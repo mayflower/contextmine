@@ -6,13 +6,14 @@ description = "Web crawler that converts HTML to Markdown with strict URL scopin
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-spider = { version = "2", features = ["sync", "control"] }
+spider = { version = "2", default-features = false, features = ["basic"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sha2 = "0.10"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
-html2md = "0.2"
+fast_html2md = "0"
 
 [[bin]]
 name = "spider_md"

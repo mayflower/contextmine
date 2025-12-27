@@ -18,10 +18,11 @@ RUN cargo build --release
 # Python worker stage
 FROM python:3.12-slim
 
-# Install git for cloning repos
+# Install git for cloning repos and OpenSSL for spider_md
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

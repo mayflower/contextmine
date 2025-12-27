@@ -6,7 +6,7 @@
 
 use clap::Parser;
 use hex;
-use html2md::parse_html;
+use html2md::rewrite_html;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use spider::configuration::Configuration;
@@ -27,7 +27,7 @@ struct Args {
     max_pages: usize,
 
     /// User agent string
-    #[arg(long, default_value = "OpenContext-Spider/0.1")]
+    #[arg(long, default_value = "Mozilla/5.0 (compatible; ContextMine/1.0; +https://github.com/mayflower/contextmine)")]
     user_agent: String,
 
     /// Request delay in milliseconds
@@ -106,7 +106,8 @@ fn compute_hash(content: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
     // Parse and validate base URL
@@ -129,13 +130,20 @@ fn main() {
     config.with_user_agent(Some(&args.user_agent));
     config.with_respect_robots_txt(true);
     config.with_delay(args.delay_ms);
+    config.with_request_timeout(Some(std::time::Duration::from_secs(30)));
+    // Limit depth, concurrency, and budget for controlled crawling
+    config.with_depth(5);
+    // Budget limits total pages crawled
+    let mut budget = spider::hashbrown::HashMap::new();
+    budget.insert("*", args.max_pages as u32);
+    config.with_budget(Some(budget));
 
     // Create website crawler
     let mut website = Website::new(&args.base_url);
     website.with_config(config);
 
-    // Crawl the website
-    website.crawl();
+    // Scrape the website (async) - scrape() collects page content, crawl() only collects links
+    website.scrape().await;
 
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -170,8 +178,8 @@ fn main() {
         // Extract title
         let title = extract_title(&html);
 
-        // Convert to Markdown
-        let markdown = parse_html(&html);
+        // Convert to Markdown (using CommonMark format)
+        let markdown = rewrite_html(&html, true);
 
         // Skip pages with no meaningful content
         if markdown.trim().is_empty() {
