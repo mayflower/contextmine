@@ -1,0 +1,104 @@
+services:
+  postgres:
+    build:
+      context: ./scripts/docker/postgres
+      dockerfile: Dockerfile
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: contextmine
+      POSTGRES_PASSWORD: contextmine
+      POSTGRES_DB: contextmine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextmine -d contextmine"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL for Docker network
+      - DATABASE_URL=postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
+    volumes:
+      # Mount source for development hot reload
+      - ./packages:/app/packages:ro
+      - ./apps/api:/app/apps/api:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://api:8000
+    volumes:
+      # Mount source for development hot reload
+      - ./apps/web/src:/app/src:ro
+      - ./apps/web/index.html:/app/index.html:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Prefect stack
+  prefect-server:
+    image: prefecthq/prefect:3-python3.12
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/prefect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      # Override for Docker network
+      DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
+      PREFECT_API_URL: http://prefect-server:4200/api
+    volumes:
+      # Mount source for development hot reload
+      - ./packages:/app/packages:ro
+      - ./apps/worker:/app/apps/worker:ro
+      # Persistent data for repos and crawl cache
+      - worker_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  worker_data:

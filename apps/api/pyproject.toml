@@ -1,0 +1,21 @@
+[project]
+name = "contextmine-api"
+version = "0.1.0"
+description = "ContextMine API server with FastAPI and MCP"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "fastmcp>=2.0.0,<3",
+    "contextmine-core",
+    "contextmine-worker",
+    "itsdangerous>=2.0.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

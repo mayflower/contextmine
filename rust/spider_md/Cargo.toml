@@ -1,0 +1,19 @@
+[package]
+name = "spider_md"
+version = "0.1.0"
+edition = "2021"
+description = "Web crawler that converts HTML to Markdown with strict URL scoping"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+spider = { version = "2", features = ["sync", "control"] }
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+html2md = "0.2"
+
+[[bin]]
+name = "spider_md"
+path = "src/main.rs"

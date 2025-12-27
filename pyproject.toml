@@ -1,0 +1,41 @@
+[project]
+name = "contextmine"
+version = "0.1.0"
+description = "Open-source local Context7 alternative with MCP retrieval"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8.0",
+    "pyright>=1.1.390",
+    "pytest>=8.0.0",
+    "anyio[trio]>=4.0.0",
+    "pytest-anyio>=0.0.0",
+    "httpx>=0.28.0",
+]
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker", "packages/*"]
+
+[tool.uv.sources]
+contextmine-core = { workspace = true }
+contextmine-worker = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["apps/api/tests"]
