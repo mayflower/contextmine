@@ -1767,52 +1767,74 @@ function App() {
             )}
 
             <section className="card">
-              <h2>Browse by Source</h2>
-              <h3>Select Collection</h3>
-              {collectionsLoading ? (
-                <p>Loading collections...</p>
-              ) : collections.length === 0 ? (
-                <p className="note">No collections yet. Create one in the Collections page first.</p>
-              ) : (
-                <div className="collection-selector">
-                  {collections.map((collection) => (
-                    <button
-                      key={collection.id}
-                      className={`collection-chip ${runsCollection?.id === collection.id ? 'active' : ''}`}
-                      onClick={() => handleSelectRunsCollection(collection)}
-                    >
-                      {collection.name}
-                    </button>
-                  ))}
+              <h2>Run History</h2>
+              <div className="run-filters">
+                <div className="filter-group">
+                  <label>Collection:</label>
+                  <select
+                    value={runsCollection?.id || ''}
+                    onChange={(e) => {
+                      const coll = collections.find(c => c.id === e.target.value) || null
+                      if (coll) {
+                        handleSelectRunsCollection(coll)
+                      } else {
+                        setRunsCollection(null)
+                        setRunsSources([])
+                        setSelectedRunSource(null)
+                        setRuns([])
+                      }
+                    }}
+                    className="filter-select"
+                  >
+                    <option value="">Select collection...</option>
+                    {collections.map((collection) => (
+                      <option key={collection.id} value={collection.id}>
+                        {collection.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+                {runsCollection && (
+                  <div className="filter-group">
+                    <label>Source:</label>
+                    <select
+                      value={selectedRunSource?.id || ''}
+                      onChange={(e) => {
+                        const src = runsSources.find(s => s.id === e.target.value) || null
+                        if (src) {
+                          handleSelectRunSource(src)
+                        } else {
+                          setSelectedRunSource(null)
+                          setRuns([])
+                        }
+                      }}
+                      className="filter-select"
+                    >
+                      <option value="">Select source...</option>
+                      {runsSources.map((source) => (
+                        <option key={source.id} value={source.id}>
+                          [{source.type}] {formatSourceUrl(source.url)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {!runsCollection && (
+                <p className="note">Select a collection and source to view run history.</p>
+              )}
+              {runsCollection && !selectedRunSource && runsSources.length > 0 && (
+                <p className="note">Select a source to view its run history.</p>
+              )}
+              {runsCollection && runsSources.length === 0 && (
+                <p className="note">No sources in this collection.</p>
               )}
             </section>
 
-            {runsCollection && (
-              <section className="card">
-                <h2>Select Source</h2>
-                {runsSources.length === 0 ? (
-                  <p className="note">No sources in this collection. Add sources in the Sources page first.</p>
-                ) : (
-                  <div className="source-selector">
-                    {runsSources.map((source) => (
-                      <button
-                        key={source.id}
-                        className={`source-chip ${selectedRunSource?.id === source.id ? 'active' : ''}`}
-                        onClick={() => handleSelectRunSource(source)}
-                      >
-                        <span className={`source-type-badge ${source.type}`}>{source.type}</span>
-                        {source.url.length > 40 ? source.url.substring(0, 40) + '...' : source.url}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
-
             {selectedRunSource && (
               <section className="card">
-                <h2>Sync Runs for {selectedRunSource.url}</h2>
+                <h2>Runs: {formatSourceUrl(selectedRunSource.url)}</h2>
                 {runsLoading ? (
                   <p>Loading runs...</p>
                 ) : runs.length === 0 ? (
