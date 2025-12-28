@@ -101,9 +101,7 @@ class TestMCPEndpointAuth:
         assert "Invalid or revoked token" in data["error"]
 
     @patch("app.mcp_server.get_settings")
-    async def test_mcp_origin_check(
-        self, mock_get_settings: Any, client: AsyncClient
-    ) -> None:
+    async def test_mcp_origin_check(self, mock_get_settings: Any, client: AsyncClient) -> None:
         """Test that /mcp validates origin when allowlist is configured."""
         from unittest.mock import MagicMock
 

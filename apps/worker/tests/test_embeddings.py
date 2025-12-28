@@ -124,15 +124,9 @@ class TestOpenAIEmbedder:
 
     def test_dimensions_for_models(self) -> None:
         """Test dimensions for different models."""
-        embedder_small = OpenAIEmbedder(
-            model_name="text-embedding-3-small", api_key="test"
-        )
-        embedder_large = OpenAIEmbedder(
-            model_name="text-embedding-3-large", api_key="test"
-        )
-        embedder_ada = OpenAIEmbedder(
-            model_name="text-embedding-ada-002", api_key="test"
-        )
+        embedder_small = OpenAIEmbedder(model_name="text-embedding-3-small", api_key="test")
+        embedder_large = OpenAIEmbedder(model_name="text-embedding-3-large", api_key="test")
+        embedder_ada = OpenAIEmbedder(model_name="text-embedding-ada-002", api_key="test")
 
         assert embedder_small.dimension == 1536
         assert embedder_large.dimension == 3072
@@ -208,9 +202,7 @@ class TestParseEmbeddingModelSpec:
 
     def test_parse_openai_spec(self) -> None:
         """Test parsing OpenAI model spec."""
-        provider, model_name = parse_embedding_model_spec(
-            "openai:text-embedding-3-small"
-        )
+        provider, model_name = parse_embedding_model_spec("openai:text-embedding-3-small")
         assert provider == EmbeddingProvider.OPENAI
         assert model_name == "text-embedding-3-small"
 

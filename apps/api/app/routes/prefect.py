@@ -69,9 +69,7 @@ async def get_flow_runs() -> dict:
 
             # For active runs, get task run progress
             for run in active_runs:
-                run["progress"] = await _get_flow_run_progress(
-                    client, prefect_url, run["id"]
-                )
+                run["progress"] = await _get_flow_run_progress(client, prefect_url, run["id"])
 
             return {
                 "active": active_runs,
@@ -100,16 +98,10 @@ async def _get_flow_run_progress(
         task_runs = response.json()
 
         total = len(task_runs)
-        completed = sum(
-            1 for t in task_runs if t.get("state_type") == "COMPLETED"
-        )
+        completed = sum(1 for t in task_runs if t.get("state_type") == "COMPLETED")
         failed = sum(1 for t in task_runs if t.get("state_type") == "FAILED")
         running = sum(1 for t in task_runs if t.get("state_type") == "RUNNING")
-        pending = sum(
-            1
-            for t in task_runs
-            if t.get("state_type") in ("PENDING", "SCHEDULED")
-        )
+        pending = sum(1 for t in task_runs if t.get("state_type") in ("PENDING", "SCHEDULED"))
 
         # Get current task if any
         current_task = None

@@ -142,9 +142,7 @@ async def _get_collection_with_access(
 
     if require_owner:
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can perform this action"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can perform this action")
     else:
         # Check access: global, owner, or member
         if (
@@ -157,9 +155,7 @@ async def _get_collection_with_access(
                 .where(CollectionMember.user_id == user_id)
             )
             if not result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=403, detail="Access denied to this collection"
-                )
+                raise HTTPException(status_code=403, detail="Access denied to this collection")
 
     return collection
 
@@ -220,9 +216,7 @@ async def create_source(
 
 
 @router.get("/collections/{collection_id}/sources", response_model=list[SourceResponse])
-async def list_sources(
-    request: Request, collection_id: str
-) -> list[SourceResponse]:
+async def list_sources(request: Request, collection_id: str) -> list[SourceResponse]:
     """List sources in a collection."""
     user_id = get_current_user_id(request)
 
@@ -283,15 +277,11 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection ownership
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can delete sources"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can delete sources")
 
         await db.delete(source)
         await db.flush()
@@ -320,15 +310,11 @@ async def update_source(
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection ownership
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can update sources"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can update sources")
 
         # Update fields if provided
         if body.enabled is not None:
@@ -347,9 +333,7 @@ async def update_source(
                     status_code=400, detail="max_pages is only supported for web sources"
                 )
             if body.max_pages < 1 or body.max_pages > 1000:
-                raise HTTPException(
-                    status_code=400, detail="max_pages must be between 1 and 1000"
-                )
+                raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
             config = source.config or {}
             config["max_pages"] = body.max_pages
             source.config = config
@@ -426,15 +410,11 @@ async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection ownership (only owner can view deploy key info)
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can view deploy key info"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can view deploy key info")
 
         return DeployKeyResponse(
             fingerprint=source.deploy_key_fingerprint,
@@ -477,15 +457,11 @@ async def set_deploy_key(
             )
 
         # Check collection ownership
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can set deploy keys"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can set deploy keys")
 
         # Compute fingerprint and encrypt the key
         fingerprint = compute_ssh_key_fingerprint(private_key)
@@ -521,15 +497,11 @@ async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection ownership
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can delete deploy keys"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can delete deploy keys")
 
         # Clear deploy key
         source.deploy_key_encrypted = None

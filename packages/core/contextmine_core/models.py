@@ -54,9 +54,7 @@ class AppKV(Base):
 
     __tablename__ = "app_kv"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -75,9 +73,7 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     github_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     github_login: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -106,9 +102,7 @@ class OAuthToken(Base):
 
     __tablename__ = "oauth_tokens"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -127,9 +121,7 @@ class MCPApiToken(Base):
 
     __tablename__ = "mcp_api_tokens"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -138,12 +130,8 @@ class MCPApiToken(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="mcp_tokens")
@@ -154,9 +142,7 @@ class Collection(Base):
 
     __tablename__ = "collections"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     visibility: Mapped[CollectionVisibility] = mapped_column(
@@ -218,9 +204,7 @@ class CollectionInvite(Base):
 
     __tablename__ = "collection_invites"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("collections.id", ondelete="CASCADE"),
@@ -240,9 +224,7 @@ class Source(Base):
 
     __tablename__ = "sources"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("collections.id", ondelete="CASCADE"),
@@ -260,21 +242,13 @@ class Source(Base):
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    schedule_interval_minutes: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=60
-    )
-    next_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    schedule_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Deploy key for SSH access (GitHub sources only)
     deploy_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    deploy_key_fingerprint: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
-    )
+    deploy_key_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -294,9 +268,7 @@ class SyncRun(Base):
 
     __tablename__ = "sync_runs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("sources.id", ondelete="CASCADE"),
@@ -305,9 +277,7 @@ class SyncRun(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[SyncRunStatus] = mapped_column(
         Enum(
             SyncRunStatus,
@@ -329,9 +299,7 @@ class Document(Base):
 
     __tablename__ = "documents"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("sources.id", ondelete="CASCADE"),
@@ -342,9 +310,7 @@ class Document(Base):
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    last_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -367,9 +333,7 @@ class EmbeddingModel(Base):
 
     __tablename__ = "embedding_models"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     provider: Mapped[EmbeddingProvider] = mapped_column(
         Enum(
             EmbeddingProvider,
@@ -394,9 +358,7 @@ class Chunk(Base):
 
     __tablename__ = "chunks"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("documents.id", ondelete="CASCADE"),
@@ -416,14 +378,10 @@ class Chunk(Base):
         ForeignKey("embedding_models.id", ondelete="SET NULL"),
         nullable=True,
     )
-    embedded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Note: embedding vector column is not mapped as SQLAlchemy type
     # It's accessed via raw SQL for pgvector operations
 
     # Relationships
     document: Mapped["Document"] = relationship(back_populates="chunks")
-    embedding_model: Mapped["EmbeddingModel | None"] = relationship(
-        back_populates="chunks"
-    )
+    embedding_model: Mapped["EmbeddingModel | None"] = relationship(back_populates="chunks")

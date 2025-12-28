@@ -77,9 +77,7 @@ def get_current_user_id(request: Request) -> uuid.UUID:
 
 
 @router.post("", response_model=CollectionResponse)
-async def create_collection(
-    request: Request, body: CreateCollectionRequest
-) -> CollectionResponse:
+async def create_collection(request: Request, body: CreateCollectionRequest) -> CollectionResponse:
     """Create a new collection."""
     user_id = get_current_user_id(request)
 
@@ -93,9 +91,7 @@ async def create_collection(
 
     async with get_db_session() as db:
         # Check if slug is already taken
-        result = await db.execute(
-            select(Collection).where(Collection.slug == body.slug)
-        )
+        result = await db.execute(select(Collection).where(Collection.slug == body.slug))
         if result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Slug already exists")
 
@@ -160,9 +156,7 @@ async def list_collections(request: Request) -> list[CollectionResponse]:
         for collection, owner in rows:
             # Count members
             member_result = await db.execute(
-                select(CollectionMember).where(
-                    CollectionMember.collection_id == collection.id
-                )
+                select(CollectionMember).where(CollectionMember.collection_id == collection.id)
             )
             member_count = len(member_result.scalars().all())
 
@@ -193,9 +187,7 @@ async def list_members(request: Request, collection_id: str) -> list[MemberRespo
         collection = await _get_collection_with_access(db, collection_id, user_id)
 
         # Get owner
-        result = await db.execute(
-            select(User).where(User.id == collection.owner_user_id)
-        )
+        result = await db.execute(select(User).where(User.id == collection.owner_user_id))
         owner = result.scalar_one()
 
         members = [
@@ -240,9 +232,7 @@ async def list_invites(request: Request, collection_id: str) -> list[InviteRespo
         )
 
         result = await db.execute(
-            select(CollectionInvite).where(
-                CollectionInvite.collection_id == collection.id
-            )
+            select(CollectionInvite).where(CollectionInvite.collection_id == collection.id)
         )
         invites = result.scalars().all()
 
@@ -272,17 +262,13 @@ async def share_collection(
         )
 
         # Check if user exists
-        result = await db.execute(
-            select(User).where(User.github_login == body.github_login)
-        )
+        result = await db.execute(select(User).where(User.github_login == body.github_login))
         target_user = result.scalar_one_or_none()
 
         if target_user:
             # Check if already owner
             if target_user.id == collection.owner_user_id:
-                raise HTTPException(
-                    status_code=400, detail="Cannot share with collection owner"
-                )
+                raise HTTPException(status_code=400, detail="Cannot share with collection owner")
 
             # Check if already a member
             result = await db.execute(
@@ -310,9 +296,7 @@ async def share_collection(
                 .where(CollectionInvite.github_login == body.github_login)
             )
             if result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=400, detail="Invite already exists for this user"
-                )
+                raise HTTPException(status_code=400, detail="Invite already exists for this user")
 
             # Create invite
             invite = CollectionInvite(
@@ -327,9 +311,7 @@ async def share_collection(
 
 
 @router.delete("/{collection_id}")
-async def delete_collection(
-    request: Request, collection_id: str
-) -> dict[str, str]:
+async def delete_collection(request: Request, collection_id: str) -> dict[str, str]:
     """Delete a collection and all its sources/documents/chunks.
 
     Only the owner can delete a collection.
@@ -346,16 +328,12 @@ async def delete_collection(
 
         # Delete in order: chunks -> documents -> sources -> invites -> members -> collection
         # Get all sources for this collection
-        result = await db.execute(
-            select(Source).where(Source.collection_id == collection.id)
-        )
+        result = await db.execute(select(Source).where(Source.collection_id == collection.id))
         sources = result.scalars().all()
 
         for source in sources:
             # Delete chunks for all documents in this source
-            result = await db.execute(
-                select(Document).where(Document.source_id == source.id)
-            )
+            result = await db.execute(select(Document).where(Document.source_id == source.id))
             documents = result.scalars().all()
 
             for doc in documents:
@@ -369,16 +347,12 @@ async def delete_collection(
 
         # Delete invites
         await db.execute(
-            delete(CollectionInvite).where(
-                CollectionInvite.collection_id == collection.id
-            )
+            delete(CollectionInvite).where(CollectionInvite.collection_id == collection.id)
         )
 
         # Delete members
         await db.execute(
-            delete(CollectionMember).where(
-                CollectionMember.collection_id == collection.id
-            )
+            delete(CollectionMember).where(CollectionMember.collection_id == collection.id)
         )
 
         # Delete collection
@@ -467,9 +441,7 @@ async def _get_collection_with_access(
 
     if require_owner:
         if collection.owner_user_id != user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can perform this action"
-            )
+            raise HTTPException(status_code=403, detail="Only the owner can perform this action")
     else:
         # Check access: global, owner, or member
         if (
@@ -482,8 +454,6 @@ async def _get_collection_with_access(
                 .where(CollectionMember.user_id == user_id)
             )
             if not result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=403, detail="Access denied to this collection"
-                )
+                raise HTTPException(status_code=403, detail="Access denied to this collection")
 
     return collection

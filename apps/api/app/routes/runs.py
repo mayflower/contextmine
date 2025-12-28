@@ -65,9 +65,7 @@ async def list_runs(
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection access
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         # Verify access: global, owner, or member
@@ -81,9 +79,7 @@ async def list_runs(
                 .where(CollectionMember.user_id == user_id)
             )
             if not result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=403, detail="Access denied to this source"
-                )
+                raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get runs for source, ordered by started_at desc
         result = await db.execute(

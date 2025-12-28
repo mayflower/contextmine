@@ -86,15 +86,16 @@ async def maintain_chunks_for_document(
         # Delete removed chunks
         if hashes_to_delete:
             ids_to_delete = [existing[h] for h in hashes_to_delete]
-            await session.execute(
-                delete(Chunk).where(Chunk.id.in_(ids_to_delete))
-            )
+            await session.execute(delete(Chunk).where(Chunk.id.in_(ids_to_delete)))
             stats["chunks_deleted"] = len(ids_to_delete)
 
         # Add new chunks (track added hashes to avoid duplicates)
         added_hashes: set[str] = set()
         for chunk_result in new_chunks:
-            if chunk_result.chunk_hash in hashes_to_add and chunk_result.chunk_hash not in added_hashes:
+            if (
+                chunk_result.chunk_hash in hashes_to_add
+                and chunk_result.chunk_hash not in added_hashes
+            ):
                 new_chunk = Chunk(
                     document_id=doc_uuid,
                     chunk_index=chunk_result.chunk_index,
@@ -361,9 +362,7 @@ async def get_github_token_for_source(source_id: str, collection_id: str) -> str
     async with get_session() as session:
         # Get collection owner
         result = await session.execute(
-            select(Collection.owner_user_id).where(
-                Collection.id == uuid_module.UUID(collection_id)
-            )
+            select(Collection.owner_user_id).where(Collection.id == uuid_module.UUID(collection_id))
         )
         owner_id = result.scalar_one_or_none()
         if not owner_id:
@@ -390,9 +389,7 @@ async def get_deploy_key_for_source(source_id: str) -> str | None:
 
     async with get_session() as session:
         result = await session.execute(
-            select(Source.deploy_key_encrypted).where(
-                Source.id == uuid_module.UUID(source_id)
-            )
+            select(Source.deploy_key_encrypted).where(Source.id == uuid_module.UUID(source_id))
         )
         encrypted_key = result.scalar_one_or_none()
 
@@ -448,7 +445,9 @@ async def sync_github_source(
     new_sha = git_repo.head.commit.hexsha
     old_sha = source.cursor
 
-    await update_progress_artifact(progress_id, progress=15, description="Detecting changed files...")  # type: ignore[misc]
+    await update_progress_artifact(
+        progress_id, progress=15, description="Detecting changed files..."
+    )  # type: ignore[misc]
 
     # Get changed and deleted files
     changed_files, deleted_files = get_changed_files(git_repo, old_sha, new_sha)
@@ -465,8 +464,7 @@ async def sync_github_source(
 
     total_files = len(changed_files) + len(deleted_files)
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=20,
-        description=f"Processing {total_files} files..."
+        progress_id, progress=20, description=f"Processing {total_files} files..."
     )
 
     async with get_session() as session:
@@ -507,9 +505,7 @@ async def sync_github_source(
             title = get_file_title(Path(file_path))
 
             # Check if document exists
-            result = await session.execute(
-                select(Document).where(Document.uri == uri)
-            )
+            result = await session.execute(select(Document).where(Document.uri == uri))
             existing_doc = result.scalar_one_or_none()
 
             if existing_doc:
@@ -556,9 +552,7 @@ async def sync_github_source(
             stats.docs_deleted += result.rowcount  # type: ignore[union-attr]
 
         # Update source cursor
-        result = await session.execute(
-            select(Source).where(Source.id == source.id)
-        )
+        result = await session.execute(select(Source).where(Source.id == source.id))
         db_source = result.scalar_one()
         db_source.cursor = new_sha
         db_source.last_run_at = datetime.now(UTC)
@@ -596,8 +590,9 @@ async def sync_github_source(
     total_docs = len(docs_to_chunk)
     if total_docs > 0:
         await update_progress_artifact(  # type: ignore[misc]
-            progress_id, progress=50,
-            description=f"Chunking and embedding {total_docs} documents..."
+            progress_id,
+            progress=50,
+            description=f"Chunking and embedding {total_docs} documents...",
         )
 
     for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
@@ -605,8 +600,9 @@ async def sync_github_source(
         if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
             pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
             await update_progress_artifact(  # type: ignore[misc]
-                progress_id, progress=pct,
-                description=f"Processing document {i + 1}/{total_docs}..."
+                progress_id,
+                progress=pct,
+                description=f"Processing document {i + 1}/{total_docs}...",
             )
 
         chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
@@ -623,9 +619,7 @@ async def sync_github_source(
 
     async with get_session() as session:
         # Update sync run
-        result = await session.execute(
-            select(SyncRun).where(SyncRun.id == sync_run.id)
-        )
+        result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
         db_run = result.scalar_one()
         db_run.status = SyncRunStatus.SUCCESS
         db_run.finished_at = datetime.now(UTC)
@@ -677,7 +671,9 @@ async def sync_web_source(
         description=f"Starting crawl of {base_url}...",
     )
 
-    await update_progress_artifact(progress_id, progress=5, description=f"Crawling up to {max_pages} pages...")  # type: ignore[misc]
+    await update_progress_artifact(
+        progress_id, progress=5, description=f"Crawling up to {max_pages} pages..."
+    )  # type: ignore[misc]
 
     # Run the spider with rate limiting
     pages = run_spider_md(
@@ -688,8 +684,7 @@ async def sync_web_source(
 
     stats.pages_crawled = len(pages)
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=40,
-        description=f"Crawled {len(pages)} pages, processing..."
+        progress_id, progress=40, description=f"Crawled {len(pages)} pages, processing..."
     )
 
     # Track documents to chunk (doc_id, content, file_path)
@@ -710,9 +705,7 @@ async def sync_web_source(
             title = get_page_title(page)
 
             # Check if document exists
-            result = await session.execute(
-                select(Document).where(Document.uri == uri)
-            )
+            result = await session.execute(select(Document).where(Document.uri == uri))
             existing_doc = result.scalar_one_or_none()
 
             if existing_doc:
@@ -765,9 +758,7 @@ async def sync_web_source(
         stats.docs_deleted = result.rowcount or 0  # type: ignore[union-attr]
 
         # Update source timestamps (no cursor for web sources)
-        result = await session.execute(
-            select(Source).where(Source.id == source.id)
-        )
+        result = await session.execute(select(Source).where(Source.id == source.id))
         db_source = result.scalar_one()
         db_source.last_run_at = datetime.now(UTC)
         db_source.next_run_at = datetime.now(UTC) + timedelta(
@@ -799,8 +790,9 @@ async def sync_web_source(
     total_docs = len(docs_to_chunk)
     if total_docs > 0:
         await update_progress_artifact(  # type: ignore[misc]
-            progress_id, progress=50,
-            description=f"Chunking and embedding {total_docs} documents..."
+            progress_id,
+            progress=50,
+            description=f"Chunking and embedding {total_docs} documents...",
         )
 
     for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
@@ -808,8 +800,9 @@ async def sync_web_source(
         if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
             pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
             await update_progress_artifact(  # type: ignore[misc]
-                progress_id, progress=pct,
-                description=f"Processing document {i + 1}/{total_docs}..."
+                progress_id,
+                progress=pct,
+                description=f"Processing document {i + 1}/{total_docs}...",
             )
 
         chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
@@ -826,9 +819,7 @@ async def sync_web_source(
 
     async with get_session() as session:
         # Update sync run
-        result = await session.execute(
-            select(SyncRun).where(SyncRun.id == sync_run.id)
-        )
+        result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
         db_run = result.scalar_one()
         db_run.status = SyncRunStatus.SUCCESS
         db_run.finished_at = datetime.now(UTC)
@@ -893,18 +884,14 @@ async def sync_source(source: Source) -> SyncRun | None:
     except Exception as e:
         # Mark run as failed
         async with get_session() as session:
-            result = await session.execute(
-                select(SyncRun).where(SyncRun.id == sync_run.id)
-            )
+            result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
             db_run = result.scalar_one()
             db_run.status = SyncRunStatus.FAILED
             db_run.finished_at = datetime.now(UTC)
             db_run.error = str(e)
 
             # Still update source timestamps
-            result = await session.execute(
-                select(Source).where(Source.id == source.id)
-            )
+            result = await session.execute(select(Source).where(Source.id == source.id))
             db_source = result.scalar_one()
             db_source.last_run_at = datetime.now(UTC)
             db_source.next_run_at = datetime.now(UTC) + timedelta(
@@ -917,9 +904,7 @@ async def sync_source(source: Source) -> SyncRun | None:
 
     # Refresh and return
     async with get_session() as session:
-        result = await session.execute(
-            select(SyncRun).where(SyncRun.id == sync_run.id)
-        )
+        result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
         return result.scalar_one()
 
 

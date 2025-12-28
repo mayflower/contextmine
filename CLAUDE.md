@@ -10,7 +10,7 @@ uv sync --all-packages
 
 # Quality checks (run from repo root)
 uv run ruff check .        # Linting
-uv run pyright             # Type checking
+uvx ty check               # Type checking
 uv run pytest -v           # Run all tests
 
 # Run a single test
@@ -48,23 +48,23 @@ ContextMine is a documentation/code indexing system exposing context via MCP (Mo
 
 Uses uv workspaces. The root `pyproject.toml` defines:
 - Workspace members: `apps/api`, `apps/worker`, `packages/*`
-- Dev dependencies: ruff, pyright, pytest, httpx
+- Dev dependencies: ruff, ty, pytest, httpx
 - Shared source: `contextmine-core` package
 
 ### API Structure
 
 FastAPI app (`apps/api/app/main.py`) mounts:
 - REST routes under `/api/*` (health, auth, collections, sources, etc.)
-- MCP server at `/mcp` using Starlette sub-application with SSE transport
+- MCP server at `/mcp` using Streamable HTTP transport
 
-MCP exposes a single tool `context.get_markdown` for retrieval (no management operations via MCP).
+MCP exposes tools for context retrieval: `context.list_collections`, `context.list_documents`, `context.get_markdown`.
 
 ### Key Conventions
 
 - Backend routes: `/api/*`
-- MCP endpoint: `/mcp/sse` (SSE) and `/mcp/messages/` (POST)
+- MCP endpoint: `/mcp` (Streamable HTTP)
 - Environment config: `.env.example` documents all env vars
-- Incremental builds: each step should pass `uv sync`, `ruff check`, `pyright`, `pytest`
+- Incremental builds: each step should pass `uv sync`, `ruff check`, `ty check`, `pytest`
 
 ## Tech Stack
 

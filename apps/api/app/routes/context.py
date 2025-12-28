@@ -173,11 +173,13 @@ async def create_context_stream(request: Request, body: ContextRequest) -> Strea
             ):
                 if isinstance(item, StreamingContextMetadata):
                     # Send metadata event
-                    data = json.dumps({
-                        "query": item.query,
-                        "chunks_used": item.chunks_used,
-                        "sources": item.sources,
-                    })
+                    data = json.dumps(
+                        {
+                            "query": item.query,
+                            "chunks_used": item.chunks_used,
+                            "sources": item.sources,
+                        }
+                    )
                     yield f"event: metadata\ndata: {data}\n\n"
                 else:
                     # Send content chunk

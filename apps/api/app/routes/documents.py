@@ -78,9 +78,7 @@ async def list_documents(
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection access
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         # Verify access: global, owner, or member
@@ -94,9 +92,7 @@ async def list_documents(
                 .where(CollectionMember.user_id == user_id)
             )
             if not result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=403, detail="Access denied to this source"
-                )
+                raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get total count
         result = await db.execute(
@@ -155,9 +151,7 @@ async def get_document_count(request: Request, source_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Source not found")
 
         # Check collection access
-        result = await db.execute(
-            select(Collection).where(Collection.id == source.collection_id)
-        )
+        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
         # Verify access: global, owner, or member
@@ -171,9 +165,7 @@ async def get_document_count(request: Request, source_id: str) -> dict:
                 .where(CollectionMember.user_id == user_id)
             )
             if not result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=403, detail="Access denied to this source"
-                )
+                raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get count
         result = await db.execute(

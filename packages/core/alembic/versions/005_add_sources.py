@@ -47,9 +47,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["collection_id"], ["collections.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_sources_collection_id", "sources", ["collection_id"])

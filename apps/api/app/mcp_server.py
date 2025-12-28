@@ -64,17 +64,13 @@ def get_current_user_id() -> uuid.UUID | None:
 class MCPAuthMiddleware(BaseHTTPMiddleware):
     """Middleware to authenticate MCP requests with Bearer tokens and validate Origin."""
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Validate Bearer token and Origin header."""
         settings = get_settings()
 
         # Check Origin allowlist
         origin = request.headers.get("origin")
-        allowed_origins = [
-            o.strip() for o in settings.mcp_allowed_origins.split(",") if o.strip()
-        ]
+        allowed_origins = [o.strip() for o in settings.mcp_allowed_origins.split(",") if o.strip()]
 
         if allowed_origins and origin and origin not in allowed_origins:
             return JSONResponse(
@@ -113,9 +109,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         """Verify token against database and return user_id if valid."""
         async with get_db_session() as db:
             # Get all non-revoked tokens
-            result = await db.execute(
-                select(MCPApiToken).where(MCPApiToken.revoked_at.is_(None))
-            )
+            result = await db.execute(select(MCPApiToken).where(MCPApiToken.revoked_at.is_(None)))
             tokens = result.scalars().all()
 
             for db_token in tokens:
@@ -223,9 +217,7 @@ async def list_documents(
 
     async with get_db_session() as db:
         # Verify access to collection
-        coll_result = await db.execute(
-            select(Collection).where(Collection.id == coll_uuid)
-        )
+        coll_result = await db.execute(select(Collection).where(Collection.id == coll_uuid))
         collection = coll_result.scalar_one_or_none()
 
         if not collection:
@@ -394,8 +386,7 @@ async def _get_raw_chunks(
     if topic:
         topic_lower = topic.lower()
         results = [
-            r for r in results
-            if topic_lower in r.title.lower() or topic_lower in r.uri.lower()
+            r for r in results if topic_lower in r.title.lower() or topic_lower in r.uri.lower()
         ]
 
     # Apply offset and limit

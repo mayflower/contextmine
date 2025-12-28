@@ -54,9 +54,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["collection_id"], ["collections.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("collection_id", "user_id"),
     )
@@ -73,15 +71,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["collection_id"], ["collections.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("collection_id", "github_login"),
     )
-    op.create_index(
-        "ix_collection_invites_github_login", "collection_invites", ["github_login"]
-    )
+    op.create_index("ix_collection_invites_github_login", "collection_invites", ["github_login"])
 
 
 def downgrade() -> None:

@@ -79,9 +79,7 @@ class TestAuthRoutes:
         location = response.headers["location"]
         assert "github.com/login/oauth/authorize" in location
 
-    async def test_me_returns_401_when_not_authenticated(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_me_returns_401_when_not_authenticated(self, client: AsyncClient) -> None:
         """Test that /api/auth/me returns 401 when not logged in."""
         response = await client.get("/api/auth/me")
         assert response.status_code == 401
@@ -95,9 +93,7 @@ class TestAuthRoutes:
         data = response.json()
         assert data["status"] == "logged_out"
 
-    async def test_callback_requires_code_and_state(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_callback_requires_code_and_state(self, client: AsyncClient) -> None:
         """Test that callback without code/state redirects with error."""
         response = await client.get("/api/auth/callback", follow_redirects=False)
         assert response.status_code == 302

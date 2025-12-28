@@ -69,17 +69,13 @@ async def callback(
         return RedirectResponse(url=f"{frontend_url}?error={error}", status_code=302)
 
     if not code or not state:
-        return RedirectResponse(
-            url=f"{frontend_url}?error=missing_params", status_code=302
-        )
+        return RedirectResponse(url=f"{frontend_url}?error=missing_params", status_code=302)
 
     # Verify state matches
     session = get_session(request)
     stored_state = session.get("oauth_state")
     if not stored_state or stored_state != state:
-        return RedirectResponse(
-            url=f"{frontend_url}?error=invalid_state", status_code=302
-        )
+        return RedirectResponse(url=f"{frontend_url}?error=invalid_state", status_code=302)
 
     try:
         # Exchange code for access token
@@ -91,9 +87,7 @@ async def callback(
         # Upsert user in database
         async with get_db_session() as db:
             # Check if user exists
-            result = await db.execute(
-                select(User).where(User.github_user_id == github_user["id"])
-            )
+            result = await db.execute(select(User).where(User.github_user_id == github_user["id"]))
             user = result.scalar_one_or_none()
 
             if user:
@@ -141,9 +135,7 @@ async def callback(
 
             # Auto-accept pending invites for this user's github_login
             invite_result = await db.execute(
-                select(CollectionInvite).where(
-                    CollectionInvite.github_login == user.github_login
-                )
+                select(CollectionInvite).where(CollectionInvite.github_login == user.github_login)
             )
             pending_invites = invite_result.scalars().all()
 

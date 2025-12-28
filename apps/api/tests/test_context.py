@@ -93,7 +93,7 @@ And that's it."""
 
         # Code fence should be preserved exactly
         assert "```python" in prompt
-        assert 'def hello():' in prompt
+        assert "def hello():" in prompt
         assert '    print("Hello, world!")' in prompt
         assert "```" in prompt
 

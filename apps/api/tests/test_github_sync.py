@@ -131,9 +131,7 @@ class TestIncrementalSync:
             commit_b = repo.index.commit("Commit B")
 
             # Get changed files
-            changed, deleted = get_changed_files(
-                repo, commit_a.hexsha, commit_b.hexsha
-            )
+            changed, deleted = get_changed_files(repo, commit_a.hexsha, commit_b.hexsha)
 
             assert len(changed) == 1
             assert "file2.py" in changed
@@ -155,9 +153,7 @@ class TestIncrementalSync:
             commit_b = repo.index.commit("Commit B")
 
             # Get changed files
-            changed, deleted = get_changed_files(
-                repo, commit_a.hexsha, commit_b.hexsha
-            )
+            changed, deleted = get_changed_files(repo, commit_a.hexsha, commit_b.hexsha)
 
             assert len(changed) == 1
             assert "file1.py" in changed
@@ -180,9 +176,7 @@ class TestIncrementalSync:
             commit_b = repo.index.commit("Commit B")
 
             # Get changed files
-            changed, deleted = get_changed_files(
-                repo, commit_a.hexsha, commit_b.hexsha
-            )
+            changed, deleted = get_changed_files(repo, commit_a.hexsha, commit_b.hexsha)
 
             assert len(changed) == 0
             assert len(deleted) == 1
@@ -205,9 +199,7 @@ class TestIncrementalSync:
             commit_b = repo.index.commit("Commit B")
 
             # Get changed files
-            changed, deleted = get_changed_files(
-                repo, commit_a.hexsha, commit_b.hexsha
-            )
+            changed, deleted = get_changed_files(repo, commit_a.hexsha, commit_b.hexsha)
 
             # Renamed file should appear in changed and old name in deleted
             assert "new_name.py" in changed
@@ -234,9 +226,7 @@ class TestIncrementalSync:
             commit_b = repo.index.commit("Commit B")
 
             # Get changed files
-            changed, deleted = get_changed_files(
-                repo, commit_a.hexsha, commit_b.hexsha
-            )
+            changed, deleted = get_changed_files(repo, commit_a.hexsha, commit_b.hexsha)
 
             assert len(changed) == 2
             assert "modify.py" in changed

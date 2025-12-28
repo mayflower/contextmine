@@ -21,9 +21,7 @@ def get_signer() -> TimestampSigner:
 class SessionMiddleware(BaseHTTPMiddleware):
     """Middleware that manages signed session cookies."""
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Process request and manage session."""
         # Load session from cookie
         session_data: dict[str, Any] = {}

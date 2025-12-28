@@ -297,9 +297,7 @@ async def hybrid_search(
 
         # Perform both searches
         fts_results = await search_fts(session, query, collection_ids, fts_limit)
-        vector_results = await search_vector(
-            session, query_embedding, collection_ids, vector_limit
-        )
+        vector_results = await search_vector(session, query_embedding, collection_ids, vector_limit)
 
         # Compute RRF scores
         rrf_scores = compute_rrf_scores(fts_results, vector_results)

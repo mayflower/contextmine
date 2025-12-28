@@ -66,7 +66,7 @@ More text after the code.
             if "def hello():" in chunk:
                 # The entire code block should be in this chunk
                 assert "```python" in chunk
-                assert "```" in chunk[chunk.index("```python") + 10:]  # closing fence
+                assert "```" in chunk[chunk.index("```python") + 10 :]  # closing fence
                 found = True
                 break
         assert found, "Code block not found in any chunk"
@@ -120,7 +120,7 @@ Both are valid greeting functions.
         python_found = False
         for chunk in chunks:
             if "def greet(name):" in chunk:
-                assert '```python' in chunk
+                assert "```python" in chunk
                 assert 'return f"Hello, {name}!"' in chunk
                 python_found = True
                 break
@@ -268,7 +268,7 @@ class MyClass:
 
     def test_javascript_file_chunked(self) -> None:
         """JavaScript files are chunked."""
-        code = '''
+        code = """
 function hello() {
     console.log("Hello");
 }
@@ -280,7 +280,7 @@ function world() {
 const foo = () => {
     return "bar";
 };
-'''
+"""
         chunks = chunk_document(code, "example.js", chunk_size=300, chunk_overlap=50)
         assert len(chunks) > 0
 
