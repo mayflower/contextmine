@@ -53,6 +53,14 @@ class SourceResponse(BaseModel):
     deploy_key_fingerprint: str | None = None
 
 
+class UpdateSourceRequest(BaseModel):
+    """Request model for updating a source."""
+
+    enabled: bool | None = None
+    schedule_interval_minutes: int | None = None
+    max_pages: int | None = None  # For web sources only
+
+
 class SetDeployKeyRequest(BaseModel):
     """Request model for setting a deploy key."""
 
@@ -289,6 +297,85 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
         await db.flush()
 
         return {"status": "deleted"}
+
+
+@router.patch("/sources/{source_id}", response_model=SourceResponse)
+async def update_source(
+    request: Request, source_id: str, body: UpdateSourceRequest
+) -> SourceResponse:
+    """Update a source's settings."""
+    user_id = get_current_user_id(request)
+
+    try:
+        src_uuid = uuid.UUID(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+
+    async with get_db_session() as db:
+        # Get source
+        result = await db.execute(select(Source).where(Source.id == src_uuid))
+        source = result.scalar_one_or_none()
+
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        # Check collection ownership
+        result = await db.execute(
+            select(Collection).where(Collection.id == source.collection_id)
+        )
+        collection = result.scalar_one()
+
+        if collection.owner_user_id != user_id:
+            raise HTTPException(
+                status_code=403, detail="Only the owner can update sources"
+            )
+
+        # Update fields if provided
+        if body.enabled is not None:
+            source.enabled = body.enabled
+
+        if body.schedule_interval_minutes is not None:
+            if body.schedule_interval_minutes < 1:
+                raise HTTPException(
+                    status_code=400, detail="Schedule interval must be at least 1 minute"
+                )
+            source.schedule_interval_minutes = body.schedule_interval_minutes
+
+        if body.max_pages is not None:
+            if source.type != SourceType.WEB:
+                raise HTTPException(
+                    status_code=400, detail="max_pages is only supported for web sources"
+                )
+            if body.max_pages < 1 or body.max_pages > 1000:
+                raise HTTPException(
+                    status_code=400, detail="max_pages must be between 1 and 1000"
+                )
+            config = source.config or {}
+            config["max_pages"] = body.max_pages
+            source.config = config
+
+        await db.flush()
+
+        # Get document count
+        doc_count_result = await db.execute(
+            select(func.count(Document.id)).where(Document.source_id == source.id)
+        )
+        doc_count = doc_count_result.scalar() or 0
+
+        return SourceResponse(
+            id=str(source.id),
+            collection_id=str(source.collection_id),
+            type=source.type.value,
+            url=source.url,
+            config=source.config,
+            enabled=source.enabled,
+            schedule_interval_minutes=source.schedule_interval_minutes,
+            next_run_at=source.next_run_at,
+            last_run_at=source.last_run_at,
+            created_at=source.created_at,
+            document_count=doc_count,
+            deploy_key_fingerprint=source.deploy_key_fingerprint,
+        )
 
 
 @router.post("/sources/{source_id}/sync-now")

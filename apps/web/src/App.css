@@ -1408,6 +1408,137 @@ code {
   margin-top: 8px;
 }
 
+/* Edit source section */
+.edit-source-section {
+  margin-top: 16px;
+  padding: 16px;
+  border: 2px solid #818cf8;
+  border-radius: 8px;
+  background: #fafaff;
+}
+
+.edit-source-section h4 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 0 12px 0;
+}
+
+.source-url-display {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 0.85rem;
+  color: #374151;
+  margin-bottom: 16px;
+  word-break: break-all;
+}
+
+.edit-source-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.edit-source-form .form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-source-form label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row !important;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.max-pages-input {
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  width: 120px;
+}
+
+.max-pages-input:focus {
+  outline: none;
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.1);
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.cancel-button {
+  padding: 8px 16px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.cancel-button:hover {
+  background: #e2e8f0;
+}
+
+.save-button {
+  padding: 8px 16px;
+  background: #818cf8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.save-button:hover {
+  background: #6366f1;
+}
+
+.save-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.edit-source-error {
+  color: #dc2626;
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
+.edit-button {
+  padding: 4px 10px;
+  background: #f0f4ff;
+  border: 1px solid #818cf8;
+  color: #6366f1;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.edit-button:hover {
+  background: #e0e7ff;
+}
+
+.edit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .create-button:disabled,
 .delete-button:disabled {
   opacity: 0.6;

@@ -216,6 +216,13 @@ function App() {
   const [deployKeyInput, setDeployKeyInput] = useState('')
   const [deployKeyError, setDeployKeyError] = useState<string | null>(null)
   const [deployKeyLoading, setDeployKeyLoading] = useState(false)
+  // Edit source state
+  const [editingSource, setEditingSource] = useState<Source | null>(null)
+  const [editSourceEnabled, setEditSourceEnabled] = useState(true)
+  const [editSourceInterval, setEditSourceInterval] = useState(60)
+  const [editSourceMaxPages, setEditSourceMaxPages] = useState(100)
+  const [editSourceError, setEditSourceError] = useState<string | null>(null)
+  const [editSourceLoading, setEditSourceLoading] = useState(false)
   // Sync status state
   const [syncingSources, setSyncingSources] = useState<Set<string>>(new Set())
 
@@ -706,6 +713,56 @@ function App() {
       setDeployKeyError('Failed to delete deploy key')
     } finally {
       setDeployKeyLoading(false)
+    }
+  }
+
+  const handleEditSource = (source: Source) => {
+    setEditingSource(source)
+    setEditSourceEnabled(source.enabled)
+    setEditSourceInterval(source.schedule_interval_minutes)
+    setEditSourceMaxPages(source.config?.max_pages || 100)
+    setEditSourceError(null)
+  }
+
+  const handleCancelEditSource = () => {
+    setEditingSource(null)
+    setEditSourceError(null)
+  }
+
+  const handleSaveSource = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingSource) return
+
+    setEditSourceLoading(true)
+    setEditSourceError(null)
+
+    try {
+      const body: { enabled?: boolean; schedule_interval_minutes?: number; max_pages?: number } = {
+        enabled: editSourceEnabled,
+        schedule_interval_minutes: editSourceInterval,
+      }
+      if (editingSource.type === 'web') {
+        body.max_pages = editSourceMaxPages
+      }
+
+      const response = await fetch(`/api/sources/${editingSource.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      })
+      if (response.ok) {
+        const updated = await response.json()
+        setSources(sources.map(s => s.id === updated.id ? updated : s))
+        setEditingSource(null)
+      } else {
+        const error = await response.json()
+        setEditSourceError(error.detail || 'Failed to update source')
+      }
+    } catch {
+      setEditSourceError('Failed to update source')
+    } finally {
+      setEditSourceLoading(false)
     }
   }
 
@@ -1452,6 +1509,13 @@ function App() {
                               </td>
                               <td className="source-actions">
                                 <button
+                                  onClick={() => handleEditSource(source)}
+                                  className="edit-button"
+                                  disabled={syncingSources.has(source.id)}
+                                >
+                                  Edit
+                                </button>
+                                <button
                                   onClick={() => handleSyncNow(source.id)}
                                   className={`sync-button ${syncingSources.has(source.id) ? 'syncing' : ''}`}
                                   disabled={syncingSources.has(source.id)}
@@ -1470,6 +1534,74 @@ function App() {
                           ))}
                         </tbody>
                       </table>
+                    )}
+
+                    {editingSource && (
+                      <div className="edit-source-section">
+                        <h4>
+                          Edit Source
+                          <button className="close-button" onClick={handleCancelEditSource}>×</button>
+                        </h4>
+                        <p className="source-url-display">{editingSource.url}</p>
+                        <form onSubmit={handleSaveSource} className="edit-source-form">
+                          <div className="form-row">
+                            <label className="checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={editSourceEnabled}
+                                onChange={(e) => setEditSourceEnabled(e.target.checked)}
+                              />
+                              Enabled
+                            </label>
+                          </div>
+                          <div className="form-row">
+                            <label>Sync Interval</label>
+                            <select
+                              value={editSourceInterval}
+                              onChange={(e) => setEditSourceInterval(Number(e.target.value))}
+                              className="interval-select"
+                            >
+                              <option value={15}>Every 15 min</option>
+                              <option value={30}>Every 30 min</option>
+                              <option value={60}>Hourly</option>
+                              <option value={120}>Every 2 hours</option>
+                              <option value={360}>Every 6 hours</option>
+                              <option value={720}>Every 12 hours</option>
+                              <option value={1440}>Daily</option>
+                            </select>
+                          </div>
+                          {editingSource.type === 'web' && (
+                            <div className="form-row">
+                              <label>Max Pages</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={1000}
+                                value={editSourceMaxPages}
+                                onChange={(e) => setEditSourceMaxPages(Number(e.target.value))}
+                                className="max-pages-input"
+                              />
+                            </div>
+                          )}
+                          <div className="form-actions">
+                            <button
+                              type="button"
+                              onClick={handleCancelEditSource}
+                              className="cancel-button"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="save-button"
+                              disabled={editSourceLoading}
+                            >
+                              {editSourceLoading ? 'Saving...' : 'Save'}
+                            </button>
+                          </div>
+                        </form>
+                        {editSourceError && <p className="edit-source-error">{editSourceError}</p>}
+                      </div>
                     )}
 
                     {selectedSource && selectedSource.type === 'github' && (
