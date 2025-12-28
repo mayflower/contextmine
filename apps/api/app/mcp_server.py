@@ -442,8 +442,9 @@ This is a test placeholder. Use the async MCP endpoint for real results.
 """
 
 
-# Get the HTTP app from FastMCP with empty path (mounted at /mcp in main.py)
-_mcp_http_app = mcp.http_app(path="")
+# Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)
+# Use stateless_http=True for simpler API testing without session management
+_mcp_http_app = mcp.http_app(path="/", stateless_http=True)
 
 # Export the MCP lifespan for integration with FastAPI
 mcp_lifespan = _mcp_http_app.lifespan
