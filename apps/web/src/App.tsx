@@ -1087,7 +1087,7 @@ function App() {
                 <div className="status-row">
                   <span className="label">Sync Runs</span>
                   <span className="status-counts">
-                    <span className="status-count ok">{stats?.runs_by_status?.completed ?? 0} completed</span>
+                    <span className="status-count ok">{stats?.runs_by_status?.success ?? 0} completed</span>
                     <span className="status-count warning">{stats?.runs_by_status?.running ?? 0} running</span>
                     <span className="status-count error">{stats?.runs_by_status?.failed ?? 0} failed</span>
                   </span>
