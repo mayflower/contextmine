@@ -42,12 +42,18 @@ class TestAuthRoutes:
 
     async def test_login_requires_oauth_config(self, client: AsyncClient) -> None:
         """Test that /api/auth/login returns 500 when OAuth not configured."""
-        # Without GitHub OAuth configured, should return 500
-        response = await client.get("/api/auth/login", follow_redirects=False)
-        # When OAuth is not configured, it should return 500
-        assert response.status_code == 500
-        data = response.json()
-        assert "not configured" in data["detail"].lower()
+        from unittest.mock import MagicMock
+
+        # Mock settings to return None for github_client_id
+        mock_settings = MagicMock()
+        mock_settings.github_client_id = None
+
+        with patch("app.routes.auth.get_settings", return_value=mock_settings):
+            response = await client.get("/api/auth/login", follow_redirects=False)
+            # When OAuth is not configured, it should return 500
+            assert response.status_code == 500
+            data = response.json()
+            assert "not configured" in data["detail"].lower()
 
     @patch("app.routes.auth.get_settings")
     @patch("app.routes.auth.get_github_authorize_url")

@@ -309,7 +309,7 @@ class AnthropicLLM(LLM):
 class GeminiLLM(LLM):
     """Google Gemini LLM implementation."""
 
-    def __init__(self, model: str = "gemini-1.5-flash", api_key: str | None = None):
+    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or get_settings().gemini_api_key
         if not self.api_key:
@@ -317,36 +317,37 @@ class GeminiLLM(LLM):
 
     async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
         """Generate using Gemini API."""
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=self.api_key)  # type: ignore[reportPrivateImportUsage]
-        model = genai.GenerativeModel(  # type: ignore[reportPrivateImportUsage]
-            self.model,
-            system_instruction=system_prompt,
+        client = genai.Client(api_key=self.api_key)
+        response = await client.aio.models.generate_content(
+            model=self.model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                max_output_tokens=max_tokens,
+            ),
         )
-        response = await model.generate_content_async(  # type: ignore[reportPrivateImportUsage]
-            user_prompt,
-            generation_config={"max_output_tokens": max_tokens},
-        )
-        return response.text
+        return response.text or ""
 
     async def generate_stream(
         self, system_prompt: str, user_prompt: str, max_tokens: int
     ) -> AsyncIterator[str]:
         """Generate streaming response using Gemini API."""
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=self.api_key)  # type: ignore[reportPrivateImportUsage]
-        model = genai.GenerativeModel(  # type: ignore[reportPrivateImportUsage]
-            self.model,
-            system_instruction=system_prompt,
+        client = genai.Client(api_key=self.api_key)
+        stream = await client.aio.models.generate_content_stream(
+            model=self.model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                max_output_tokens=max_tokens,
+            ),
         )
-        response = await model.generate_content_async(  # type: ignore[reportPrivateImportUsage]
-            user_prompt,
-            generation_config={"max_output_tokens": max_tokens},
-            stream=True,
-        )
-        async for chunk in response:  # type: ignore[reportPrivateImportUsage]
+        async for chunk in stream:
             if chunk.text:
                 yield chunk.text
 
@@ -383,7 +384,7 @@ def get_llm(
         )
     elif provider == LLMProvider.GEMINI:
         return GeminiLLM(
-            model=model or "gemini-1.5-flash",
+            model=model or "gemini-2.0-flash",
             api_key=api_key,
         )
     else:

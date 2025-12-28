@@ -227,18 +227,20 @@ class GeminiEmbedder(Embedder):
     )
     async def embed_batch(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts using Gemini API."""
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=self._api_key)  # type: ignore[reportPrivateImportUsage]
+        client = genai.Client(api_key=self._api_key)
 
-        embeddings = []
-        for text in texts:
-            result = genai.embed_content(  # type: ignore[reportPrivateImportUsage]
-                model=f"models/{self._model_name}",
-                content=text,
-                task_type="retrieval_document",
-            )
-            embeddings.append(result["embedding"])
+        result = await client.aio.models.embed_content(
+            model=self._model_name,
+            contents=texts,
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+        )
+
+        if result.embeddings is None:
+            raise ValueError("Gemini API returned no embeddings")
+        embeddings = [e.values for e in result.embeddings if e.values is not None]
 
         return EmbeddingResult(
             embeddings=embeddings,
