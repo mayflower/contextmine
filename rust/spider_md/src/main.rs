@@ -201,18 +201,16 @@ async fn main() {
         let content_hash = compute_hash(&markdown);
 
         // Extract HTTP cache headers if available
-        let (etag, last_modified) = if let Some(headers) = page.get_headers() {
-            let etag = headers
+        let (etag, last_modified) = if let Some(ref headers) = page.headers {
+            let etag: Option<String> = headers
                 .get("etag")
                 .or_else(|| headers.get("ETag"))
-                .map(|v| v.to_str().ok())
-                .flatten()
+                .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let last_modified = headers
+            let last_modified: Option<String> = headers
                 .get("last-modified")
                 .or_else(|| headers.get("Last-Modified"))
-                .map(|v| v.to_str().ok())
-                .flatten()
+                .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
             (etag, last_modified)
         } else {
