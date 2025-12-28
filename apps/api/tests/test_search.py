@@ -1,7 +1,5 @@
 """Tests for search functionality."""
 
-import os
-
 import pytest
 from contextmine_core.search import compute_rrf_scores
 
@@ -151,24 +149,44 @@ class TestAccessControl:
         assert callable(get_accessible_collection_ids)
 
     @pytest.mark.anyio
-    @pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
     async def test_hybrid_search_returns_empty_for_no_access(self) -> None:
         """Test that search returns empty when user has no collection access."""
         import uuid
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from contextmine_core.search import hybrid_search
 
-        # Search with a non-existent collection should return empty
-        # (user has no access to private collections)
-        result = await hybrid_search(
-            query="test query",
-            query_embedding=[0.1] * 1536,
-            user_id=None,
-            collection_id=uuid.uuid4(),  # Random collection
-            top_k=10,
-        )
+        # Mock the session context manager
+        mock_session = MagicMock()
 
-        assert len(result.results) == 0
+        @asynccontextmanager
+        async def mock_get_session():
+            yield mock_session
+
+        # Mock get_accessible_collection_ids to return empty set (no access)
+        async def mock_get_accessible(*args, **kwargs):
+            return set()
+
+        with (
+            patch("contextmine_core.search.get_session", mock_get_session),
+            patch(
+                "contextmine_core.search.get_accessible_collection_ids",
+                AsyncMock(side_effect=mock_get_accessible),
+            ),
+        ):
+            # Search with a random collection should return empty
+            # (user has no access to any collections)
+            result = await hybrid_search(
+                query="test query",
+                query_embedding=[0.1] * 1536,
+                user_id=None,
+                collection_id=uuid.uuid4(),
+                top_k=10,
+            )
+
+            assert len(result.results) == 0
+            assert result.query == "test query"
 
 
 class TestSearchIntegration:
