@@ -3,18 +3,26 @@
 from app.mcp_server import get_context_markdown_sync, get_tools
 
 
-def test_mcp_tool_exists() -> None:
-    """Test that the context.get_markdown tool is defined."""
+def test_mcp_tools_exist() -> None:
+    """Test that all MCP tools are defined."""
     tools = get_tools()
-    assert len(tools) == 1
-    tool = tools[0]
-    assert tool["name"] == "context.get_markdown"
-    assert "query" in tool["inputSchema"].get("properties", {})
-    # Verify new parameters are in schema
-    properties = tool["inputSchema"].get("properties", {})
+    assert len(tools) == 3
+
+    tool_names = {t["name"] for t in tools}
+    assert "context.list_collections" in tool_names
+    assert "context.list_documents" in tool_names
+    assert "context.get_markdown" in tool_names
+
+    # Find get_markdown tool and verify its schema
+    get_markdown = next(t for t in tools if t["name"] == "context.get_markdown")
+    properties = get_markdown["inputSchema"].get("properties", {})
+    assert "query" in properties
     assert "collection_id" in properties
+    assert "topic" in properties
     assert "max_chunks" in properties
     assert "max_tokens" in properties
+    assert "offset" in properties
+    assert "raw" in properties
 
 
 def test_mcp_tool_returns_markdown() -> None:
