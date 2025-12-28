@@ -19,6 +19,7 @@ from contextmine_core import (
     get_settings,
 )
 from prefect import flow, task
+from prefect.artifacts import create_progress_artifact, update_progress_artifact
 from sqlalchemy import delete, select, text
 
 from contextmine_worker.chunking import chunk_document
@@ -419,6 +420,12 @@ async def sync_github_source(
     if not owner or not repo:
         raise ValueError("GitHub source missing owner/repo in config")
 
+    # Create progress artifact
+    progress_id = await create_progress_artifact(  # type: ignore[misc]
+        progress=0.0,
+        description=f"Starting sync for {owner}/{repo}...",
+    )
+
     # Get deploy key (preferred) or OAuth token (fallback)
     deploy_key = await get_deploy_key_for_source(str(source.id))
     token = None
@@ -429,6 +436,8 @@ async def sync_github_source(
     ensure_repos_dir()
     repo_path = get_repo_path(str(source.id))
 
+    await update_progress_artifact(progress_id, progress=5, description="Fetching repository...")  # type: ignore[misc]
+
     # Clone or pull (deploy key takes priority over token)
     clone_url = f"https://github.com/{owner}/{repo}.git"
     git_repo = clone_or_pull_repo(
@@ -438,6 +447,8 @@ async def sync_github_source(
     # Get current commit SHA
     new_sha = git_repo.head.commit.hexsha
     old_sha = source.cursor
+
+    await update_progress_artifact(progress_id, progress=15, description="Detecting changed files...")  # type: ignore[misc]
 
     # Get changed and deleted files
     changed_files, deleted_files = get_changed_files(git_repo, old_sha, new_sha)
@@ -451,6 +462,12 @@ async def sync_github_source(
     total_chunks_embedded = 0
     total_chunks_deduplicated = 0
     total_tokens_used = 0
+
+    total_files = len(changed_files) + len(deleted_files)
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=20,
+        description=f"Processing {total_files} files..."
+    )
 
     async with get_session() as session:
         # Process deleted files
@@ -576,7 +593,22 @@ async def sync_github_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
-    for doc_id, content, file_path in docs_to_chunk:
+    total_docs = len(docs_to_chunk)
+    if total_docs > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id, progress=50,
+            description=f"Chunking and embedding {total_docs} documents..."
+        )
+
+    for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
+        # Update progress every 5 documents or on last document
+        if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
+            pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
+            await update_progress_artifact(  # type: ignore[misc]
+                progress_id, progress=pct,
+                description=f"Processing document {i + 1}/{total_docs}..."
+            )
+
         chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
@@ -586,6 +618,8 @@ async def sync_github_source(
         total_chunks_embedded += embed_stats["chunks_embedded"]
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
+
+    await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
         # Update sync run
@@ -615,6 +649,8 @@ async def sync_github_source(
 
         await session.commit()
 
+    await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
+
     return stats
 
 
@@ -635,6 +671,14 @@ async def sync_web_source(
     if not base_url:
         raise ValueError("Web source missing base_url in config")
 
+    # Create progress artifact
+    progress_id = await create_progress_artifact(  # type: ignore[misc]
+        progress=0.0,
+        description=f"Starting crawl of {base_url}...",
+    )
+
+    await update_progress_artifact(progress_id, progress=5, description=f"Crawling up to {max_pages} pages...")  # type: ignore[misc]
+
     # Run the spider with rate limiting
     pages = run_spider_md(
         base_url=base_url,
@@ -643,6 +687,10 @@ async def sync_web_source(
     )
 
     stats.pages_crawled = len(pages)
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=40,
+        description=f"Crawled {len(pages)} pages, processing..."
+    )
 
     # Track documents to chunk (doc_id, content, file_path)
     docs_to_chunk: list[tuple[str, str, str | None]] = []
@@ -748,7 +796,22 @@ async def sync_web_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
-    for doc_id, content, file_path in docs_to_chunk:
+    total_docs = len(docs_to_chunk)
+    if total_docs > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id, progress=50,
+            description=f"Chunking and embedding {total_docs} documents..."
+        )
+
+    for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
+        # Update progress every 5 documents or on last document
+        if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
+            pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
+            await update_progress_artifact(  # type: ignore[misc]
+                progress_id, progress=pct,
+                description=f"Processing document {i + 1}/{total_docs}..."
+            )
+
         chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
@@ -758,6 +821,8 @@ async def sync_web_source(
         total_chunks_embedded += embed_stats["chunks_embedded"]
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
+
+    await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
         # Update sync run
@@ -782,6 +847,8 @@ async def sync_web_source(
         }
 
         await session.commit()
+
+    await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 
     return stats
 
