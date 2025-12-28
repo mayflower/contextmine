@@ -1,159 +1,49 @@
 # ContextMine
 
-Open-source local Context7 alternative with MCP retrieval.
+Self-hosted documentation and code indexing with MCP integration. An open-source alternative to Context7.
 
-## Overview
+## What is ContextMine?
 
-ContextMine is a documentation and code indexing system that provides context to AI assistants via the Model Context Protocol (MCP). It supports:
+ContextMine indexes your documentation and code repositories, making them searchable via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Connect it to Claude Desktop, Cursor, or any MCP-compatible AI assistant to give your AI accurate, up-to-date context from your own sources.
 
-- **Web crawling**: Index documentation sites with spider-rs
-- **Git indexing**: Index GitHub repositories with incremental updates
-- **Hybrid retrieval**: Full-text search + vector similarity search
-- **MCP integration**: Expose context via Streamable HTTP (SSE)
+**Key features:**
+- **Web crawling** - Index documentation sites automatically
+- **Git indexing** - Index GitHub repositories with incremental updates
+- **Hybrid search** - Full-text search + vector similarity for accurate retrieval
+- **MCP integration** - Works with Claude Desktop, Cursor, and other MCP clients
+- **Self-hosted** - Your data stays on your infrastructure
 
-## Quick Start
-
-### Prerequisites
-
-- Python 3.12+
-- Node.js 20+
-- Docker and Docker Compose
-- [uv](https://github.com/astral-sh/uv) for Python dependency management
-
-### Local Development
-
-1. **Clone and set up environment**:
+## Quick Start with Docker
 
 ```bash
-git clone <repo-url>
+# Clone the repository
+git clone https://github.com/mayflower/contextmine.git
 cd contextmine
+
+# Copy environment template
 cp .env.example .env
-```
 
-2. **Install Python dependencies**:
+# Start all services
+docker compose up -d
 
-```bash
-uv sync --all-packages
-```
-
-3. **Run the API server**:
-
-```bash
-cd apps/api
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-4. **Run the frontend** (in another terminal):
-
-```bash
-cd apps/web
-npm install
-npm run dev
-```
-
-5. **Access the application**:
-   - Frontend: http://localhost:5173
-   - API: http://localhost:8000
-   - API Health: http://localhost:8000/api/health
-
-### Docker Compose
-
-```bash
-docker compose up --build
-```
-
-Access:
-- Frontend: http://localhost:5173
-- API: http://localhost:8000
-- Postgres: localhost:5432
-
-### GitHub OAuth Setup
-
-ContextMine uses GitHub OAuth for authentication. To set up:
-
-1. **Create a GitHub OAuth App**:
-   - Go to https://github.com/settings/developers
-   - Click "New OAuth App"
-   - Set **Application name**: ContextMine (or your preferred name)
-   - Set **Homepage URL**: `http://localhost:5173`
-   - Set **Authorization callback URL**: `http://localhost:8000/api/auth/callback`
-   - Click "Register application"
-
-2. **Configure environment variables**:
-   - Copy the Client ID and generate a Client Secret
-   - Update your `.env` file:
-     ```
-     GITHUB_CLIENT_ID=your_client_id_here
-     GITHUB_CLIENT_SECRET=your_client_secret_here
-     ```
-
-3. **Generate secure keys for production**:
-   ```bash
-   # Generate session secret
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
-
-   # Generate encryption key
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
-   ```
-   Update `SESSION_SECRET` and `TOKEN_ENCRYPTION_KEY` in your `.env` file.
-
-### Database Migrations
-
-The project uses Alembic for database migrations. Migrations are located in `packages/core/alembic/`.
-
-**Run migrations in Docker:**
-
-```bash
-# After starting docker compose
+# Run database migrations
 docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
 ```
 
-**Run migrations locally:**
+Access the admin UI at http://localhost:5173
 
-```bash
-# Ensure DATABASE_URL is set in your environment or .env file
-cd packages/core
-DATABASE_URL=postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine uv run alembic upgrade head
-```
+## Connecting to MCP Clients
 
-**Create a new migration:**
+### 1. Create an MCP Token
 
-```bash
-cd packages/core
-DATABASE_URL=... uv run alembic revision -m "description of changes"
-```
+1. Open the admin UI at http://localhost:5173
+2. Log in with GitHub OAuth
+3. Navigate to **MCP Tokens** in the sidebar
+4. Create a new token and copy it
 
-## Smoke Tests
+### 2. Configure Your MCP Client
 
-### Health Check
-
-```bash
-curl http://localhost:8000/api/health
-# Expected: {"status":"ok"}
-```
-
-### Database Health Check
-
-```bash
-curl http://localhost:8000/api/db/health
-# Expected: {"db":"ok"} (when database is configured and connected)
-# Expected: {"db":"not_configured"} (when DATABASE_URL is not set)
-```
-
-### MCP Endpoint
-
-The MCP server is mounted at `/mcp` using FastMCP 2 with Streamable HTTP transport:
-
-- MCP endpoint: `http://localhost:8000/mcp`
-
-**Authentication**: The MCP endpoint requires Bearer token authentication.
-
-1. Log in to the admin UI at http://localhost:5173
-2. Navigate to "MCP Tokens" in the sidebar
-3. Create a new token and copy it (you'll only see it once!)
-4. Use the token in your MCP client configuration
-
-**Configuring MCP clients** (e.g., Claude Desktop):
+**Claude Desktop** (`~/.config/claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -161,131 +51,149 @@ The MCP server is mounted at `/mcp` using FastMCP 2 with Streamable HTTP transpo
     "contextmine": {
       "url": "http://localhost:8000/mcp",
       "headers": {
-        "Authorization": "Bearer your-token-here"
+        "Authorization": "Bearer YOUR_TOKEN_HERE"
       }
     }
   }
 }
 ```
 
-**Origin allowlist**: In production, set `MCP_ALLOWED_ORIGINS` to restrict which origins can access the MCP endpoint (for DNS rebinding protection):
-```
-MCP_ALLOWED_ORIGINS=https://claude.ai,https://your-app.com
-```
+**Cursor** (Settings → MCP):
 
-In development, leave this empty to allow all origins.
+Add a new server with URL `http://localhost:8000/mcp` and your Bearer token.
 
-### MCP Tool: context.get_markdown
+### 3. Use It
 
-The MCP server exposes one tool for retrieval:
+In your AI assistant, say **"use contextmine"** to activate context retrieval, then ask questions about your indexed documentation.
 
-- **`context.get_markdown`**: Retrieve assembled context as a Markdown document
-  - **Input**:
-    - `query` (string, required): The search query
-    - `collection_id` (string, optional): Filter to a specific collection
-    - `max_chunks` (integer, optional, default: 10): Maximum chunks to retrieve
-    - `max_tokens` (integer, optional, default: 4000): Maximum tokens for LLM response
-  - **Output**: Markdown document with assembled context and sources
+## Available MCP Tools
 
-The tool uses hybrid retrieval (FTS + vector search) to find relevant chunks and assembles them into a coherent Markdown document using an LLM.
+| Tool | Description |
+|------|-------------|
+| `context.list_collections` | Discover available documentation collections |
+| `context.list_documents` | Browse documents in a collection |
+| `context.get_markdown` | Search and retrieve context as Markdown |
 
-### Testing MCP with curl
+## Adding Sources
 
-You can test the MCP endpoint using JSON-RPC over HTTP:
+### Web Documentation
 
-```bash
-# Call the context.get_markdown tool
-curl -X POST http://localhost:8000/mcp \
-  -H "Authorization: Bearer your-token-here" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "context.get_markdown",
-      "arguments": {
-        "query": "How do I authenticate with the API?"
-      }
-    }
-  }'
-```
+1. Go to **Collections** → Create a new collection
+2. Go to **Sources** → Add a new source
+3. Select **Web** as the source type
+4. Enter the base URL (e.g., `https://docs.example.com/`)
+5. Click **Sync** to start crawling
 
-### Example MCP Response
+### GitHub Repositories
 
-The `context.get_markdown` tool returns a Markdown document like:
+1. Create a collection if you haven't already
+2. Add a new source with type **GitHub**
+3. Enter the repository (e.g., `owner/repo`)
+4. Optionally specify a branch and path filter
+5. Click **Sync** to start indexing
 
-```markdown
-# Response to: How do I authenticate with the API?
+## Configuration
 
-## Summary
+Copy `.env.example` to `.env` and configure:
 
-Based on the retrieved documentation...
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID | Yes |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret | Yes |
+| `SESSION_SECRET` | Secret for session cookies | Yes |
+| `TOKEN_ENCRYPTION_KEY` | Key for encrypting tokens | Yes |
+| `OPENAI_API_KEY` | OpenAI API key for embeddings | Yes* |
+| `GEMINI_API_KEY` | Alternative: Gemini API key | Yes* |
+| `MCP_ALLOWED_ORIGINS` | Allowed origins for MCP (production) | No |
 
-## Authentication
+*At least one embedding provider is required.
 
-To authenticate, use Bearer tokens...
+### GitHub OAuth Setup
 
-## Sources
+1. Go to https://github.com/settings/developers
+2. Create a new OAuth App:
+   - **Homepage URL**: `http://localhost:5173`
+   - **Callback URL**: `http://localhost:8000/api/auth/callback`
+3. Copy the Client ID and Secret to your `.env`
 
-- https://docs.example.com/auth
-- git://github.com/org/repo/src/auth.py?ref=main
-```
-
-The response includes a **Sources** section listing the document URIs used, with file paths for git:// URIs.
-
-### MCP Smoke Test
-
-A smoke test script is provided to verify the MCP endpoint is working:
+### Generate Secure Keys
 
 ```bash
-# Run the smoke test (requires an MCP token)
-python scripts/mcp_smoke_test.py --token YOUR_TOKEN
+# Generate session secret
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 
-# With custom base URL
-python scripts/mcp_smoke_test.py --token YOUR_TOKEN --base-url http://localhost:8000
-
-# With custom query
-python scripts/mcp_smoke_test.py --token YOUR_TOKEN --query "How do I authenticate?"
+# Generate encryption key
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-The smoke test:
-1. Connects to the MCP SSE endpoint
-2. Calls the `context.get_markdown` tool
-3. Verifies the response contains a "Sources" section
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Web UI    │────▶│   FastAPI   │────▶│  PostgreSQL │
+│  (React)    │     │   + MCP     │     │  + pgvector │
+└─────────────┘     └─────────────┘     └─────────────┘
+                           │
+                    ┌──────┴──────┐
+                    ▼             ▼
+              ┌─────────┐   ┌─────────┐
+              │ Prefect │   │ spider  │
+              │ Worker  │   │   _md   │
+              └─────────┘   └─────────┘
+```
+
+- **API** (`apps/api`): FastAPI backend with MCP server at `/mcp`
+- **Web** (`apps/web`): React admin console
+- **Worker** (`apps/worker`): Prefect-based background sync jobs
+- **Core** (`packages/core`): Shared models, settings, migrations
 
 ## Development
 
-### Run Quality Checks
+### Prerequisites
+
+- Python 3.12+
+- Node.js 20+
+- [uv](https://github.com/astral-sh/uv) for Python dependency management
+
+### Local Setup
 
 ```bash
-# Linting
-uv run ruff check .
+# Install dependencies
+uv sync --all-packages
 
-# Type checking
-uv run pyright
+# Run quality checks
+uv run ruff check .          # Linting
+uvx ty check                 # Type checking
+uv run pytest -v             # Tests
 
-# Tests
-uv run pytest -v
+# Start API server
+cd apps/api && uv run uvicorn app.main:app --reload --port 8000
+
+# Start frontend (separate terminal)
+cd apps/web && npm install && npm run dev
 ```
 
-### Project Structure
+### Pre-commit Hooks
 
+```bash
+# Install hooks
+uv run pre-commit install
+
+# Run manually
+uv run pre-commit run --all-files
 ```
-contextmine/
-├── apps/
-│   ├── api/          # FastAPI backend + MCP server
-│   ├── web/          # React frontend (Vite)
-│   └── worker/       # Prefect worker (future)
-├── packages/
-│   └── core/         # Shared Python code (DB models, settings, migrations)
-├── rust/
-│   └── spider_md/    # Rust crawler (future)
-├── docker-compose.yml
-├── pyproject.toml    # Workspace configuration
-└── README.md
+
+## Container Images
+
+Pre-built images are available from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/mayflower/contextmine-api:latest
+docker pull ghcr.io/mayflower/contextmine-worker:latest
+docker pull ghcr.io/mayflower/contextmine-web:latest
 ```
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
