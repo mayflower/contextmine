@@ -813,11 +813,20 @@ function App() {
     if (currentPage === 'runs' && user) {
       fetchCollections()
       fetchPrefectFlowRuns()
-      // Poll for active runs every 5 seconds
-      const interval = setInterval(fetchPrefectFlowRuns, 5000)
+      // Refresh selected source's runs if one is selected
+      if (selectedRunSource) {
+        fetchRuns(selectedRunSource)
+      }
+      // Poll for active runs and selected source runs every 5 seconds
+      const interval = setInterval(() => {
+        fetchPrefectFlowRuns()
+        if (selectedRunSource) {
+          fetchRuns(selectedRunSource)
+        }
+      }, 5000)
       return () => clearInterval(interval)
     }
-  }, [currentPage, user])
+  }, [currentPage, user, selectedRunSource])
 
   // Load collections for query page
   useEffect(() => {
