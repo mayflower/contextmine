@@ -1,1 +1,1 @@
-"""OpenContext API application."""
+"""ContextMine API application."""

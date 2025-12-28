@@ -1,4 +1,4 @@
-"""Middleware for the OpenContext API."""
+"""Middleware for the ContextMine API."""
 
 from app.middleware.session import (
     SESSION_COOKIE_NAME,

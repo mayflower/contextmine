@@ -83,7 +83,7 @@ def get_page_title(page: WebPage) -> str:
 def run_spider_md(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
-    user_agent: str = "OpenContext-Spider/0.1",
+    user_agent: str = "ContextMine-Spider/0.1",
     delay_ms: int = DEFAULT_DELAY_MS,
 ) -> list[WebPage]:
     """Run the spider_md binary and collect results.

@@ -1,4 +1,4 @@
-"""OpenContext worker for Prefect flows and tasks."""
+"""ContextMine worker for Prefect flows and tasks."""
 
 from contextmine_worker.flows import sync_due_sources
 

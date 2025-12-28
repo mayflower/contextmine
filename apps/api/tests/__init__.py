@@ -1,1 +1,1 @@
-"""Tests for OpenContext API."""
+"""Tests for ContextMine API."""

@@ -31,7 +31,7 @@ spider_md --base-url https://example.com/docs/ --max-pages 100
 |----------|-------------|---------|
 | `--base-url` | Base URL to start crawling from | Required |
 | `--max-pages` | Maximum number of pages to crawl | 100 |
-| `--user-agent` | User agent string | OpenContext-Spider/0.1 |
+| `--user-agent` | User agent string | ContextMine-Spider/0.1 |
 | `--delay-ms` | Request delay in milliseconds | 100 |
 
 ### Output Format
