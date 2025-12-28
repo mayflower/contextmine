@@ -98,14 +98,19 @@ type Page = 'dashboard' | 'query' | 'collections' | 'runs'
 /**
  * Format a source URL for display.
  * GitHub URLs: owner/repo
- * Other URLs: hostname
+ * Web docs: hostname/path (e.g., langchain-ai.github.io/langgraph)
  */
 function formatSourceUrl(url: string): string {
   if (url.startsWith('https://github.com/')) {
     return url.replace('https://github.com/', '').split('/').slice(0, 2).join('/')
   }
   try {
-    return new URL(url).hostname
+    const parsed = new URL(url)
+    const path = parsed.pathname.replace(/\/$/, '') // Remove trailing slash
+    if (path && path !== '/') {
+      return parsed.hostname + path
+    }
+    return parsed.hostname
   } catch {
     return url
   }
