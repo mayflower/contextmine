@@ -151,17 +151,90 @@ async def embed_chunks_for_document(
 ) -> dict:
     """Embed chunks for a document that don't have embeddings yet.
 
+    Uses deduplication: if another chunk with the same hash already has an
+    embedding for this model, copies that embedding instead of calling the API.
+
     Args:
         document_id: The document UUID
         embedding_model: The EmbeddingModel to use
         batch_size: Number of chunks to embed per batch
 
     Returns:
-        Stats dict with chunks_embedded and tokens_used
+        Stats dict with chunks_embedded, chunks_deduplicated, and tokens_used
     """
     import uuid as uuid_module
 
-    stats = {"chunks_embedded": 0, "tokens_used": 0}
+    stats = {"chunks_embedded": 0, "chunks_deduplicated": 0, "tokens_used": 0}
+
+    doc_uuid = uuid_module.UUID(document_id)
+    model_uuid = embedding_model.id
+
+    # Find chunks without embeddings for this model (include chunk_hash for dedup)
+    async with get_session() as session:
+        result = await session.execute(
+            select(Chunk.id, Chunk.chunk_hash, Chunk.content).where(
+                Chunk.document_id == doc_uuid,
+                (Chunk.embedding_model_id != model_uuid) | (Chunk.embedding_model_id.is_(None)),
+            )
+        )
+        chunks_to_process = result.all()
+
+    if not chunks_to_process:
+        return stats
+
+    # Try to deduplicate: find existing embeddings for chunks with same hash
+    chunk_hashes = list({row.chunk_hash for row in chunks_to_process})
+
+    async with get_session() as session:
+        # Find chunks with same hashes that already have embeddings for this model
+        result = await session.execute(
+            text("""
+                SELECT DISTINCT ON (chunk_hash) chunk_hash, embedding::text
+                FROM chunks
+                WHERE chunk_hash = ANY(:hashes)
+                  AND embedding_model_id = :model_id
+                  AND embedding IS NOT NULL
+            """),
+            {"hashes": chunk_hashes, "model_id": model_uuid},
+        )
+        existing_embeddings = {row[0]: row[1] for row in result.all()}
+
+    # Separate chunks into those we can deduplicate vs those needing API call
+    chunks_to_copy = []
+    chunks_to_embed = []
+
+    for chunk in chunks_to_process:
+        if chunk.chunk_hash in existing_embeddings:
+            chunks_to_copy.append((chunk.id, existing_embeddings[chunk.chunk_hash]))
+        else:
+            chunks_to_embed.append(chunk)
+
+    # Copy embeddings for deduplicated chunks
+    if chunks_to_copy:
+        async with get_session() as session:
+            for chunk_id, embedding_str in chunks_to_copy:
+                await session.execute(
+                    text("""
+                        UPDATE chunks
+                        SET embedding = CAST(:embedding AS vector),
+                            embedding_model_id = :model_id,
+                            embedded_at = :embedded_at
+                        WHERE id = :chunk_id
+                    """),
+                    {
+                        "embedding": embedding_str,
+                        "model_id": model_uuid,
+                        "embedded_at": datetime.now(UTC),
+                        "chunk_id": chunk_id,
+                    },
+                )
+                stats["chunks_deduplicated"] += 1
+
+            await session.commit()
+
+    # Embed remaining chunks via API
+    if not chunks_to_embed:
+        return stats
 
     # Get embedder for this model
     embedder = get_embedder(
@@ -169,29 +242,13 @@ async def embed_chunks_for_document(
         model_name=embedding_model.model_name,
     )
 
-    doc_uuid = uuid_module.UUID(document_id)
-    model_uuid = embedding_model.id
-
-    # Find chunks without embeddings for this model
-    async with get_session() as session:
-        result = await session.execute(
-            select(Chunk.id, Chunk.content).where(
-                Chunk.document_id == doc_uuid,
-                (Chunk.embedding_model_id != model_uuid) | (Chunk.embedding_model_id.is_(None)),
-            )
-        )
-        chunks_to_embed = result.all()
-
-    if not chunks_to_embed:
-        return stats
-
     # Process in batches
     for i in range(0, len(chunks_to_embed), batch_size):
         batch = chunks_to_embed[i : i + batch_size]
         chunk_ids = [row.id for row in batch]
         texts = [row.content for row in batch]
 
-        # Get embeddings
+        # Get embeddings from API
         result = await embedder.embed_batch(texts)
         stats["tokens_used"] += result.tokens_used
 
@@ -249,14 +306,15 @@ async def get_embedding_model_for_collection(collection_id: str) -> str:
 async def embed_document(document_id: str, collection_id: str | None = None) -> dict:
     """Embed all chunks for a document using the collection's or default embedding model.
 
-    This is the main entry point for embedding after chunking.
+    This is the main entry point for embedding after chunking. Uses deduplication
+    to copy embeddings from chunks with identical hashes instead of calling the API.
 
     Args:
         document_id: The document UUID
         collection_id: Optional collection UUID for per-collection embedding config
 
     Returns:
-        Stats dict with chunks_embedded and tokens_used
+        Stats dict with chunks_embedded, chunks_deduplicated, and tokens_used
     """
     # Get embedding model spec from collection config or global default
     if collection_id:
@@ -391,6 +449,7 @@ async def sync_github_source(
     total_chunks_created = 0
     total_chunks_deleted = 0
     total_chunks_embedded = 0
+    total_chunks_deduplicated = 0
     total_tokens_used = 0
 
     async with get_session() as session:
@@ -525,6 +584,7 @@ async def sync_github_source(
         # Embed new/updated chunks (using collection's embedding config)
         embed_stats = await embed_document(doc_id, collection_id_str)
         total_chunks_embedded += embed_stats["chunks_embedded"]
+        total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
     async with get_session() as session:
@@ -547,6 +607,7 @@ async def sync_github_source(
             "chunks_created": total_chunks_created,
             "chunks_deleted": total_chunks_deleted,
             "chunks_embedded": total_chunks_embedded,
+            "chunks_deduplicated": total_chunks_deduplicated,
             "embedding_tokens_used": total_tokens_used,
             "commit_sha": new_sha,
             "previous_sha": old_sha,
@@ -590,6 +651,7 @@ async def sync_web_source(
     total_chunks_created = 0
     total_chunks_deleted = 0
     total_chunks_embedded = 0
+    total_chunks_deduplicated = 0
     total_tokens_used = 0
 
     async with get_session() as session:
@@ -612,21 +674,31 @@ async def sync_web_source(
                     existing_doc.content_hash = page.content_hash
                     existing_doc.title = title
                     existing_doc.updated_at = datetime.now(UTC)
+                    # Update HTTP cache headers in meta
+                    meta = existing_doc.meta or {}
+                    if page.etag:
+                        meta["etag"] = page.etag
+                    if page.last_modified:
+                        meta["last_modified"] = page.last_modified
+                    existing_doc.meta = meta
                     stats.docs_updated += 1
                     # Mark for re-chunking
                     docs_to_chunk.append((str(existing_doc.id), page.markdown, None))
                 existing_doc.last_seen_at = run_started_at
             else:
-                # Create new document
+                # Create new document with HTTP cache headers in meta
+                meta = {"base_url": base_url}
+                if page.etag:
+                    meta["etag"] = page.etag
+                if page.last_modified:
+                    meta["last_modified"] = page.last_modified
                 new_doc = Document(
                     source_id=source.id,
                     uri=uri,
                     title=title,
                     content_markdown=page.markdown,
                     content_hash=page.content_hash,
-                    meta={
-                        "base_url": base_url,
-                    },
+                    meta=meta,
                     last_seen_at=run_started_at,
                 )
                 session.add(new_doc)
@@ -684,6 +756,7 @@ async def sync_web_source(
         # Embed new/updated chunks (using collection's embedding config)
         embed_stats = await embed_document(doc_id, collection_id_str)
         total_chunks_embedded += embed_stats["chunks_embedded"]
+        total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
     async with get_session() as session:
@@ -704,6 +777,7 @@ async def sync_web_source(
             "chunks_created": total_chunks_created,
             "chunks_deleted": total_chunks_deleted,
             "chunks_embedded": total_chunks_embedded,
+            "chunks_deduplicated": total_chunks_deduplicated,
             "embedding_tokens_used": total_tokens_used,
         }
 

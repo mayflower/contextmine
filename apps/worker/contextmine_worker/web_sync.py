@@ -21,6 +21,8 @@ class WebPage:
     title: str
     markdown: str
     content_hash: str
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 @dataclass
@@ -145,6 +147,8 @@ def run_spider_md(
                     title=data.get("title", ""),
                     markdown=markdown,
                     content_hash=data["content_hash"],
+                    etag=data.get("etag"),
+                    last_modified=data.get("last_modified"),
                 )
             )
         except (json.JSONDecodeError, KeyError):

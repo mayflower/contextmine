@@ -33,6 +33,10 @@ struct Args {
     /// Request delay in milliseconds
     #[arg(long, default_value = "100")]
     delay_ms: u64,
+
+    /// Disable HTTP caching (by default caching respects Cache-Control, ETag, Last-Modified)
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[derive(Serialize)]
@@ -41,6 +45,10 @@ struct PageOutput {
     title: String,
     markdown: String,
     content_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_modified: Option<String>,
 }
 
 /// Check if a URL is within the allowed scope (same host + path prefix)
@@ -137,6 +145,9 @@ async fn main() {
     let mut budget = spider::hashbrown::HashMap::new();
     budget.insert("*", args.max_pages as u32);
     config.with_budget(Some(budget));
+    // Enable HTTP caching (respects Cache-Control, ETag, Last-Modified headers)
+    // Caching is enabled by default, use --no-cache to disable
+    config.with_caching(!args.no_cache);
 
     // Create website crawler
     let mut website = Website::new(&args.base_url);
@@ -189,12 +200,33 @@ async fn main() {
         // Compute hash
         let content_hash = compute_hash(&markdown);
 
+        // Extract HTTP cache headers if available
+        let (etag, last_modified) = if let Some(headers) = page.get_headers() {
+            let etag = headers
+                .get("etag")
+                .or_else(|| headers.get("ETag"))
+                .map(|v| v.to_str().ok())
+                .flatten()
+                .map(|s| s.to_string());
+            let last_modified = headers
+                .get("last-modified")
+                .or_else(|| headers.get("Last-Modified"))
+                .map(|v| v.to_str().ok())
+                .flatten()
+                .map(|s| s.to_string());
+            (etag, last_modified)
+        } else {
+            (None, None)
+        };
+
         // Create output
         let output = PageOutput {
             url: page_url.to_string(),
             title,
             markdown,
             content_hash,
+            etag,
+            last_modified,
         };
 
         // Write JSON line
