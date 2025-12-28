@@ -95,6 +95,22 @@ interface SyncRun {
 
 type Page = 'dashboard' | 'query' | 'collections' | 'runs'
 
+/**
+ * Format a source URL for display.
+ * GitHub URLs: owner/repo
+ * Other URLs: hostname
+ */
+function formatSourceUrl(url: string): string {
+  if (url.startsWith('https://github.com/')) {
+    return url.replace('https://github.com/', '').split('/').slice(0, 2).join('/')
+  }
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
 interface ContextSource {
   uri: string
   title: string
@@ -966,7 +982,7 @@ function App() {
                       {stats.recent_runs.slice(0, 5).map((run) => (
                         <tr key={run.id}>
                           <td className="source-cell" title={run.source_url}>
-                            {run.source_url.replace('https://github.com/', '').split('/').slice(0, 2).join('/')}
+                            {formatSourceUrl(run.source_url)}
                           </td>
                           <td>
                             <span className={`status-badge ${run.status}`}>
@@ -1524,7 +1540,7 @@ function App() {
                       </div>
                       {run.parameters.source_url && (
                         <div className="run-source">
-                          {run.parameters.source_url.replace('https://github.com/', '').split('/').slice(0, 2).join('/')}
+                          {formatSourceUrl(run.parameters.source_url)}
                         </div>
                       )}
                       {run.progress && (
@@ -1587,9 +1603,7 @@ function App() {
                         <tr key={run.id} className={`state-${run.state_type.toLowerCase()}`}>
                           <td>{run.name}</td>
                           <td className="source-cell">
-                            {run.parameters.source_url
-                              ? run.parameters.source_url.replace('https://github.com/', '').split('/').slice(0, 2).join('/')
-                              : '-'}
+                            {run.parameters.source_url ? formatSourceUrl(run.parameters.source_url) : '-'}
                           </td>
                           <td>
                             <span className={`state-badge ${run.state_type.toLowerCase()}`}>
