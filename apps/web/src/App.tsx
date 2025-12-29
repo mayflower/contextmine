@@ -240,6 +240,11 @@ function App() {
   const [queryResult, setQueryResult] = useState<ContextResult | null>(null)
   const [queryLoading, setQueryLoading] = useState(false)
   const [queryError, setQueryError] = useState<string | null>(null)
+  const [queryMode, setQueryMode] = useState<'quick' | 'deep'>('quick')
+  // Deep research state
+  const [researchStep, setResearchStep] = useState<string | null>(null)
+  const [researchCitations, setResearchCitations] = useState<string[]>([])
+  const [researchRunId, setResearchRunId] = useState<string | null>(null)
 
   // Check authentication status
   useEffect(() => {
@@ -843,7 +848,20 @@ function App() {
     setQueryLoading(true)
     setQueryError(null)
     setQueryResult(null)
+    setResearchStep(null)
+    setResearchCitations([])
+    setResearchRunId(null)
 
+    // Route to appropriate handler based on mode
+    if (queryMode === 'deep') {
+      await handleDeepResearch()
+    } else {
+      await handleQuickQuery()
+    }
+  }
+
+  // Quick query - uses semantic search + LLM synthesis
+  const handleQuickQuery = async () => {
     try {
       const response = await fetch('/api/context/stream', {
         method: 'POST',
@@ -936,6 +954,91 @@ function App() {
     } catch {
       setQueryError('Failed to generate context')
       setQueryLoading(false)
+    }
+  }
+
+  // Deep research - uses multi-step agent
+  const handleDeepResearch = async () => {
+    try {
+      const response = await fetch('/api/context/research/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          question: queryText,
+          budget: 10,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        setQueryError(error.detail || 'Failed to start research')
+        setQueryLoading(false)
+        return
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        setQueryError('Streaming not supported')
+        setQueryLoading(false)
+        return
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // Parse SSE events from buffer
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || '' // Keep incomplete line in buffer
+
+        let eventType = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7)
+          } else if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            try {
+              const parsed = JSON.parse(data)
+
+              if (eventType === 'step') {
+                setResearchStep(parsed.description || `Step ${parsed.step}`)
+              } else if (eventType === 'answer') {
+                setQueryResult({
+                  markdown: parsed.text,
+                  query: queryText,
+                  chunks_used: 0,
+                  sources: [],
+                })
+              } else if (eventType === 'citations') {
+                setResearchCitations(parsed.citations || [])
+                setResearchRunId(parsed.run_id)
+                // Update result with citation count
+                setQueryResult(prev => prev ? {
+                  ...prev,
+                  chunks_used: parsed.steps_used || 0,
+                } : null)
+              } else if (eventType === 'error') {
+                setQueryError(parsed.error || 'Research error')
+              }
+            } catch {
+              // Ignore JSON parse errors
+            }
+          }
+        }
+      }
+
+      setQueryLoading(false)
+      setResearchStep(null)
+    } catch {
+      setQueryError('Failed to run research')
+      setQueryLoading(false)
+      setResearchStep(null)
     }
   }
 
@@ -1170,27 +1273,52 @@ function App() {
           <>
             <section className="card">
               <h2>Query Documentation</h2>
+              <div className="query-mode-toggle">
+                <button
+                  className={`mode-button ${queryMode === 'quick' ? 'active' : ''}`}
+                  onClick={() => setQueryMode('quick')}
+                  type="button"
+                >
+                  Quick Search
+                </button>
+                <button
+                  className={`mode-button ${queryMode === 'deep' ? 'active' : ''}`}
+                  onClick={() => setQueryMode('deep')}
+                  type="button"
+                >
+                  Deep Research
+                </button>
+              </div>
+              <p className="mode-description">
+                {queryMode === 'quick'
+                  ? 'Fast semantic search with LLM-synthesized answer from indexed documentation.'
+                  : 'Multi-step AI agent that searches, reads code, and investigates complex questions.'}
+              </p>
               <form onSubmit={handleQuery} className="query-form">
-                <div className="form-row">
-                  <select
-                    value={queryCollection?.id || ''}
-                    onChange={(e) => {
-                      const coll = collections.find(c => c.id === e.target.value) || null
-                      setQueryCollection(coll)
-                    }}
-                    className="collection-select"
-                  >
-                    <option value="">All accessible collections</option>
-                    {collections.map((collection) => (
-                      <option key={collection.id} value={collection.id}>
-                        {collection.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {queryMode === 'quick' && (
+                  <div className="form-row">
+                    <select
+                      value={queryCollection?.id || ''}
+                      onChange={(e) => {
+                        const coll = collections.find(c => c.id === e.target.value) || null
+                        setQueryCollection(coll)
+                      }}
+                      className="collection-select"
+                    >
+                      <option value="">All accessible collections</option>
+                      {collections.map((collection) => (
+                        <option key={collection.id} value={collection.id}>
+                          {collection.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="form-row">
                   <textarea
-                    placeholder="Enter your query... (e.g., 'How do I use the authentication API?')"
+                    placeholder={queryMode === 'quick'
+                      ? "Enter your query... (e.g., 'How do I use the authentication API?')"
+                      : "Enter a complex question... (e.g., 'How does the error handling work in the API layer?')"}
                     value={queryText}
                     onChange={(e) => setQueryText(e.target.value)}
                     className="query-input"
@@ -1198,7 +1326,9 @@ function App() {
                   />
                 </div>
                 <button type="submit" className="query-button" disabled={queryLoading || !queryText.trim()}>
-                  {queryLoading ? 'Generating...' : 'Generate Context'}
+                  {queryLoading
+                    ? (researchStep || (queryMode === 'deep' ? 'Researching...' : 'Generating...'))
+                    : (queryMode === 'deep' ? 'Start Research' : 'Generate Context')}
                 </button>
               </form>
               {queryError && <p className="query-error">{queryError}</p>}
@@ -1209,28 +1339,50 @@ function App() {
                 <section className="card">
                   <h2>Result</h2>
                   <div className="query-meta">
-                    <span>Used {queryResult.chunks_used} chunks from {queryResult.sources.length} sources</span>
+                    {queryMode === 'quick' ? (
+                      <span>Used {queryResult.chunks_used} chunks from {queryResult.sources.length} sources</span>
+                    ) : (
+                      <span>Research completed in {queryResult.chunks_used} steps with {researchCitations.length} citations</span>
+                    )}
                   </div>
                   <div className="markdown-content">
                     <pre className="markdown-raw">{queryResult.markdown}</pre>
                   </div>
                 </section>
 
-                <section className="card">
-                  <h2>Sources</h2>
-                  <ul className="sources-list">
-                    {queryResult.sources.map((source, index) => (
-                      <li key={index} className="source-item">
-                        <a href={source.uri} target="_blank" rel="noopener noreferrer">
-                          {source.title}
-                        </a>
-                        {source.file_path && (
-                          <span className="file-path">{source.file_path}</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </section>
+                {queryMode === 'quick' && queryResult.sources.length > 0 && (
+                  <section className="card">
+                    <h2>Sources</h2>
+                    <ul className="sources-list">
+                      {queryResult.sources.map((source, index) => (
+                        <li key={index} className="source-item">
+                          <a href={source.uri} target="_blank" rel="noopener noreferrer">
+                            {source.title}
+                          </a>
+                          {source.file_path && (
+                            <span className="file-path">{source.file_path}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {queryMode === 'deep' && researchCitations.length > 0 && (
+                  <section className="card">
+                    <h2>Evidence Citations</h2>
+                    <ul className="sources-list citations-list">
+                      {researchCitations.map((citation, index) => (
+                        <li key={index} className="source-item citation-item">
+                          <code>{citation}</code>
+                        </li>
+                      ))}
+                    </ul>
+                    {researchRunId && (
+                      <p className="note">Run ID: {researchRunId}</p>
+                    )}
+                  </section>
+                )}
               </>
             )}
           </>

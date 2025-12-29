@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from collections.abc import AsyncIterator
 
 from contextmine_core import (
     LLMProvider,
@@ -201,5 +202,102 @@ async def create_context_stream(request: Request, body: ContextRequest) -> Strea
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+class ResearchRequest(BaseModel):
+    """Request model for deep research."""
+
+    question: str
+    scope: str | None = None  # Path pattern like 'src/api/**'
+    budget: int = 10  # Max investigation steps
+
+
+class ResearchStepInfo(BaseModel):
+    """Information about a research step."""
+
+    action: str
+    description: str
+
+
+class ResearchResponse(BaseModel):
+    """Response model for deep research."""
+
+    answer: str
+    citations: list[str]
+    steps_used: int
+    run_id: str | None = None
+
+
+@router.post("/research/stream")
+async def research_stream(request: Request, body: ResearchRequest) -> StreamingResponse:
+    """Stream deep research results using Server-Sent Events.
+
+    This endpoint runs a multi-step research agent that:
+    1. Searches indexed documentation and code
+    2. Reads relevant files
+    3. Collects evidence
+    4. Synthesizes an answer with citations
+
+    The stream sends:
+    - event: step - Current research action being performed
+    - event: answer - Final answer
+    - event: citations - List of citations
+    - event: done - Completion marker
+    - event: error - Error if something fails
+    """
+    # Validate budget
+    budget = max(1, min(20, body.budget))
+
+    async def event_generator() -> AsyncIterator[str]:
+        """Generate SSE events for research progress."""
+        try:
+            from contextmine_core.research import run_research
+
+            # Send start event
+            yield f"event: step\ndata: {json.dumps({'action': 'starting', 'description': 'Initializing research agent...', 'step': 0})}\n\n"
+
+            # Run research (this executes the full agent)
+            result = await run_research(
+                question=body.question,
+                scope=body.scope,
+                max_steps=budget,
+            )
+
+            # Send step summary
+            yield f"event: step\ndata: {json.dumps({'action': 'completed', 'description': f'Research completed with {len(result.evidence)} evidence items', 'step': len(result.steps)})}\n\n"
+
+            # Send answer
+            if result.answer:
+                yield f"event: answer\ndata: {json.dumps({'text': result.answer})}\n\n"
+
+                # Extract citations from evidence
+                citations = [
+                    f"[{e.id}] {e.file_path}:{e.start_line}-{e.end_line}" for e in result.evidence
+                ]
+                yield f"event: citations\ndata: {json.dumps({'citations': citations, 'steps_used': len(result.steps), 'run_id': result.run_id})}\n\n"
+            else:
+                error_msg = (
+                    result.error_message or "Research completed but no conclusive answer was found."
+                )
+                yield f"event: answer\ndata: {json.dumps({'text': error_msg})}\n\n"
+                yield f"event: citations\ndata: {json.dumps({'citations': [], 'steps_used': len(result.steps), 'run_id': result.run_id})}\n\n"
+
+            yield "event: done\ndata: {}\n\n"
+
+        except ImportError as e:
+            error_msg = f"Research agent not available: {e}"
+            yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
