@@ -248,6 +248,140 @@ def chunk_document(
     return results
 
 
+def symbol_aware_chunk_document(
+    content: str,
+    file_path: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[ChunkResult]:
+    """Chunk a code file using Tree-sitter symbol boundaries.
+
+    Creates chunks at function/class boundaries when possible,
+    falling back to regular chunking when Tree-sitter is unavailable
+    or when symbols are too large.
+
+    Args:
+        content: File content
+        file_path: Path to the file (for language detection)
+        chunk_size: Target chunk size in characters
+        chunk_overlap: Overlap between chunks (used for fallback)
+
+    Returns:
+        List of ChunkResult objects
+    """
+    if not content or not content.strip():
+        return []
+
+    # Try to use Tree-sitter for symbol-aware chunking
+    try:
+        from contextmine_core.treesitter import extract_outline, get_symbol_content
+
+        symbols = extract_outline(file_path, content, include_children=False)
+
+        if not symbols:
+            # No symbols found, fall back to regular chunking
+            return chunk_document(content, file_path, chunk_size, chunk_overlap)
+
+        results: list[ChunkResult] = []
+        chunk_index = 0
+        covered_lines: set[int] = set()
+
+        # Sort symbols by start line
+        symbols.sort(key=lambda s: s.start_line)
+
+        for symbol in symbols:
+            # Get symbol content
+            symbol_content = get_symbol_content(symbol, content)
+
+            if not symbol_content.strip():
+                continue
+
+            # Track which lines are covered by symbols
+            for line in range(symbol.start_line, symbol.end_line + 1):
+                covered_lines.add(line)
+
+            if len(symbol_content) <= chunk_size:
+                # Symbol fits in one chunk
+                chunk_hash = compute_chunk_hash(symbol_content)
+                results.append(
+                    ChunkResult(
+                        content=symbol_content,
+                        chunk_index=chunk_index,
+                        chunk_hash=chunk_hash,
+                        meta={
+                            "file_path": file_path,
+                            "symbol_name": symbol.name,
+                            "symbol_kind": symbol.kind.value,
+                            "start_line": symbol.start_line,
+                            "end_line": symbol.end_line,
+                        },
+                    )
+                )
+                chunk_index += 1
+            else:
+                # Symbol too large, split it
+                sub_chunks = split_code_file(symbol_content, file_path, chunk_size, chunk_overlap)
+                for i, sub_chunk in enumerate(sub_chunks):
+                    if sub_chunk.strip():
+                        chunk_hash = compute_chunk_hash(sub_chunk)
+                        results.append(
+                            ChunkResult(
+                                content=sub_chunk,
+                                chunk_index=chunk_index,
+                                chunk_hash=chunk_hash,
+                                meta={
+                                    "file_path": file_path,
+                                    "symbol_name": symbol.name,
+                                    "symbol_kind": symbol.kind.value,
+                                    "start_line": symbol.start_line,
+                                    "end_line": symbol.end_line,
+                                    "sub_chunk": i,
+                                },
+                            )
+                        )
+                        chunk_index += 1
+
+        # Handle any content not covered by symbols (imports, module-level code)
+        lines = content.split("\n")
+        uncovered_content = []
+        for i, line in enumerate(lines, 1):
+            if i not in covered_lines:
+                uncovered_content.append(line)
+
+        if uncovered_content:
+            uncovered_text = "\n".join(uncovered_content).strip()
+            if uncovered_text:
+                # Chunk the uncovered content
+                uncovered_chunks = split_code_file(
+                    uncovered_text, file_path, chunk_size, chunk_overlap
+                )
+                for uc in uncovered_chunks:
+                    if uc.strip():
+                        chunk_hash = compute_chunk_hash(uc)
+                        results.append(
+                            ChunkResult(
+                                content=uc,
+                                chunk_index=chunk_index,
+                                chunk_hash=chunk_hash,
+                                meta={
+                                    "file_path": file_path,
+                                    "symbol_name": "__module__",
+                                    "symbol_kind": "module",
+                                },
+                            )
+                        )
+                        chunk_index += 1
+
+        return results
+
+    except ImportError:
+        # Tree-sitter not available, fall back to regular chunking
+        return chunk_document(content, file_path, chunk_size, chunk_overlap)
+    except Exception:
+        # Any other error, fall back to regular chunking
+        return chunk_document(content, file_path, chunk_size, chunk_overlap)
+
+
 def chunk_with_headers(
     content: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,

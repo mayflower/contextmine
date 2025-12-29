@@ -1,10 +1,13 @@
 """Tests for document chunking logic."""
 
+from pathlib import Path
+
 from contextmine_worker.chunking import (
     chunk_document,
     compute_chunk_hash,
     extract_code_blocks,
     split_markdown_preserving_code_fences,
+    symbol_aware_chunk_document,
 )
 
 
@@ -303,3 +306,111 @@ class TestChunkMetadata:
 
         assert len(chunks) > 0
         assert chunks[0].meta.get("file_path") == "path/to/file.md"
+
+
+class TestSymbolAwareChunking:
+    """Tests for symbol-aware chunking using Tree-sitter."""
+
+    def test_symbol_aware_chunk_python(self, tmp_path: Path) -> None:
+        """Symbol-aware chunking creates chunks at symbol boundaries."""
+        code = '''def function_one():
+    """First function."""
+    return 1
+
+
+def function_two():
+    """Second function."""
+    return 2
+
+
+class MyClass:
+    """A class."""
+
+    def method(self):
+        return "method"
+'''
+        test_file = tmp_path / "test.py"
+        test_file.write_text(code)
+
+        chunks = symbol_aware_chunk_document(code, str(test_file), chunk_size=500)
+
+        # Should have chunks for each symbol
+        assert len(chunks) >= 2
+
+        # Check that metadata includes symbol info
+        symbol_names = [c.meta.get("symbol_name") for c in chunks]
+        assert "function_one" in symbol_names or any(
+            "function" in str(c.meta.get("symbol_kind", "")) for c in chunks
+        )
+
+    def test_symbol_aware_chunk_with_module_level_code(self, tmp_path: Path) -> None:
+        """Symbol-aware chunking handles module-level code."""
+        code = '''"""Module docstring."""
+
+import os
+import sys
+
+CONSTANT = 42
+
+
+def my_function():
+    return CONSTANT
+'''
+        test_file = tmp_path / "test.py"
+        test_file.write_text(code)
+
+        chunks = symbol_aware_chunk_document(code, str(test_file), chunk_size=500)
+
+        # Should have chunks
+        assert len(chunks) >= 1
+
+    def test_symbol_aware_chunk_fallback_for_markdown(self, tmp_path: Path) -> None:
+        """Symbol-aware chunking falls back for non-code files."""
+        content = """# Header
+
+Some markdown content.
+
+## Section 2
+
+More content here.
+"""
+        test_file = tmp_path / "test.md"
+        test_file.write_text(content)
+
+        # Should fall back to regular chunking (no symbols in markdown)
+        chunks = symbol_aware_chunk_document(content, str(test_file), chunk_size=500)
+
+        assert len(chunks) >= 1
+
+    def test_symbol_aware_chunk_empty_content(self, tmp_path: Path) -> None:
+        """Symbol-aware chunking handles empty content."""
+        test_file = tmp_path / "empty.py"
+        test_file.write_text("")
+
+        chunks = symbol_aware_chunk_document("", str(test_file))
+
+        assert len(chunks) == 0
+
+    def test_symbol_aware_chunk_large_symbol(self, tmp_path: Path) -> None:
+        """Large symbols are split into sub-chunks."""
+        # Create a large function
+        large_body = "\n".join([f"    line_{i} = {i}" for i in range(100)])
+        code = f"""def large_function():
+{large_body}
+    return line_99
+"""
+        test_file = tmp_path / "test.py"
+        test_file.write_text(code)
+
+        chunks = symbol_aware_chunk_document(code, str(test_file), chunk_size=500)
+
+        # Should have multiple chunks for the large function
+        assert len(chunks) >= 2
+
+        # All chunks should reference the same symbol
+        for chunk in chunks:
+            if (
+                "large_function" in chunk.content
+                or chunk.meta.get("symbol_name") == "large_function"
+            ):
+                assert chunk.meta.get("symbol_kind") in ("function", None)

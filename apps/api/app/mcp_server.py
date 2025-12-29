@@ -1,5 +1,6 @@
 """MCP server implementation with FastMCP 2 and Streamable HTTP transport."""
 
+import json
 import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -12,6 +13,7 @@ from contextmine_core import (
     Document,
     MCPApiToken,
     Source,
+    Symbol,
     get_settings,
     verify_api_token,
 )
@@ -31,19 +33,32 @@ from starlette.routing import Mount
 # Create FastMCP server
 mcp = FastMCP(
     name="contextmine",
-    instructions="""ContextMine MCP server for documentation and code retrieval.
+    instructions="""ContextMine - documentation and code retrieval.
 
-To use ContextMine, add "use contextmine" to your prompt.
+## Quick Start
+For simple questions: get_markdown(query="how do I X?")
+For complex investigations: deep_research(question="how does X work?")
 
-Available tools:
-- context.list_collections: Discover available documentation collections
-- context.list_documents: Browse documents in a collection
-- context.get_markdown: Search and retrieve assembled context
+## Tool Selection Guide
 
-Typical workflow:
-1. Call list_collections to find the right collection
-2. Optionally call list_documents to explore what's available
-3. Call get_markdown with your query to get relevant documentation
+**I need documentation/context:**
+→ get_markdown - semantic search across indexed docs
+
+**I need to understand code structure:**
+→ outline - list functions/classes in a file
+→ find_symbol - get source code of a specific function/class
+
+**I need to trace code relationships:**
+→ definition - jump to where something is defined
+→ references - find all usages of a symbol
+→ expand - explore call graphs and imports
+
+**I have a complex question requiring investigation:**
+→ deep_research - multi-step agent that searches, reads code, collects evidence
+
+## Discovery (usually not needed)
+- list_collections - see available doc collections
+- list_documents - browse docs in a collection
 """,
 )
 
@@ -125,18 +140,11 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         return None
 
 
-@mcp.tool(name="context.list_collections")
+@mcp.tool(name="list_collections")
 async def list_collections(
     search: Annotated[str | None, "Optional search term to filter collections by name"] = None,
 ) -> str:
-    """List all documentation collections available to search.
-
-    Call this first to discover what collections are available.
-    Returns collection IDs, names, and descriptions that you can use
-    with other tools like get_markdown or list_documents.
-
-    Example: To find React documentation, call list_collections with search="react"
-    """
+    """List available documentation collections. Usually not needed - just call get_markdown directly."""
     user_id = get_current_user_id()
 
     async with get_db_session() as db:
@@ -194,20 +202,13 @@ async def list_collections(
     return "\n".join(lines)
 
 
-@mcp.tool(name="context.list_documents")
+@mcp.tool(name="list_documents")
 async def list_documents(
     collection_id: Annotated[str, "The collection ID to list documents from"],
     topic: Annotated[str | None, "Optional topic/path filter (e.g., 'routing', 'api')"] = None,
     limit: Annotated[int, "Maximum number of documents to return"] = 50,
 ) -> str:
-    """List documents in a collection to explore available content.
-
-    Use this to browse what documentation is available before searching.
-    Optionally filter by topic to focus on specific areas like 'authentication',
-    'routing', or 'api'.
-
-    Example: list_documents(collection_id="...", topic="hooks")
-    """
+    """Browse documents in a collection. Usually not needed - just call get_markdown directly."""
     user_id = get_current_user_id()
 
     try:
@@ -281,39 +282,17 @@ async def list_documents(
     return "\n".join(lines)
 
 
-@mcp.tool(name="context.get_markdown")
+@mcp.tool(name="get_markdown")
 async def get_context_markdown(
-    query: Annotated[str, "The search query to find relevant documentation"],
-    collection_id: Annotated[
-        str | None,
-        "Collection ID to search within. Call list_collections first to find IDs.",
-    ] = None,
-    topic: Annotated[
-        str | None,
-        "Focus on specific topic like 'routing', 'authentication', or 'hooks'",
-    ] = None,
-    max_chunks: Annotated[int, "Maximum number of chunks to retrieve (1-50)"] = 10,
-    max_tokens: Annotated[int, "Maximum tokens for LLM response"] = 4000,
-    offset: Annotated[int, "Skip first N results for pagination"] = 0,
-    raw: Annotated[
-        bool,
-        "Return raw chunks instead of LLM-assembled response (faster, cheaper)",
-    ] = False,
+    query: Annotated[str, "Natural language question or search terms"],
+    collection_id: Annotated[str | None, "Limit to specific collection (optional)"] = None,
+    topic: Annotated[str | None, "Filter by topic path (e.g., 'api', 'hooks')"] = None,
+    max_chunks: Annotated[int, "Number of results (1-50)"] = 10,
+    max_tokens: Annotated[int, "Response length limit"] = 4000,
+    offset: Annotated[int, "Pagination offset"] = 0,
+    raw: Annotated[bool, "Return raw chunks without LLM synthesis (faster)"] = False,
 ) -> str:
-    """Search and retrieve documentation context as Markdown.
-
-    Uses hybrid retrieval (full-text + vector search) to find relevant
-    documentation and code. By default, results are assembled into a
-    coherent document using an LLM. Use raw=true for faster raw chunks.
-
-    Tips:
-    - Call list_collections first if you don't know the collection ID
-    - Use topic parameter to focus on specific areas (e.g., topic="routing")
-    - Use raw=true for quick lookups without LLM processing
-    - Increase max_chunks for broader context
-
-    Add "use contextmine" to your prompts to trigger this tool.
-    """
+    """Semantic search across all indexed documentation and code. Returns synthesized context."""
     user_id = get_current_user_id()
 
     # Parse collection_id if provided
@@ -419,6 +398,454 @@ async def _get_raw_chunks(
     return "\n".join(lines)
 
 
+# =============================================================================
+# Deep Research Tool
+# =============================================================================
+
+
+@mcp.tool(name="deep_research")
+async def code_deep_research(
+    question: Annotated[str, "Complex question requiring multi-step investigation"],
+    scope: Annotated[str | None, "Limit to path pattern (e.g., 'src/api/**')"] = None,
+    budget: Annotated[int, "Max investigation steps (1-20)"] = 10,
+    debug: Annotated[bool, "Return run_id for trace inspection"] = False,
+) -> str:
+    """Multi-step research agent for complex codebase questions.
+
+    Use this for questions like "how does X work?" or "where is Y implemented?"
+    The agent searches, reads code, and collects evidence autonomously.
+
+    Returns concise answer with citations. For full trace: @research://runs/{run_id}/report.md
+    """
+    # Validate budget
+    budget = max(1, min(20, budget))
+
+    try:
+        from contextmine_core.research import AgentConfig, ResearchAgent
+        from contextmine_core.research.actions.finalize import format_answer_with_citations
+        from contextmine_core.research.llm import get_research_llm_provider
+
+        # Get LLM provider
+        llm_provider = get_research_llm_provider()
+
+        # Create and run agent
+        config = AgentConfig(
+            max_steps=budget,
+            store_artifacts=True,
+        )
+        agent = ResearchAgent(
+            llm_provider=llm_provider,
+            config=config,
+        )
+
+        run = await agent.research(question=question, scope=scope)
+
+        # Build output
+        if run.answer:
+            citations = [
+                {
+                    "id": e.id,
+                    "file": e.file_path,
+                    "lines": f"{e.start_line}-{e.end_line}",
+                    "provenance": e.provenance,
+                }
+                for e in run.evidence
+            ]
+            output = format_answer_with_citations(run.answer, citations, max_length=800)
+        else:
+            output = f"Research failed: {run.error_message or 'Unknown error'}"
+
+        # Add run_id if debug mode or include for artifact access
+        if debug:
+            output += f"\n\n**Run ID:** {run.run_id}"
+            output += f"\n**Status:** {run.status.value}"
+            output += f"\n**Steps:** {run.budget_used}/{run.budget_steps}"
+            output += f"\n\nUse @research://runs/{run.run_id}/report.md for the full report."
+        else:
+            # Always include minimal reference
+            output += f"\n\n*Run ID: {run.run_id[:8]}... (use debug=true for full trace)*"
+
+        return output
+
+    except Exception as e:
+        return f"Research error: {e}"
+
+
+# =============================================================================
+# Code Navigation Tools
+# =============================================================================
+
+
+@mcp.tool(name="outline")
+async def code_outline(
+    file_path: Annotated[str, "Document URI from search results"],
+    include_children: Annotated[bool, "Include methods inside classes"] = True,
+) -> str:
+    """List all functions, classes, and methods in a file with line numbers."""
+    # First, try to get symbols from the database (for indexed documents)
+    try:
+        async with get_db_session() as session:
+            # Look up document by URI (for git:// URIs) or by file path in meta
+            result = await session.execute(
+                select(Document)
+                .where(
+                    or_(
+                        Document.uri == file_path,
+                        Document.uri.contains(file_path),
+                    )
+                )
+                .limit(1)
+            )
+            doc = result.scalar_one_or_none()
+
+            if doc:
+                # Get symbols from database
+                result = await session.execute(
+                    select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
+                )
+                db_symbols = result.scalars().all()
+
+                if db_symbols:
+                    # Format database symbols
+                    lines = [f"# Outline: {file_path}\n"]
+                    lines.append("*From index (fast lookup)*\n")
+
+                    # Group by parent for hierarchy
+                    top_level = [s for s in db_symbols if s.parent_name is None]
+                    children_map: dict[str, list[Symbol]] = {}
+                    for s in db_symbols:
+                        if s.parent_name:
+                            children_map.setdefault(s.parent_name, []).append(s)
+
+                    for sym in top_level:
+                        lines.append(
+                            f"## {sym.kind.value} `{sym.name}` (L{sym.start_line}-{sym.end_line})"
+                        )
+                        if sym.signature:
+                            lines.append(f"```\n{sym.signature}\n```")
+
+                        if include_children and sym.qualified_name in children_map:
+                            for child in children_map[sym.qualified_name]:
+                                lines.append(
+                                    f"  - {child.kind.value} `{child.name}` "
+                                    f"(L{child.start_line}-{child.end_line})"
+                                )
+                                if child.signature:
+                                    lines.append(f"    `{child.signature}`")
+
+                        lines.append("")
+
+                    lines.append(f"\n*Found {len(top_level)} top-level symbols*")
+                    return "\n".join(lines)
+    except Exception as e:
+        return f"# Document Not Found\n\nNo indexed document matches: `{file_path}`\n\nError: {e}"
+
+    # Document exists but has no symbols (not a code file, or unsupported language)
+    return (
+        f"# No symbols found in {file_path}\n\nDocument exists but contains no extractable symbols."
+    )
+
+
+@mcp.tool(name="find_symbol")
+async def code_find_symbol(
+    file_path: Annotated[str, "Document URI from search results"],
+    name: Annotated[str, "Function, class, or method name"],
+) -> str:
+    """Get the source code of a specific function or class by name."""
+    # First, try to find in database (for indexed documents)
+    try:
+        async with get_db_session() as session:
+            # Look up document by URI or file path
+            result = await session.execute(
+                select(Document)
+                .where(
+                    or_(
+                        Document.uri == file_path,
+                        Document.uri.contains(file_path),
+                    )
+                )
+                .limit(1)
+            )
+            doc = result.scalar_one_or_none()
+
+            if doc:
+                # Find symbol by name in this document
+                result = await session.execute(
+                    select(Symbol).where(
+                        Symbol.document_id == doc.id,
+                        Symbol.name == name,
+                    )
+                )
+                db_symbol = result.scalar_one_or_none()
+
+                if db_symbol:
+                    # Extract content from document markdown
+                    content_lines = doc.content_markdown.split("\n")
+                    start_idx = max(0, db_symbol.start_line - 1)
+                    end_idx = min(len(content_lines), db_symbol.end_line)
+                    content = "\n".join(content_lines[start_idx:end_idx])
+
+                    return f"""# {db_symbol.kind.value} `{db_symbol.name}`
+
+**File:** {file_path}
+**Lines:** {db_symbol.start_line}-{db_symbol.end_line}
+*From index (fast lookup)*
+
+```
+{content}
+```
+"""
+    except Exception as e:
+        return f"# Document Not Found\n\nNo indexed document matches: `{file_path}`\n\nError: {e}"
+
+    # Document exists but symbol not found
+    return f"# Symbol Not Found\n\nNo symbol named `{name}` in indexed document: {file_path}"
+
+
+@mcp.tool(name="definition")
+async def code_definition(
+    file_path: Annotated[str, "Document URI"],
+    line: Annotated[int, "Line number (1-indexed)"],
+    column: Annotated[int, "Column position (0-indexed)"],
+) -> str:
+    """Jump to where a symbol is defined. Provide the location of a reference to find its definition."""
+    from pathlib import Path
+
+    # Try LSP first
+    try:
+        from contextmine_core.lsp import LspNotAvailableError, get_lsp_manager
+
+        manager = get_lsp_manager()
+        client = await manager.get_client(file_path)
+
+        # Use LSP for accurate definition lookup
+        locations = await client.get_definition(file_path, line, column)
+
+        if locations:
+            location = locations[0]  # Take first definition
+            # Read the definition content
+            def_path = Path(location.file_path)
+            if def_path.exists():
+                file_lines = def_path.read_text().split("\n")
+                start_idx = max(0, location.start_line - 1)
+                end_idx = min(len(file_lines), location.end_line + 10)
+                content = "\n".join(file_lines[start_idx:end_idx])
+
+                return f"""# Definition Found
+
+**File:** {location.file_path}
+**Lines:** {location.start_line}-{location.end_line}
+
+```
+{content}
+```
+"""
+            return f"""# Definition Found
+
+**File:** {location.file_path}
+**Lines:** {location.start_line}-{location.end_line}
+"""
+
+        # LSP returned nothing, fall through to tree-sitter
+    except (ImportError, LspNotAvailableError):
+        # LSP not available, fall through to tree-sitter
+        pass
+    except Exception:
+        # Log but continue to fallback
+        pass
+
+    # Fallback: Try tree-sitter to find enclosing symbol
+    try:
+        from contextmine_core.treesitter import find_enclosing_symbol, get_symbol_content
+
+        symbol = find_enclosing_symbol(file_path, line)
+        if symbol:
+            content = get_symbol_content(symbol)
+            return f"""# Enclosing Symbol (LSP not available)
+
+**File:** {file_path}
+**Symbol:** {symbol.kind.value} `{symbol.name}`
+**Lines:** {symbol.start_line}-{symbol.end_line}
+
+```
+{content}
+```
+
+*Note: For accurate go-to-definition, an LSP server is needed.*
+"""
+    except Exception:
+        pass
+
+    return f"# Definition Not Found\n\nCould not find definition at {file_path}:{line}:{column}"
+
+
+@mcp.tool(name="references")
+async def code_references(
+    file_path: Annotated[str, "Document URI"],
+    line: Annotated[int, "Line number (1-indexed)"],
+    column: Annotated[int, "Column position (0-indexed)"],
+    limit: Annotated[int, "Max results"] = 20,
+) -> str:
+    """Find all usages of a symbol. Use for impact analysis before refactoring."""
+    try:
+        from contextmine_core.lsp import LspNotAvailableError, get_lsp_manager
+
+        manager = get_lsp_manager()
+        client = await manager.get_client(file_path)
+
+        locations = await client.get_references(file_path, line, column)
+
+        if not locations:
+            return (
+                f"# No References Found\n\nNo references to symbol at {file_path}:{line}:{column}"
+            )
+
+        output_lines = [f"# References ({len(locations)} found)\n"]
+
+        for i, loc in enumerate(locations[:limit]):
+            output_lines.append(f"## {i + 1}. {loc.file_path}:{loc.start_line}")
+            output_lines.append(f"Lines {loc.start_line}-{loc.end_line}\n")
+
+        if len(locations) > limit:
+            output_lines.append(f"\n*Showing {limit} of {len(locations)} references*")
+
+        return "\n".join(output_lines)
+
+    except (ImportError, LspNotAvailableError):
+        # LSP not available
+        return """# LSP Not Available
+
+To find references, an LSP server needs to be running for this language.
+
+**Alternative:** Use `context.get_markdown` with the symbol name to search
+for usages across the indexed codebase.
+
+Example:
+```
+context.get_markdown(query="<symbol_name>", raw=True)
+```
+"""
+
+    except Exception as e:
+        return f"# Error\n\nFailed to find references: {e}"
+
+
+@mcp.tool(name="expand")
+async def code_expand(
+    seeds: Annotated[
+        list[str],
+        "Starting points as 'file_uri::function_name' (e.g., 'git://repo/main.py::process_data')",
+    ],
+    depth: Annotated[int, "Hops to follow (1-3)"] = 2,
+    edge_types: Annotated[
+        list[str] | None, "Filter: 'calls', 'called_by', 'imports', 'inherits'"
+    ] = None,
+    limit: Annotated[int, "Max nodes"] = 30,
+) -> str:
+    """Explore code relationships from a starting symbol. Shows what it calls, what calls it, imports, etc.
+
+    Seeds should be in format: file_path::symbol_name
+    Example: src/auth.py::authenticate
+    """
+    if not seeds:
+        return "# Error\n\nNo seed symbols provided. Use format: file_path::symbol_name"
+
+    try:
+        from contextmine_core.graph import EdgeType, get_graph_builder
+
+        builder = get_graph_builder()
+
+        if not builder.has_treesitter:
+            return "# Error\n\nTree-sitter required for graph expansion but not available."
+
+        # Extract file paths from seeds
+        file_paths = set()
+        for seed in seeds:
+            if "::" in seed:
+                file_path = seed.split("::")[0]
+                file_paths.add(file_path)
+            else:
+                return f"# Error\n\nInvalid seed format: {seed}\nExpected: file_path::symbol_name"
+
+        # Build graph
+        graph = builder.build_multi_file_graph(list(file_paths))
+
+        if graph.node_count() == 0:
+            return f"# No Symbols Found\n\nNo symbols extracted from: {', '.join(file_paths)}"
+
+        # Parse edge types
+        parsed_edge_types = None
+        if edge_types:
+            parsed_edge_types = []
+            for et in edge_types:
+                try:
+                    parsed_edge_types.append(EdgeType(et.lower()))
+                except ValueError:
+                    return f"# Error\n\nUnknown edge type: {et}\nValid: calls, called_by, imports, imported_by, inherits, inherited_by"
+
+        # Find valid seeds
+        all_node_ids = {n.id for n in graph.get_all_nodes()}
+        valid_seeds = [s for s in seeds if s in all_node_ids]
+
+        if not valid_seeds:
+            # Try partial match
+            for seed in seeds:
+                symbol_name = seed.split("::")[-1] if "::" in seed else seed
+                for node_id in all_node_ids:
+                    if symbol_name in node_id:
+                        valid_seeds.append(node_id)
+                        break
+
+        if not valid_seeds:
+            available = list(all_node_ids)[:10]
+            return f"""# Seed Symbols Not Found
+
+The provided seeds were not found in the graph.
+
+**Available symbols (first 10):**
+{chr(10).join(f"- {s}" for s in available)}
+
+**Tip:** Use `code.outline` to find exact symbol IDs.
+"""
+
+        # Expand graph
+        from contextmine_core.graph import expand_graph
+
+        subgraph = expand_graph(
+            graph=graph,
+            seeds=valid_seeds,
+            depth=min(depth, 3),  # Cap depth at 3
+            edge_types=parsed_edge_types,
+        )
+
+        nodes = list(subgraph.get_all_nodes())[:limit]
+        edges = list(subgraph.get_all_edges())
+
+        # Format output
+        lines = ["# Graph Expansion\n"]
+        lines.append(f"**Seeds:** {', '.join(valid_seeds)}")
+        lines.append(f"**Depth:** {depth}")
+        lines.append(f"**Nodes:** {len(nodes)} | **Edges:** {len(edges)}\n")
+
+        lines.append("## Symbols\n")
+        for node in nodes:
+            lines.append(f"- **{node.kind}** `{node.name}` ({node.file_path}:{node.start_line})")
+
+        if edges:
+            lines.append("\n## Relationships\n")
+            for edge in edges[:30]:  # Limit edges shown
+                lines.append(
+                    f"- {edge.source_id.split('::')[-1]} → {edge.edge_type.value} → {edge.target_id.split('::')[-1]}"
+                )
+
+        return "\n".join(lines)
+
+    except ImportError as e:
+        return f"# Error\n\nRequired module not available: {e}"
+    except Exception as e:
+        return f"# Error\n\nGraph expansion failed: {e}"
+
+
 def get_context_markdown_sync(query: str) -> str:
     """Synchronous wrapper for testing. Returns a simple placeholder."""
     return f"""# Context for: {query}
@@ -431,6 +858,113 @@ This is a test placeholder. Use the async MCP endpoint for real results.
 
 - No sources (test mode)
 """
+
+
+# =============================================================================
+# MCP Resources for Research Agent Artifacts
+# =============================================================================
+#
+# These resources expose research run artifacts (traces, evidence, reports)
+# so that Claude Code users can inspect them via @ mentions without polluting
+# the main context with large outputs.
+#
+# URI Scheme:
+#   research://runs                         - List recent runs
+#   research://runs/{run_id}/trace.json     - Agent execution trace
+#   research://runs/{run_id}/evidence.json  - Collected evidence
+#   research://runs/{run_id}/report.md      - Human-readable report
+
+
+@mcp.resource("research://runs")
+async def list_research_runs() -> str:
+    """List recent research runs.
+
+    Returns a JSON list of research run metadata including run_id,
+    question, status, and timestamps. Use the run_id to fetch
+    individual artifacts.
+    """
+    from contextmine_core.research import get_artifact_store
+
+    store = get_artifact_store()
+    runs = store.list_runs(limit=20)
+
+    result = []
+    for meta in runs:
+        result.append(
+            {
+                "run_id": meta.run_id,
+                "question": meta.question,
+                "status": meta.status,
+                "created_at": meta.created_at.isoformat(),
+                "completed_at": meta.completed_at.isoformat() if meta.completed_at else None,
+            }
+        )
+
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("research://runs/{run_id}/trace.json")
+async def get_research_trace(run_id: str) -> str:
+    """Get the execution trace for a research run.
+
+    The trace shows each step the agent took, including:
+    - Action name and input parameters
+    - Output summary and timing
+    - Any errors encountered
+    - Evidence IDs collected in each step
+    """
+    from contextmine_core.research import get_artifact_store
+
+    store = get_artifact_store()
+    trace = store.get_trace(run_id)
+
+    if trace is None:
+        return json.dumps({"error": f"Run not found: {run_id}"})
+
+    return json.dumps(trace, indent=2)
+
+
+@mcp.resource("research://runs/{run_id}/evidence.json")
+async def get_research_evidence(run_id: str) -> str:
+    """Get the evidence collected during a research run.
+
+    Evidence includes code snippets and documentation spans that
+    support the answer, with:
+    - File path and line range
+    - Content excerpt
+    - Reason for selection
+    - How it was found (bm25, vector, lsp, graph, manual)
+    - Symbol information if available
+    """
+    from contextmine_core.research import get_artifact_store
+
+    store = get_artifact_store()
+    evidence = store.get_evidence(run_id)
+
+    if evidence is None:
+        return json.dumps({"error": f"Run not found: {run_id}"})
+
+    return json.dumps(evidence, indent=2)
+
+
+@mcp.resource("research://runs/{run_id}/report.md")
+async def get_research_report(run_id: str) -> str:
+    """Get the markdown report for a research run.
+
+    The report provides a human-readable summary including:
+    - The original question and answer
+    - All evidence with file locations and excerpts
+    - Step-by-step trace of the investigation
+    """
+    from contextmine_core.research import get_artifact_store
+
+    store = get_artifact_store()
+    report = store.get_report(run_id)
+
+    if report is None:
+        return f"# Error\n\nRun not found: {run_id}"
+
+    return report
 
 
 # Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)

@@ -36,6 +36,7 @@ from contextmine_worker.github_sync import (
     is_eligible_file,
     read_file_content,
 )
+from contextmine_worker.symbol_indexing import maintain_symbols_for_document
 from contextmine_worker.web_sync import (
     DEFAULT_DELAY_MS,
     DEFAULT_MAX_PAGES,
@@ -455,12 +456,14 @@ async def sync_github_source(
     # Track documents to chunk (doc_id, content, file_path)
     docs_to_chunk: list[tuple[str, str, str | None]] = []
 
-    # Chunk and embedding stats
+    # Chunk, symbol, and embedding stats
     total_chunks_created = 0
     total_chunks_deleted = 0
     total_chunks_embedded = 0
     total_chunks_deduplicated = 0
     total_tokens_used = 0
+    total_symbols_created = 0
+    total_symbols_deleted = 0
 
     total_files = len(changed_files) + len(deleted_files)
     await update_progress_artifact(  # type: ignore[misc]
@@ -609,6 +612,17 @@ async def sync_github_source(
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
 
+        # Extract symbols for code files (using tree-sitter)
+        import uuid as uuid_module
+
+        async with get_session() as session:
+            sym_created, sym_deleted = await maintain_symbols_for_document(
+                session, uuid_module.UUID(doc_id)
+            )
+            total_symbols_created += sym_created
+            total_symbols_deleted += sym_deleted
+            await session.commit()
+
         # Embed new/updated chunks (using collection's embedding config)
         embed_stats = await embed_document(doc_id, collection_id_str)
         total_chunks_embedded += embed_stats["chunks_embedded"]
@@ -637,6 +651,8 @@ async def sync_github_source(
             "chunks_embedded": total_chunks_embedded,
             "chunks_deduplicated": total_chunks_deduplicated,
             "embedding_tokens_used": total_tokens_used,
+            "symbols_created": total_symbols_created,
+            "symbols_deleted": total_symbols_deleted,
             "commit_sha": new_sha,
             "previous_sha": old_sha,
         }
@@ -690,12 +706,14 @@ async def sync_web_source(
     # Track documents to chunk (doc_id, content, file_path)
     docs_to_chunk: list[tuple[str, str, str | None]] = []
 
-    # Chunk and embedding stats
+    # Chunk, symbol, and embedding stats
     total_chunks_created = 0
     total_chunks_deleted = 0
     total_chunks_embedded = 0
     total_chunks_deduplicated = 0
     total_tokens_used = 0
+    total_symbols_created = 0
+    total_symbols_deleted = 0
 
     async with get_session() as session:
         # Process each page
@@ -795,6 +813,8 @@ async def sync_web_source(
             description=f"Chunking and embedding {total_docs} documents...",
         )
 
+    import uuid as uuid_module
+
     for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
         # Update progress every 5 documents or on last document
         if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
@@ -808,6 +828,15 @@ async def sync_web_source(
         chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
+
+        # Extract symbols for code files (using tree-sitter)
+        async with get_session() as session:
+            sym_created, sym_deleted = await maintain_symbols_for_document(
+                session, uuid_module.UUID(doc_id)
+            )
+            total_symbols_created += sym_created
+            total_symbols_deleted += sym_deleted
+            await session.commit()
 
         # Embed new/updated chunks (using collection's embedding config)
         embed_stats = await embed_document(doc_id, collection_id_str)
@@ -835,6 +864,8 @@ async def sync_web_source(
             "chunks_embedded": total_chunks_embedded,
             "chunks_deduplicated": total_chunks_deduplicated,
             "embedding_tokens_used": total_tokens_used,
+            "symbols_created": total_symbols_created,
+            "symbols_deleted": total_symbols_deleted,
         }
 
         await session.commit()

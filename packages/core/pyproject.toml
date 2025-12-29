@@ -16,6 +16,15 @@ dependencies = [
     "openai>=2.0.0",
     "google-genai>=1.0.0",
     "tenacity>=8.0.0",
+    # LangChain for LLM abstraction (stable 1.x)
+    "langchain-core>=1.0.0",
+    "langchain-anthropic>=1.0.0",
+    "langchain-openai>=1.0.0",
+    "langgraph>=1.0.0",
+    # Tree-sitter for code analysis
+    "tree-sitter-language-pack>=0.9.0",
+    # LSP support for code intelligence
+    "multilspy>=0.0.15",
 ]
 
 [build-system]

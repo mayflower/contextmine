@@ -2,6 +2,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install system dependencies for LSP servers
+# - Node.js: Required for TypeScript/JavaScript language server
+# - git: Required by some language servers for project detection
+# - curl: For downloading language server binaries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TypeScript language server globally
+RUN npm install -g typescript typescript-language-server
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -11,7 +25,7 @@ COPY packages/ packages/
 COPY apps/api/ apps/api/
 COPY apps/worker/pyproject.toml apps/worker/
 
-# Sync dependencies
+# Sync dependencies (includes multilspy + jedi-language-server for LSP support)
 RUN uv sync --frozen --no-dev
 
 # Copy and make entrypoint executable

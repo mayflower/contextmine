@@ -17,7 +17,7 @@ repos:
 
       - id: ty
         name: ty check
-        entry: uvx ty check
+        entry: uvx ty check apps packages
         language: system
         types: [python]
         pass_filenames: false

@@ -49,6 +49,32 @@ class EmbeddingProvider(enum.Enum):
     GEMINI = "gemini"
 
 
+class SymbolKind(enum.Enum):
+    """Kind of code symbol."""
+
+    FUNCTION = "function"
+    CLASS = "class"
+    METHOD = "method"
+    VARIABLE = "variable"
+    CONSTANT = "constant"
+    MODULE = "module"
+    INTERFACE = "interface"
+    ENUM = "enum"
+    PROPERTY = "property"
+    TYPE_ALIAS = "type_alias"
+
+
+class SymbolEdgeType(enum.Enum):
+    """Type of relationship between symbols."""
+
+    CALLS = "calls"  # Function calls another function
+    IMPORTS = "imports"  # Symbol imports another symbol
+    INHERITS = "inherits"  # Class inherits from another class
+    IMPLEMENTS = "implements"  # Class implements an interface
+    CONTAINS = "contains"  # Class contains a method
+    REFERENCES = "references"  # General reference to another symbol
+
+
 class AppKV(Base):
     """Simple key-value store for app settings and metadata."""
 
@@ -326,6 +352,9 @@ class Document(Base):
     chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+    symbols: Mapped[list["Symbol"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
 
 
 class EmbeddingModel(Base):
@@ -385,3 +414,108 @@ class Chunk(Base):
     # Relationships
     document: Mapped["Document"] = relationship(back_populates="chunks")
     embedding_model: Mapped["EmbeddingModel | None"] = relationship(back_populates="chunks")
+
+
+class Symbol(Base):
+    """A code symbol (function, class, method, etc.) extracted from a document.
+
+    Symbols are extracted via tree-sitter during sync and stored for fast lookup.
+    They cascade delete when the parent Document is deleted.
+    """
+
+    __tablename__ = "symbols"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Qualified name: e.g., "ResearchAgent.research" or just "run_research"
+    qualified_name: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # Simple name: e.g., "research" or "run_research"
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    kind: Mapped[SymbolKind] = mapped_column(
+        Enum(
+            SymbolKind,
+            name="symbol_kind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    # Line numbers (1-indexed)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Optional signature for functions/methods
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Parent symbol qualified name (for nested symbols like methods in classes)
+    parent_name: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Additional metadata (docstring, decorators, etc.)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    document: Mapped["Document"] = relationship(back_populates="symbols")
+    # Edges where this symbol is the source
+    outgoing_edges: Mapped[list["SymbolEdge"]] = relationship(
+        back_populates="source_symbol",
+        foreign_keys="SymbolEdge.source_symbol_id",
+        cascade="all, delete-orphan",
+    )
+    # Edges where this symbol is the target
+    incoming_edges: Mapped[list["SymbolEdge"]] = relationship(
+        back_populates="target_symbol",
+        foreign_keys="SymbolEdge.target_symbol_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class SymbolEdge(Base):
+    """A relationship between two symbols (calls, imports, inherits, etc.).
+
+    Edges are extracted during sync using tree-sitter and/or LSP.
+    They cascade delete when either the source or target Symbol is deleted.
+    """
+
+    __tablename__ = "symbol_edges"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_symbol_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("symbols.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_symbol_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("symbols.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    edge_type: Mapped[SymbolEdgeType] = mapped_column(
+        Enum(
+            SymbolEdgeType,
+            name="symbol_edge_type",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    # Line number in source where the reference occurs
+    source_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Additional metadata
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    source_symbol: Mapped["Symbol"] = relationship(
+        back_populates="outgoing_edges",
+        foreign_keys=[source_symbol_id],
+    )
+    target_symbol: Mapped["Symbol"] = relationship(
+        back_populates="incoming_edges",
+        foreign_keys=[target_symbol_id],
+    )

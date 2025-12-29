@@ -78,6 +78,76 @@ class Settings(BaseSettings):
         description="Prefect server API URL",
     )
 
+    # Research Agent
+    artifact_store: str = Field(
+        default="memory",
+        description="Artifact store type: 'memory' or 'file'",
+    )
+    artifact_dir: str = Field(
+        default=".mcp_artifacts",
+        description="Directory for file-backed artifact store",
+    )
+    artifact_ttl_minutes: int = Field(
+        default=60,
+        description="Time-to-live for artifacts in minutes",
+    )
+    artifact_max_runs: int = Field(
+        default=100,
+        description="Maximum number of research runs to keep",
+    )
+    research_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        description="LLM model for research agent reasoning",
+    )
+    research_max_tokens: int = Field(
+        default=4096,
+        description="Max tokens per research agent LLM call",
+    )
+    research_budget_steps: int = Field(
+        default=10,
+        description="Default maximum steps for research agent",
+    )
+
+    # LSP Settings
+    lsp_idle_timeout_seconds: float = Field(
+        default=300.0,
+        description="Idle timeout before stopping language servers (seconds)",
+    )
+    lsp_request_timeout_seconds: float = Field(
+        default=30.0,
+        description="Timeout for individual LSP requests (seconds)",
+    )
+
+    # Tree-sitter Settings
+    treesitter_cache_size: int = Field(
+        default=100,
+        description="Maximum number of parsed syntax trees to cache",
+    )
+
+    # Graph Settings
+    graph_max_depth: int = Field(
+        default=3,
+        description="Maximum traversal depth for graph expansion",
+    )
+    graph_max_nodes: int = Field(
+        default=100,
+        description="Maximum nodes to collect during graph expansion",
+    )
+
+    # Verification Settings
+    verification_require_citations: bool = Field(
+        default=True,
+        description="Require citations in answers for verification to pass",
+    )
+    verification_min_evidence_support: float = Field(
+        default=0.5,
+        description="Minimum evidence support score (0.0-1.0) for verification to pass",
+    )
+    verification_confidence_tolerance: float = Field(
+        default=0.2,
+        description="Tolerance for confidence calibration (|stated - evidence| <= tolerance)",
+    )
+
 
 # Singleton instance
 _settings: Settings | None = None

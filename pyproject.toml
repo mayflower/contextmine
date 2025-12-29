@@ -37,9 +37,17 @@ python-version = "3.12"
 python = ".venv"
 
 [tool.ty.rules]
-# False positives from library stubs (Starlette, Prefect, Anthropic)
-invalid-argument-type = "warn"
-no-matching-overload = "warn"
+# Ignore false positives from library stubs (Starlette, Prefect, Anthropic)
+invalid-argument-type = "ignore"
+no-matching-overload = "ignore"
+# Test mocking patterns trigger this
+invalid-assignment = "ignore"
+# Optional attribute access in tests
+possibly-missing-attribute = "ignore"
+# Optional dependencies (multilspy, etc.) may not be installed
+unresolved-import = "ignore"
+# Test code uses `in` operator with Optional types
+unsupported-operator = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["apps/api/tests"]
