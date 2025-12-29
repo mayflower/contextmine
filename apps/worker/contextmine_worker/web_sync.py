@@ -85,22 +85,29 @@ def run_spider_md(
     max_pages: int = DEFAULT_MAX_PAGES,
     user_agent: str = "ContextMine-Spider/0.1",
     delay_ms: int = DEFAULT_DELAY_MS,
+    start_url: str | None = None,
 ) -> list[WebPage]:
     """Run the spider_md binary and collect results.
 
     Args:
-        base_url: URL to start crawling from
+        base_url: URL path prefix for scoping (determines which pages to include)
         max_pages: Maximum pages to crawl (default 100)
         user_agent: User agent string
         delay_ms: Delay between requests in milliseconds (default 500ms)
+        start_url: URL to start crawling from (defaults to base_url if not provided)
 
     Returns:
         List of WebPage objects from crawl results
     """
+    # Use start_url if provided, otherwise fall back to base_url
+    crawl_start = start_url or base_url
+
     cmd = [
         "spider_md",
         "--base-url",
-        base_url,
+        base_url,  # Used for scoping (path prefix filter)
+        "--start-url",
+        crawl_start,  # Used as crawling entry point
         "--max-pages",
         str(max_pages),
         "--user-agent",

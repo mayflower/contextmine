@@ -744,7 +744,10 @@ async def sync_web_source(
 
     # Get config with sensible defaults
     config = source.config or {}
-    base_url = config.get("base_url", source.url)
+    # start_url: where to begin crawling (user's original URL)
+    # base_url: path prefix for scoping (derived from start_url)
+    start_url = config.get("start_url", source.url)
+    base_url = config.get("base_url", start_url)  # Fall back to start_url for old sources
     max_pages = config.get("max_pages", DEFAULT_MAX_PAGES)
     delay_ms = config.get("delay_ms", DEFAULT_DELAY_MS)
 
@@ -754,7 +757,7 @@ async def sync_web_source(
     # Create progress artifact
     progress_id = await create_progress_artifact(  # type: ignore[misc]
         progress=0.0,
-        description=f"Starting crawl of {base_url}...",
+        description=f"Starting crawl of {start_url}...",
     )
 
     await update_progress_artifact(
@@ -764,6 +767,7 @@ async def sync_web_source(
     # Run the spider with rate limiting
     pages = run_spider_md(
         base_url=base_url,
+        start_url=start_url,
         max_pages=max_pages,
         delay_ms=delay_ms,
     )

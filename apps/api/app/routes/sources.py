@@ -107,9 +107,17 @@ def validate_github_url(url: str) -> dict:
 def validate_web_url(url: str) -> dict:
     """Validate a web URL for crawling.
 
-    Returns config dict with base_url.
-    TODO: Enforce domain/path rules in later prompts.
+    Returns config dict with start_url and base_url.
+    - start_url: The URL to begin crawling from (user's input)
+    - base_url: The path prefix for scoping (derived from start_url)
+
+    The base_url is derived by taking the parent directory of the start_url.
+    For example:
+    - https://example.com/docs/intro → base_url = https://example.com/docs/
+    - https://example.com/docs/ → base_url = https://example.com/docs/
     """
+    from urllib.parse import urlparse, urlunparse
+
     # Basic URL validation
     if not url.startswith(("http://", "https://")):
         raise HTTPException(
@@ -117,11 +125,22 @@ def validate_web_url(url: str) -> dict:
             detail="Invalid URL. Must start with http:// or https://",
         )
 
-    # TODO: Enforce same domain + path prefix rules
-    # TODO: Respect robots.txt
+    # Parse URL to derive base_url
+    parsed = urlparse(url)
+    path = parsed.path
+
+    # Derive base path: if path doesn't end with /, strip the last component
+    if path and not path.endswith("/"):
+        # Strip last path component (the "page")
+        last_slash = path.rfind("/")
+        path = path[: last_slash + 1] if last_slash > 0 else "/"
+
+    # Reconstruct base_url with derived path
+    base_url = urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
     return {
-        "base_url": url,
+        "start_url": url,  # Original URL to start crawling from
+        "base_url": base_url,  # Derived path prefix for scoping
     }
 
 

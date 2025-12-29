@@ -18,9 +18,13 @@ use url::Url;
 #[command(name = "spider_md")]
 #[command(about = "Web crawler that converts HTML to Markdown with strict URL scoping")]
 struct Args {
-    /// Base URL to start crawling from
+    /// Base URL for scoping (only pages within this path prefix are included)
     #[arg(long)]
     base_url: String,
+
+    /// URL to start crawling from (defaults to base_url if not provided)
+    #[arg(long)]
+    start_url: Option<String>,
 
     /// Maximum number of pages to crawl
     #[arg(long, default_value = "100")]
@@ -118,7 +122,7 @@ fn compute_hash(content: &str) -> String {
 async fn main() {
     let args = Args::parse();
 
-    // Parse and validate base URL
+    // Parse and validate base URL (used for scoping)
     let base_url = match Url::parse(&args.base_url) {
         Ok(u) => u,
         Err(e) => {
@@ -127,9 +131,30 @@ async fn main() {
         }
     };
 
+    // Determine start URL (defaults to base_url if not provided)
+    let start_url_str = args.start_url.as_deref().unwrap_or(&args.base_url);
+
+    // Validate start URL
+    let start_url = match Url::parse(start_url_str) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("Invalid start URL: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // Ensure HTTPS or HTTP
     if base_url.scheme() != "https" && base_url.scheme() != "http" {
         eprintln!("URL must use http or https scheme");
+        std::process::exit(1);
+    }
+
+    // Start URL must be within base URL scope
+    if !is_url_in_scope(start_url.as_str(), &base_url) {
+        eprintln!(
+            "Start URL {} is not within base URL scope {}",
+            start_url, base_url
+        );
         std::process::exit(1);
     }
 
@@ -149,8 +174,8 @@ async fn main() {
     // Caching is enabled by default, use --no-cache to disable
     config.with_caching(!args.no_cache);
 
-    // Create website crawler
-    let mut website = Website::new(&args.base_url);
+    // Create website crawler starting from start_url
+    let mut website = Website::new(start_url.as_str());
     website.with_config(config);
 
     // Scrape the website (async) - scrape() collects page content, crawl() only collects links
