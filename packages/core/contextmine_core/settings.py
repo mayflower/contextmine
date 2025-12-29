@@ -46,6 +46,12 @@ class Settings(BaseSettings):
         description="Comma-separated list of allowed origins for MCP requests. Empty = allow all (dev mode).",
     )
 
+    # MCP OAuth (uses same GitHub OAuth app, different callback path)
+    mcp_oauth_base_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL for MCP OAuth callbacks. Must match where the server is accessible.",
+    )
+
     # Embedding providers
     openai_api_key: str | None = Field(
         default=None,

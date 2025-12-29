@@ -61,22 +61,47 @@ async def callback(
     state: str | None = None,
     error: str | None = None,
 ) -> RedirectResponse:
-    """Handle GitHub OAuth callback."""
-    frontend_url = "http://localhost:5173"  # Frontend URL for redirect
+    """Handle GitHub OAuth callback.
+
+    This is the unified callback endpoint for both:
+    1. Frontend (web UI) OAuth - session-based authentication
+    2. MCP client OAuth - token-based authentication via FastMCP
+
+    The flows are distinguished by the state parameter:
+    - If state matches session's oauth_state → frontend flow
+    - Otherwise → forward to FastMCP's /mcp/auth/callback
+    """
+    frontend_url = "/"  # Redirect to root (frontend served from same origin)
 
     # Check for OAuth errors
     if error:
+        # Check if this might be an MCP flow error
+        session = get_session(request)
+        if not session.get("oauth_state"):
+            # No session state means this is likely an MCP flow
+            # Forward to MCP handler to handle the error
+            return RedirectResponse(
+                url=f"/mcp/auth/callback?error={error}&state={state or ''}",
+                status_code=302,
+            )
         return RedirectResponse(url=f"{frontend_url}?error={error}", status_code=302)
 
     if not code or not state:
         return RedirectResponse(url=f"{frontend_url}?error=missing_params", status_code=302)
 
-    # Verify state matches
+    # Check if this is an MCP OAuth flow by comparing state with session
     session = get_session(request)
     stored_state = session.get("oauth_state")
-    if not stored_state or stored_state != state:
-        return RedirectResponse(url=f"{frontend_url}?error=invalid_state", status_code=302)
 
+    # If state doesn't match session, this is an MCP OAuth flow
+    # Forward to FastMCP's callback handler
+    if not stored_state or stored_state != state:
+        return RedirectResponse(
+            url=f"/mcp/auth/callback?code={code}&state={state}",
+            status_code=302,
+        )
+
+    # Frontend OAuth flow - state verified above, continue with token exchange
     try:
         # Exchange code for access token
         access_token = await exchange_code_for_token(code)

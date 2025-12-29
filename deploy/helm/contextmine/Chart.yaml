@@ -1,0 +1,17 @@
+apiVersion: v2
+name: contextmine
+description: ContextMine - Documentation/code indexing system with MCP (Model Context Protocol) support
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - documentation
+  - indexing
+  - mcp
+  - model-context-protocol
+  - rag
+home: https://github.com/your-org/contextmine
+sources:
+  - https://github.com/your-org/contextmine
+maintainers:
+  - name: ContextMine Team

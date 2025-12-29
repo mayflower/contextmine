@@ -1,0 +1,99 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "contextmine.fullname" . }}-postgres
+  labels:
+    {{- include "contextmine.postgres.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "contextmine.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "contextmine.postgres.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "contextmine.postgres.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: {{ include "contextmine.fullname" . }}-postgres-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresql.auth.username }}
+                - -d
+                - {{ .Values.postgresql.auth.database }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresql.auth.username }}
+                - -d
+                - {{ .Values.postgresql.auth.database }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: {{ include "contextmine.fullname" . }}-postgres-init
+  {{- if .Values.postgresql.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgresql.persistence.storageClass }}
+        storageClassName: {{ .Values.postgresql.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+  {{- else }}
+      volumes:
+        - name: data
+          emptyDir: {}
+  {{- end }}
+---
+# Init script ConfigMap to create the Prefect database
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "contextmine.fullname" . }}-postgres-init
+  labels:
+    {{- include "contextmine.postgres.labels" . | nindent 4 }}
+data:
+  init-db.sh: |
+    #!/bin/sh
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        CREATE DATABASE {{ .Values.postgresql.auth.prefectDatabase }};
+        GRANT ALL PRIVILEGES ON DATABASE {{ .Values.postgresql.auth.prefectDatabase }} TO {{ .Values.postgresql.auth.username }};
+    EOSQL
+{{- end }}

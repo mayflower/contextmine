@@ -2,8 +2,6 @@
 
 import json
 import uuid
-from contextvars import ContextVar
-from datetime import UTC, datetime
 from typing import Annotated
 
 from contextmine_core import (
@@ -11,27 +9,25 @@ from contextmine_core import (
     CollectionMember,
     CollectionVisibility,
     Document,
-    MCPApiToken,
     Source,
     Symbol,
     get_settings,
-    verify_api_token,
 )
 from contextmine_core import get_session as get_db_session
 from contextmine_core.context import assemble_context
 from contextmine_core.embeddings import FakeEmbedder, get_embedder, parse_embedding_model_spec
 from contextmine_core.search import hybrid_search
 from fastmcp import FastMCP
-from sqlalchemy import func, or_, select, update
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.routing import Mount
+from sqlalchemy import func, or_, select
 
-# Create FastMCP server
+from app.mcp_auth import ContextMineGitHubProvider, get_current_user_id
+
+# Create auth provider (uses GitHub OAuth)
+auth = ContextMineGitHubProvider()
+
+# Create FastMCP server with auth
 mcp = FastMCP(
+    auth=auth,
     name="contextmine",
     instructions="""ContextMine - documentation and code retrieval.
 
@@ -61,83 +57,6 @@ For complex investigations: deep_research(question="how does X work?")
 - list_documents - browse docs in a collection
 """,
 )
-
-# Store user_id for the current request using contextvars (async-safe)
-_current_user_id: ContextVar[uuid.UUID | None] = ContextVar("current_user_id", default=None)
-
-
-def set_current_user_id(user_id: uuid.UUID | None) -> None:
-    """Set the current user ID for authorization."""
-    _current_user_id.set(user_id)
-
-
-def get_current_user_id() -> uuid.UUID | None:
-    """Get the current user ID."""
-    return _current_user_id.get()
-
-
-class MCPAuthMiddleware(BaseHTTPMiddleware):
-    """Middleware to authenticate MCP requests with Bearer tokens and validate Origin."""
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        """Validate Bearer token and Origin header."""
-        settings = get_settings()
-
-        # Check Origin allowlist
-        origin = request.headers.get("origin")
-        allowed_origins = [o.strip() for o in settings.mcp_allowed_origins.split(",") if o.strip()]
-
-        if allowed_origins and origin and origin not in allowed_origins:
-            return JSONResponse(
-                {"error": "Origin not allowed"},
-                status_code=403,
-            )
-
-        # Check Bearer token
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return JSONResponse(
-                {"error": "Missing or invalid Authorization header"},
-                status_code=401,
-            )
-
-        token = auth_header[7:]  # Remove "Bearer " prefix
-
-        # Verify token against database
-        user_id = await self._verify_token(token)
-        if not user_id:
-            return JSONResponse(
-                {"error": "Invalid or revoked token"},
-                status_code=401,
-            )
-
-        # Store user_id for tool handlers
-        set_current_user_id(user_id)
-
-        try:
-            return await call_next(request)
-        finally:
-            # Clear user_id after request
-            set_current_user_id(None)
-
-    async def _verify_token(self, token: str) -> uuid.UUID | None:
-        """Verify token against database and return user_id if valid."""
-        async with get_db_session() as db:
-            # Get all non-revoked tokens
-            result = await db.execute(select(MCPApiToken).where(MCPApiToken.revoked_at.is_(None)))
-            tokens = result.scalars().all()
-
-            for db_token in tokens:
-                if verify_api_token(token, db_token.token_hash):
-                    # Update last_used_at
-                    await db.execute(
-                        update(MCPApiToken)
-                        .where(MCPApiToken.id == db_token.id)
-                        .values(last_used_at=datetime.now(UTC))
-                    )
-                    return db_token.user_id
-
-        return None
 
 
 @mcp.tool(name="list_collections")
@@ -968,22 +887,11 @@ async def get_research_report(run_id: str) -> str:
 
 
 # Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)
-# Use stateless_http=True for simpler API testing without session management
-_mcp_http_app = mcp.http_app(path="/", stateless_http=True)
+# FastMCP handles OAuth authentication via GitHubProvider
+mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 # Export the MCP lifespan for integration with FastAPI
-mcp_lifespan = _mcp_http_app.lifespan
-
-
-# Create Starlette app with auth middleware wrapping the MCP HTTP app
-mcp_app = Starlette(
-    routes=[
-        Mount("/", app=_mcp_http_app),
-    ],
-    middleware=[
-        Middleware(MCPAuthMiddleware),
-    ],
-)
+mcp_lifespan = mcp_app.lifespan
 
 
 # Export tool list for tests

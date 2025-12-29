@@ -100,15 +100,20 @@ class TestAuthRoutes:
         location = response.headers["location"]
         assert "error=missing_params" in location
 
-    async def test_callback_validates_state(self, client: AsyncClient) -> None:
-        """Test that callback with mismatched state redirects with error."""
+    async def test_callback_forwards_mcp_flows(self, client: AsyncClient) -> None:
+        """Test that callback with mismatched state forwards to MCP OAuth handler.
+
+        When state doesn't match the session, we assume it's an MCP OAuth flow
+        and forward to /mcp/auth/callback for FastMCP to handle.
+        """
         response = await client.get(
-            "/api/auth/callback?code=test_code&state=invalid_state",
+            "/api/auth/callback?code=test_code&state=mcp_state",
             follow_redirects=False,
         )
         assert response.status_code == 302
         location = response.headers["location"]
-        assert "error=invalid_state" in location
+        # Should forward to MCP OAuth handler, not return error
+        assert location == "/mcp/auth/callback?code=test_code&state=mcp_state"
 
     async def test_callback_error_parameter(self, client: AsyncClient) -> None:
         """Test that callback with error parameter redirects with error."""

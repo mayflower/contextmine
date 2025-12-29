@@ -1,0 +1,103 @@
+# Production values for ContextMine Helm chart
+# Use with: helm install contextmine ./deploy/helm/contextmine -f ./deploy/helm/contextmine/values-production.yaml
+
+# -- PostgreSQL configuration for production
+postgresql:
+  # Set to false to use external database (RDS, Cloud SQL, etc.)
+  enabled: true
+  auth:
+    # IMPORTANT: Change these credentials in production!
+    username: contextmine
+    password: "CHANGE_ME_IN_PRODUCTION"
+    database: contextmine
+    prefectDatabase: prefect
+  persistence:
+    enabled: true
+    size: 50Gi
+    # Specify your storage class
+    # storageClass: "gp3"
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+# -- API configuration for production
+api:
+  replicaCount: 2
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+
+# -- Prefect configuration for production
+prefect:
+  replicaCount: 1
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+# -- Worker configuration for production
+worker:
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 100Gi
+    # storageClass: "gp3"
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+# -- Ingress configuration for production
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: contextmine.your-domain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: contextmine-tls
+      hosts:
+        - contextmine.your-domain.com
+
+# -- Application configuration for production
+config:
+  debug: "false"
+  # IMPORTANT: Update these URLs for your domain
+  publicBaseUrl: "https://contextmine.your-domain.com"
+  mcpOauthBaseUrl: "https://contextmine.your-domain.com"
+  # Restrict MCP allowed origins in production
+  mcpAllowedOrigins: "https://claude.ai"
+
+# -- Secrets for production
+# IMPORTANT: Override these with actual secrets!
+# Best practice: Use external secrets management (Vault, AWS Secrets Manager, etc.)
+secrets:
+  github:
+    clientId: "your-github-client-id"
+    clientSecret: "your-github-client-secret"
+  # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+  sessionSecret: "GENERATE_SECURE_RANDOM_VALUE"
+  tokenEncryptionKey: "GENERATE_SECURE_RANDOM_VALUE"
+  # LLM provider API keys
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  geminiApiKey: ""

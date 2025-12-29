@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "contextmine.fullname" . }}-config
+  labels:
+    {{- include "contextmine.labels" . | nindent 4 }}
+data:
+  # API settings
+  DEBUG: {{ .Values.config.debug | quote }}
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+
+  # Public URLs
+  PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
+  MCP_OAUTH_BASE_URL: {{ .Values.config.mcpOauthBaseUrl | quote }}
+  MCP_ALLOWED_ORIGINS: {{ .Values.config.mcpAllowedOrigins | quote }}
+
+  # Prefect settings (for worker)
+  PREFECT_API_URL: {{ include "contextmine.prefectApiUrl" . | quote }}
+
+  # Research agent settings
+  ARTIFACT_STORE: {{ .Values.config.research.artifactStore | quote }}
+  ARTIFACT_DIR: {{ .Values.config.research.artifactDir | quote }}
+  ARTIFACT_TTL_MINUTES: {{ .Values.config.research.artifactTtlMinutes | quote }}
+  ARTIFACT_MAX_RUNS: {{ .Values.config.research.artifactMaxRuns | quote }}
+  RESEARCH_MODEL: {{ .Values.config.research.model | quote }}
+  RESEARCH_MAX_TOKENS: {{ .Values.config.research.maxTokens | quote }}
+  RESEARCH_BUDGET_STEPS: {{ .Values.config.research.budgetSteps | quote }}

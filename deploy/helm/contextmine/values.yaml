@@ -1,0 +1,182 @@
+# Default values for ContextMine Helm chart
+# This is a YAML-formatted file.
+
+# -- Global settings
+global:
+  # -- Image pull policy for all containers
+  imagePullPolicy: IfNotPresent
+  # -- Image pull secrets (if using private registry)
+  imagePullSecrets: []
+
+# -- PostgreSQL configuration
+postgresql:
+  # -- Enable built-in PostgreSQL (set to false for external DB)
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+  # -- External PostgreSQL configuration (used when enabled: false)
+  external:
+    host: ""
+    port: 5432
+  # -- PostgreSQL credentials
+  auth:
+    username: contextmine
+    password: contextmine
+    database: contextmine
+    # -- Prefect uses a separate database
+    prefectDatabase: prefect
+  # -- Persistence configuration
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+  # -- Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# -- API service configuration
+api:
+  image:
+    repository: ghcr.io/your-org/contextmine-api
+    tag: latest
+  # -- Number of replicas
+  replicaCount: 1
+  # -- Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  # -- Service configuration
+  service:
+    type: ClusterIP
+    port: 8000
+  # -- Pod annotations
+  podAnnotations: {}
+  # -- Node selector
+  nodeSelector: {}
+  # -- Tolerations
+  tolerations: []
+  # -- Affinity rules
+  affinity: {}
+
+# -- Prefect server configuration
+prefect:
+  image:
+    repository: prefecthq/prefect
+    tag: 3-python3.12
+  # -- Number of replicas (should be 1 for Prefect server)
+  replicaCount: 1
+  # -- Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  # -- Service configuration
+  service:
+    type: ClusterIP
+    port: 4200
+  # -- Pod annotations
+  podAnnotations: {}
+  # -- Node selector
+  nodeSelector: {}
+  # -- Tolerations
+  tolerations: []
+  # -- Affinity rules
+  affinity: {}
+
+# -- Worker configuration
+worker:
+  image:
+    repository: ghcr.io/your-org/contextmine-worker
+    tag: latest
+  # -- Number of replicas
+  replicaCount: 1
+  # -- Resource limits
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+  # -- Persistence for cloned repos and crawl cache
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  # -- Pod annotations
+  podAnnotations: {}
+  # -- Node selector
+  nodeSelector: {}
+  # -- Tolerations
+  tolerations: []
+  # -- Affinity rules
+  affinity: {}
+
+# -- Ingress configuration
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  # -- Ingress hosts
+  hosts:
+    - host: contextmine.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls: []
+  #  - secretName: contextmine-tls
+  #    hosts:
+  #      - contextmine.local
+
+# -- Application configuration
+config:
+  # -- Debug mode (disable in production)
+  debug: "true"
+  # -- Public base URL for OAuth callbacks
+  publicBaseUrl: "http://localhost:8000"
+  # -- MCP OAuth base URL
+  mcpOauthBaseUrl: "http://localhost:8000"
+  # -- MCP allowed origins (comma-separated, empty = allow all)
+  mcpAllowedOrigins: ""
+  # -- Research agent settings
+  research:
+    artifactStore: "memory"
+    artifactDir: ".mcp_artifacts"
+    artifactTtlMinutes: "60"
+    artifactMaxRuns: "100"
+    model: "claude-sonnet-4-5-20250929"
+    maxTokens: "4096"
+    budgetSteps: "10"
+
+# -- Secrets (set these in your values override or use external secrets)
+secrets:
+  # -- GitHub OAuth credentials
+  github:
+    clientId: ""
+    clientSecret: ""
+  # -- Security keys (MUST change in production)
+  sessionSecret: "dev-session-secret-change-in-production"
+  tokenEncryptionKey: "dev-encryption-key-change-in-production"
+  # -- LLM provider API keys (optional, at least one recommended)
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  geminiApiKey: ""

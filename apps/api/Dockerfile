@@ -1,3 +1,16 @@
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+# Copy frontend source
+COPY apps/web/package*.json ./
+RUN npm ci
+
+COPY apps/web/ ./
+RUN npm run build
+
+# Stage 2: Python API with frontend
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -27,6 +40,9 @@ COPY apps/worker/pyproject.toml apps/worker/
 
 # Sync dependencies (includes multilspy + jedi-language-server for LSP support)
 RUN uv sync --frozen --no-dev
+
+# Copy built frontend from stage 1
+COPY --from=frontend-builder /app/dist /app/static
 
 # Copy and make entrypoint executable
 COPY apps/api/entrypoint.sh /entrypoint.sh

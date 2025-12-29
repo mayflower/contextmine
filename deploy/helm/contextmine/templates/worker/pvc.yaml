@@ -1,0 +1,17 @@
+{{- if .Values.worker.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "contextmine.fullname" . }}-worker-data
+  labels:
+    {{- include "contextmine.worker.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.worker.persistence.storageClass }}
+  storageClassName: {{ .Values.worker.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.worker.persistence.size }}
+{{- end }}

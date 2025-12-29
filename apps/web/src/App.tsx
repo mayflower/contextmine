@@ -720,7 +720,7 @@ function App() {
     setEditingSource(source)
     setEditSourceEnabled(source.enabled)
     setEditSourceInterval(source.schedule_interval_minutes)
-    setEditSourceMaxPages(source.config?.max_pages || 100)
+    setEditSourceMaxPages(Number(source.config?.max_pages) || 100)
     setEditSourceError(null)
   }
 

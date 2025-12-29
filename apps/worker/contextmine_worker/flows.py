@@ -1,4 +1,11 @@
-"""Prefect flows for syncing sources."""
+"""Prefect flows for syncing sources.
+
+Features:
+- Native Prefect scheduling (no custom scheduler)
+- Automatic retries with exponential backoff
+- Concurrency limits via tags (github-api, embedding-api, web-crawl)
+- Task result caching for idempotent operations
+"""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +27,8 @@ from contextmine_core import (
 )
 from prefect import flow, task
 from prefect.artifacts import create_progress_artifact, update_progress_artifact
+from prefect.cache_policies import INPUTS
+from prefect.tasks import exponential_backoff
 from sqlalchemy import delete, select, text
 
 from contextmine_worker.chunking import chunk_document
@@ -45,7 +54,24 @@ from contextmine_worker.web_sync import (
     run_spider_md,
 )
 
+# Retry configuration
+DEFAULT_RETRIES = 2
+GITHUB_API_RETRIES = 3
+EMBEDDING_API_RETRIES = 2
 
+# Concurrency limit tags (set limits via: prefect concurrency-limit create <tag> <limit>)
+# Example: prefect concurrency-limit create github-api 5
+TAG_GITHUB_API = "github-api"
+TAG_EMBEDDING_API = "embedding-api"
+TAG_WEB_CRAWL = "web-crawl"
+TAG_DB_HEAVY = "db-heavy"
+
+
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=1,
+    tags=[TAG_DB_HEAVY],
+)
 async def maintain_chunks_for_document(
     document_id: str,
     content: str,
@@ -113,6 +139,13 @@ async def maintain_chunks_for_document(
     return stats
 
 
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=1,
+    cache_policy=INPUTS,
+    cache_expiration=timedelta(hours=24),
+    tags=[TAG_DB_HEAVY],
+)
 async def get_or_create_embedding_model(
     provider: EmbeddingProvider,
     model_name: str,
@@ -121,6 +154,8 @@ async def get_or_create_embedding_model(
     """Get or create an EmbeddingModel record.
 
     Returns the EmbeddingModel for the given provider/model, creating it if needed.
+
+    Cached for 24 hours since embedding models rarely change.
     """
     async with get_session() as session:
         # Try to find existing model
@@ -147,6 +182,12 @@ async def get_or_create_embedding_model(
         return new_model
 
 
+@task(
+    retries=EMBEDDING_API_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=2),
+    retry_jitter_factor=0.5,
+    tags=[TAG_EMBEDDING_API],
+)
 async def embed_chunks_for_document(
     document_id: str,
     embedding_model: EmbeddingModel,
@@ -156,6 +197,9 @@ async def embed_chunks_for_document(
 
     Uses deduplication: if another chunk with the same hash already has an
     embedding for this model, copies that embedding instead of calling the API.
+
+    Tagged with embedding-api for concurrency limiting to prevent rate limits.
+    Retries on transient API failures.
 
     Args:
         document_id: The document UUID
@@ -343,7 +387,11 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
     return await embed_chunks_for_document(document_id, embedding_model)
 
 
-@task
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=2),
+    tags=[TAG_DB_HEAVY],
+)
 async def get_due_sources() -> list[Source]:
     """Get all sources that are due for syncing."""
     async with get_session() as session:
@@ -401,12 +449,23 @@ async def get_deploy_key_for_source(source_id: str) -> str | None:
         return decrypt_token(encrypted_key)
 
 
+@task(
+    retries=GITHUB_API_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=2),
+    retry_jitter_factor=0.5,
+    tags=[TAG_GITHUB_API],
+    task_run_name="sync-github-{source.url}",
+)
 async def sync_github_source(
     source: Source,
     sync_run: SyncRun,
     run_started_at: datetime,
 ) -> SyncStats:
-    """Sync a GitHub source, creating/updating/deleting documents."""
+    """Sync a GitHub source, creating/updating/deleting documents.
+
+    Tagged with github-api for concurrency limiting.
+    Retries on transient GitHub API failures.
+    """
     stats = SyncStats()
 
     # Get config
@@ -664,12 +723,23 @@ async def sync_github_source(
     return stats
 
 
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=3),
+    retry_jitter_factor=0.5,
+    tags=[TAG_WEB_CRAWL],
+    task_run_name="sync-web-{source.url}",
+)
 async def sync_web_source(
     source: Source,
     sync_run: SyncRun,
     run_started_at: datetime,
 ) -> WebSyncStats:
-    """Sync a web source, creating/updating/deleting documents."""
+    """Sync a web source, creating/updating/deleting documents.
+
+    Tagged with web-crawl for concurrency limiting.
+    Retries on transient network failures.
+    """
     stats = WebSyncStats()
 
     # Get config with sensible defaults
@@ -875,12 +945,19 @@ async def sync_web_source(
     return stats
 
 
-@task
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=2),
+    retry_jitter_factor=0.5,
+    tags=[TAG_DB_HEAVY],
+)
 async def sync_source(source: Source) -> SyncRun | None:
     """Sync a single source.
 
     Creates a sync run record and executes the appropriate sync logic.
     Uses advisory lock to prevent concurrent syncs for the same source.
+
+    Retries automatically on transient failures (network issues, DB timeouts).
     """
     run_started_at = datetime.now(UTC)
 

@@ -17,7 +17,11 @@ ContextMine indexes your documentation and code repositories, making them search
 
 ## Quick Start
 
-### 1. Start the Services
+Choose your deployment method:
+- [Docker Compose](#docker-compose) (recommended for local development)
+- [Kubernetes (Helm)](#kubernetes-helm) (recommended for production)
+
+### Docker Compose
 
 ```bash
 # Clone the repository
@@ -35,9 +39,48 @@ docker compose up -d
 docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
 ```
 
+### Kubernetes (Helm)
+
+For production deployments, use the Helm chart:
+
+```bash
+# Clone the repository
+git clone https://github.com/mayflower/contextmine.git
+cd contextmine
+
+# Create a values file with your configuration
+cat > my-values.yaml << EOF
+api:
+  image:
+    repository: ghcr.io/mayflower/contextmine-api
+    tag: latest
+worker:
+  image:
+    repository: ghcr.io/mayflower/contextmine-worker
+    tag: latest
+config:
+  publicBaseUrl: "http://localhost:8000"
+secrets:
+  github:
+    clientId: "your-github-client-id"
+    clientSecret: "your-github-client-secret"
+  sessionSecret: "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  tokenEncryptionKey: "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  openaiApiKey: "sk-..."
+EOF
+
+# Install the chart
+helm install contextmine ./deploy/helm/contextmine -f my-values.yaml
+
+# Access the application
+kubectl port-forward svc/contextmine-api 8000:8000
+```
+
+See [deploy/helm/contextmine/README.md](deploy/helm/contextmine/README.md) for full configuration options.
+
 ### 2. Create Your First Collection
 
-1. Open the admin UI at **http://localhost:5173**
+1. Open the admin UI at **http://localhost:8000**
 2. Log in with GitHub OAuth
 3. Create a new **Collection** (e.g., "My Docs")
 4. Add a **Source**:
@@ -47,7 +90,7 @@ docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
 
 ### 3. Connect Your AI Assistant
 
-Create an MCP token in the admin UI under **MCP Tokens**, then configure your client:
+Configure your MCP client to connect to ContextMine. Authentication is handled via GitHub OAuth automatically.
 
 **Claude Desktop** (`~/.config/claude/claude_desktop_config.json` on Linux, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
@@ -55,14 +98,13 @@ Create an MCP token in the admin UI under **MCP Tokens**, then configure your cl
 {
   "mcpServers": {
     "contextmine": {
-      "url": "http://localhost:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_TOKEN_HERE"
-      }
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
+
+When you first connect, your MCP client will redirect to GitHub for authentication.
 
 **Cursor**: Settings → MCP → Add server with URL `http://localhost:8000/mcp`
 
@@ -137,9 +179,11 @@ Copy `.env.example` to `.env` and configure these variables:
 2. Click **New OAuth App**
 3. Fill in:
    - **Application name**: ContextMine (or your preferred name)
-   - **Homepage URL**: `http://localhost:5173`
+   - **Homepage URL**: `http://localhost:8000`
    - **Authorization callback URL**: `http://localhost:8000/api/auth/callback`
 4. Copy the **Client ID** and **Client Secret** to your `.env`
+
+> **Note**: Both the admin UI and MCP clients use the same callback URL. The server automatically routes OAuth flows to the appropriate handler.
 
 ### Generating Secure Keys
 
@@ -179,21 +223,21 @@ Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Web UI    │────▶│   FastAPI   │────▶│  PostgreSQL │
-│  (React)    │     │   + MCP     │     │  + pgvector │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    ▼             ▼
-              ┌─────────┐   ┌─────────┐
-              │ Prefect │   │ spider  │
-              │ Worker  │   │   _md   │
-              └─────────┘   └─────────┘
+┌───────────────────────────────┐     ┌─────────────┐
+│     FastAPI + React SPA       │────▶│  PostgreSQL │
+│  /api/* /mcp/* /* (frontend)  │     │  + pgvector │
+└───────────────────────────────┘     └─────────────┘
+               │
+        ┌──────┴──────┐
+        ▼             ▼
+  ┌─────────┐   ┌─────────┐
+  │ Prefect │   │ spider  │
+  │ Worker  │   │   _md   │
+  └─────────┘   └─────────┘
 ```
 
-- **API** (`apps/api`): FastAPI backend with MCP server at `/mcp`
-- **Web** (`apps/web`): React admin console for managing collections and sources
+- **API** (`apps/api`): FastAPI serving REST API at `/api/*`, MCP at `/mcp/*`, and React frontend at `/*`
+- **Web** (`apps/web`): React admin console (built and served by API)
 - **Worker** (`apps/worker`): Background sync jobs using Prefect
 - **Core** (`packages/core`): Shared models, database, and utilities
 
@@ -221,11 +265,21 @@ DATABASE_URL=postgresql+asyncpg://contextmine:contextmine@localhost:5432/context
   uv run alembic upgrade head
 cd ../..
 
-# Start API server
-cd apps/api && uv run uvicorn app.main:app --reload --port 8000
+# Build frontend (one-time, or after frontend changes)
+cd apps/web && npm install && npm run build && cd ../..
 
-# Start frontend (separate terminal)
-cd apps/web && npm install && npm run dev
+# Start API server (serves both API and frontend)
+STATIC_DIR=apps/web/dist uv run uvicorn apps.api.app.main:app --reload --port 8000
+```
+
+For frontend development with hot reload, run the Vite dev server separately:
+
+```bash
+# Terminal 1: API server
+uv run uvicorn apps.api.app.main:app --reload --port 8000
+
+# Terminal 2: Frontend dev server (proxies API requests to :8000)
+cd apps/web && npm run dev
 ```
 
 ### Running Tests

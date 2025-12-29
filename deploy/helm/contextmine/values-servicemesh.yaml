@@ -1,0 +1,43 @@
+# Values for servicemesh.cloud deployment
+
+api:
+  image:
+    repository: ghcr.io/mayflower/contextmine-api
+    tag: latest
+
+worker:
+  image:
+    repository: ghcr.io/mayflower/contextmine-worker
+    tag: latest
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: contextmine.servicemesh.cloud
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: contextmine-tls
+      hosts:
+        - contextmine.servicemesh.cloud
+
+config:
+  debug: "false"
+  publicBaseUrl: "https://contextmine.servicemesh.cloud"
+  mcpOauthBaseUrl: "https://contextmine.servicemesh.cloud"
+  mcpAllowedOrigins: "https://claude.ai"
+
+# Secrets - these need to be set via --set or environment
+secrets:
+  github:
+    clientId: ""
+    clientSecret: ""
+  sessionSecret: ""
+  tokenEncryptionKey: ""
+  openaiApiKey: ""
+  anthropicApiKey: ""

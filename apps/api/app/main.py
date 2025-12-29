@@ -1,11 +1,15 @@
 """FastAPI application with MCP server mounted."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from contextmine_core import close_engine
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.mcp_server import mcp_app, mcp_lifespan
 from app.middleware import SessionMiddleware
@@ -16,12 +20,14 @@ from app.routes import (
     db,
     documents,
     health,
-    mcp_tokens,
     prefect,
     runs,
     search,
     sources,
 )
+
+# Static files directory (built frontend)
+STATIC_DIR = Path(os.getenv("STATIC_DIR", "/app/static"))
 
 
 @asynccontextmanager
@@ -47,10 +53,10 @@ def create_app() -> FastAPI:
     # Session middleware (must be added before CORS)
     app.add_middleware(SessionMiddleware)
 
-    # CORS middleware - permissive for dev
+    # CORS middleware - allow same-origin requests
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:8000"],
+        allow_origins=["http://localhost:8000"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -60,7 +66,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(db.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
-    app.include_router(mcp_tokens.router, prefix="/api")
     app.include_router(collections.router, prefix="/api")
     app.include_router(sources.router, prefix="/api")
     app.include_router(runs.router, prefix="/api")
@@ -71,6 +76,27 @@ def create_app() -> FastAPI:
 
     # Mount MCP server at /mcp
     app.mount("/mcp", mcp_app)
+
+    # Serve static frontend files if directory exists
+    if STATIC_DIR.exists() and STATIC_DIR.is_dir():
+        # Mount static assets (js, css, images)
+        app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+        # SPA catch-all: serve index.html for all non-API routes
+        @app.get("/{path:path}")
+        async def serve_spa(path: str) -> FileResponse:
+            """Serve the SPA frontend for all non-API routes."""
+            # Try to serve the exact file if it exists
+            file_path = STATIC_DIR / path
+            if file_path.exists() and file_path.is_file():
+                return FileResponse(file_path)
+            # Otherwise serve index.html for SPA routing
+            return FileResponse(STATIC_DIR / "index.html")
+
+        @app.get("/")
+        async def serve_index() -> FileResponse:
+            """Serve index.html at root."""
+            return FileResponse(STATIC_DIR / "index.html")
 
     return app
 
