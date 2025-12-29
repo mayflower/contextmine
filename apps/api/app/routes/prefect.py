@@ -13,12 +13,17 @@ async def get_flow_runs() -> dict:
 
     Only shows RUNNING/PENDING runs as "active" (not SCHEDULED, which are
     just pre-created by Prefect's scheduler).
+
+    Filters out sync_due_sources scheduler runs (empty polling runs).
     """
     settings = get_settings()
     prefect_url = settings.prefect_api_url
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
+            # First, get flow IDs to filter (we want to exclude sync_due_sources)
+            flow_id_to_name = await _get_flow_names(client, prefect_url)
+
             # Get recently started/completed runs (not scheduled)
             response = await client.post(
                 f"{prefect_url}/flow_runs/filter",
@@ -48,11 +53,19 @@ async def get_flow_runs() -> dict:
             recent_runs = []
 
             for run in all_runs:
+                flow_id = run.get("flow_id")
+                flow_name = flow_id_to_name.get(flow_id, "")
+
+                # Skip sync_due_sources scheduler runs (polling runs with no actual work)
+                if flow_name == "sync_due_sources":
+                    continue
+
                 state_type = run.get("state_type", "")
                 run_data = {
                     "id": run.get("id"),
                     "name": run.get("name"),
-                    "flow_id": run.get("flow_id"),
+                    "flow_id": flow_id,
+                    "flow_name": flow_name,
                     "state_type": state_type,
                     "state_name": run.get("state_name"),
                     "start_time": run.get("start_time"),
@@ -80,6 +93,20 @@ async def get_flow_runs() -> dict:
             return {"error": f"Failed to connect to Prefect: {e}", "active": [], "recent": []}
         except Exception as e:
             return {"error": str(e), "active": [], "recent": []}
+
+
+async def _get_flow_names(client: httpx.AsyncClient, prefect_url: str) -> dict[str, str]:
+    """Get mapping of flow_id to flow_name."""
+    try:
+        response = await client.post(
+            f"{prefect_url}/flows/filter",
+            json={"limit": 100},
+        )
+        response.raise_for_status()
+        flows = response.json()
+        return {flow["id"]: flow["name"] for flow in flows}
+    except Exception:
+        return {}
 
 
 async def _get_flow_run_progress(
