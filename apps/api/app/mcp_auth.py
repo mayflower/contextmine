@@ -126,7 +126,11 @@ class ContextMineGitHubProvider(GitHubProvider):
     """
 
     def __init__(self) -> None:
-        """Initialize with settings from environment."""
+        """Initialize with settings from environment.
+
+        Raises:
+            ValueError: If GitHub OAuth credentials are not configured.
+        """
         settings = get_settings()
 
         if not settings.github_client_id or not settings.github_client_secret:

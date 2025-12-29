@@ -22,10 +22,14 @@ from sqlalchemy import func, or_, select
 
 from app.mcp_auth import ContextMineGitHubProvider, get_current_user_id
 
-# Create auth provider (uses GitHub OAuth)
-auth = ContextMineGitHubProvider()
+# Create auth provider (uses GitHub OAuth) - optional for testing
+try:
+    auth = ContextMineGitHubProvider()
+except ValueError:
+    # GitHub OAuth not configured - run without auth (for testing)
+    auth = None
 
-# Create FastMCP server with auth
+# Create FastMCP server with auth (if configured)
 mcp = FastMCP(
     auth=auth,
     name="contextmine",
