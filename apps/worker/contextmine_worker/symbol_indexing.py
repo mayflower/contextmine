@@ -158,6 +158,24 @@ async def extract_symbols_for_document(
 
     flattened = flatten_symbols(symbols)
 
+    # Deduplicate by qualified_name (keep first occurrence)
+    # This handles cases like multiple functions with the same name in a file
+    seen_qualified: set[str] = set()
+    unique_symbols = []
+    for item in flattened:
+        qualified_name = item[0]
+        if qualified_name not in seen_qualified:
+            seen_qualified.add(qualified_name)
+            unique_symbols.append(item)
+        else:
+            # Make unique by appending line number
+            start_line = item[3]
+            unique_qualified = f"{qualified_name}@L{start_line}"
+            if unique_qualified not in seen_qualified:
+                seen_qualified.add(unique_qualified)
+                # Create new tuple with modified qualified_name
+                unique_symbols.append((unique_qualified, *item[1:]))
+
     # Create Symbol records
     created = 0
     for (
@@ -169,7 +187,7 @@ async def extract_symbols_for_document(
         signature,
         parent_name,
         meta,
-    ) in flattened:
+    ) in unique_symbols:
         symbol = Symbol(
             id=uuid.uuid4(),
             document_id=document.id,
