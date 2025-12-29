@@ -1,27 +1,32 @@
 # ContextMine
 
-Self-hosted documentation and code indexing with MCP integration. An open-source alternative to Context7.
+Self-hosted documentation and code indexing with MCP integration. Give your AI assistant accurate, up-to-date context from your own sources.
 
 ## What is ContextMine?
 
-ContextMine indexes your documentation and code repositories, making them searchable via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Connect it to Claude Desktop, Cursor, or any MCP-compatible AI assistant to give your AI accurate, up-to-date context from your own sources.
+ContextMine indexes your documentation and code repositories, making them searchable via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Connect it to Claude Desktop, Cursor, or any MCP-compatible AI assistant to provide rich context for code understanding, documentation lookup, and codebase exploration.
 
 **Key features:**
+
+- **Hybrid search** - Full-text + vector similarity with RRF ranking for accurate retrieval
+- **Code intelligence** - Symbol extraction, code outlines, and structural navigation
+- **Deep research** - Multi-step AI agent for complex codebase questions
 - **Web crawling** - Index documentation sites automatically
 - **Git indexing** - Index GitHub repositories with incremental updates
-- **Hybrid search** - Full-text search + vector similarity for accurate retrieval
-- **MCP integration** - Works with Claude Desktop, Cursor, and other MCP clients
 - **Self-hosted** - Your data stays on your infrastructure
 
-## Quick Start with Docker
+## Quick Start
+
+### 1. Start the Services
 
 ```bash
 # Clone the repository
 git clone https://github.com/mayflower/contextmine.git
 cd contextmine
 
-# Copy environment template
+# Copy environment template and configure
 cp .env.example .env
+# Edit .env with your API keys (see Configuration section)
 
 # Start all services
 docker compose up -d
@@ -30,20 +35,21 @@ docker compose up -d
 docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
 ```
 
-Access the admin UI at http://localhost:5173
+### 2. Create Your First Collection
 
-## Connecting to MCP Clients
-
-### 1. Create an MCP Token
-
-1. Open the admin UI at http://localhost:5173
+1. Open the admin UI at **http://localhost:5173**
 2. Log in with GitHub OAuth
-3. Navigate to **MCP Tokens** in the sidebar
-4. Create a new token and copy it
+3. Create a new **Collection** (e.g., "My Docs")
+4. Add a **Source**:
+   - **Web**: Enter a documentation URL (e.g., `https://docs.python.org/3/`)
+   - **GitHub**: Enter `owner/repo` (e.g., `fastapi/fastapi`)
+5. Click **Sync** to start indexing
 
-### 2. Configure Your MCP Client
+### 3. Connect Your AI Assistant
 
-**Claude Desktop** (`~/.config/claude/claude_desktop_config.json`):
+Create an MCP token in the admin UI under **MCP Tokens**, then configure your client:
+
+**Claude Desktop** (`~/.config/claude/claude_desktop_config.json` on Linux, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 ```json
 {
@@ -58,66 +64,84 @@ Access the admin UI at http://localhost:5173
 }
 ```
 
-**Cursor** (Settings → MCP):
+**Cursor**: Settings → MCP → Add server with URL `http://localhost:8000/mcp`
 
-Add a new server with URL `http://localhost:8000/mcp` and your Bearer token.
+### 4. Start Using It
 
-### 3. Use It
+In your AI assistant, you can now:
 
-In your AI assistant, say **"use contextmine"** to activate context retrieval, then ask questions about your indexed documentation.
+```
+Search the FastAPI docs for information about dependency injection
+```
+
+```
+What authentication methods does this codebase support?
+```
+
+```
+Show me the outline of src/auth/handlers.py
+```
 
 ## Available MCP Tools
 
+### Context Retrieval
+
 | Tool | Description |
 |------|-------------|
-| `context.list_collections` | Discover available documentation collections |
-| `context.list_documents` | Browse documents in a collection |
-| `context.get_markdown` | Search and retrieve context as Markdown |
+| `get_markdown` | **Primary search tool.** Searches indexed content and returns relevant context as Markdown. Supports filtering by collection. |
+| `list_collections` | List available documentation collections |
+| `list_documents` | Browse documents in a collection |
 
-## Adding Sources
+### Code Intelligence
 
-### Web Documentation
+| Tool | Description |
+|------|-------------|
+| `outline` | List all functions, classes, and methods in a file with line numbers |
+| `find_symbol` | Get the source code of a specific function or class by name |
+| `definition` | Jump to where a symbol is defined (requires LSP) |
+| `references` | Find all usages of a symbol for impact analysis (requires LSP) |
+| `expand` | Explore code relationships - what a function calls, what calls it, imports, etc. |
 
-1. Go to **Collections** → Create a new collection
-2. Go to **Sources** → Add a new source
-3. Select **Web** as the source type
-4. Enter the base URL (e.g., `https://docs.example.com/`)
-5. Click **Sync** to start crawling
+### Advanced Research
 
-### GitHub Repositories
-
-1. Create a collection if you haven't already
-2. Add a new source with type **GitHub**
-3. Enter the repository (e.g., `owner/repo`)
-4. Optionally specify a branch and path filter
-5. Click **Sync** to start indexing
+| Tool | Description |
+|------|-------------|
+| `deep_research` | Multi-step AI agent for complex questions. Autonomously searches, reads code, and builds answers with citations. |
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env` and configure these variables:
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | Yes |
-| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID | Yes |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret | Yes |
-| `SESSION_SECRET` | Secret for session cookies | Yes |
-| `TOKEN_ENCRYPTION_KEY` | Key for encrypting tokens | Yes |
-| `OPENAI_API_KEY` | OpenAI API key for embeddings | Yes* |
-| `GEMINI_API_KEY` | Alternative: Gemini API key | Yes* |
-| `MCP_ALLOWED_ORIGINS` | Allowed origins for MCP (production) | No |
+### Required
 
-*At least one embedding provider is required.
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string (default works with docker compose) |
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
+| `SESSION_SECRET` | Secret for session cookies |
+| `TOKEN_ENCRYPTION_KEY` | Key for encrypting stored tokens |
+| `OPENAI_API_KEY` | OpenAI API key for embeddings |
 
-### GitHub OAuth Setup
+### Optional
+
+| Variable | Description |
+|----------|-------------|
+| `GEMINI_API_KEY` | Alternative to OpenAI for embeddings |
+| `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
+| `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
+
+### Setting Up GitHub OAuth
 
 1. Go to https://github.com/settings/developers
-2. Create a new OAuth App:
+2. Click **New OAuth App**
+3. Fill in:
+   - **Application name**: ContextMine (or your preferred name)
    - **Homepage URL**: `http://localhost:5173`
-   - **Callback URL**: `http://localhost:8000/api/auth/callback`
-3. Copy the Client ID and Secret to your `.env`
+   - **Authorization callback URL**: `http://localhost:8000/api/auth/callback`
+4. Copy the **Client ID** and **Client Secret** to your `.env`
 
-### Generate Secure Keys
+### Generating Secure Keys
 
 ```bash
 # Generate session secret
@@ -126,6 +150,31 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 # Generate encryption key
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+## Adding Sources
+
+### Web Documentation
+
+Best for: API docs, guides, reference documentation
+
+1. Create a collection in the admin UI
+2. Add a source with type **Web**
+3. Enter the base URL (e.g., `https://docs.example.com/`)
+4. The crawler follows links within the same domain
+
+### GitHub Repositories
+
+Best for: Source code, README files, inline documentation
+
+1. Add a source with type **GitHub**
+2. Enter the repository as `owner/repo`
+3. Optionally specify:
+   - **Branch**: defaults to the default branch
+   - **Path filter**: limit to specific directories (e.g., `src/`, `docs/`)
+4. Code files are parsed for symbols (functions, classes, methods)
+
+**Supported languages for symbol extraction:**
+Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
 
 ## Architecture
 
@@ -144,9 +193,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 - **API** (`apps/api`): FastAPI backend with MCP server at `/mcp`
-- **Web** (`apps/web`): React admin console
-- **Worker** (`apps/worker`): Prefect-based background sync jobs
-- **Core** (`packages/core`): Shared models, settings, migrations
+- **Web** (`apps/web`): React admin console for managing collections and sources
+- **Worker** (`apps/worker`): Background sync jobs using Prefect
+- **Core** (`packages/core`): Shared models, database, and utilities
 
 ## Development
 
@@ -155,17 +204,22 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - Python 3.12+
 - Node.js 20+
 - [uv](https://github.com/astral-sh/uv) for Python dependency management
+- Docker (for PostgreSQL with pgvector)
 
-### Local Setup
+### Local Development Setup
 
 ```bash
-# Install dependencies
+# Start database
+docker compose up -d postgres
+
+# Install Python dependencies
 uv sync --all-packages
 
-# Run quality checks
-uv run ruff check .          # Linting
-uvx ty check                 # Type checking
-uv run pytest -v             # Tests
+# Run migrations
+cd packages/core
+DATABASE_URL=postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine \
+  uv run alembic upgrade head
+cd ../..
 
 # Start API server
 cd apps/api && uv run uvicorn app.main:app --reload --port 8000
@@ -174,13 +228,33 @@ cd apps/api && uv run uvicorn app.main:app --reload --port 8000
 cd apps/web && npm install && npm run dev
 ```
 
-### Pre-commit Hooks
+### Running Tests
 
 ```bash
-# Install hooks
-uv run pre-commit install
+# All tests
+uv run pytest -v
 
-# Run manually
+# Specific test file
+uv run pytest packages/core/tests/test_treesitter.py -v
+
+# With coverage
+uv run pytest --cov=contextmine_core --cov-report=term-missing
+```
+
+### Code Quality
+
+```bash
+# Linting
+uv run ruff check .
+
+# Type checking
+uvx ty check
+
+# Auto-format
+uv run ruff format .
+
+# Pre-commit hooks
+uv run pre-commit install
 uv run pre-commit run --all-files
 ```
 
@@ -193,6 +267,26 @@ docker pull ghcr.io/mayflower/contextmine-api:latest
 docker pull ghcr.io/mayflower/contextmine-worker:latest
 docker pull ghcr.io/mayflower/contextmine-web:latest
 ```
+
+## Troubleshooting
+
+### "No collections found" in MCP client
+
+1. Ensure you've created at least one collection in the admin UI
+2. Check that the collection visibility is set to **Global** (or you're authenticated)
+3. Verify your MCP token is valid
+
+### Sync not finding documents
+
+1. Check the Prefect UI at http://localhost:4200 for job status
+2. For GitHub sources, ensure the repository is accessible
+3. For web sources, verify the URL is reachable and returns HTML
+
+### Symbols not being extracted
+
+Symbol extraction works for supported languages only. Check that:
+1. The file has a recognized extension (`.py`, `.ts`, `.js`, `.go`, etc.)
+2. The sync has completed (symbols are extracted during sync)
 
 ## License
 
