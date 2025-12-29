@@ -955,22 +955,32 @@ async def sync_source(source: Source) -> SyncRun | None:
     """Sync a single source.
 
     Creates a sync run record and executes the appropriate sync logic.
-    Uses advisory lock to prevent concurrent syncs for the same source.
+    Checks for existing running syncs to prevent concurrent syncs for the same source.
 
     Retries automatically on transient failures (network issues, DB timeouts).
     """
     run_started_at = datetime.now(UTC)
 
     async with get_session() as session:
-        # Try to acquire advisory lock for this source (non-blocking)
-        lock_key = hash(str(source.id)) & 0x7FFFFFFF
-        lock_result = await session.execute(
-            text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": lock_key},
+        # Lock the source row to prevent race conditions
+        # Use FOR UPDATE SKIP LOCKED so concurrent attempts just skip
+        source_lock = await session.execute(
+            select(Source).where(Source.id == source.id).with_for_update(skip_locked=True)
         )
-        acquired = lock_result.scalar()
+        locked_source = source_lock.scalar_one_or_none()
+        if not locked_source:
+            # Another sync already has the lock
+            return None
 
-        if not acquired:
+        # Check if there's already a running sync for this source
+        existing_run = await session.execute(
+            select(SyncRun).where(
+                SyncRun.source_id == source.id,
+                SyncRun.status == SyncRunStatus.RUNNING,
+            )
+        )
+        if existing_run.scalar_one_or_none():
+            # Another sync is already running for this source
             return None
 
         # Create sync run record
