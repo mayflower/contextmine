@@ -197,163 +197,239 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
         return f"Answer submitted for verification (confidence: {confidence})"
 
     # =========================================================================
-    # LSP TOOLS
+    # DEFINITION/REFERENCE TOOLS (use pre-indexed Symbol and SymbolEdge data)
     # =========================================================================
 
     @tool
-    async def lsp_definition(file_path: str, line: int, column: int = 0) -> str:
-        """Jump to the definition of a symbol using LSP.
+    async def goto_definition(symbol_name: str, file_path: str | None = None) -> str:
+        """Jump to the definition of a symbol.
 
-        Use this to find where a function, class, or variable is defined.
-        Provide the file path, line number (1-indexed), and column (0-indexed).
+        Uses pre-indexed Symbol table to find where a symbol is defined.
+        Optionally filter by file path if you know where it's used.
         """
         run = run_holder["run"]
         try:
-            from contextmine_core.lsp import get_lsp_manager
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
 
-            manager = get_lsp_manager()
-            client = await manager.get_client(file_path)
-            locations = await client.get_definition(file_path, line, column)
-
-            if not locations:
-                return f"No definition found at {file_path}:{line}:{column}"
-
-            output_parts = []
-            for loc in locations:
-                # Read content at the location
-                from pathlib import Path
-
-                path = Path(loc.file_path)
-                if path.exists():
-                    content = path.read_text(encoding="utf-8", errors="replace")
-                    lines = content.split("\n")
-                    start_idx = max(0, loc.start_line - 1)
-                    end_idx = min(len(lines), loc.end_line + 10)
-                    snippet = "\n".join(lines[start_idx:end_idx])
-                else:
-                    snippet = "[File not accessible]"
-
-                evidence = Evidence(
-                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                    file_path=loc.file_path,
-                    start_line=loc.start_line,
-                    end_line=loc.end_line + 10,
-                    content=snippet[:2000],
-                    reason="Definition found via LSP",
-                    provenance="lsp",
-                    symbol_kind="definition",
+            async with get_async_session() as session:
+                # Find symbol by name
+                stmt = (
+                    select(Symbol)
+                    .join(Document)
+                    .where(Symbol.name == symbol_name)
+                    .options(selectinload(Symbol.document))
                 )
-                run.add_evidence(evidence)
-                output_parts.append(
-                    f"[{evidence.id}] {loc.file_path}:{loc.start_line}\n```\n{snippet[:500]}\n```"
-                )
+                if file_path:
+                    # If file_path given, prioritize symbols in that file
+                    stmt = stmt.order_by(
+                        (Document.uri == file_path).desc(),
+                        Symbol.start_line,
+                    )
+                stmt = stmt.limit(5)
 
-            return f"Found {len(locations)} definition(s):\n\n" + "\n\n".join(output_parts)
+                result = await session.execute(stmt)
+                symbols = result.scalars().all()
+
+                if not symbols:
+                    return f"No definition found for '{symbol_name}'"
+
+                output_parts = []
+                for sym in symbols:
+                    doc = sym.document
+                    lines = (doc.content or "").split("\n")
+                    start_idx = max(0, sym.start_line - 1)
+                    end_idx = min(len(lines), sym.end_line)
+                    content = "\n".join(lines[start_idx:end_idx])
+
+                    evidence = Evidence(
+                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                        file_path=doc.uri or "unknown",
+                        start_line=sym.start_line,
+                        end_line=sym.end_line,
+                        content=content[:2000],
+                        reason=f"Definition of '{symbol_name}'",
+                        provenance="symbol_index",
+                        symbol_id=sym.qualified_name,
+                        symbol_kind=sym.kind.value,
+                    )
+                    run.add_evidence(evidence)
+                    output_parts.append(
+                        f"[{evidence.id}] {sym.kind.value} '{sym.name}' at "
+                        f"{doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:500]}\n```"
+                    )
+
+                return f"Found {len(symbols)} definition(s):\n\n" + "\n\n".join(output_parts)
 
         except Exception as e:
-            logger.warning("lsp_definition failed: %s", e)
-            return f"LSP definition failed: {e}"
+            logger.warning("goto_definition failed: %s", e)
+            return f"Goto definition failed: {e}"
 
     @tool
-    async def lsp_references(file_path: str, line: int, column: int = 0) -> str:
-        """Find all usages of a symbol in the codebase using LSP.
+    async def find_references(symbol_name: str, file_path: str | None = None) -> str:
+        """Find all usages/references of a symbol in the codebase.
 
-        Use this to find where a function, class, or variable is used.
-        Provide the file path, line number (1-indexed), and column (0-indexed).
+        Uses pre-indexed SymbolEdge table to find where a symbol is referenced.
+        Returns both callers (CALLS edges) and references (REFERENCES edges).
         """
         run = run_holder["run"]
         try:
-            from contextmine_core.lsp import get_lsp_manager
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+            from sqlalchemy import or_, select
+            from sqlalchemy.orm import selectinload
 
-            manager = get_lsp_manager()
-            client = await manager.get_client(file_path)
-            locations = await client.get_references(file_path, line, column)
+            async with get_async_session() as session:
+                # Find target symbol
+                target_stmt = select(Symbol).join(Document).where(Symbol.name == symbol_name)
+                if file_path:
+                    target_stmt = target_stmt.where(Document.uri == file_path)
+                target_stmt = target_stmt.limit(3)
 
-            if not locations:
-                return f"No references found at {file_path}:{line}:{column}"
+                target_result = await session.execute(target_stmt)
+                targets = target_result.scalars().all()
 
-            output_parts = []
-            for i, loc in enumerate(locations[:10]):  # Limit to 10 references
-                from pathlib import Path
+                if not targets:
+                    return f"Symbol '{symbol_name}' not found"
 
-                path = Path(loc.file_path)
-                if path.exists():
-                    content = path.read_text(encoding="utf-8", errors="replace")
-                    lines = content.split("\n")
-                    start_idx = max(0, loc.start_line - 3)
-                    end_idx = min(len(lines), loc.end_line + 3)
-                    snippet = "\n".join(lines[start_idx:end_idx])
-                else:
-                    snippet = "[File not accessible]"
+                output_parts = []
+                total_refs = 0
 
-                evidence = Evidence(
-                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                    file_path=loc.file_path,
-                    start_line=max(1, loc.start_line - 2),
-                    end_line=loc.end_line + 2,
-                    content=snippet[:1500],
-                    reason=f"Reference {i + 1} of {len(locations)} via LSP",
-                    provenance="lsp",
-                    symbol_kind="reference",
-                )
-                run.add_evidence(evidence)
-                output_parts.append(
-                    f"[{evidence.id}] {loc.file_path}:{loc.start_line}\n```\n{snippet[:300]}\n```"
-                )
+                for target in targets:
+                    # Get incoming CALLS and REFERENCES edges
+                    edges_stmt = (
+                        select(SymbolEdge)
+                        .where(SymbolEdge.target_symbol_id == target.id)
+                        .where(
+                            or_(
+                                SymbolEdge.edge_type == SymbolEdgeType.CALLS,
+                                SymbolEdge.edge_type == SymbolEdgeType.REFERENCES,
+                            )
+                        )
+                        .options(
+                            selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document)
+                        )
+                        .limit(15)
+                    )
 
-            summary = f"Found {len(locations)} reference(s)"
-            if len(locations) > 10:
-                summary += " (showing first 10)"
-            return summary + ":\n\n" + "\n\n".join(output_parts)
+                    edges_result = await session.execute(edges_stmt)
+                    edges = edges_result.scalars().all()
+
+                    for edge in edges[:10]:
+                        ref_sym = edge.source_symbol
+                        doc = ref_sym.document
+                        lines = (doc.content or "").split("\n")
+
+                        # Show context around the reference line
+                        ref_line = edge.source_line or ref_sym.start_line
+                        start_idx = max(0, ref_line - 3)
+                        end_idx = min(len(lines), ref_line + 3)
+                        snippet = "\n".join(lines[start_idx:end_idx])
+
+                        evidence = Evidence(
+                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                            file_path=doc.uri or "unknown",
+                            start_line=max(1, ref_line - 2),
+                            end_line=ref_line + 2,
+                            content=snippet[:1500],
+                            reason=f"{edge.edge_type.value} '{symbol_name}' from '{ref_sym.name}'",
+                            provenance="symbol_index",
+                            symbol_id=ref_sym.qualified_name,
+                            symbol_kind=ref_sym.kind.value,
+                        )
+                        run.add_evidence(evidence)
+                        output_parts.append(
+                            f"[{evidence.id}] {edge.edge_type.value} in {ref_sym.kind.value} "
+                            f"'{ref_sym.name}' at {doc.uri}:{ref_line}\n```\n{snippet[:300]}\n```"
+                        )
+                        total_refs += 1
+
+                if not output_parts:
+                    return f"No references found for '{symbol_name}'"
+
+                summary = f"Found {total_refs} reference(s) to '{symbol_name}'"
+                if total_refs > 10:
+                    summary += " (showing first 10)"
+                return summary + ":\n\n" + "\n\n".join(output_parts[:10])
 
         except Exception as e:
-            logger.warning("lsp_references failed: %s", e)
-            return f"LSP references failed: {e}"
+            logger.warning("find_references failed: %s", e)
+            return f"Find references failed: {e}"
 
     @tool
-    async def lsp_hover(file_path: str, line: int, column: int = 0) -> str:
-        """Get type signature and documentation for a symbol using LSP.
+    async def get_signature(symbol_name: str, file_path: str | None = None) -> str:
+        """Get type signature and documentation for a symbol.
 
-        Use this to understand what a function or class does without reading all its code.
-        Provide the file path, line number (1-indexed), and column (0-indexed).
+        Uses pre-indexed Symbol table to retrieve signature and docstring.
         """
         run = run_holder["run"]
         try:
-            from contextmine_core.lsp import get_lsp_manager
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
 
-            manager = get_lsp_manager()
-            client = await manager.get_client(file_path)
-            info = await client.get_hover(file_path, line, column)
+            async with get_async_session() as session:
+                stmt = (
+                    select(Symbol)
+                    .join(Document)
+                    .where(Symbol.name == symbol_name)
+                    .options(selectinload(Symbol.document))
+                )
+                if file_path:
+                    stmt = stmt.where(Document.uri == file_path)
+                stmt = stmt.limit(5)
 
-            if not info:
-                return f"No hover info at {file_path}:{line}:{column}"
+                result = await session.execute(stmt)
+                symbols = result.scalars().all()
 
-            content_parts = []
-            if info.signature:
-                content_parts.append(f"Signature: {info.signature}")
-            if info.documentation:
-                content_parts.append(f"Documentation:\n{info.documentation}")
+                if not symbols:
+                    return f"Symbol '{symbol_name}' not found"
 
-            content = "\n\n".join(content_parts) or f"{info.kind}: {info.name}"
+                output_parts = []
+                for sym in symbols:
+                    doc = sym.document
+                    content_parts = []
 
-            evidence = Evidence(
-                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                file_path=file_path,
-                start_line=line,
-                end_line=line,
-                content=content[:2000],
-                reason=f"Hover info for {info.name} ({info.kind})",
-                provenance="lsp",
-                symbol_id=info.name,
-                symbol_kind=info.kind,
-            )
-            run.add_evidence(evidence)
+                    if sym.signature:
+                        content_parts.append(f"Signature: {sym.signature}")
+                    if sym.docstring:
+                        content_parts.append(f"Documentation:\n{sym.docstring}")
 
-            return f"[{evidence.id}] {info.kind} '{info.name}':\n{content}"
+                    if not content_parts:
+                        # Fall back to showing the first few lines of the symbol
+                        lines = (doc.content or "").split("\n")
+                        start_idx = max(0, sym.start_line - 1)
+                        end_idx = min(len(lines), sym.start_line + 5)
+                        snippet = "\n".join(lines[start_idx:end_idx])
+                        content_parts.append(f"Source:\n{snippet}")
+
+                    content = "\n\n".join(content_parts)
+
+                    evidence = Evidence(
+                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                        file_path=doc.uri or "unknown",
+                        start_line=sym.start_line,
+                        end_line=sym.start_line,
+                        content=content[:2000],
+                        reason=f"Signature/docs for '{symbol_name}'",
+                        provenance="symbol_index",
+                        symbol_id=sym.qualified_name,
+                        symbol_kind=sym.kind.value,
+                    )
+                    run.add_evidence(evidence)
+                    output_parts.append(
+                        f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
+                        f"at {doc.uri}:{sym.start_line}\n{content}"
+                    )
+
+                return "\n\n".join(output_parts)
 
         except Exception as e:
-            logger.warning("lsp_hover failed: %s", e)
-            return f"LSP hover failed: {e}"
+            logger.warning("get_signature failed: %s", e)
+            return f"Get signature failed: {e}"
 
     # =========================================================================
     # SYMBOL INDEX TOOLS (use pre-indexed data from database)
@@ -1057,30 +1133,28 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             logger.warning("graph_trace failed: %s", e)
             return f"Graph trace failed: {e}"
 
-    # Build tools list - core tools always available
-    tools = [hybrid_search, open_span, finalize, summarize_evidence]
-
-    # Add LSP tools (may fail if LSP not available)
-    try:
-        from contextmine_core.lsp import get_lsp_manager  # noqa: F401
-
-        tools.extend([lsp_definition, lsp_references, lsp_hover])
-    except ImportError:
-        logger.info("LSP tools not available (multilspy not installed)")
-
-    # Symbol index tools always available (use pre-indexed database)
-    tools.extend(
-        [
-            symbol_outline,
-            symbol_find,
-            symbol_enclosing,
-            symbol_callers,
-            symbol_callees,
-        ]
-    )
-
-    # Graph traversal tools always available (use pre-indexed SymbolEdge)
-    tools.extend([graph_expand, graph_pack, graph_trace])
+    # Build tools list - all tools use pre-indexed data
+    tools = [
+        # Core tools
+        hybrid_search,
+        open_span,
+        finalize,
+        summarize_evidence,
+        # Definition/reference tools (pre-indexed)
+        goto_definition,
+        find_references,
+        get_signature,
+        # Symbol index tools (pre-indexed)
+        symbol_outline,
+        symbol_find,
+        symbol_enclosing,
+        symbol_callers,
+        symbol_callees,
+        # Graph traversal tools (pre-indexed)
+        graph_expand,
+        graph_pack,
+        graph_trace,
+    ]
 
     return tools
 
@@ -1336,27 +1410,27 @@ class ResearchAgent:
 
 Your task: {question}{scope_instruction}
 
-## Available Tools
+## Available Tools (all use pre-indexed data)
 
 ### RAG Search
-- **hybrid_search** - Search the codebase using BM25 + vector retrieval (pre-indexed chunks)
+- **hybrid_search** - Search the codebase using BM25 + vector retrieval
 
-### Symbol Index (pre-indexed via Tree-sitter)
-- **symbol_outline** - Get all indexed symbols in a file (functions, classes, methods)
+### Definition & References
+- **goto_definition** - Jump to where a symbol is defined
+- **find_references** - Find all usages of a symbol across the codebase
+- **get_signature** - Get type signature and documentation for a symbol
+
+### Symbol Index
+- **symbol_outline** - Get all symbols in a file (functions, classes, methods)
 - **symbol_find** - Find a symbol by name across the codebase
 - **symbol_enclosing** - Find what symbol (function/class) contains a specific line
 - **symbol_callers** - Find all functions that call a given symbol
 - **symbol_callees** - Find all functions that a symbol calls
 
-### Graph Traversal (pre-indexed relationships)
+### Graph Traversal
 - **graph_expand** - Expand from seed symbols following relationships (calls, references, imports)
 - **graph_pack** - Select the most relevant evidence items from collected evidence
 - **graph_trace** - Find paths between two symbols (for impact analysis)
-
-### LSP (Language Server Protocol)
-- **lsp_definition** - Jump to where a symbol is defined (live analysis)
-- **lsp_references** - Find all usages of a symbol (live analysis)
-- **lsp_hover** - Get type signature and documentation
 
 ### Read & Summarize
 - **open_span** - Read specific lines from a file
@@ -1368,9 +1442,9 @@ Your task: {question}{scope_instruction}
 ## Instructions
 
 1. Start by searching for relevant code using hybrid_search (RAG)
-2. Use symbol_* tools to navigate the pre-indexed code graph
-3. Use graph_* tools for multi-hop traversal and impact analysis
-4. Use LSP tools for precise definition/reference lookups
+2. Use goto_definition/find_references for precise symbol navigation
+3. Use symbol_* tools to explore file structure and relationships
+4. Use graph_* tools for multi-hop traversal and impact analysis
 5. Use open_span to examine specific code sections in detail
 6. Use summarize_evidence when you have many items and need to organize
 7. Use graph_pack to select the most important evidence before finalizing
