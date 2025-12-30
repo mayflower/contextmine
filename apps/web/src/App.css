@@ -261,8 +261,8 @@
 }
 
 .welcome-logo {
-  width: 80px;
-  height: 80px;
+  width: 160px;
+  height: 160px;
   flex-shrink: 0;
 }
 
@@ -334,8 +334,8 @@
   }
 
   .welcome-logo {
-    width: 64px;
-    height: 64px;
+    width: 120px;
+    height: 120px;
   }
 
   .features-grid {

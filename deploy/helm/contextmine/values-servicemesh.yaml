@@ -1,4 +1,4 @@
-# Values for servicemesh.cloud deployment
+# Values for mayflower.gmbh deployment
 
 global:
   imagePullPolicy: Always
@@ -20,19 +20,19 @@ ingress:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
   hosts:
-    - host: contextmine.home.servicemesh.cloud
+    - host: contextmine.mayflower.gmbh
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: contextmine-tls
       hosts:
-        - contextmine.home.servicemesh.cloud
+        - contextmine.mayflower.gmbh
 
 config:
   debug: "false"
-  publicBaseUrl: "https://contextmine.home.servicemesh.cloud"
-  mcpOauthBaseUrl: "https://contextmine.home.servicemesh.cloud"
+  publicBaseUrl: "https://contextmine.mayflower.gmbh"
+  mcpOauthBaseUrl: "https://contextmine.mayflower.gmbh"
   mcpAllowedOrigins: "https://claude.ai"
 
 # Secrets
