@@ -7,6 +7,7 @@ Features:
 - Task result caching for idempotent operations
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -53,6 +54,8 @@ from contextmine_worker.web_sync import (
     get_page_title,
     run_spider_md,
 )
+
+logger = logging.getLogger(__name__)
 
 # Retry configuration
 DEFAULT_RETRIES = 2
@@ -389,6 +392,238 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
 
 @task(
     retries=DEFAULT_RETRIES,
+    retry_delay_seconds=1,
+    tags=[TAG_DB_HEAVY],
+)
+async def build_knowledge_graph(
+    source_id: str,
+    collection_id: str,
+) -> dict:
+    """Build Knowledge Graph from indexed documents.
+
+    Extracts:
+    - FILE and SYMBOL nodes from documents/symbols
+    - RULE_CANDIDATE nodes from code validation patterns
+    - DB_TABLE/DB_COLUMN nodes from Alembic migrations
+    - API_ENDPOINT/JOB/etc. nodes from spec files
+    - BUSINESS_RULE nodes (if LLM labeling enabled)
+    - arc42 architecture documentation
+
+    Errors are logged but don't fail the sync.
+
+    Returns:
+        Stats dict with KG extraction metrics
+    """
+    import uuid as uuid_module
+
+    from contextmine_core.models import Document
+
+    stats = {
+        "kg_file_nodes": 0,
+        "kg_symbol_nodes": 0,
+        "kg_rule_candidates": 0,
+        "kg_business_rules": 0,
+        "kg_tables": 0,
+        "kg_endpoints": 0,
+        "kg_jobs": 0,
+        "kg_errors": [],
+    }
+
+    source_uuid = uuid_module.UUID(source_id)
+    collection_uuid = uuid_module.UUID(collection_id)
+
+    # Step 1: Build FILE and SYMBOL nodes from indexed documents
+    try:
+        from contextmine_core.knowledge.builder import build_knowledge_graph_for_source
+
+        async with get_session() as session:
+            kg_stats = await build_knowledge_graph_for_source(session, source_uuid)
+            stats["kg_file_nodes"] = kg_stats.get("file_nodes_created", 0)
+            stats["kg_symbol_nodes"] = kg_stats.get("symbol_nodes_created", 0)
+            await session.commit()
+            logger.info(
+                "Built KG: %d file nodes, %d symbol nodes",
+                stats["kg_file_nodes"],
+                stats["kg_symbol_nodes"],
+            )
+    except Exception as e:
+        logger.warning("Failed to build FILE/SYMBOL nodes: %s", e)
+        stats["kg_errors"].append(f"file_symbol: {e}")
+
+    # Step 2: Extract rule candidates from code files
+    try:
+        from contextmine_core.analyzer.extractors.rules import (
+            build_rule_candidates_graph,
+            extract_rule_candidates,
+        )
+
+        all_candidates = []
+
+        async with get_session() as session:
+            # Get all documents for this source
+            result = await session.execute(
+                select(Document.id, Document.uri, Document.content_markdown).where(
+                    Document.source_id == source_uuid
+                )
+            )
+            docs = result.all()
+
+            for _doc_id, uri, content in docs:
+                if not content:
+                    continue
+                # Extract file path from URI
+                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                # Only process Python/JS/TS files
+                if file_path.endswith((".py", ".js", ".ts", ".tsx", ".jsx")):
+                    try:
+                        rule_result = extract_rule_candidates(file_path, content)
+                        all_candidates.extend(rule_result.candidates)
+                    except Exception as e:
+                        logger.debug("Rule extraction failed for %s: %s", file_path, e)
+
+            # Build graph nodes for all candidates
+            if all_candidates:
+                rc_stats = await build_rule_candidates_graph(
+                    session, collection_uuid, all_candidates
+                )
+                stats["kg_rule_candidates"] = rc_stats.get("nodes_created", 0)
+                await session.commit()
+                logger.info("Extracted %d rule candidates", stats["kg_rule_candidates"])
+
+    except Exception as e:
+        logger.warning("Failed to extract rule candidates: %s", e)
+        stats["kg_errors"].append(f"rules: {e}")
+
+    # Step 3: Extract ERM from Alembic migrations
+    try:
+        from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
+        from contextmine_core.analyzer.extractors.erm import (
+            ERMExtractor,
+            build_erm_graph,
+            save_erd_artifact,
+        )
+
+        erm_extractor = ERMExtractor()
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(Document.uri, Document.content_markdown).where(
+                    Document.source_id == source_uuid
+                )
+            )
+            docs = result.all()
+
+            for uri, content in docs:
+                if not content:
+                    continue
+                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                # Detect Alembic migrations
+                if "alembic/versions" in file_path and file_path.endswith(".py"):
+                    try:
+                        extraction = extract_from_alembic(file_path, content)
+                        erm_extractor.add_alembic_extraction(extraction)
+                    except Exception as e:
+                        logger.debug("ERM extraction failed for %s: %s", file_path, e)
+
+            # Build graph and save ERD if we found tables
+            if erm_extractor.schema.tables:
+                erm_stats = await build_erm_graph(session, collection_uuid, erm_extractor.schema)
+                stats["kg_tables"] = erm_stats.get("table_nodes_created", 0)
+                await save_erd_artifact(session, collection_uuid, erm_extractor.schema)
+                await session.commit()
+                logger.info("Extracted %d database tables", stats["kg_tables"])
+
+    except Exception as e:
+        logger.warning("Failed to extract ERM: %s", e)
+        stats["kg_errors"].append(f"erm: {e}")
+
+    # Step 4: Extract Surface Catalog (OpenAPI, GraphQL, Protobuf, Jobs)
+    try:
+        from contextmine_core.analyzer.extractors.surface import (
+            SurfaceCatalogExtractor,
+            build_surface_graph,
+        )
+
+        surface_extractor = SurfaceCatalogExtractor()
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(Document.uri, Document.content_markdown).where(
+                    Document.source_id == source_uuid
+                )
+            )
+            docs = result.all()
+
+            for uri, content in docs:
+                if not content:
+                    continue
+                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                try:
+                    surface_extractor.add_file(file_path, content)
+                except Exception as e:
+                    logger.debug("Surface extraction failed for %s: %s", file_path, e)
+
+            # Build graph if we found anything
+            catalog = surface_extractor.catalog
+            has_surfaces = (
+                catalog.openapi_specs
+                or catalog.graphql_schemas
+                or catalog.protobuf_files
+                or catalog.job_definitions
+            )
+            if has_surfaces:
+                surface_stats = await build_surface_graph(session, collection_uuid, catalog)
+                stats["kg_endpoints"] = surface_stats.get("endpoint_nodes_created", 0)
+                stats["kg_jobs"] = surface_stats.get("job_nodes_created", 0)
+                await session.commit()
+                logger.info(
+                    "Extracted %d endpoints, %d jobs",
+                    stats["kg_endpoints"],
+                    stats["kg_jobs"],
+                )
+
+    except Exception as e:
+        logger.warning("Failed to extract surfaces: %s", e)
+        stats["kg_errors"].append(f"surface: {e}")
+
+    # Step 5: LLM labeling of rule candidates (if configured)
+    try:
+        settings = get_settings()
+        # Check if LLM provider is available
+        if settings.openai_api_key or settings.anthropic_api_key or settings.gemini_api_key:
+            from contextmine_core.analyzer.labeling import label_rule_candidates
+            from contextmine_core.research.llm import get_research_llm_provider
+
+            provider = get_research_llm_provider()
+            if provider:
+                async with get_session() as session:
+                    label_stats = await label_rule_candidates(session, collection_uuid, provider)
+                    stats["kg_business_rules"] = label_stats.rules_created
+                    await session.commit()
+                    logger.info("Labeled %d business rules", stats["kg_business_rules"])
+    except Exception as e:
+        logger.warning("Failed to label rule candidates: %s", e)
+        stats["kg_errors"].append(f"labeling: {e}")
+
+    # Step 6: Generate arc42 architecture documentation
+    try:
+        from contextmine_core.analyzer.arc42 import generate_arc42, save_arc42_artifact
+
+        async with get_session() as session:
+            doc = await generate_arc42(session, collection_uuid)
+            await save_arc42_artifact(session, collection_uuid, doc)
+            await session.commit()
+            logger.info("Generated arc42 documentation with %d sections", len(doc.sections))
+
+    except Exception as e:
+        logger.warning("Failed to generate arc42: %s", e)
+        stats["kg_errors"].append(f"arc42: {e}")
+
+    return stats
+
+
+@task(
+    retries=DEFAULT_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=2),
     tags=[TAG_DB_HEAVY],
 )
@@ -688,6 +923,12 @@ async def sync_github_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
+    # Build Knowledge Graph from indexed documents
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=96, description="Building knowledge graph..."
+    )
+    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str)
+
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
@@ -714,6 +955,14 @@ async def sync_github_source(
             "symbols_deleted": total_symbols_deleted,
             "commit_sha": new_sha,
             "previous_sha": old_sha,
+            # Knowledge Graph stats
+            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
+            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
+            "kg_rule_candidates": kg_stats.get("kg_rule_candidates", 0),
+            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
+            "kg_tables": kg_stats.get("kg_tables", 0),
+            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
+            "kg_jobs": kg_stats.get("kg_jobs", 0),
         }
 
         await session.commit()
@@ -918,6 +1167,12 @@ async def sync_web_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
+    # Build Knowledge Graph from indexed documents
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=96, description="Building knowledge graph..."
+    )
+    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str)
+
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
@@ -940,6 +1195,14 @@ async def sync_web_source(
             "embedding_tokens_used": total_tokens_used,
             "symbols_created": total_symbols_created,
             "symbols_deleted": total_symbols_deleted,
+            # Knowledge Graph stats
+            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
+            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
+            "kg_rule_candidates": kg_stats.get("kg_rule_candidates", 0),
+            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
+            "kg_tables": kg_stats.get("kg_tables", 0),
+            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
+            "kg_jobs": kg_stats.get("kg_jobs", 0),
         }
 
         await session.commit()

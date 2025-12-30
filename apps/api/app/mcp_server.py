@@ -46,28 +46,52 @@ except ValueError as e:
 mcp = FastMCP(
     auth=auth,
     name="contextmine",
-    instructions="""ContextMine - documentation and code retrieval.
+    instructions="""ContextMine - research assistant for documentation, code, and architecture.
 
 ## Quick Start
 For simple questions: get_markdown(query="how do I X?")
 For complex investigations: deep_research(question="how does X work?")
+For knowledge graph queries: graph_rag(query="how do X and Y relate?")
 
-## Tool Selection Guide
+## Research Tools (Recommended)
 
-**I need documentation/context:**
-→ get_markdown - semantic search across indexed docs
+**I have a question about code/architecture:**
+→ graph_rag(query="how does auth work?") - combines semantic search with knowledge graph
+→ deep_research(question="explain the payment flow") - multi-step investigation agent
 
-**I need to understand code structure:**
-→ outline - list functions/classes in a file
-→ find_symbol - get source code of a specific function/class
+**I need to understand validation/business rules:**
+→ research_validation(code_path="auth.py") - find validation rules for specific code
+→ research_validation(code_path="payment") - find payment-related business rules
 
-**I need to trace code relationships:**
-→ definition - jump to where something is defined
-→ references - find all usages of a symbol
-→ expand - explore call graphs and imports
+**I need to understand data model:**
+→ research_data_model(entity="users") - research tables, columns, relationships
+→ research_data_model(entity="order") - find data structures for a concept
 
-**I have a complex question requiring investigation:**
-→ deep_research - multi-step agent that searches, reads code, collects evidence
+**I need to understand architecture:**
+→ research_architecture(topic="deployment") - infrastructure, CI/CD, jobs
+→ research_architecture(topic="security") - auth patterns, access control
+→ research_architecture(topic="api") - REST, GraphQL, RPC endpoints
+
+## Code Navigation (for specific files/symbols)
+
+**I need code structure of a specific file:**
+→ outline(file_path="src/auth.py") - list functions/classes
+→ find_symbol(file_path="src/auth.py", name="authenticate") - get source code
+
+**I need to trace relationships:**
+→ definition(file_path, line, column) - jump to definition
+→ references(file_path, line, column) - find all usages
+→ expand(seeds=["auth.py::login"], depth=2) - explore call graph
+
+## Graph Exploration (for specific node IDs)
+
+→ graph_neighborhood(node_id="...") - explore around a known node
+→ trace_path(from_node_id="...", to_node_id="...") - find connection between nodes
+
+## Architecture Documentation
+
+→ get_arc42(section="deployment") - get specific architecture section
+→ arc42_drift_report() - see what changed since last documentation
 
 ## Discovery (usually not needed)
 - list_collections - see available doc collections
@@ -895,6 +919,700 @@ async def get_research_report(run_id: str) -> str:
         return f"# Error\n\nRun not found: {run_id}"
 
     return report
+
+
+# =============================================================================
+# Knowledge Graph Tools (Business Rules, ERD, Surfaces, GraphRAG)
+# =============================================================================
+
+
+@mcp.tool(name="research_validation")
+async def research_validation(
+    code_path: Annotated[str, "File path or function name to find validation rules for"],
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+) -> str:
+    """Find validation rules, business logic, and constraints for specific code.
+
+    Use this to understand what validation/authorization rules apply to a
+    file, function, or feature. Returns business rules, their source code,
+    and the conditions that trigger validation failures.
+
+    Example queries:
+    - "auth.py" - find rules in the auth module
+    - "create_user" - find rules for user creation
+    - "payment" - find payment validation rules
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.models import (
+            KnowledgeEvidence,
+            KnowledgeNode,
+            KnowledgeNodeEvidence,
+            KnowledgeNodeKind,
+        )
+        from contextmine_core.search import get_accessible_collection_ids
+
+        async with get_db_session() as db:
+            if collection_id:
+                collection_ids = [uuid.UUID(collection_id)]
+            else:
+                collection_ids = await get_accessible_collection_ids(db, user_id)
+
+            if not collection_ids:
+                return "# No Collections Available\n\nNo accessible collections found."
+
+            code_path_lower = code_path.lower()
+            query_words = set(code_path_lower.replace("/", " ").replace("_", " ").split())
+
+            # Find business rules matching the code path
+            stmt = select(KnowledgeNode).where(
+                KnowledgeNode.collection_id.in_(collection_ids),
+                KnowledgeNode.kind == KnowledgeNodeKind.BUSINESS_RULE,
+            )
+            result = await db.execute(stmt)
+            all_rules = result.scalars().all()
+
+            # Also find rule candidates (unlabeled) for more context
+            stmt = select(KnowledgeNode).where(
+                KnowledgeNode.collection_id.in_(collection_ids),
+                KnowledgeNode.kind == KnowledgeNodeKind.RULE_CANDIDATE,
+            )
+            result = await db.execute(stmt)
+            all_candidates = result.scalars().all()
+
+            # Match rules by evidence file path or rule content
+            matched_rules = []
+            for rule in all_rules:
+                meta = rule.meta or {}
+                searchable = " ".join(
+                    [
+                        rule.name.lower(),
+                        meta.get("natural_language", "").lower(),
+                        meta.get("container_name", "").lower(),
+                    ]
+                ).replace("_", " ")
+
+                # Check if matches by name or content
+                if any(word in searchable for word in query_words if len(word) > 2):
+                    matched_rules.append(rule)
+                    continue
+
+                # Check evidence file paths
+                ev_stmt = (
+                    select(KnowledgeEvidence)
+                    .join(
+                        KnowledgeNodeEvidence,
+                        KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id,
+                    )
+                    .where(KnowledgeNodeEvidence.node_id == rule.id)
+                )
+                ev_result = await db.execute(ev_stmt)
+                for ev in ev_result.scalars().all():
+                    if code_path_lower in ev.file_path.lower():
+                        matched_rules.append(rule)
+                        break
+
+            # Match candidates similarly
+            matched_candidates = []
+            for candidate in all_candidates:
+                meta = candidate.meta or {}
+                searchable = " ".join(
+                    [
+                        candidate.name.lower(),
+                        meta.get("container_name", "").lower(),
+                        meta.get("file_path", "").lower(),
+                    ]
+                ).replace("_", " ")
+
+                if any(word in searchable for word in query_words if len(word) > 2):
+                    matched_candidates.append(candidate)
+
+            if not matched_rules and not matched_candidates:
+                return f"# No Validation Rules Found\n\nNo business rules or validation logic found for: `{code_path}`"
+
+            lines = [f"# Validation Rules for: {code_path}\n"]
+
+            if matched_rules:
+                lines.append(f"## Business Rules ({len(matched_rules)} found)\n")
+                for rule in matched_rules[:10]:
+                    meta = rule.meta or {}
+                    lines.append(f"### {rule.name}")
+                    lines.append(
+                        f"- **Category**: {meta.get('category', 'unknown')} | **Severity**: {meta.get('severity', 'unknown')}"
+                    )
+                    if meta.get("natural_language"):
+                        lines.append(f"- **Rule**: {meta['natural_language']}")
+                    if meta.get("predicate"):
+                        lines.append(f"- **Condition**: `{meta['predicate'][:100]}`")
+                    if meta.get("failure"):
+                        lines.append(f"- **On Failure**: `{meta['failure'][:100]}`")
+                    lines.append("")
+
+            if matched_candidates:
+                lines.append(f"## Validation Candidates ({len(matched_candidates)} unlabeled)\n")
+                lines.append(
+                    "*These are detected validation patterns not yet labeled as business rules.*\n"
+                )
+                for candidate in matched_candidates[:5]:
+                    meta = candidate.meta or {}
+                    lines.append(f"### {meta.get('container_name', candidate.name)}")
+                    lines.append(f"- **File**: `{meta.get('file_path', 'unknown')}`")
+                    if meta.get("predicate"):
+                        lines.append(f"- **Condition**: `{meta['predicate'][:150]}`")
+                    if meta.get("failure"):
+                        lines.append(f"- **Failure**: `{meta['failure'][:100]}`")
+                    lines.append("")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        return f"# Error\n\nFailed to research validation: {e}"
+
+
+@mcp.tool(name="research_data_model")
+async def research_data_model(
+    entity: Annotated[str, "Table name, entity, or data concept to research"],
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+) -> str:
+    """Research the data model for a specific entity or concept.
+
+    Returns database tables, columns, relationships, and related API endpoints
+    for the given entity. Use this to understand how data is structured.
+
+    Example queries:
+    - "users" - find the users table and related entities
+    - "order" - find order-related tables and APIs
+    - "authentication" - find auth-related data structures
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.models import (
+            KnowledgeArtifact,
+            KnowledgeArtifactKind,
+            KnowledgeNode,
+            KnowledgeNodeKind,
+        )
+        from contextmine_core.search import get_accessible_collection_ids
+
+        async with get_db_session() as db:
+            if collection_id:
+                collection_ids = [uuid.UUID(collection_id)]
+            else:
+                collection_ids = await get_accessible_collection_ids(db, user_id)
+
+            if not collection_ids:
+                return "# No Collections Available\n\nNo accessible collections found."
+
+            entity_lower = entity.lower()
+            query_words = set(entity_lower.replace("_", " ").split())
+
+            # Find matching tables
+            stmt = select(KnowledgeNode).where(
+                KnowledgeNode.collection_id.in_(collection_ids),
+                KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
+            )
+            result = await db.execute(stmt)
+            tables = [
+                t
+                for t in result.scalars().all()
+                if any(word in t.name.lower() for word in query_words if len(word) > 2)
+            ]
+
+            # Find matching columns
+            stmt = select(KnowledgeNode).where(
+                KnowledgeNode.collection_id.in_(collection_ids),
+                KnowledgeNode.kind == KnowledgeNodeKind.DB_COLUMN,
+            )
+            result = await db.execute(stmt)
+            columns = [
+                c
+                for c in result.scalars().all()
+                if any(word in c.name.lower() for word in query_words if len(word) > 2)
+            ]
+
+            # Find related API endpoints
+            stmt = select(KnowledgeNode).where(
+                KnowledgeNode.collection_id.in_(collection_ids),
+                KnowledgeNode.kind == KnowledgeNodeKind.API_ENDPOINT,
+            )
+            result = await db.execute(stmt)
+            endpoints = []
+            for ep in result.scalars().all():
+                meta = ep.meta or {}
+                searchable = " ".join([ep.name.lower(), meta.get("path", "").lower()])
+                if any(word in searchable for word in query_words if len(word) > 2):
+                    endpoints.append(ep)
+
+            # Get ERD if available
+            stmt = (
+                select(KnowledgeArtifact)
+                .where(
+                    KnowledgeArtifact.collection_id.in_(collection_ids),
+                    KnowledgeArtifact.kind == KnowledgeArtifactKind.MERMAID_ERD,
+                )
+                .order_by(KnowledgeArtifact.created_at.desc())
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            erd_artifact = result.scalar_one_or_none()
+
+            if not tables and not columns and not endpoints:
+                return f"# No Data Model Found\n\nNo tables, columns, or APIs found for: `{entity}`"
+
+            lines = [f"# Data Model: {entity}\n"]
+
+            if tables:
+                lines.append(f"## Database Tables ({len(tables)} found)\n")
+                for table in tables[:10]:
+                    meta = table.meta or {}
+                    pk = f" (PK: `{meta.get('primary_key')}`)" if meta.get("primary_key") else ""
+                    lines.append(f"### {table.name}{pk}")
+                    lines.append(f"- **Columns**: {meta.get('column_count', 'unknown')}")
+                    if meta.get("columns"):
+                        for col in meta["columns"][:8]:
+                            nullable = "" if col.get("nullable", True) else " NOT NULL"
+                            lines.append(f"  - `{col['name']}`: {col.get('type', '?')}{nullable}")
+                    lines.append("")
+
+            if columns:
+                # Group columns by table
+                cols_by_table: dict[str, list] = {}
+                for col in columns:
+                    table_name = (
+                        col.natural_key.split(":")[1] if ":" in col.natural_key else "unknown"
+                    )
+                    cols_by_table.setdefault(table_name, []).append(col)
+
+                lines.append(f"## Related Columns ({len(columns)} found)\n")
+                for table_name, cols in cols_by_table.items():
+                    lines.append(f"**{table_name}**:")
+                    for col in cols[:5]:
+                        meta = col.meta or {}
+                        lines.append(f"- `{col.name}`: {meta.get('type', '?')}")
+                    lines.append("")
+
+            if endpoints:
+                lines.append(f"## Related API Endpoints ({len(endpoints)} found)\n")
+                for ep in endpoints[:8]:
+                    meta = ep.meta or {}
+                    lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
+                lines.append("")
+
+            if erd_artifact and entity_lower in erd_artifact.content.lower():
+                lines.append("## Entity Relationship Diagram\n")
+                lines.append("```mermaid")
+                # Extract relevant portion of ERD
+                lines.append(erd_artifact.content)
+                lines.append("```\n")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        return f"# Error\n\nFailed to research data model: {e}"
+
+
+@mcp.tool(name="research_architecture")
+async def research_architecture(
+    topic: Annotated[str, "Architecture topic to research (e.g., 'deployment', 'security', 'api')"],
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+) -> str:
+    """Research system architecture for a specific topic.
+
+    Returns relevant architecture documentation, components, patterns,
+    and deployment information. Use this to understand how the system
+    is designed and structured.
+
+    Example topics:
+    - "deployment" - infrastructure, jobs, CI/CD
+    - "security" - authentication, authorization patterns
+    - "api" - REST endpoints, GraphQL, RPC services
+    - "database" - data model, tables, relationships
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.models import (
+            KnowledgeArtifact,
+            KnowledgeArtifactKind,
+            KnowledgeNode,
+            KnowledgeNodeKind,
+        )
+        from contextmine_core.search import get_accessible_collection_ids
+
+        async with get_db_session() as db:
+            if collection_id:
+                collection_ids = [uuid.UUID(collection_id)]
+            else:
+                collection_ids = await get_accessible_collection_ids(db, user_id)
+
+            if not collection_ids:
+                return "# No Collections Available\n\nNo accessible collections found."
+
+            topic_lower = topic.lower()
+            topic_words = set(topic_lower.replace("-", " ").replace("_", " ").split())
+
+            lines = [f"# Architecture: {topic}\n"]
+
+            # Get arc42 documentation
+            stmt = (
+                select(KnowledgeArtifact)
+                .where(
+                    KnowledgeArtifact.collection_id.in_(collection_ids),
+                    KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                )
+                .order_by(KnowledgeArtifact.created_at.desc())
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            arc42 = result.scalar_one_or_none()
+
+            if arc42 and arc42.content:
+                # Extract relevant sections
+                sections = arc42.content.split("## ")
+                relevant_sections = []
+                for section in sections[1:]:  # Skip header
+                    section_lower = section.lower()
+                    if any(word in section_lower for word in topic_words if len(word) > 2):
+                        relevant_sections.append("## " + section[:1000])
+
+                if relevant_sections:
+                    lines.append("## From Architecture Documentation\n")
+                    for section in relevant_sections[:3]:
+                        lines.append(section)
+                        lines.append("")
+
+            # Topic-specific knowledge
+            if any(word in topic_lower for word in ["api", "endpoint", "rest", "http"]):
+                stmt = (
+                    select(KnowledgeNode)
+                    .where(
+                        KnowledgeNode.collection_id.in_(collection_ids),
+                        KnowledgeNode.kind == KnowledgeNodeKind.API_ENDPOINT,
+                    )
+                    .limit(20)
+                )
+                result = await db.execute(stmt)
+                endpoints = result.scalars().all()
+                if endpoints:
+                    lines.append(f"## API Endpoints ({len(endpoints)} total)\n")
+                    for ep in endpoints[:10]:
+                        meta = ep.meta or {}
+                        lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
+                    lines.append("")
+
+            if any(word in topic_lower for word in ["deploy", "job", "ci", "cd", "workflow"]):
+                stmt = (
+                    select(KnowledgeNode)
+                    .where(
+                        KnowledgeNode.collection_id.in_(collection_ids),
+                        KnowledgeNode.kind == KnowledgeNodeKind.JOB,
+                    )
+                    .limit(20)
+                )
+                result = await db.execute(stmt)
+                jobs = result.scalars().all()
+                if jobs:
+                    lines.append(f"## Jobs & Workflows ({len(jobs)} total)\n")
+                    for job in jobs[:10]:
+                        meta = job.meta or {}
+                        schedule = (
+                            f" (schedule: `{meta['schedule']}`)" if meta.get("schedule") else ""
+                        )
+                        lines.append(
+                            f"- **{job.name}** ({meta.get('job_type', 'unknown')}){schedule}"
+                        )
+                    lines.append("")
+
+            if any(word in topic_lower for word in ["database", "data", "table", "schema"]):
+                stmt = (
+                    select(KnowledgeNode)
+                    .where(
+                        KnowledgeNode.collection_id.in_(collection_ids),
+                        KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
+                    )
+                    .limit(20)
+                )
+                result = await db.execute(stmt)
+                tables = result.scalars().all()
+                if tables:
+                    lines.append(f"## Database Tables ({len(tables)} total)\n")
+                    for table in tables[:10]:
+                        meta = table.meta or {}
+                        lines.append(f"- **{table.name}**: {meta.get('column_count', '?')} columns")
+                    lines.append("")
+
+            if any(word in topic_lower for word in ["security", "auth", "permission", "access"]):
+                stmt = select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id.in_(collection_ids),
+                    KnowledgeNode.kind == KnowledgeNodeKind.BUSINESS_RULE,
+                )
+                result = await db.execute(stmt)
+                auth_rules = [
+                    r
+                    for r in result.scalars().all()
+                    if (r.meta or {}).get("category") in ("authorization", "authentication")
+                ]
+                if auth_rules:
+                    lines.append(f"## Security Rules ({len(auth_rules)} found)\n")
+                    for rule in auth_rules[:5]:
+                        meta = rule.meta or {}
+                        lines.append(f"### {rule.name}")
+                        if meta.get("natural_language"):
+                            lines.append(f"- {meta['natural_language']}")
+                        lines.append("")
+
+            if len(lines) == 1:
+                lines.append(f"No specific architecture information found for topic: `{topic}`\n")
+                lines.append("Try topics like: api, deployment, database, security")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        return f"# Error\n\nFailed to research architecture: {e}"
+
+
+@mcp.tool(name="graph_neighborhood")
+async def mcp_graph_neighborhood(
+    node_id: Annotated[str, "The starting node ID"],
+    depth: Annotated[int, "Expansion depth (1-3)"] = 1,
+    edge_kinds: Annotated[list[str] | None, "Filter by edge kinds"] = None,
+    limit: Annotated[int, "Maximum nodes to return"] = 30,
+) -> str:
+    """Explore the knowledge graph neighborhood around a node.
+
+    Returns connected nodes and edges, useful for understanding
+    relationships between files, symbols, tables, rules, etc.
+    """
+    try:
+        node_uuid = uuid.UUID(node_id)
+    except ValueError:
+        return f"# Error\n\nInvalid node_id: {node_id}"
+
+    try:
+        from contextmine_core.graphrag import graph_neighborhood
+
+        async with get_db_session() as db:
+            result = await graph_neighborhood(
+                session=db,
+                node_id=node_uuid,
+                collection_id=None,
+                depth=min(depth, 3),
+                edge_kinds=edge_kinds,
+                max_nodes=limit,
+            )
+
+            if not result.nodes:
+                return f"# No Neighborhood Found\n\nNode {node_id} has no connections."
+
+            return result.summary_markdown
+
+    except Exception as e:
+        return f"# Error\n\nFailed to get graph neighborhood: {e}"
+
+
+@mcp.tool(name="trace_path")
+async def mcp_trace_path(
+    from_node_id: Annotated[str, "Starting node ID"],
+    to_node_id: Annotated[str, "Target node ID"],
+    max_hops: Annotated[int, "Maximum path length (1-10)"] = 6,
+) -> str:
+    """Find the shortest path between two nodes in the knowledge graph.
+
+    Useful for understanding how different code elements are connected,
+    e.g., how a business rule relates to a database table.
+    """
+    try:
+        from_uuid = uuid.UUID(from_node_id)
+        to_uuid = uuid.UUID(to_node_id)
+    except ValueError as e:
+        return f"# Error\n\nInvalid node ID: {e}"
+
+    try:
+        from contextmine_core.graphrag import trace_path
+
+        async with get_db_session() as db:
+            result = await trace_path(
+                session=db,
+                from_node_id=from_uuid,
+                to_node_id=to_uuid,
+                collection_id=None,
+                max_hops=min(max_hops, 10),
+            )
+
+            if not result.nodes:
+                return f"# No Path Found\n\nNo connection between {from_node_id[:8]}... and {to_node_id[:8]}..."
+
+            return result.summary_markdown
+
+    except Exception as e:
+        return f"# Error\n\nFailed to trace path: {e}"
+
+
+@mcp.tool(name="graph_rag")
+async def mcp_graph_rag(
+    query: Annotated[str, "Natural language query"],
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+    max_depth: Annotated[int, "Graph expansion depth (1-3)"] = 2,
+    max_results: Annotated[int, "Maximum search results to use as seeds"] = 10,
+) -> str:
+    """Graph-augmented retrieval: combines semantic search with knowledge graph.
+
+    1. Searches for relevant documents/code
+    2. Maps results to knowledge graph nodes (files, symbols, rules, tables)
+    3. Expands the graph neighborhood
+    4. Returns a rich context bundle with citations
+
+    Use this for questions that benefit from understanding code structure
+    and relationships, not just text similarity.
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.graphrag import graph_rag_bundle
+
+        collection_uuid = uuid.UUID(collection_id) if collection_id else None
+
+        async with get_db_session() as db:
+            result = await graph_rag_bundle(
+                session=db,
+                query=query,
+                collection_id=collection_uuid,
+                user_id=user_id,
+                max_depth=min(max_depth, 3),
+                max_results=max_results,
+            )
+
+            if not result.summary_markdown:
+                return f"# No Results\n\nNo relevant content found for: {query}"
+
+            return result.summary_markdown
+
+    except Exception as e:
+        return f"# Error\n\nGraphRAG query failed: {e}"
+
+
+@mcp.tool(name="get_arc42")
+async def mcp_get_arc42(
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+    section: Annotated[
+        str | None,
+        "Specific section: 'context', 'building-blocks', 'runtime', 'deployment', 'crosscutting', 'risks', 'glossary'",
+    ] = None,
+    regenerate: Annotated[bool, "Force regeneration instead of using cached"] = False,
+) -> str:
+    """Get arc42 architecture documentation for the codebase.
+
+    Returns generated architecture documentation with sections for:
+    - Context (system boundary, external interfaces)
+    - Building Blocks (components, database schema)
+    - Runtime View (execution flows)
+    - Deployment View (infrastructure, jobs)
+    - Crosscutting Concepts (patterns, security)
+    - Risks & Technical Debt
+    - Glossary (domain terms)
+
+    Every statement is evidence-backed from the knowledge graph.
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.analyzer.arc42 import generate_arc42, save_arc42_artifact
+        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind
+        from contextmine_core.search import get_accessible_collection_ids
+
+        async with get_db_session() as db:
+            # Get accessible collections
+            if collection_id:
+                collection_ids = [uuid.UUID(collection_id)]
+            else:
+                collection_ids = await get_accessible_collection_ids(db, user_id)
+
+            if not collection_ids:
+                return "# No Collections Available\n\nNo accessible collections found."
+
+            target_collection = collection_ids[0]  # Use first accessible collection
+
+            # Check for cached artifact
+            if not regenerate:
+                result = await db.execute(
+                    select(KnowledgeArtifact)
+                    .where(
+                        KnowledgeArtifact.collection_id == target_collection,
+                        KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                    )
+                    .order_by(KnowledgeArtifact.created_at.desc())
+                    .limit(1)
+                )
+                artifact = result.scalar_one_or_none()
+
+                if artifact:
+                    if section:
+                        # Parse section from content
+                        content = artifact.content or ""
+                        section_marker = f"## {section.replace('-', ' ').title()}"
+                        if section_marker.lower() not in content.lower():
+                            return f"# Section Not Found\n\nSection '{section}' not found in arc42 document."
+                        return content  # Return full for now, could parse section
+
+                    return artifact.content or "# Empty Document"
+
+            # Generate fresh arc42 document
+            doc = await generate_arc42(db, target_collection)
+
+            # Save as artifact
+            await save_arc42_artifact(db, target_collection, doc)
+            await db.commit()
+
+            if section:
+                sec = doc.get_section(section)
+                if sec:
+                    return f"## {sec.title}\n\n{sec.content}"
+                return f"# Section Not Found\n\nSection '{section}' not found."
+
+            return doc.to_markdown()
+
+    except Exception as e:
+        return f"# Error\n\nFailed to get arc42 documentation: {e}"
+
+
+@mcp.tool(name="arc42_drift_report")
+async def mcp_arc42_drift_report(
+    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+) -> str:
+    """Generate a drift report comparing stored architecture with current state.
+
+    Shows what has changed since the last arc42 document was generated:
+    - New endpoints, tables, jobs added
+    - Components removed or changed
+    - Architecture drift indicators
+
+    Useful for keeping architecture documentation up to date.
+    """
+    user_id = get_current_user_id()
+
+    try:
+        from contextmine_core.analyzer.arc42 import compute_drift_report
+        from contextmine_core.search import get_accessible_collection_ids
+
+        async with get_db_session() as db:
+            # Get accessible collections
+            if collection_id:
+                collection_ids = [uuid.UUID(collection_id)]
+            else:
+                collection_ids = await get_accessible_collection_ids(db, user_id)
+
+            if not collection_ids:
+                return "# No Collections Available\n\nNo accessible collections found."
+
+            target_collection = collection_ids[0]
+
+            report = await compute_drift_report(db, target_collection)
+            return report.to_markdown()
+
+    except Exception as e:
+        return f"# Error\n\nFailed to generate drift report: {e}"
 
 
 # Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)

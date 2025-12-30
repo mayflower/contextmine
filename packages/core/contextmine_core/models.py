@@ -11,9 +11,11 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -73,6 +75,67 @@ class SymbolEdgeType(enum.Enum):
     IMPLEMENTS = "implements"  # Class implements an interface
     CONTAINS = "contains"  # Class contains a method
     REFERENCES = "references"  # General reference to another symbol
+
+
+class KnowledgeNodeKind(enum.Enum):
+    """Kind of knowledge graph node."""
+
+    # Code entities
+    FILE = "file"
+    SYMBOL = "symbol"
+    # Database entities
+    DB_TABLE = "db_table"
+    DB_COLUMN = "db_column"
+    DB_CONSTRAINT = "db_constraint"
+    # API entities
+    API_ENDPOINT = "api_endpoint"
+    GRAPHQL_OPERATION = "graphql_operation"
+    GRAPHQL_TYPE = "graphql_type"
+    MESSAGE_SCHEMA = "message_schema"
+    SERVICE_RPC = "service_rpc"
+    # Job entities
+    JOB = "job"
+    # Business rules
+    RULE_CANDIDATE = "rule_candidate"
+    BUSINESS_RULE = "business_rule"
+    # Architecture
+    BOUNDED_CONTEXT = "bounded_context"
+    ARC42_SECTION = "arc42_section"
+
+
+class KnowledgeEdgeKind(enum.Enum):
+    """Kind of knowledge graph edge."""
+
+    # Code relationships
+    FILE_DEFINES_SYMBOL = "file_defines_symbol"
+    SYMBOL_CONTAINS_SYMBOL = "symbol_contains_symbol"
+    FILE_IMPORTS_FILE = "file_imports_file"
+    SYMBOL_CALLS_SYMBOL = "symbol_calls_symbol"
+    SYMBOL_REFERENCES_SYMBOL = "symbol_references_symbol"
+    # Database relationships
+    TABLE_HAS_COLUMN = "table_has_column"
+    COLUMN_FK_TO_COLUMN = "column_fk_to_column"
+    TABLE_HAS_CONSTRAINT = "table_has_constraint"
+    # API relationships
+    SYSTEM_EXPOSES_ENDPOINT = "system_exposes_endpoint"
+    ENDPOINT_USES_SCHEMA = "endpoint_uses_schema"
+    RPC_USES_MESSAGE = "rpc_uses_message"
+    JOB_DEFINED_IN_FILE = "job_defined_in_file"
+    # Business rule relationships
+    RULE_DERIVED_FROM_CANDIDATE = "rule_derived_from_candidate"
+    RULE_EVIDENCED_BY = "rule_evidenced_by"
+    # Architecture relationships
+    DOCUMENTED_BY = "documented_by"
+    BELONGS_TO_CONTEXT = "belongs_to_context"
+
+
+class KnowledgeArtifactKind(enum.Enum):
+    """Kind of knowledge artifact."""
+
+    MERMAID_ERD = "mermaid_erd"
+    ARC42 = "arc42"
+    RULE_CATALOG = "rule_catalog"
+    SURFACE_CATALOG = "surface_catalog"
 
 
 class AppKV(Base):
@@ -495,3 +558,281 @@ class SymbolEdge(Base):
         back_populates="incoming_edges",
         foreign_keys=[target_symbol_id],
     )
+
+
+# -----------------------------------------------------------------------------
+# Knowledge Graph Tables
+# -----------------------------------------------------------------------------
+
+
+class KnowledgeEvidence(Base):
+    """Evidence linking knowledge nodes/edges to source locations.
+
+    Evidence provides traceability back to the original source: file path,
+    line numbers, and optionally document/chunk references.
+    """
+
+    __tablename__ = "knowledge_evidence"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Optional link to indexed document
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Optional link to specific chunk
+    chunk_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chunks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # File path (may differ from document URI for non-indexed files)
+    file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Line span (1-indexed)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Optional code snippet for context
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    document: Mapped["Document | None"] = relationship()
+    chunk: Mapped["Chunk | None"] = relationship()
+
+
+class KnowledgeNode(Base):
+    """A node in the knowledge graph representing an extracted entity.
+
+    Nodes are typed (FILE, SYMBOL, DB_TABLE, API_ENDPOINT, etc.) and have
+    a natural key for idempotent upserts. Metadata is stored as JSON.
+    """
+
+    __tablename__ = "knowledge_nodes"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "kind", "natural_key", name="uq_knowledge_node_natural"),
+        Index("ix_knowledge_node_collection_kind", "collection_id", "kind"),
+        Index("ix_knowledge_node_meta", "meta", postgresql_using="gin"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[KnowledgeNodeKind] = mapped_column(
+        Enum(
+            KnowledgeNodeKind,
+            name="knowledge_node_kind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    # Stable natural key for upserts (e.g., file path, qualified symbol name)
+    natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Display name
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Flexible metadata (schema depends on kind)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    collection: Mapped["Collection"] = relationship()
+    evidence_links: Mapped[list["KnowledgeNodeEvidence"]] = relationship(
+        back_populates="node", cascade="all, delete-orphan"
+    )
+    outgoing_edges: Mapped[list["KnowledgeEdge"]] = relationship(
+        back_populates="source_node",
+        foreign_keys="KnowledgeEdge.source_node_id",
+        cascade="all, delete-orphan",
+    )
+    incoming_edges: Mapped[list["KnowledgeEdge"]] = relationship(
+        back_populates="target_node",
+        foreign_keys="KnowledgeEdge.target_node_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class KnowledgeEdge(Base):
+    """An edge in the knowledge graph representing a relationship between nodes.
+
+    Edges are typed (FILE_DEFINES_SYMBOL, TABLE_HAS_COLUMN, etc.) and can
+    have metadata and evidence links.
+    """
+
+    __tablename__ = "knowledge_edges"
+    __table_args__ = (
+        Index("ix_knowledge_edge_source", "source_node_id", "kind"),
+        Index("ix_knowledge_edge_target", "target_node_id", "kind"),
+        Index("ix_knowledge_edge_collection", "collection_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[KnowledgeEdgeKind] = mapped_column(
+        Enum(
+            KnowledgeEdgeKind,
+            name="knowledge_edge_kind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    # Flexible metadata
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    collection: Mapped["Collection"] = relationship()
+    source_node: Mapped["KnowledgeNode"] = relationship(
+        back_populates="outgoing_edges",
+        foreign_keys=[source_node_id],
+    )
+    target_node: Mapped["KnowledgeNode"] = relationship(
+        back_populates="incoming_edges",
+        foreign_keys=[target_node_id],
+    )
+    evidence_links: Mapped[list["KnowledgeEdgeEvidence"]] = relationship(
+        back_populates="edge", cascade="all, delete-orphan"
+    )
+
+
+class KnowledgeNodeEvidence(Base):
+    """Link table between knowledge nodes and their evidence."""
+
+    __tablename__ = "knowledge_node_evidence"
+
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # Relationships
+    node: Mapped["KnowledgeNode"] = relationship(back_populates="evidence_links")
+    evidence: Mapped["KnowledgeEvidence"] = relationship()
+
+
+class KnowledgeEdgeEvidence(Base):
+    """Link table between knowledge edges and their evidence."""
+
+    __tablename__ = "knowledge_edge_evidence"
+
+    edge_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_edges.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # Relationships
+    edge: Mapped["KnowledgeEdge"] = relationship(back_populates="evidence_links")
+    evidence: Mapped["KnowledgeEvidence"] = relationship()
+
+
+class KnowledgeArtifact(Base):
+    """A generated artifact from the knowledge graph (ERD, arc42 doc, etc.).
+
+    Artifacts are derived from extracted knowledge and stored for retrieval.
+    They link back to evidence showing what contributed to their generation.
+    """
+
+    __tablename__ = "knowledge_artifacts"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "kind", "name", name="uq_knowledge_artifact_name"),
+        Index("ix_knowledge_artifact_collection_kind", "collection_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[KnowledgeArtifactKind] = mapped_column(
+        Enum(
+            KnowledgeArtifactKind,
+            name="knowledge_artifact_kind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    # The artifact content (Mermaid diagram, Markdown doc, etc.)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Flexible metadata
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    collection: Mapped["Collection"] = relationship()
+    evidence_links: Mapped[list["KnowledgeArtifactEvidence"]] = relationship(
+        back_populates="artifact", cascade="all, delete-orphan"
+    )
+
+
+class KnowledgeArtifactEvidence(Base):
+    """Link table between knowledge artifacts and their contributing evidence."""
+
+    __tablename__ = "knowledge_artifact_evidence"
+
+    artifact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_artifacts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # Relationships
+    artifact: Mapped["KnowledgeArtifact"] = relationship(back_populates="evidence_links")
+    evidence: Mapped["KnowledgeEvidence"] = relationship()
