@@ -347,7 +347,7 @@ docker pull ghcr.io/mayflower/contextmine-web:latest
 
 1. Ensure you've created at least one collection in the admin UI
 2. Check that the collection visibility is set to **Global** (or you're authenticated)
-3. Verify your MCP token is valid
+3. Verify you've completed the GitHub OAuth flow when prompted by your MCP client
 
 ### Sync not finding documents
 
