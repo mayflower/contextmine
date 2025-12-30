@@ -1062,11 +1062,40 @@ function App() {
           <section className="card welcome-card">
             <img src="/logo-512.png" alt="ContextMine" className="welcome-logo" />
             <div className="welcome-content">
-              <h2>Welcome to ContextMine</h2>
-              <p>
-                Index your documentation and code repositories, then access them via MCP in Claude, Cursor, or any AI assistant.
-                Add GitHub repos or web docs, and let your AI tools query up-to-date context with semantic search.
+              <h2>Your AI's Knowledge Base</h2>
+              <p className="welcome-tagline">
+                Give Claude, Cursor, and any MCP-compatible AI assistant instant access to your documentation and codebase.
               </p>
+              <div className="features-grid">
+                <div className="feature-item">
+                  <span className="feature-icon">🔍</span>
+                  <div className="feature-text">
+                    <strong>Semantic Search</strong>
+                    <span>Hybrid FTS + vector search with smart ranking finds exactly what you need</span>
+                  </div>
+                </div>
+                <div className="feature-item">
+                  <span className="feature-icon">🔄</span>
+                  <div className="feature-text">
+                    <strong>Auto-Sync</strong>
+                    <span>GitHub repos and web docs stay current with scheduled incremental updates</span>
+                  </div>
+                </div>
+                <div className="feature-item">
+                  <span className="feature-icon">🔌</span>
+                  <div className="feature-text">
+                    <strong>MCP Native</strong>
+                    <span>Works with Claude Desktop, Cursor, VS Code, Cline, and Claude Code CLI</span>
+                  </div>
+                </div>
+                <div className="feature-item">
+                  <span className="feature-icon">🧠</span>
+                  <div className="feature-text">
+                    <strong>Deep Research</strong>
+                    <span>AI agent investigates complex questions across your entire knowledge base</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
           <div className="dashboard-grid">
