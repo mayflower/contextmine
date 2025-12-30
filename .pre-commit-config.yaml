@@ -28,3 +28,17 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      - id: vulture
+        name: vulture (dead code)
+        entry: uvx vulture apps packages vulture_whitelist.py --min-confidence 80
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: bandit
+        name: bandit (security)
+        entry: uvx bandit -r apps packages -c pyproject.toml
+        language: system
+        types: [python]
+        pass_filenames: false

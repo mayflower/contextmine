@@ -51,3 +51,15 @@ unsupported-operator = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["apps/api/tests"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "node_modules"]
+skips = [
+    "B101",  # assert warnings (used in tests)
+    "B104",  # 0.0.0.0 bind (intentional for containers)
+    "B105",  # hardcoded password false positives on URLs
+    "B110",  # try/except/pass (intentional fallbacks)
+    "B404",  # subprocess import (needed for spider-md binary)
+    "B603",  # subprocess without shell (spider-md binary)
+    "B608",  # SQL injection false positive on prompt templates
+]
