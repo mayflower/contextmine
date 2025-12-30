@@ -112,9 +112,6 @@ class User(Base):
     oauth_tokens: Mapped[list["OAuthToken"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    mcp_tokens: Mapped[list["MCPApiToken"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
     owned_collections: Mapped[list["Collection"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
@@ -140,27 +137,6 @@ class OAuthToken(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="oauth_tokens")
-
-
-class MCPApiToken(Base):
-    """API tokens for MCP endpoint access."""
-
-    __tablename__ = "mcp_api_tokens"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # Relationships
-    user: Mapped["User"] = relationship(back_populates="mcp_tokens")
 
 
 class Collection(Base):

@@ -1,4 +1,4 @@
-"""Authentication services for GitHub OAuth and API tokens."""
+"""Authentication services for GitHub OAuth."""
 
 import base64
 import hashlib
@@ -6,13 +6,8 @@ import secrets
 from typing import Any
 
 import httpx
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
 from contextmine_core.settings import get_settings
 from cryptography.fernet import Fernet
-
-# Argon2 hasher for API tokens
-_ph = PasswordHasher()
 
 # GitHub OAuth endpoints
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -100,25 +95,6 @@ async def get_github_user(access_token: str) -> dict[str, Any]:
         )
         response.raise_for_status()
         return response.json()
-
-
-def generate_api_token() -> str:
-    """Generate a random API token for MCP access."""
-    return secrets.token_urlsafe(32)
-
-
-def hash_api_token(token: str) -> str:
-    """Hash an API token for secure storage using Argon2."""
-    return _ph.hash(token)
-
-
-def verify_api_token(token: str, token_hash: str) -> bool:
-    """Verify an API token against its hash."""
-    try:
-        _ph.verify(token_hash, token)
-        return True
-    except VerifyMismatchError:
-        return False
 
 
 def compute_ssh_key_fingerprint(private_key_pem: str) -> str:
