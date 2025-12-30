@@ -12,15 +12,6 @@ interface User {
   avatar_url: string | null
 }
 
-interface MCPToken {
-  id: string
-  name: string
-  token?: string // Only present on creation
-  created_at: string
-  last_used_at: string | null
-  revoked_at: string | null
-}
-
 interface Collection {
   id: string
   slug: string
@@ -188,12 +179,6 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
 
-  // MCP Tokens state
-  const [tokens, setTokens] = useState<MCPToken[]>([])
-  const [tokensLoading, setTokensLoading] = useState(false)
-  const [newTokenName, setNewTokenName] = useState('')
-  const [createdToken, setCreatedToken] = useState<string | null>(null)
-
   // Collections state
   const [collections, setCollections] = useState<Collection[]>([])
   const [collectionsLoading, setCollectionsLoading] = useState(false)
@@ -322,65 +307,6 @@ function App() {
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { credentials: 'include' })
     setUser(null)
-  }
-
-  // Fetch MCP tokens
-  const fetchTokens = async () => {
-    setTokensLoading(true)
-    try {
-      const response = await fetch('/api/mcp-tokens', { credentials: 'include' })
-      if (response.ok) {
-        const data = await response.json()
-        setTokens(data)
-      }
-    } catch {
-      // Error fetching tokens
-    } finally {
-      setTokensLoading(false)
-    }
-  }
-
-  // Load tokens when switching to Dashboard page
-  useEffect(() => {
-    if (currentPage === 'dashboard' && user) {
-      fetchTokens()
-    }
-  }, [currentPage, user])
-
-  const handleCreateToken = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newTokenName.trim()) return
-
-    try {
-      const response = await fetch('/api/mcp-tokens', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ name: newTokenName }),
-      })
-      if (response.ok) {
-        const data = await response.json()
-        setCreatedToken(data.token)
-        setNewTokenName('')
-        fetchTokens()
-      }
-    } catch {
-      // Error creating token
-    }
-  }
-
-  const handleRevokeToken = async (tokenId: string) => {
-    try {
-      const response = await fetch(`/api/mcp-tokens/${tokenId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
-      if (response.ok) {
-        fetchTokens()
-      }
-    } catch {
-      // Error revoking token
-    }
   }
 
   // Fetch collections
