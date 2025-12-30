@@ -1095,7 +1095,7 @@ function App() {
               )}
             </svg>
           </button>
-          <img src="/logo-sm.png" alt="ContextMine" className="header-logo" />
+          <img src="/logo-dark-sm.png" alt="ContextMine" className="header-logo" />
           <h1>ContextMine</h1>
           <span className="subtitle">Admin Console</span>
           <button
