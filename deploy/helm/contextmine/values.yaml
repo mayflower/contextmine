@@ -43,7 +43,7 @@ postgresql:
 # -- API service configuration
 api:
   image:
-    repository: ghcr.io/your-org/contextmine-api
+    repository: ghcr.io/mayflower/contextmine-api
     tag: latest
   # -- Number of replicas
   replicaCount: 1
@@ -99,7 +99,7 @@ prefect:
 # -- Worker configuration
 worker:
   image:
-    repository: ghcr.io/your-org/contextmine-worker
+    repository: ghcr.io/mayflower/contextmine-worker
     tag: latest
   # -- Number of replicas
   replicaCount: 1
@@ -157,6 +157,14 @@ config:
   mcpOauthBaseUrl: "http://localhost:8000"
   # -- MCP allowed origins (comma-separated, empty = allow all)
   mcpAllowedOrigins: ""
+  # -- Default LLM settings
+  llm:
+    # -- Default embedding model (e.g., openai:text-embedding-3-small)
+    defaultEmbeddingModel: ""
+    # -- Default LLM provider (openai, anthropic, gemini)
+    defaultProvider: ""
+    # -- Default LLM model (e.g., gpt-4o-mini)
+    defaultModel: ""
   # -- Research agent settings
   research:
     artifactStore: "memory"

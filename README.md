@@ -41,13 +41,9 @@ docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
 
 ### Kubernetes (Helm)
 
-For production deployments, use the Helm chart:
+For production deployments, use the Helm chart from GHCR:
 
 ```bash
-# Clone the repository
-git clone https://github.com/mayflower/contextmine.git
-cd contextmine
-
 # Create a values file with your configuration
 cat > my-values.yaml << EOF
 api:
@@ -59,7 +55,7 @@ worker:
     repository: ghcr.io/mayflower/contextmine-worker
     tag: latest
 config:
-  publicBaseUrl: "http://localhost:8000"
+  publicBaseUrl: "https://contextmine.example.com"
 secrets:
   github:
     clientId: "your-github-client-id"
@@ -69,8 +65,8 @@ secrets:
   openaiApiKey: "sk-..."
 EOF
 
-# Install the chart
-helm install contextmine ./deploy/helm/contextmine -f my-values.yaml
+# Install from OCI registry
+helm install contextmine oci://ghcr.io/mayflower/contextmine -f my-values.yaml
 
 # Access the application
 kubectl port-forward svc/contextmine-api 8000:8000

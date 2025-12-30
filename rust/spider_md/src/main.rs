@@ -1,12 +1,14 @@
 //! spider_md - Web crawler that converts HTML to Markdown with strict URL scoping
 //!
 //! This CLI tool crawls websites starting from a base URL, staying strictly within
-//! the same hostname and path prefix. It converts HTML to Markdown and outputs
-//! JSON lines format.
+//! the same hostname and path prefix. It extracts main content using Readability,
+//! strips navigation elements, and converts to clean Markdown.
 
 use clap::Parser;
+use fast_html2md::rewrite_html;
 use hex;
-use html2md::rewrite_html;
+use readability::extractor;
+use scraper::{Html, Selector};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use spider::configuration::Configuration;
@@ -118,6 +120,143 @@ fn compute_hash(content: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Preprocess HTML by removing navigation elements, scripts, styles, etc.
+/// This helps readability extraction and improves markdown quality.
+fn preprocess_html(html: &str) -> String {
+    let document = Html::parse_document(html);
+
+    // Elements to remove completely
+    let selectors_to_remove = [
+        "script",
+        "style",
+        "noscript",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "[role='navigation']",
+        "[role='banner']",
+        "[role='contentinfo']",
+        "[aria-hidden='true']",
+        ".nav",
+        ".navbar",
+        ".navigation",
+        ".sidebar",
+        ".menu",
+        ".footer",
+        ".header",
+        "#nav",
+        "#navbar",
+        "#navigation",
+        "#sidebar",
+        "#menu",
+        "#footer",
+        "#header",
+        // Common cookie/consent banners
+        ".cookie",
+        ".consent",
+        "#cookie",
+        "#consent",
+        // Ads
+        ".ad",
+        ".ads",
+        ".advertisement",
+        "[class*='cookie']",
+        "[class*='banner']",
+        "[id*='cookie']",
+    ];
+
+    // Remove elements by their outer HTML
+    // Since scraper doesn't support mutation, we use string replacement
+    let mut result = html.to_string();
+
+    for selector_str in &selectors_to_remove {
+        if let Ok(selector) = Selector::parse(selector_str) {
+            for element in document.select(&selector) {
+                let outer_html = element.html();
+                result = result.replace(&outer_html, "");
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract main content using Mozilla Readability algorithm
+fn extract_with_readability(html: &str, url: &str) -> Option<String> {
+    // Parse URL for readability
+    let parsed_url = match Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return None,
+    };
+
+    // Use readability to extract main content
+    match extractor::extract(&mut html.as_bytes(), &parsed_url) {
+        Ok(product) => Some(product.content),
+        Err(_) => None,
+    }
+}
+
+/// Convert HTML to clean Markdown with preprocessing and content extraction
+fn html_to_clean_markdown(html: &str, url: &str) -> String {
+    // Step 1: Preprocess to remove nav, scripts, etc.
+    let preprocessed = preprocess_html(html);
+
+    // Step 2: Try readability extraction for main content
+    let content_html = match extract_with_readability(&preprocessed, url) {
+        Some(content) => content,
+        None => preprocessed, // Fall back to preprocessed HTML if readability fails
+    };
+
+    // Step 3: Convert to Markdown
+    let markdown = rewrite_html(&content_html, true);
+
+    // Step 4: Clean up the markdown
+    clean_markdown(&markdown)
+}
+
+/// Clean up markdown output - remove excessive whitespace, empty links, etc.
+fn clean_markdown(markdown: &str) -> String {
+    let mut result = String::new();
+    let mut consecutive_empty = 0;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+
+        // Skip lines that are just whitespace or empty brackets/links
+        if trimmed.is_empty() {
+            consecutive_empty += 1;
+            // Allow max 2 consecutive empty lines
+            if consecutive_empty <= 2 {
+                result.push('\n');
+            }
+            continue;
+        }
+
+        // Skip lines that are just navigation artifacts
+        if trimmed == "[]" || trimmed == "[]()" || trimmed == "[ ]()" {
+            continue;
+        }
+
+        // Skip "Skip to content" type links
+        if trimmed.to_lowercase().contains("skip to") {
+            continue;
+        }
+
+        // Skip lines that are just symbols/punctuation
+        if trimmed.chars().all(|c| !c.is_alphanumeric()) && trimmed.len() < 5 {
+            continue;
+        }
+
+        consecutive_empty = 0;
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result.trim().to_string()
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -214,11 +353,11 @@ async fn main() {
         // Extract title
         let title = extract_title(&html);
 
-        // Convert to Markdown (using CommonMark format)
-        let markdown = rewrite_html(&html, true);
+        // Convert to clean Markdown (with preprocessing and readability extraction)
+        let markdown = html_to_clean_markdown(&html, page_url);
 
         // Skip pages with no meaningful content
-        if markdown.trim().is_empty() {
+        if markdown.trim().is_empty() || markdown.len() < 50 {
             continue;
         }
 
@@ -314,5 +453,78 @@ mod tests {
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
         assert_eq!(hash1.len(), 64); // SHA-256 = 64 hex chars
+    }
+
+    #[test]
+    fn test_preprocess_html_removes_nav() {
+        let html = r#"<html><body><nav>Navigation</nav><main>Content</main></body></html>"#;
+        let result = preprocess_html(html);
+        assert!(!result.contains("Navigation"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn test_preprocess_html_removes_script_style() {
+        let html = r#"<html><head><style>.foo{}</style></head><body><script>alert('x')</script><p>Text</p></body></html>"#;
+        let result = preprocess_html(html);
+        assert!(!result.contains("alert"));
+        assert!(!result.contains(".foo"));
+        assert!(result.contains("Text"));
+    }
+
+    #[test]
+    fn test_preprocess_html_removes_header_footer() {
+        let html = r#"<html><body><header>Header</header><article>Article content</article><footer>Footer</footer></body></html>"#;
+        let result = preprocess_html(html);
+        assert!(!result.contains("Header"));
+        assert!(!result.contains("Footer"));
+        assert!(result.contains("Article content"));
+    }
+
+    #[test]
+    fn test_clean_markdown_removes_empty_links() {
+        let markdown = "Some text\n[]()\n[]\nMore text";
+        let result = clean_markdown(markdown);
+        assert!(!result.contains("[]()"));
+        assert!(!result.contains("\n[]\n"));
+        assert!(result.contains("Some text"));
+        assert!(result.contains("More text"));
+    }
+
+    #[test]
+    fn test_clean_markdown_removes_skip_to_content() {
+        let markdown = "# Title\n[Skip to main content](#main)\nActual content";
+        let result = clean_markdown(markdown);
+        assert!(!result.to_lowercase().contains("skip to"));
+        assert!(result.contains("Actual content"));
+    }
+
+    #[test]
+    fn test_clean_markdown_limits_empty_lines() {
+        let markdown = "Line 1\n\n\n\n\n\nLine 2";
+        let result = clean_markdown(markdown);
+        // Should have at most 2 consecutive empty lines
+        assert!(!result.contains("\n\n\n\n"));
+    }
+
+    #[test]
+    fn test_html_to_clean_markdown() {
+        let html = r#"
+        <html>
+        <head><title>Test</title><style>.nav{}</style></head>
+        <body>
+            <nav><a href="/">Home</a></nav>
+            <main>
+                <h1>Main Title</h1>
+                <p>This is the main content of the page.</p>
+            </main>
+            <footer>Copyright 2024</footer>
+        </body>
+        </html>"#;
+        let result = html_to_clean_markdown(html, "https://example.com/page");
+        // Should contain main content
+        assert!(result.contains("Main Title") || result.contains("main content"));
+        // Should not contain navigation or footer
+        assert!(!result.contains("Copyright 2024"));
     }
 }

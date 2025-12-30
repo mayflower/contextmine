@@ -18,6 +18,17 @@ data:
   # Prefect settings (for worker)
   PREFECT_API_URL: {{ include "contextmine.prefectApiUrl" . | quote }}
 
+  # Default LLM settings
+  {{- if .Values.config.llm.defaultEmbeddingModel }}
+  DEFAULT_EMBEDDING_MODEL: {{ .Values.config.llm.defaultEmbeddingModel | quote }}
+  {{- end }}
+  {{- if .Values.config.llm.defaultProvider }}
+  DEFAULT_LLM_PROVIDER: {{ .Values.config.llm.defaultProvider | quote }}
+  {{- end }}
+  {{- if .Values.config.llm.defaultModel }}
+  DEFAULT_LLM_MODEL: {{ .Values.config.llm.defaultModel | quote }}
+  {{- end }}
+
   # Research agent settings
   ARTIFACT_STORE: {{ .Values.config.research.artifactStore | quote }}
   ARTIFACT_DIR: {{ .Values.config.research.artifactDir | quote }}

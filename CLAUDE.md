@@ -16,13 +16,13 @@ uv run pytest -v           # Run all tests
 # Run a single test
 uv run pytest apps/api/tests/test_health.py::test_health_check -v
 
-# Start API server (from apps/api or repo root)
-cd apps/api && uv run uvicorn app.main:app --reload --port 8000
+# Start API server (run from repo root)
+uv run uvicorn apps.api.app.main:app --reload --port 8000
 
-# Start frontend (from apps/web)
+# Start frontend dev server (from apps/web)
 cd apps/web && npm install && npm run dev
 
-# Docker
+# Docker (full stack)
 docker compose up --build
 
 # Database migrations (run from packages/core)
@@ -40,9 +40,9 @@ ContextMine is a documentation/code indexing system exposing context via MCP (Mo
 
 - **apps/api**: FastAPI backend with MCP server mounted at `/mcp`
 - **apps/web**: React frontend (Vite) admin console
-- **apps/worker**: Prefect worker for background sync jobs (future)
+- **apps/worker**: Prefect worker for background sync jobs
 - **packages/core**: Shared Python library (settings, DB models, services)
-- **rust/spider_md**: Rust-based web crawler binary (future)
+- **rust/spider_md**: Rust-based web crawler binary (HTML→Markdown)
 
 ### Python Workspace
 
@@ -57,7 +57,7 @@ FastAPI app (`apps/api/app/main.py`) mounts:
 - REST routes under `/api/*` (health, auth, collections, sources, etc.)
 - MCP server at `/mcp` using Streamable HTTP transport
 
-MCP exposes tools for context retrieval: `context.list_collections`, `context.list_documents`, `context.get_markdown`.
+MCP exposes tools: `get_markdown` (semantic search), `list_collections`, `list_documents`, `outline`, `find_symbol`, `definition`, `references`, `expand`, `deep_research`.
 
 ### Key Conventions
 

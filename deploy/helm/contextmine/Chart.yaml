@@ -10,8 +10,8 @@ keywords:
   - mcp
   - model-context-protocol
   - rag
-home: https://github.com/your-org/contextmine
+home: https://github.com/mayflower/contextmine
 sources:
-  - https://github.com/your-org/contextmine
+  - https://github.com/mayflower/contextmine
 maintainers:
   - name: ContextMine Team
