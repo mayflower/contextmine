@@ -11,6 +11,7 @@ from contextmine_core import (
     Document,
     Source,
     Symbol,
+    SymbolEdge,
     get_settings,
 )
 from contextmine_core import get_session as get_db_session
@@ -534,75 +535,51 @@ async def code_definition(
     line: Annotated[int, "Line number (1-indexed)"],
     column: Annotated[int, "Column position (0-indexed)"],
 ) -> str:
-    """Jump to where a symbol is defined. Provide the location of a reference to find its definition."""
-    from pathlib import Path
+    """Jump to where a symbol is defined. Uses pre-indexed symbol data."""
+    async with get_db_session() as db:
+        # Find the document matching the file path
+        doc_query = select(Document).where(Document.uri.ilike(f"%{file_path}%"))
+        doc_result = await db.execute(doc_query)
+        doc = doc_result.scalar_one_or_none()
 
-    # Try LSP first
-    try:
-        from contextmine_core.lsp import LspNotAvailableError, get_lsp_manager
+        if not doc:
+            return f"# Document Not Found\n\nNo indexed document matches: `{file_path}`"
 
-        manager = get_lsp_manager()
-        client = await manager.get_client(file_path)
+        # Find the symbol that contains this line (smallest enclosing symbol)
+        symbol_query = (
+            select(Symbol)
+            .where(Symbol.document_id == doc.id)
+            .where(Symbol.start_line <= line)
+            .where(Symbol.end_line >= line)
+            .order_by(Symbol.end_line - Symbol.start_line)  # Smallest first
+        )
+        symbol_result = await db.execute(symbol_query)
+        symbol = symbol_result.scalars().first()
 
-        # Use LSP for accurate definition lookup
-        locations = await client.get_definition(file_path, line, column)
+        if not symbol:
+            return f"# No Symbol Found\n\nNo indexed symbol at {file_path}:{line}"
 
-        if locations:
-            location = locations[0]  # Take first definition
-            # Read the definition content
-            def_path = Path(location.file_path)
-            if def_path.exists():
-                file_lines = def_path.read_text().split("\n")
-                start_idx = max(0, location.start_line - 1)
-                end_idx = min(len(file_lines), location.end_line + 10)
-                content = "\n".join(file_lines[start_idx:end_idx])
+        # Get the content from the document's markdown
+        content_lines = (doc.content_markdown or "").split("\n")
+        start_idx = max(0, symbol.start_line - 1)
+        end_idx = min(len(content_lines), symbol.end_line + 5)
+        content = "\n".join(content_lines[start_idx:end_idx])
 
-                return f"""# Definition Found
+        # Build response
+        docstring = symbol.meta.get("docstring", "") if symbol.meta else ""
+        signature_info = f"**Signature:** `{symbol.signature}`\n" if symbol.signature else ""
+        docstring_info = f"**Docstring:** {docstring}\n" if docstring else ""
 
-**File:** {location.file_path}
-**Lines:** {location.start_line}-{location.end_line}
+        return f"""# Definition Found
 
-```
-{content}
-```
-"""
-            return f"""# Definition Found
-
-**File:** {location.file_path}
-**Lines:** {location.start_line}-{location.end_line}
-"""
-
-        # LSP returned nothing, fall through to tree-sitter
-    except (ImportError, LspNotAvailableError):
-        # LSP not available, fall through to tree-sitter
-        pass
-    except Exception:
-        # Log but continue to fallback
-        pass
-
-    # Fallback: Try tree-sitter to find enclosing symbol
-    try:
-        from contextmine_core.treesitter import find_enclosing_symbol, get_symbol_content
-
-        symbol = find_enclosing_symbol(file_path, line)
-        if symbol:
-            content = get_symbol_content(symbol)
-            return f"""# Enclosing Symbol (LSP not available)
-
-**File:** {file_path}
-**Symbol:** {symbol.kind.value} `{symbol.name}`
+**File:** {doc.uri}
+**Symbol:** {symbol.kind.value} `{symbol.qualified_name}`
 **Lines:** {symbol.start_line}-{symbol.end_line}
-
+{signature_info}{docstring_info}
 ```
 {content}
 ```
-
-*Note: For accurate go-to-definition, an LSP server is needed.*
 """
-    except Exception:
-        pass
-
-    return f"# Definition Not Found\n\nCould not find definition at {file_path}:{line}:{column}"
 
 
 @mcp.tool(name="references")
@@ -612,48 +589,59 @@ async def code_references(
     column: Annotated[int, "Column position (0-indexed)"],
     limit: Annotated[int, "Max results"] = 20,
 ) -> str:
-    """Find all usages of a symbol. Use for impact analysis before refactoring."""
-    try:
-        from contextmine_core.lsp import LspNotAvailableError, get_lsp_manager
+    """Find all usages of a symbol. Uses pre-indexed symbol edge data."""
+    from sqlalchemy.orm import selectinload
 
-        manager = get_lsp_manager()
-        client = await manager.get_client(file_path)
+    async with get_db_session() as db:
+        # Find the document matching the file path
+        doc_query = select(Document).where(Document.uri.ilike(f"%{file_path}%"))
+        doc_result = await db.execute(doc_query)
+        doc = doc_result.scalar_one_or_none()
 
-        locations = await client.get_references(file_path, line, column)
+        if not doc:
+            return f"# Document Not Found\n\nNo indexed document matches: `{file_path}`"
 
-        if not locations:
-            return (
-                f"# No References Found\n\nNo references to symbol at {file_path}:{line}:{column}"
-            )
+        # Find the symbol at this location (smallest enclosing)
+        symbol_query = (
+            select(Symbol)
+            .where(Symbol.document_id == doc.id)
+            .where(Symbol.start_line <= line)
+            .where(Symbol.end_line >= line)
+            .order_by(Symbol.end_line - Symbol.start_line)  # Smallest first
+        )
+        symbol_result = await db.execute(symbol_query)
+        target_symbol = symbol_result.scalars().first()
 
-        output_lines = [f"# References ({len(locations)} found)\n"]
+        if not target_symbol:
+            return f"# No Symbol Found\n\nNo indexed symbol at {file_path}:{line}"
 
-        for i, loc in enumerate(locations[:limit]):
-            output_lines.append(f"## {i + 1}. {loc.file_path}:{loc.start_line}")
-            output_lines.append(f"Lines {loc.start_line}-{loc.end_line}\n")
+        # Find all edges where this symbol is the target (incoming references)
+        edge_query = (
+            select(SymbolEdge)
+            .options(selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document))
+            .where(SymbolEdge.target_symbol_id == target_symbol.id)
+            .limit(limit + 10)  # Get a few extra in case of filtering
+        )
+        edge_result = await db.execute(edge_query)
+        edges = edge_result.scalars().all()
 
-        if len(locations) > limit:
-            output_lines.append(f"\n*Showing {limit} of {len(locations)} references*")
+        if not edges:
+            return f"# No References Found\n\nNo indexed references to `{target_symbol.qualified_name}`"
+
+        output_lines = [f"# References to `{target_symbol.qualified_name}` ({len(edges)} found)\n"]
+
+        for i, edge in enumerate(edges[:limit]):
+            source = edge.source_symbol
+            if source and source.document:
+                ref_file = source.document.uri
+                ref_line = edge.source_line or source.start_line
+                output_lines.append(f"## {i + 1}. {source.qualified_name} ({edge.edge_type.value})")
+                output_lines.append(f"**File:** {ref_file}:{ref_line}\n")
+
+        if len(edges) > limit:
+            output_lines.append(f"\n*Showing {limit} of {len(edges)} references*")
 
         return "\n".join(output_lines)
-
-    except (ImportError, LspNotAvailableError):
-        # LSP not available
-        return """# LSP Not Available
-
-To find references, an LSP server needs to be running for this language.
-
-**Alternative:** Use `context.get_markdown` with the symbol name to search
-for usages across the indexed codebase.
-
-Example:
-```
-context.get_markdown(query="<symbol_name>", raw=True)
-```
-"""
-
-    except Exception as e:
-        return f"# Error\n\nFailed to find references: {e}"
 
 
 @mcp.tool(name="expand")
