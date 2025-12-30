@@ -8,8 +8,8 @@ from urllib.parse import urlparse
 
 import trafilatura
 
-# Maximum page content size (500KB per page)
-MAX_PAGE_SIZE = 500 * 1024
+# Maximum page content size (5MB per page - high because modern SPAs have large HTML)
+MAX_PAGE_SIZE = 5 * 1024 * 1024
 
 # Default rate limiting settings
 DEFAULT_DELAY_MS = 500  # 500ms between requests
