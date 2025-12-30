@@ -5,8 +5,8 @@
 //! strips navigation elements, and converts to clean Markdown.
 
 use clap::Parser;
-use fast_html2md::rewrite_html;
 use hex;
+use html2md::rewrite_html;
 use readability::extractor;
 use scraper::{Html, Selector};
 use serde::Serialize;
