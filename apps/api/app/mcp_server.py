@@ -344,8 +344,11 @@ async def code_deep_research(
     budget = max(1, min(20, budget))
 
     try:
-        from contextmine_core.research import AgentConfig, ResearchAgent
-        from contextmine_core.research.actions.finalize import format_answer_with_citations
+        from contextmine_core.research import (
+            AgentConfig,
+            ResearchAgent,
+            format_answer_with_citations,
+        )
         from contextmine_core.research.llm import get_research_llm_provider
 
         # Get LLM provider
