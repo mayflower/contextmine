@@ -15,7 +15,7 @@ from contextmine_core import (
 )
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from app.middleware import get_session
 
@@ -156,9 +156,11 @@ async def list_collections(request: Request) -> list[CollectionResponse]:
         for collection, owner in rows:
             # Count members
             member_result = await db.execute(
-                select(CollectionMember).where(CollectionMember.collection_id == collection.id)
+                select(func.count())
+                .select_from(CollectionMember)
+                .where(CollectionMember.collection_id == collection.id)
             )
-            member_count = len(member_result.scalars().all())
+            member_count = member_result.scalar() or 0
 
             collections.append(
                 CollectionResponse(

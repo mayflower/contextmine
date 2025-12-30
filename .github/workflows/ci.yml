@@ -80,6 +80,7 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine
+          DEBUG: "true"
         run: uv run pytest -v
 
   build:

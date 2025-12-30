@@ -11,6 +11,11 @@ RUN npm ci
 # Copy source files
 COPY . .
 
+# Create non-root user and fix ownership
+RUN adduser --disabled-password --gecos "" appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
 # Expose port
 EXPOSE 5173
 

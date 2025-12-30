@@ -43,8 +43,11 @@ COPY apps/api/pyproject.toml apps/api/
 # Sync dependencies
 RUN uv sync --frozen --no-dev
 
-# Create data directory for repos
-RUN mkdir -p /data/repos && chmod 777 /data/repos
+# Create non-root user and data directory
+RUN useradd --create-home --shell /bin/bash appuser && \
+    mkdir -p /data/repos && \
+    chown -R appuser:appuser /app /data
+USER appuser
 
 # Set working directory to worker
 WORKDIR /app/apps/worker

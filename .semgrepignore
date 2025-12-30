@@ -1,0 +1,7 @@
+# Semgrep ignore patterns
+
+# Local development values file (contains intentional test secrets)
+deploy/helm/contextmine/values-servicemesh.yaml
+
+# Test files may have intentional security patterns for testing
+**/tests/

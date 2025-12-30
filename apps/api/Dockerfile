@@ -48,6 +48,11 @@ COPY --from=frontend-builder /app/dist /app/static
 COPY apps/api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
 # Expose port
 EXPOSE 8000
 

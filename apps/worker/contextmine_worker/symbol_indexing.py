@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from contextmine_core.models import Document, Symbol, SymbolKind
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -231,8 +231,10 @@ async def maintain_symbols_for_document(
         return 0, 0
 
     # Count existing symbols before deletion
-    result = await db.execute(select(Symbol.id).where(Symbol.document_id == document_id))
-    existing_count = len(result.all())
+    result = await db.execute(
+        select(func.count()).select_from(Symbol).where(Symbol.document_id == document_id)
+    )
+    existing_count = result.scalar() or 0
 
     # Extract and store new symbols
     created = await extract_symbols_for_document(db, document)
@@ -273,8 +275,10 @@ async def index_symbols_for_source(
 
         try:
             # Count existing symbols
-            result = await db.execute(select(Symbol.id).where(Symbol.document_id == doc.id))
-            old_count = len(result.all())
+            result = await db.execute(
+                select(func.count()).select_from(Symbol).where(Symbol.document_id == doc.id)
+            )
+            old_count = result.scalar() or 0
 
             # Extract new symbols
             new_count = await extract_symbols_for_document(db, doc)

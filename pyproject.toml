@@ -35,6 +35,10 @@ ignore = ["E501"]
 [tool.ty.environment]
 python-version = "3.12"
 python = ".venv"
+extra-paths = []
+
+[tool.ty.src]
+exclude = ["vulture_whitelist.py"]
 
 [tool.ty.rules]
 # Ignore false positives from library stubs (Starlette, Prefect, Anthropic)
