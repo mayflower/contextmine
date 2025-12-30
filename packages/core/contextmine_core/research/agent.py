@@ -196,7 +196,298 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
         run_holder["confidence"] = confidence
         return f"Answer submitted for verification (confidence: {confidence})"
 
-    return [hybrid_search, open_span, finalize]
+    # =========================================================================
+    # LSP TOOLS
+    # =========================================================================
+
+    @tool
+    async def lsp_definition(file_path: str, line: int, column: int = 0) -> str:
+        """Jump to the definition of a symbol using LSP.
+
+        Use this to find where a function, class, or variable is defined.
+        Provide the file path, line number (1-indexed), and column (0-indexed).
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.lsp import get_lsp_manager
+
+            manager = get_lsp_manager()
+            client = await manager.get_client(file_path)
+            locations = await client.get_definition(file_path, line, column)
+
+            if not locations:
+                return f"No definition found at {file_path}:{line}:{column}"
+
+            output_parts = []
+            for loc in locations:
+                # Read content at the location
+                from pathlib import Path
+
+                path = Path(loc.file_path)
+                if path.exists():
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                    lines = content.split("\n")
+                    start_idx = max(0, loc.start_line - 1)
+                    end_idx = min(len(lines), loc.end_line + 10)
+                    snippet = "\n".join(lines[start_idx:end_idx])
+                else:
+                    snippet = "[File not accessible]"
+
+                evidence = Evidence(
+                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                    file_path=loc.file_path,
+                    start_line=loc.start_line,
+                    end_line=loc.end_line + 10,
+                    content=snippet[:2000],
+                    reason="Definition found via LSP",
+                    provenance="lsp",
+                    symbol_kind="definition",
+                )
+                run.add_evidence(evidence)
+                output_parts.append(
+                    f"[{evidence.id}] {loc.file_path}:{loc.start_line}\n```\n{snippet[:500]}\n```"
+                )
+
+            return f"Found {len(locations)} definition(s):\n\n" + "\n\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("lsp_definition failed: %s", e)
+            return f"LSP definition failed: {e}"
+
+    @tool
+    async def lsp_references(file_path: str, line: int, column: int = 0) -> str:
+        """Find all usages of a symbol in the codebase using LSP.
+
+        Use this to find where a function, class, or variable is used.
+        Provide the file path, line number (1-indexed), and column (0-indexed).
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.lsp import get_lsp_manager
+
+            manager = get_lsp_manager()
+            client = await manager.get_client(file_path)
+            locations = await client.get_references(file_path, line, column)
+
+            if not locations:
+                return f"No references found at {file_path}:{line}:{column}"
+
+            output_parts = []
+            for i, loc in enumerate(locations[:10]):  # Limit to 10 references
+                from pathlib import Path
+
+                path = Path(loc.file_path)
+                if path.exists():
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                    lines = content.split("\n")
+                    start_idx = max(0, loc.start_line - 3)
+                    end_idx = min(len(lines), loc.end_line + 3)
+                    snippet = "\n".join(lines[start_idx:end_idx])
+                else:
+                    snippet = "[File not accessible]"
+
+                evidence = Evidence(
+                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                    file_path=loc.file_path,
+                    start_line=max(1, loc.start_line - 2),
+                    end_line=loc.end_line + 2,
+                    content=snippet[:1500],
+                    reason=f"Reference {i + 1} of {len(locations)} via LSP",
+                    provenance="lsp",
+                    symbol_kind="reference",
+                )
+                run.add_evidence(evidence)
+                output_parts.append(
+                    f"[{evidence.id}] {loc.file_path}:{loc.start_line}\n```\n{snippet[:300]}\n```"
+                )
+
+            summary = f"Found {len(locations)} reference(s)"
+            if len(locations) > 10:
+                summary += " (showing first 10)"
+            return summary + ":\n\n" + "\n\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("lsp_references failed: %s", e)
+            return f"LSP references failed: {e}"
+
+    @tool
+    async def lsp_hover(file_path: str, line: int, column: int = 0) -> str:
+        """Get type signature and documentation for a symbol using LSP.
+
+        Use this to understand what a function or class does without reading all its code.
+        Provide the file path, line number (1-indexed), and column (0-indexed).
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.lsp import get_lsp_manager
+
+            manager = get_lsp_manager()
+            client = await manager.get_client(file_path)
+            info = await client.get_hover(file_path, line, column)
+
+            if not info:
+                return f"No hover info at {file_path}:{line}:{column}"
+
+            content_parts = []
+            if info.signature:
+                content_parts.append(f"Signature: {info.signature}")
+            if info.documentation:
+                content_parts.append(f"Documentation:\n{info.documentation}")
+
+            content = "\n\n".join(content_parts) or f"{info.kind}: {info.name}"
+
+            evidence = Evidence(
+                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                file_path=file_path,
+                start_line=line,
+                end_line=line,
+                content=content[:2000],
+                reason=f"Hover info for {info.name} ({info.kind})",
+                provenance="lsp",
+                symbol_id=info.name,
+                symbol_kind=info.kind,
+            )
+            run.add_evidence(evidence)
+
+            return f"[{evidence.id}] {info.kind} '{info.name}':\n{content}"
+
+        except Exception as e:
+            logger.warning("lsp_hover failed: %s", e)
+            return f"LSP hover failed: {e}"
+
+    # =========================================================================
+    # TREE-SITTER TOOLS
+    # =========================================================================
+
+    @tool
+    async def ts_outline(file_path: str) -> str:
+        """Get the outline of all functions, classes, and symbols in a file.
+
+        Use this to quickly understand the structure of a file without reading all code.
+        Returns a list of symbols with their line numbers.
+        """
+        try:
+            from contextmine_core.treesitter import extract_outline
+
+            symbols = extract_outline(file_path, include_children=True)
+
+            if not symbols:
+                return f"No symbols found in {file_path}"
+
+            outline_lines = []
+            for sym in symbols:
+                outline_lines.append(
+                    f"{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line})"
+                )
+                for child in sym.children:
+                    outline_lines.append(
+                        f"  {child.kind.value} {child.name} (L{child.start_line}-{child.end_line})"
+                    )
+
+            summary = f"Found {len(symbols)} top-level symbols:\n" + "\n".join(outline_lines[:30])
+            if len(outline_lines) > 30:
+                summary += f"\n... and {len(outline_lines) - 30} more"
+
+            return summary
+
+        except Exception as e:
+            logger.warning("ts_outline failed: %s", e)
+            return f"Tree-sitter outline failed: {e}"
+
+    @tool
+    async def ts_find_symbol(file_path: str, name: str) -> str:
+        """Find a specific function, class, or method by name in a file.
+
+        Use this when you know the symbol name but want to see its full implementation.
+        Returns the symbol's source code as evidence.
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.treesitter import find_symbol_by_name, get_symbol_content
+
+            symbol = find_symbol_by_name(file_path, name)
+
+            if not symbol:
+                return f"Symbol '{name}' not found in {file_path}"
+
+            content = get_symbol_content(symbol)
+
+            evidence = Evidence(
+                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                file_path=file_path,
+                start_line=symbol.start_line,
+                end_line=symbol.end_line,
+                content=content[:2000],
+                reason=f"Found {symbol.kind.value} '{name}' via Tree-sitter",
+                provenance="treesitter",
+                symbol_id=symbol.name,
+                symbol_kind=symbol.kind.value,
+            )
+            run.add_evidence(evidence)
+
+            return f"[{evidence.id}] {symbol.kind.value} '{name}' at {file_path}:{symbol.start_line}-{symbol.end_line}\n```\n{content[:1000]}\n```"
+
+        except Exception as e:
+            logger.warning("ts_find_symbol failed: %s", e)
+            return f"Tree-sitter find_symbol failed: {e}"
+
+    @tool
+    async def ts_enclosing_symbol(file_path: str, line: int) -> str:
+        """Find what function, class, or method contains a specific line.
+
+        Use this to understand the context of a code location.
+        Returns the enclosing symbol's source code as evidence.
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.treesitter import find_enclosing_symbol, get_symbol_content
+
+            symbol = find_enclosing_symbol(file_path, line)
+
+            if not symbol:
+                return f"Line {line} is not inside any symbol in {file_path}"
+
+            content = get_symbol_content(symbol)
+
+            evidence = Evidence(
+                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                file_path=file_path,
+                start_line=symbol.start_line,
+                end_line=symbol.end_line,
+                content=content[:2000],
+                reason=f"Enclosing {symbol.kind.value} for line {line}",
+                provenance="treesitter",
+                symbol_id=symbol.name,
+                symbol_kind=symbol.kind.value,
+            )
+            run.add_evidence(evidence)
+
+            return f"[{evidence.id}] Line {line} is inside {symbol.kind.value} '{symbol.name}' (L{symbol.start_line}-{symbol.end_line})\n```\n{content[:1000]}\n```"
+
+        except Exception as e:
+            logger.warning("ts_enclosing_symbol failed: %s", e)
+            return f"Tree-sitter enclosing_symbol failed: {e}"
+
+    # Build tools list
+    tools = [hybrid_search, open_span, finalize]
+
+    # Add LSP tools (may fail if LSP not available)
+    try:
+        from contextmine_core.lsp import get_lsp_manager  # noqa: F401
+
+        tools.extend([lsp_definition, lsp_references, lsp_hover])
+    except ImportError:
+        logger.info("LSP tools not available (multilspy not installed)")
+
+    # Add Tree-sitter tools (may fail if tree-sitter not available)
+    try:
+        from contextmine_core.treesitter import extract_outline  # noqa: F401
+
+        tools.extend([ts_outline, ts_find_symbol, ts_enclosing_symbol])
+    except ImportError:
+        logger.info("Tree-sitter tools not available")
+
+    return tools
 
 
 # =============================================================================
@@ -452,16 +743,31 @@ Your task: {question}{scope_instruction}
 
 ## Available Tools
 
-1. **hybrid_search** - Search the codebase using BM25 + vector retrieval
-2. **open_span** - Read specific lines from a file
-3. **finalize** - Submit your final answer with citations
+### Search & Read
+- **hybrid_search** - Search the codebase using BM25 + vector retrieval
+- **open_span** - Read specific lines from a file
+
+### LSP (Language Server Protocol)
+- **lsp_definition** - Jump to where a symbol is defined
+- **lsp_references** - Find all usages of a symbol across the codebase
+- **lsp_hover** - Get type signature and documentation for a symbol
+
+### Tree-sitter (Code Structure)
+- **ts_outline** - Get outline of functions, classes, and symbols in a file
+- **ts_find_symbol** - Find a specific symbol by name and get its source code
+- **ts_enclosing_symbol** - Find what function/class contains a specific line
+
+### Finalize
+- **finalize** - Submit your final answer with citations
 
 ## Instructions
 
 1. Start by searching for relevant code using hybrid_search
-2. Use open_span to examine interesting files in detail
-3. Collect evidence until you can confidently answer the question
-4. Call finalize with your answer including citation IDs like [ev-abc-001]
+2. Use LSP tools to navigate definitions and find usages
+3. Use Tree-sitter tools to understand file structure
+4. Use open_span to examine specific code sections in detail
+5. Collect evidence until you can confidently answer the question
+6. Call finalize with your answer including citation IDs like [ev-abc-001]
 
 ## Important
 
