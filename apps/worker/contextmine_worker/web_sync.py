@@ -1,9 +1,12 @@
-"""Web source sync service using spider_md."""
+"""Web source sync service using spider_md for crawling and trafilatura for extraction."""
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+
+import trafilatura
 
 # Maximum page content size (500KB per page)
 MAX_PAGE_SIZE = 500 * 1024
@@ -80,6 +83,31 @@ def get_page_title(page: WebPage) -> str:
     return parsed.path or page.url
 
 
+def extract_markdown_with_trafilatura(html: str) -> str | None:
+    """Extract clean markdown from HTML using trafilatura.
+
+    Args:
+        html: Raw HTML content
+
+    Returns:
+        Extracted markdown text, or None if extraction fails
+    """
+    if not html:
+        return None
+
+    try:
+        text = trafilatura.extract(
+            html,
+            include_links=True,
+            include_formatting=True,
+            include_tables=True,
+            output_format="markdown",
+        )
+        return text
+    except Exception:
+        return None
+
+
 def run_spider_md(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
@@ -141,19 +169,29 @@ def run_spider_md(
             continue
         try:
             data = json.loads(line)
-            markdown = data["markdown"]
+            html = data["html"]
 
             # Skip pages that are too large
-            if len(markdown.encode("utf-8")) > MAX_PAGE_SIZE:
+            if len(html.encode("utf-8")) > MAX_PAGE_SIZE:
                 skipped_too_large += 1
                 continue
+
+            # Extract markdown using trafilatura
+            markdown = extract_markdown_with_trafilatura(html)
+
+            # Skip if extraction failed or produced empty content
+            if not markdown or len(markdown.strip()) < 50:
+                continue
+
+            # Compute hash of extracted markdown (not raw HTML)
+            content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
             pages.append(
                 WebPage(
                     url=data["url"],
                     title=data.get("title", ""),
                     markdown=markdown,
-                    content_hash=data["content_hash"],
+                    content_hash=content_hash,
                     etag=data.get("etag"),
                     last_modified=data.get("last_modified"),
                 )

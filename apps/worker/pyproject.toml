@@ -12,6 +12,8 @@ dependencies = [
     "anthropic>=0.30.0",
     "google-genai>=1.0.0",
     "tenacity>=8.0.0",
+    "trafilatura>=2.0.0",
+    "lxml_html_clean>=0.4.0",
 ]
 
 [build-system]

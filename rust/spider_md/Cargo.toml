@@ -2,7 +2,7 @@
 name = "spider_md"
 version = "0.1.0"
 edition = "2021"
-description = "Web crawler that converts HTML to Markdown with strict URL scoping"
+description = "Web crawler that outputs raw HTML as JSON lines"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -13,9 +13,6 @@ hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
-fast_html2md = "0"
-readability = "0.3"
-scraper = "0.22"
 
 [[bin]]
 name = "spider_md"
