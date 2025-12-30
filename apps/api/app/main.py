@@ -10,9 +10,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.mcp_server import mcp_app, mcp_lifespan
 from app.middleware import SessionMiddleware
+from app.rate_limit import limiter
 from app.routes import (
     auth,
     collections,
@@ -49,6 +52,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Rate limiting
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # Session middleware (must be added before CORS)
     app.add_middleware(SessionMiddleware)
@@ -87,7 +94,10 @@ def create_app() -> FastAPI:
         async def serve_spa(path: str) -> FileResponse:
             """Serve the SPA frontend for all non-API routes."""
             # Try to serve the exact file if it exists
-            file_path = STATIC_DIR / path
+            file_path = (STATIC_DIR / path).resolve()
+            # Prevent path traversal attacks
+            if not file_path.is_relative_to(STATIC_DIR.resolve()):
+                return FileResponse(STATIC_DIR / "index.html")
             if file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)
             # Otherwise serve index.html for SPA routing

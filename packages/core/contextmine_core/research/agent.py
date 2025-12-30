@@ -25,6 +25,11 @@ from typing_extensions import TypedDict
 logger = logging.getLogger(__name__)
 
 
+def _escape_like_pattern(value: str) -> str:
+    """Escape special characters in LIKE patterns to prevent SQL injection."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # =============================================================================
 # STATE
 # =============================================================================
@@ -510,7 +515,12 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
 
                 if not symbols:
                     # Try partial match
-                    stmt = select(Symbol).join(Document).where(Symbol.name.ilike(f"%{name}%"))
+                    escaped_name = _escape_like_pattern(name)
+                    stmt = (
+                        select(Symbol)
+                        .join(Document)
+                        .where(Symbol.name.ilike(f"%{escaped_name}%", escape="\\"))
+                    )
                     if file_path:
                         stmt = stmt.where(Document.uri == file_path)
                     stmt = stmt.limit(10)

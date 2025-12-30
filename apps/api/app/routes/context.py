@@ -1,6 +1,7 @@
 """Context assembly routes for generating Markdown documents."""
 
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 
@@ -15,6 +16,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.middleware import get_session
+from app.rate_limit import RATE_LIMIT_RESEARCH, RATE_LIMIT_SEARCH, limiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/context", tags=["context"])
 
@@ -57,6 +61,7 @@ def get_current_user_id(request: Request) -> uuid.UUID | None:
 
 
 @router.post("", response_model=ContextResponse)
+@limiter.limit(RATE_LIMIT_SEARCH)
 async def create_context(request: Request, body: ContextRequest) -> ContextResponse:
     """Assemble a context document from retrieved chunks.
 
@@ -102,9 +107,10 @@ async def create_context(request: Request, body: ContextRequest) -> ContextRespo
             model=body.model,
         )
     except Exception as e:
+        logger.exception("Error assembling context: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"Error assembling context: {e!s}",
+            detail="Error assembling context. Please try again.",
         ) from e
 
     # Convert sources
@@ -126,6 +132,7 @@ async def create_context(request: Request, body: ContextRequest) -> ContextRespo
 
 
 @router.post("/stream")
+@limiter.limit(RATE_LIMIT_SEARCH)
 async def create_context_stream(request: Request, body: ContextRequest) -> StreamingResponse:
     """Stream a context document using Server-Sent Events.
 
@@ -191,8 +198,9 @@ async def create_context_stream(request: Request, body: ContextRequest) -> Strea
             yield "event: done\ndata: {}\n\n"
 
         except Exception as e:
-            # Send error event
-            data = json.dumps({"error": str(e)})
+            # Send error event - log details server-side, return generic message
+            logger.exception("Error during context streaming: %s", e)
+            data = json.dumps({"error": "An error occurred while generating context"})
             yield f"event: error\ndata: {data}\n\n"
 
     return StreamingResponse(
@@ -231,6 +239,7 @@ class ResearchResponse(BaseModel):
 
 
 @router.post("/research/stream")
+@limiter.limit(RATE_LIMIT_RESEARCH)
 async def research_stream(request: Request, body: ResearchRequest) -> StreamingResponse:
     """Stream deep research results using Server-Sent Events.
 
@@ -287,10 +296,11 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
             yield "event: done\ndata: {}\n\n"
 
         except ImportError as e:
-            error_msg = f"Research agent not available: {e}"
-            yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+            logger.error("Research agent not available: %s", e)
+            yield f"event: error\ndata: {json.dumps({'error': 'Research agent is not available'})}\n\n"
         except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            logger.exception("Error during research: %s", e)
+            yield f"event: error\ndata: {json.dumps({'error': 'An error occurred during research'})}\n\n"
 
     return StreamingResponse(
         event_generator(),

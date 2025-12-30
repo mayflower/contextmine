@@ -23,11 +23,23 @@ from sqlalchemy import func, or_, select
 
 from app.mcp_auth import ContextMineGitHubProvider, get_current_user_id
 
-# Create auth provider (uses GitHub OAuth) - optional for testing
+
+def escape_like_pattern(value: str) -> str:
+    """Escape special characters in LIKE patterns to prevent SQL injection."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# Create auth provider (uses GitHub OAuth)
+settings = get_settings()
 try:
     auth = ContextMineGitHubProvider()
-except ValueError:
-    # GitHub OAuth not configured - run without auth (for testing)
+except ValueError as e:
+    # GitHub OAuth not configured
+    if not settings.debug:
+        raise RuntimeError(
+            "MCP authentication required in production. "
+            "Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or enable DEBUG mode for testing."
+        ) from e
     auth = None
 
 # Create FastMCP server with auth (if configured)
@@ -99,10 +111,11 @@ async def list_collections(
 
         # Optional search filter
         if search:
+            escaped_search = escape_like_pattern(search)
             query = query.where(
                 or_(
-                    Collection.name.ilike(f"%{search}%"),
-                    Collection.slug.ilike(f"%{search}%"),
+                    Collection.name.ilike(f"%{escaped_search}%", escape="\\"),
+                    Collection.slug.ilike(f"%{escaped_search}%", escape="\\"),
                 )
             )
 
@@ -174,10 +187,11 @@ async def list_documents(
         )
 
         if topic:
+            escaped_topic = escape_like_pattern(topic)
             query = query.where(
                 or_(
-                    Document.title.ilike(f"%{topic}%"),
-                    Document.uri.ilike(f"%{topic}%"),
+                    Document.title.ilike(f"%{escaped_topic}%", escape="\\"),
+                    Document.uri.ilike(f"%{escaped_topic}%", escape="\\"),
                 )
             )
 
@@ -538,7 +552,8 @@ async def code_definition(
     """Jump to where a symbol is defined. Uses pre-indexed symbol data."""
     async with get_db_session() as db:
         # Find the document matching the file path
-        doc_query = select(Document).where(Document.uri.ilike(f"%{file_path}%"))
+        escaped_path = escape_like_pattern(file_path)
+        doc_query = select(Document).where(Document.uri.ilike(f"%{escaped_path}%", escape="\\"))
         doc_result = await db.execute(doc_query)
         doc = doc_result.scalar_one_or_none()
 
@@ -594,7 +609,8 @@ async def code_references(
 
     async with get_db_session() as db:
         # Find the document matching the file path
-        doc_query = select(Document).where(Document.uri.ilike(f"%{file_path}%"))
+        escaped_path = escape_like_pattern(file_path)
+        doc_query = select(Document).where(Document.uri.ilike(f"%{escaped_path}%", escape="\\"))
         doc_result = await db.execute(doc_query)
         doc = doc_result.scalar_one_or_none()
 

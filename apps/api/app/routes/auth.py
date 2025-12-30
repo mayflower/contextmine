@@ -1,5 +1,6 @@
 """Authentication routes for GitHub OAuth."""
 
+import logging
 import uuid
 
 from contextmine_core import (
@@ -23,6 +24,9 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 from app.middleware import clear_session, get_session, set_session
+from app.rate_limit import RATE_LIMIT_AUTH, limiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,6 +41,7 @@ class UserResponse(BaseModel):
 
 
 @router.get("/login")
+@limiter.limit(RATE_LIMIT_AUTH)
 async def login(request: Request) -> RedirectResponse:
     """Initiate GitHub OAuth login flow."""
     settings = get_settings()
@@ -55,6 +60,7 @@ async def login(request: Request) -> RedirectResponse:
 
 
 @router.get("/callback")
+@limiter.limit(RATE_LIMIT_AUTH)
 async def callback(
     request: Request,
     code: str | None = None,
@@ -192,9 +198,8 @@ async def callback(
         return RedirectResponse(url=frontend_url, status_code=302)
 
     except Exception as e:
-        return RedirectResponse(
-            url=f"{frontend_url}?error=auth_failed&detail={str(e)}", status_code=302
-        )
+        logger.exception("OAuth callback failed: %s", e)
+        return RedirectResponse(url=f"{frontend_url}?error=auth_failed", status_code=302)
 
 
 @router.get("/logout")

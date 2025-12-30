@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.middleware import get_session
+from app.rate_limit import RATE_LIMIT_SEARCH, limiter
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -81,6 +82,7 @@ async def get_query_embedding(query: str, collection_id: str | None = None) -> l
 
 
 @router.post("", response_model=SearchResponse)
+@limiter.limit(RATE_LIMIT_SEARCH)
 async def search(request: Request, body: SearchRequest) -> SearchResponse:
     """Perform hybrid search over chunks.
 
