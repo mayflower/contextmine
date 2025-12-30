@@ -356,117 +356,256 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
             return f"LSP hover failed: {e}"
 
     # =========================================================================
-    # TREE-SITTER TOOLS
+    # SYMBOL INDEX TOOLS (use pre-indexed data from database)
     # =========================================================================
 
     @tool
-    async def ts_outline(file_path: str) -> str:
-        """Get the outline of all functions, classes, and symbols in a file.
+    async def symbol_outline(file_path: str) -> str:
+        """Get the outline of all indexed functions, classes, and symbols in a file.
 
-        Use this to quickly understand the structure of a file without reading all code.
-        Returns a list of symbols with their line numbers.
+        Uses the pre-indexed symbol database for fast lookup.
+        Returns a list of symbols with their line numbers and signatures.
         """
         try:
-            from contextmine_core.treesitter import extract_outline
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol
+            from sqlalchemy import select
 
-            symbols = extract_outline(file_path, include_children=True)
+            async with get_async_session() as session:
+                # Find document by URI
+                doc_stmt = select(Document).where(Document.uri == file_path)
+                doc_result = await session.execute(doc_stmt)
+                doc = doc_result.scalar_one_or_none()
 
-            if not symbols:
-                return f"No symbols found in {file_path}"
+                if not doc:
+                    return f"File not found in index: {file_path}"
 
-            outline_lines = []
-            for sym in symbols:
-                outline_lines.append(
-                    f"{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line})"
+                # Get all symbols for this document, ordered by line
+                sym_stmt = (
+                    select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
                 )
-                for child in sym.children:
+                sym_result = await session.execute(sym_stmt)
+                symbols = sym_result.scalars().all()
+
+                if not symbols:
+                    return f"No symbols indexed for {file_path}"
+
+                outline_lines = []
+                for sym in symbols:
+                    indent = "  " if sym.parent_name else ""
+                    sig = f" - {sym.signature}" if sym.signature else ""
                     outline_lines.append(
-                        f"  {child.kind.value} {child.name} (L{child.start_line}-{child.end_line})"
+                        f"{indent}{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line}){sig}"
                     )
 
-            summary = f"Found {len(symbols)} top-level symbols:\n" + "\n".join(outline_lines[:30])
-            if len(outline_lines) > 30:
-                summary += f"\n... and {len(outline_lines) - 30} more"
+                summary = f"Found {len(symbols)} indexed symbols:\n" + "\n".join(outline_lines[:40])
+                if len(outline_lines) > 40:
+                    summary += f"\n... and {len(outline_lines) - 40} more"
 
-            return summary
+                return summary
 
         except Exception as e:
-            logger.warning("ts_outline failed: %s", e)
-            return f"Tree-sitter outline failed: {e}"
+            logger.warning("symbol_outline failed: %s", e)
+            return f"Symbol outline failed: {e}"
 
     @tool
-    async def ts_find_symbol(file_path: str, name: str) -> str:
-        """Find a specific function, class, or method by name in a file.
+    async def symbol_find(name: str, file_path: str | None = None) -> str:
+        """Find a symbol by name in the indexed codebase.
 
-        Use this when you know the symbol name but want to see its full implementation.
+        Uses the pre-indexed symbol database. Optionally filter by file path.
         Returns the symbol's source code as evidence.
         """
         run = run_holder["run"]
         try:
-            from contextmine_core.treesitter import find_symbol_by_name, get_symbol_content
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol
+            from sqlalchemy import select
 
-            symbol = find_symbol_by_name(file_path, name)
+            async with get_async_session() as session:
+                stmt = select(Symbol).join(Document)
 
-            if not symbol:
-                return f"Symbol '{name}' not found in {file_path}"
+                if file_path:
+                    stmt = stmt.where(Document.uri == file_path)
 
-            content = get_symbol_content(symbol)
+                # Search by name (exact match first, then contains)
+                stmt = stmt.where(Symbol.name == name)
+                result = await session.execute(stmt)
+                symbols = result.scalars().all()
 
-            evidence = Evidence(
-                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                file_path=file_path,
-                start_line=symbol.start_line,
-                end_line=symbol.end_line,
-                content=content[:2000],
-                reason=f"Found {symbol.kind.value} '{name}' via Tree-sitter",
-                provenance="treesitter",
-                symbol_id=symbol.name,
-                symbol_kind=symbol.kind.value,
-            )
-            run.add_evidence(evidence)
+                if not symbols:
+                    # Try partial match
+                    stmt = select(Symbol).join(Document).where(Symbol.name.ilike(f"%{name}%"))
+                    if file_path:
+                        stmt = stmt.where(Document.uri == file_path)
+                    stmt = stmt.limit(10)
+                    result = await session.execute(stmt)
+                    symbols = result.scalars().all()
 
-            return f"[{evidence.id}] {symbol.kind.value} '{name}' at {file_path}:{symbol.start_line}-{symbol.end_line}\n```\n{content[:1000]}\n```"
+                if not symbols:
+                    return f"Symbol '{name}' not found in index"
+
+                output_parts = []
+                for sym in symbols[:5]:
+                    # Get document content for the symbol
+                    doc = sym.document
+                    lines = (doc.content or "").split("\n")
+                    start_idx = max(0, sym.start_line - 1)
+                    end_idx = min(len(lines), sym.end_line)
+                    content = "\n".join(lines[start_idx:end_idx])
+
+                    evidence = Evidence(
+                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                        file_path=doc.uri or "unknown",
+                        start_line=sym.start_line,
+                        end_line=sym.end_line,
+                        content=content[:2000],
+                        reason=f"Found indexed {sym.kind.value} '{sym.name}'",
+                        provenance="symbol_index",
+                        symbol_id=sym.qualified_name,
+                        symbol_kind=sym.kind.value,
+                    )
+                    run.add_evidence(evidence)
+                    output_parts.append(
+                        f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' at {doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:800]}\n```"
+                    )
+
+                return f"Found {len(symbols)} symbol(s):\n\n" + "\n\n".join(output_parts)
 
         except Exception as e:
-            logger.warning("ts_find_symbol failed: %s", e)
-            return f"Tree-sitter find_symbol failed: {e}"
+            logger.warning("symbol_find failed: %s", e)
+            return f"Symbol find failed: {e}"
 
     @tool
-    async def ts_enclosing_symbol(file_path: str, line: int) -> str:
-        """Find what function, class, or method contains a specific line.
+    async def symbol_callers(name: str, file_path: str | None = None) -> str:
+        """Find all functions/methods that call a given symbol.
 
-        Use this to understand the context of a code location.
-        Returns the enclosing symbol's source code as evidence.
+        Uses the pre-indexed symbol graph (SymbolEdge table).
+        Returns callers as evidence.
         """
         run = run_holder["run"]
         try:
-            from contextmine_core.treesitter import find_enclosing_symbol, get_symbol_content
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
 
-            symbol = find_enclosing_symbol(file_path, line)
+            async with get_async_session() as session:
+                # Find the target symbol
+                stmt = select(Symbol).join(Document).where(Symbol.name == name)
+                if file_path:
+                    stmt = stmt.where(Document.uri == file_path)
+                stmt = stmt.options(selectinload(Symbol.incoming_edges))
+                result = await session.execute(stmt)
+                target_symbols = result.scalars().all()
 
-            if not symbol:
-                return f"Line {line} is not inside any symbol in {file_path}"
+                if not target_symbols:
+                    return f"Symbol '{name}' not found in index"
 
-            content = get_symbol_content(symbol)
+                output_parts = []
+                for target in target_symbols[:3]:
+                    # Get incoming CALLS edges
+                    edges_stmt = (
+                        select(SymbolEdge)
+                        .where(SymbolEdge.target_symbol_id == target.id)
+                        .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
+                        .options(
+                            selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document)
+                        )
+                    )
+                    edges_result = await session.execute(edges_stmt)
+                    edges = edges_result.scalars().all()
 
-            evidence = Evidence(
-                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                file_path=file_path,
-                start_line=symbol.start_line,
-                end_line=symbol.end_line,
-                content=content[:2000],
-                reason=f"Enclosing {symbol.kind.value} for line {line}",
-                provenance="treesitter",
-                symbol_id=symbol.name,
-                symbol_kind=symbol.kind.value,
-            )
-            run.add_evidence(evidence)
+                    for edge in edges[:10]:
+                        caller = edge.source_symbol
+                        doc = caller.document
+                        lines = (doc.content or "").split("\n")
+                        start_idx = max(0, caller.start_line - 1)
+                        end_idx = min(len(lines), caller.end_line)
+                        content = "\n".join(lines[start_idx:end_idx])
 
-            return f"[{evidence.id}] Line {line} is inside {symbol.kind.value} '{symbol.name}' (L{symbol.start_line}-{symbol.end_line})\n```\n{content[:1000]}\n```"
+                        evidence = Evidence(
+                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                            file_path=doc.uri or "unknown",
+                            start_line=caller.start_line,
+                            end_line=caller.end_line,
+                            content=content[:2000],
+                            reason=f"Caller of '{name}' (line {edge.source_line})",
+                            provenance="symbol_graph",
+                            symbol_id=caller.qualified_name,
+                            symbol_kind=caller.kind.value,
+                        )
+                        run.add_evidence(evidence)
+                        output_parts.append(
+                            f"[{evidence.id}] {caller.kind.value} '{caller.qualified_name}' calls '{name}' at line {edge.source_line}\n  {doc.uri}:{caller.start_line}"
+                        )
+
+                if not output_parts:
+                    return f"No callers found for '{name}'"
+
+                return f"Found {len(output_parts)} caller(s):\n" + "\n".join(output_parts)
 
         except Exception as e:
-            logger.warning("ts_enclosing_symbol failed: %s", e)
-            return f"Tree-sitter enclosing_symbol failed: {e}"
+            logger.warning("symbol_callers failed: %s", e)
+            return f"Symbol callers failed: {e}"
+
+    @tool
+    async def symbol_callees(name: str, file_path: str | None = None) -> str:
+        """Find all functions/methods that a given symbol calls.
+
+        Uses the pre-indexed symbol graph (SymbolEdge table).
+        Returns callees as a list.
+        """
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            async with get_async_session() as session:
+                # Find the source symbol
+                stmt = select(Symbol).join(Document).where(Symbol.name == name)
+                if file_path:
+                    stmt = stmt.where(Document.uri == file_path)
+                stmt = stmt.options(selectinload(Symbol.outgoing_edges))
+                result = await session.execute(stmt)
+                source_symbols = result.scalars().all()
+
+                if not source_symbols:
+                    return f"Symbol '{name}' not found in index"
+
+                output_parts = []
+                for source in source_symbols[:3]:
+                    # Get outgoing CALLS edges
+                    edges_stmt = (
+                        select(SymbolEdge)
+                        .where(SymbolEdge.source_symbol_id == source.id)
+                        .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
+                        .options(
+                            selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document)
+                        )
+                    )
+                    edges_result = await session.execute(edges_stmt)
+                    edges = edges_result.scalars().all()
+
+                    for edge in edges[:10]:
+                        callee = edge.target_symbol
+                        doc = callee.document
+                        sig = f" - {callee.signature}" if callee.signature else ""
+
+                        output_parts.append(
+                            f"{callee.kind.value} '{callee.qualified_name}'{sig}\n  {doc.uri}:{callee.start_line}"
+                        )
+
+                if not output_parts:
+                    return f"No callees found for '{name}'"
+
+                return f"'{name}' calls {len(output_parts)} function(s):\n" + "\n".join(
+                    output_parts
+                )
+
+        except Exception as e:
+            logger.warning("symbol_callees failed: %s", e)
+            return f"Symbol callees failed: {e}"
 
     # Build tools list
     tools = [hybrid_search, open_span, finalize]
@@ -479,13 +618,8 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
     except ImportError:
         logger.info("LSP tools not available (multilspy not installed)")
 
-    # Add Tree-sitter tools (may fail if tree-sitter not available)
-    try:
-        from contextmine_core.treesitter import extract_outline  # noqa: F401
-
-        tools.extend([ts_outline, ts_find_symbol, ts_enclosing_symbol])
-    except ImportError:
-        logger.info("Tree-sitter tools not available")
+    # Symbol index tools always available (use database)
+    tools.extend([symbol_outline, symbol_find, symbol_callers, symbol_callees])
 
     return tools
 
@@ -743,28 +877,31 @@ Your task: {question}{scope_instruction}
 
 ## Available Tools
 
-### Search & Read
-- **hybrid_search** - Search the codebase using BM25 + vector retrieval
-- **open_span** - Read specific lines from a file
+### RAG Search
+- **hybrid_search** - Search the codebase using BM25 + vector retrieval (pre-indexed chunks)
+
+### Symbol Index (pre-indexed via Tree-sitter)
+- **symbol_outline** - Get all indexed symbols in a file (functions, classes, methods)
+- **symbol_find** - Find a symbol by name across the codebase
+- **symbol_callers** - Find all functions that call a given symbol
+- **symbol_callees** - Find all functions that a symbol calls
 
 ### LSP (Language Server Protocol)
-- **lsp_definition** - Jump to where a symbol is defined
-- **lsp_references** - Find all usages of a symbol across the codebase
-- **lsp_hover** - Get type signature and documentation for a symbol
+- **lsp_definition** - Jump to where a symbol is defined (live analysis)
+- **lsp_references** - Find all usages of a symbol (live analysis)
+- **lsp_hover** - Get type signature and documentation
 
-### Tree-sitter (Code Structure)
-- **ts_outline** - Get outline of functions, classes, and symbols in a file
-- **ts_find_symbol** - Find a specific symbol by name and get its source code
-- **ts_enclosing_symbol** - Find what function/class contains a specific line
+### Read
+- **open_span** - Read specific lines from a file
 
 ### Finalize
 - **finalize** - Submit your final answer with citations
 
 ## Instructions
 
-1. Start by searching for relevant code using hybrid_search
-2. Use LSP tools to navigate definitions and find usages
-3. Use Tree-sitter tools to understand file structure
+1. Start by searching for relevant code using hybrid_search (RAG)
+2. Use symbol_* tools to navigate the pre-indexed code graph
+3. Use LSP tools for precise definition/reference lookups
 4. Use open_span to examine specific code sections in detail
 5. Collect evidence until you can confidently answer the question
 6. Call finalize with your answer including citation IDs like [ev-abc-001]
