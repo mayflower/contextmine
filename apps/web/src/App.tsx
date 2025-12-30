@@ -95,6 +95,8 @@ interface SyncRun {
 
 type Page = 'dashboard' | 'query' | 'collections' | 'runs'
 
+const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
+
 /**
  * Format a source URL for display.
  * GitHub URLs: owner/repo
@@ -245,6 +247,9 @@ function App() {
   const [researchStep, setResearchStep] = useState<string | null>(null)
   const [researchCitations, setResearchCitations] = useState<string[]>([])
   const [researchRunId, setResearchRunId] = useState<string | null>(null)
+
+  // Mobile menu state
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // Check authentication status
   useEffect(() => {
@@ -1077,9 +1082,31 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="header-left">
+          <button
+            className="mobile-menu-toggle"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            aria-label="Toggle menu"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              {mobileMenuOpen ? (
+                <path d="M18 6L6 18M6 6l12 12" />
+              ) : (
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
           <img src="/logo-sm.png" alt="ContextMine" className="header-logo" />
           <h1>ContextMine</h1>
           <span className="subtitle">Admin Console</span>
+          <button
+            className="header-cta"
+            onClick={() => setCurrentPage('collections')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            Add Source
+          </button>
         </div>
         {user && (
           <div className="header-right">
@@ -1096,12 +1123,12 @@ function App() {
         )}
       </header>
 
-      <nav className="sidebar">
+      <nav className={`sidebar ${mobileMenuOpen ? 'open' : ''}`}>
         <ul>
-          <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => setCurrentPage('dashboard')}>Dashboard</li>
-          <li className={currentPage === 'query' ? 'active' : ''} onClick={() => setCurrentPage('query')}>Query</li>
-          <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => setCurrentPage('collections')}>Collections</li>
-          <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => setCurrentPage('runs')}>Runs</li>
+          <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }}>Dashboard</li>
+          <li className={currentPage === 'query' ? 'active' : ''} onClick={() => { setCurrentPage('query'); setMobileMenuOpen(false); }}>Query</li>
+          <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => { setCurrentPage('collections'); setMobileMenuOpen(false); }}>Collections</li>
+          <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => { setCurrentPage('runs'); setMobileMenuOpen(false); }}>Runs</li>
         </ul>
       </nav>
 
@@ -2088,6 +2115,18 @@ function App() {
           </>
         )}
       </main>
+
+      <footer className="footer">
+        <div className="footer-left">
+          <span>ContextMine by</span>
+          <a href="https://mayflower.de" target="_blank" rel="noopener noreferrer">Mayflower</a>
+        </div>
+        <div className="footer-links">
+          <a href={GITHUB_REPO} target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href={`${GITHUB_REPO}/blob/main/README.md`} target="_blank" rel="noopener noreferrer">Docs</a>
+          <a href={`${GITHUB_REPO}/issues`} target="_blank" rel="noopener noreferrer">Issues</a>
+        </div>
+      </footer>
     </div>
   )
 }
