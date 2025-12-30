@@ -1059,6 +1059,7 @@ function App() {
     return (
       <div className="app login-page">
         <div className="login-container">
+          <img src="/logo-md.png" alt="ContextMine" className="login-logo" />
           <h1>ContextMine</h1>
           <p className="login-subtitle">Documentation & Code Indexing with MCP</p>
           <button className="login-button" onClick={handleLogin}>
@@ -1076,6 +1077,7 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="header-left">
+          <img src="/logo-sm.png" alt="ContextMine" className="header-logo" />
           <h1>ContextMine</h1>
           <span className="subtitle">Admin Console</span>
         </div>
