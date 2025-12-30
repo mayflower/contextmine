@@ -607,8 +607,458 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("symbol_callees failed: %s", e)
             return f"Symbol callees failed: {e}"
 
-    # Build tools list
-    tools = [hybrid_search, open_span, finalize]
+    @tool
+    async def symbol_enclosing(file_path: str, line: int) -> str:
+        """Find what function, class, or method contains a specific line.
+
+        Uses the pre-indexed symbol database.
+        Returns the enclosing symbol's information.
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Document, Symbol
+            from sqlalchemy import and_, select
+
+            async with get_async_session() as session:
+                # Find document by URI
+                doc_stmt = select(Document).where(Document.uri == file_path)
+                doc_result = await session.execute(doc_stmt)
+                doc = doc_result.scalar_one_or_none()
+
+                if not doc:
+                    return f"File not found in index: {file_path}"
+
+                # Find symbols that contain this line
+                sym_stmt = (
+                    select(Symbol)
+                    .where(Symbol.document_id == doc.id)
+                    .where(and_(Symbol.start_line <= line, Symbol.end_line >= line))
+                    .order_by(Symbol.end_line - Symbol.start_line)  # Smallest first
+                )
+                sym_result = await session.execute(sym_stmt)
+                symbols = sym_result.scalars().all()
+
+                if not symbols:
+                    return f"Line {line} is not inside any indexed symbol in {file_path}"
+
+                # Get the innermost (smallest) symbol
+                sym = symbols[0]
+                lines = (doc.content or "").split("\n")
+                start_idx = max(0, sym.start_line - 1)
+                end_idx = min(len(lines), sym.end_line)
+                content = "\n".join(lines[start_idx:end_idx])
+
+                evidence = Evidence(
+                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                    file_path=file_path,
+                    start_line=sym.start_line,
+                    end_line=sym.end_line,
+                    content=content[:2000],
+                    reason=f"Enclosing {sym.kind.value} for line {line}",
+                    provenance="symbol_index",
+                    symbol_id=sym.qualified_name,
+                    symbol_kind=sym.kind.value,
+                )
+                run.add_evidence(evidence)
+
+                return f"[{evidence.id}] Line {line} is inside {sym.kind.value} '{sym.name}' (L{sym.start_line}-{sym.end_line})\n```\n{content[:1000]}\n```"
+
+        except Exception as e:
+            logger.warning("symbol_enclosing failed: %s", e)
+            return f"Symbol enclosing failed: {e}"
+
+    @tool
+    async def summarize_evidence(goal: str) -> str:
+        """Use LLM to summarize collected evidence into a focused memo.
+
+        Use this when you have gathered many evidence items and need to
+        organize them before answering. Specify a goal to focus the summary.
+        """
+        run = run_holder["run"]
+
+        if not run.evidence:
+            return "No evidence collected yet to summarize."
+
+        try:
+            # Build evidence summary
+            evidence_text = []
+            for ev in run.evidence[:20]:  # Limit to 20 items
+                evidence_text.append(
+                    f"[{ev.id}] {ev.file_path}:{ev.start_line}-{ev.end_line}\n"
+                    f"Reason: {ev.reason}\n"
+                    f"```\n{ev.content[:500]}\n```"
+                )
+
+            system = "You are a code research assistant. Summarize evidence concisely."
+            user_prompt = f"""Summarize the following code evidence to address this goal: {goal}
+
+Evidence:
+{chr(10).join(evidence_text)}
+
+Provide a concise summary (2-3 paragraphs) focusing on the goal.
+Reference evidence IDs like [ev-xxx-001] when making claims."""
+
+            # Use the LLM provider
+            from contextmine_core.research.llm import get_research_llm_provider
+
+            provider = get_research_llm_provider()
+            response = await provider.generate_text(
+                system=system,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=1000,
+            )
+
+            return f"Evidence Summary ({len(run.evidence)} items):\n\n{response}"
+
+        except Exception as e:
+            logger.warning("summarize_evidence failed: %s", e)
+            return f"Summarize failed: {e}"
+
+    # =========================================================================
+    # GRAPH TRAVERSAL TOOLS (use pre-indexed SymbolEdge data)
+    # =========================================================================
+
+    @tool
+    async def graph_expand(
+        seed_names: list[str],
+        edge_types: list[str] | None = None,
+        depth: int = 2,
+        limit: int = 50,
+    ) -> str:
+        """Expand from seed symbols following relationship types.
+
+        Uses the pre-indexed symbol graph (SymbolEdge table).
+        BFS traversal from seeds up to specified depth.
+
+        Args:
+            seed_names: List of symbol names to start from
+            edge_types: Filter by edge types (calls, references, imports, inherits)
+            depth: Max traversal depth (1-5)
+            limit: Max nodes to return
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Symbol, SymbolEdge, SymbolEdgeType
+            from sqlalchemy import or_, select
+            from sqlalchemy.orm import selectinload
+
+            depth = max(1, min(5, depth))
+            limit = max(1, min(100, limit))
+
+            # Map edge type strings to enum
+            edge_type_map = {
+                "calls": SymbolEdgeType.CALLS,
+                "references": SymbolEdgeType.REFERENCES,
+                "imports": SymbolEdgeType.IMPORTS,
+                "inherits": SymbolEdgeType.INHERITS,
+                "contains": SymbolEdgeType.CONTAINS,
+            }
+
+            filter_types = None
+            if edge_types:
+                filter_types = [edge_type_map[t] for t in edge_types if t in edge_type_map]
+
+            async with get_async_session() as session:
+                # Find seed symbols
+                seed_stmt = select(Symbol).where(or_(*[Symbol.name == name for name in seed_names]))
+                seed_result = await session.execute(seed_stmt)
+                seeds = {s.id: s for s in seed_result.scalars().all()}
+
+                if not seeds:
+                    return f"No symbols found matching: {seed_names}"
+
+                visited = set(seeds.keys())
+                frontier = set(seeds.keys())
+                collected_symbols = dict(seeds)
+
+                # BFS traversal
+                for _d in range(depth):
+                    if not frontier or len(collected_symbols) >= limit:
+                        break
+
+                    # Get edges from frontier
+                    edge_stmt = select(SymbolEdge).where(
+                        or_(
+                            SymbolEdge.source_symbol_id.in_(frontier),
+                            SymbolEdge.target_symbol_id.in_(frontier),
+                        )
+                    )
+                    if filter_types:
+                        edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
+
+                    edge_stmt = edge_stmt.options(
+                        selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document),
+                        selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document),
+                    )
+
+                    edge_result = await session.execute(edge_stmt)
+                    edges = edge_result.scalars().all()
+
+                    new_frontier = set()
+                    for edge in edges:
+                        for sym in [edge.source_symbol, edge.target_symbol]:
+                            if sym.id not in visited and len(collected_symbols) < limit:
+                                visited.add(sym.id)
+                                new_frontier.add(sym.id)
+                                collected_symbols[sym.id] = sym
+
+                    frontier = new_frontier
+
+                # Create evidence for collected symbols
+                output_parts = []
+                for sym in list(collected_symbols.values())[:limit]:
+                    doc = sym.document
+                    is_seed = sym.name in seed_names
+                    marker = "[SEED] " if is_seed else ""
+
+                    lines = (doc.content or "").split("\n")
+                    start_idx = max(0, sym.start_line - 1)
+                    end_idx = min(len(lines), sym.end_line)
+                    content = "\n".join(lines[start_idx:end_idx])
+
+                    evidence = Evidence(
+                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                        file_path=doc.uri or "unknown",
+                        start_line=sym.start_line,
+                        end_line=sym.end_line,
+                        content=content[:1500],
+                        reason=f"Graph expansion from {seed_names}",
+                        provenance="symbol_graph",
+                        symbol_id=sym.qualified_name,
+                        symbol_kind=sym.kind.value,
+                    )
+                    run.add_evidence(evidence)
+                    output_parts.append(
+                        f"{marker}[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
+                        f"at {doc.uri}:{sym.start_line}"
+                    )
+
+                return (
+                    f"Expanded to {len(collected_symbols)} symbols "
+                    f"(depth={depth}, seeds={len(seeds)}):\n" + "\n".join(output_parts[:30])
+                )
+
+        except Exception as e:
+            logger.warning("graph_expand failed: %s", e)
+            return f"Graph expand failed: {e}"
+
+    @tool
+    async def graph_pack(target_count: int = 10) -> str:
+        """Select the most relevant evidence items from collected evidence.
+
+        Scores evidence by:
+        - Symbol importance (classes > functions > methods)
+        - Content size (larger often more important)
+        - Provenance diversity (multiple sources = bonus)
+
+        Returns a ranked list of the most important evidence.
+        """
+        run = run_holder["run"]
+
+        if not run.evidence:
+            return "No evidence collected yet to pack."
+
+        # Score each evidence item
+        scored = []
+        for ev in run.evidence:
+            score = 0.0
+
+            # Symbol kind scoring
+            kind_scores = {
+                "class": 5.0,
+                "struct": 4.5,
+                "interface": 4.0,
+                "function": 3.0,
+                "method": 2.5,
+                "variable": 1.0,
+            }
+            if ev.symbol_kind:
+                score += kind_scores.get(ev.symbol_kind.lower(), 1.0)
+
+            # Size scoring (normalized)
+            content_lines = len(ev.content.split("\n")) if ev.content else 0
+            score += min(content_lines / 20.0, 3.0)  # Max 3 points for size
+
+            # Provenance scoring
+            provenance_scores = {
+                "lsp": 2.0,
+                "symbol_graph": 1.8,
+                "symbol_index": 1.5,
+                "hybrid": 1.2,
+                "manual": 1.0,
+            }
+            score += provenance_scores.get(ev.provenance, 1.0)
+
+            # Score bonus for having a score
+            if ev.score:
+                score += ev.score * 2.0
+
+            scored.append((score, ev))
+
+        # Sort by score descending
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Build output
+        output_parts = [f"Top {min(target_count, len(scored))} evidence items:\n"]
+        for i, (score, ev) in enumerate(scored[:target_count]):
+            kind = f" ({ev.symbol_kind})" if ev.symbol_kind else ""
+            output_parts.append(
+                f"{i + 1}. [{ev.id}] score={score:.1f}{kind}\n"
+                f"   {ev.file_path}:{ev.start_line}-{ev.end_line}\n"
+                f"   Reason: {ev.reason}"
+            )
+
+        return "\n".join(output_parts)
+
+    @tool
+    async def graph_trace(
+        from_symbol: str,
+        to_symbol: str,
+        edge_types: list[str] | None = None,
+        max_depth: int = 5,
+    ) -> str:
+        """Find paths between two symbols in the code graph.
+
+        Uses bidirectional BFS to find shortest paths.
+        Useful for impact analysis and understanding code flow.
+
+        Args:
+            from_symbol: Source symbol name
+            to_symbol: Target symbol name
+            edge_types: Filter by edge types (calls, references, imports, inherits)
+            max_depth: Maximum path length
+        """
+        run = run_holder["run"]
+        try:
+            from collections import deque
+
+            from contextmine_core.database import get_async_session
+            from contextmine_core.models import Symbol, SymbolEdge, SymbolEdgeType
+            from sqlalchemy import or_, select
+            from sqlalchemy.orm import selectinload
+
+            max_depth = max(1, min(10, max_depth))
+
+            edge_type_map = {
+                "calls": SymbolEdgeType.CALLS,
+                "references": SymbolEdgeType.REFERENCES,
+                "imports": SymbolEdgeType.IMPORTS,
+                "inherits": SymbolEdgeType.INHERITS,
+            }
+
+            filter_types = None
+            if edge_types:
+                filter_types = [edge_type_map[t] for t in edge_types if t in edge_type_map]
+
+            async with get_async_session() as session:
+                # Find source and target symbols
+                sym_stmt = (
+                    select(Symbol)
+                    .where(or_(Symbol.name == from_symbol, Symbol.name == to_symbol))
+                    .options(selectinload(Symbol.document))
+                )
+                sym_result = await session.execute(sym_stmt)
+                symbols = {s.name: s for s in sym_result.scalars().all()}
+
+                if from_symbol not in symbols:
+                    return f"Source symbol '{from_symbol}' not found"
+                if to_symbol not in symbols:
+                    return f"Target symbol '{to_symbol}' not found"
+
+                source = symbols[from_symbol]
+                target = symbols[to_symbol]
+
+                if source.id == target.id:
+                    return "Source and target are the same symbol"
+
+                # BFS to find path
+                queue = deque([(source.id, [source.id])])
+                visited = {source.id}
+                found_paths = []
+
+                while queue and len(found_paths) < 3:
+                    current_id, path = queue.popleft()
+
+                    if len(path) > max_depth:
+                        continue
+
+                    # Get outgoing edges
+                    edge_stmt = select(SymbolEdge).where(SymbolEdge.source_symbol_id == current_id)
+                    if filter_types:
+                        edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
+
+                    edge_stmt = edge_stmt.options(
+                        selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document)
+                    )
+
+                    edge_result = await session.execute(edge_stmt)
+                    edges = edge_result.scalars().all()
+
+                    for edge in edges:
+                        next_sym = edge.target_symbol
+                        if next_sym.id == target.id:
+                            found_paths.append(path + [next_sym.id])
+                        elif next_sym.id not in visited:
+                            visited.add(next_sym.id)
+                            queue.append((next_sym.id, path + [next_sym.id]))
+
+                if not found_paths:
+                    return f"No path found from '{from_symbol}' to '{to_symbol}' within depth {max_depth}"
+
+                # Get all symbols in paths
+                all_ids = set()
+                for p in found_paths:
+                    all_ids.update(p)
+
+                sym_stmt = (
+                    select(Symbol)
+                    .where(Symbol.id.in_(all_ids))
+                    .options(selectinload(Symbol.document))
+                )
+                sym_result = await session.execute(sym_stmt)
+                sym_map = {s.id: s for s in sym_result.scalars().all()}
+
+                # Create evidence and output
+                output_parts = [f"Found {len(found_paths)} path(s):\n"]
+                for i, path in enumerate(found_paths[:3]):
+                    path_names = []
+                    for sym_id in path:
+                        sym = sym_map.get(sym_id)
+                        if sym:
+                            path_names.append(sym.name)
+
+                            # Add evidence for each symbol in path
+                            doc = sym.document
+                            lines = (doc.content or "").split("\n")
+                            start_idx = max(0, sym.start_line - 1)
+                            end_idx = min(len(lines), sym.end_line)
+                            content = "\n".join(lines[start_idx:end_idx])
+
+                            evidence = Evidence(
+                                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                                file_path=doc.uri or "unknown",
+                                start_line=sym.start_line,
+                                end_line=sym.end_line,
+                                content=content[:1500],
+                                reason=f"Path step {path.index(sym_id) + 1} from '{from_symbol}' to '{to_symbol}'",
+                                provenance="symbol_graph",
+                                symbol_id=sym.qualified_name,
+                                symbol_kind=sym.kind.value,
+                            )
+                            run.add_evidence(evidence)
+
+                    output_parts.append(f"Path {i + 1}: {' -> '.join(path_names)}")
+
+                return "\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("graph_trace failed: %s", e)
+            return f"Graph trace failed: {e}"
+
+    # Build tools list - core tools always available
+    tools = [hybrid_search, open_span, finalize, summarize_evidence]
 
     # Add LSP tools (may fail if LSP not available)
     try:
@@ -618,8 +1068,19 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
     except ImportError:
         logger.info("LSP tools not available (multilspy not installed)")
 
-    # Symbol index tools always available (use database)
-    tools.extend([symbol_outline, symbol_find, symbol_callers, symbol_callees])
+    # Symbol index tools always available (use pre-indexed database)
+    tools.extend(
+        [
+            symbol_outline,
+            symbol_find,
+            symbol_enclosing,
+            symbol_callers,
+            symbol_callees,
+        ]
+    )
+
+    # Graph traversal tools always available (use pre-indexed SymbolEdge)
+    tools.extend([graph_expand, graph_pack, graph_trace])
 
     return tools
 
@@ -883,16 +1344,23 @@ Your task: {question}{scope_instruction}
 ### Symbol Index (pre-indexed via Tree-sitter)
 - **symbol_outline** - Get all indexed symbols in a file (functions, classes, methods)
 - **symbol_find** - Find a symbol by name across the codebase
+- **symbol_enclosing** - Find what symbol (function/class) contains a specific line
 - **symbol_callers** - Find all functions that call a given symbol
 - **symbol_callees** - Find all functions that a symbol calls
+
+### Graph Traversal (pre-indexed relationships)
+- **graph_expand** - Expand from seed symbols following relationships (calls, references, imports)
+- **graph_pack** - Select the most relevant evidence items from collected evidence
+- **graph_trace** - Find paths between two symbols (for impact analysis)
 
 ### LSP (Language Server Protocol)
 - **lsp_definition** - Jump to where a symbol is defined (live analysis)
 - **lsp_references** - Find all usages of a symbol (live analysis)
 - **lsp_hover** - Get type signature and documentation
 
-### Read
+### Read & Summarize
 - **open_span** - Read specific lines from a file
+- **summarize_evidence** - Use LLM to compress collected evidence into a memo
 
 ### Finalize
 - **finalize** - Submit your final answer with citations
@@ -901,10 +1369,12 @@ Your task: {question}{scope_instruction}
 
 1. Start by searching for relevant code using hybrid_search (RAG)
 2. Use symbol_* tools to navigate the pre-indexed code graph
-3. Use LSP tools for precise definition/reference lookups
-4. Use open_span to examine specific code sections in detail
-5. Collect evidence until you can confidently answer the question
-6. Call finalize with your answer including citation IDs like [ev-abc-001]
+3. Use graph_* tools for multi-hop traversal and impact analysis
+4. Use LSP tools for precise definition/reference lookups
+5. Use open_span to examine specific code sections in detail
+6. Use summarize_evidence when you have many items and need to organize
+7. Use graph_pack to select the most important evidence before finalizing
+8. Call finalize with your answer including citation IDs like [ev-abc-001]
 
 ## Important
 
