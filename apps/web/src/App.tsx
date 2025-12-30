@@ -84,7 +84,7 @@ interface SyncRun {
   error: string | null
 }
 
-type Page = 'dashboard' | 'query' | 'collections' | 'runs'
+type Page = 'dashboard' | 'collections' | 'runs'
 
 const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
 
@@ -764,9 +764,9 @@ function App() {
     }
   }, [currentPage, user, selectedRunSource])
 
-  // Load collections for query page
+  // Load collections for dashboard (needed for query form)
   useEffect(() => {
-    if (currentPage === 'query' && user) {
+    if (currentPage === 'dashboard' && user) {
       fetchCollections()
     }
   }, [currentPage, user])
@@ -1051,7 +1051,6 @@ function App() {
       <nav className={`sidebar ${mobileMenuOpen ? 'open' : ''}`}>
         <ul>
           <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }}>Dashboard</li>
-          <li className={currentPage === 'query' ? 'active' : ''} onClick={() => { setCurrentPage('query'); setMobileMenuOpen(false); }}>Query</li>
           <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => { setCurrentPage('collections'); setMobileMenuOpen(false); }}>Collections</li>
           <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => { setCurrentPage('runs'); setMobileMenuOpen(false); }}>Runs</li>
         </ul>
@@ -1184,125 +1183,121 @@ function App() {
               </section>
             </div>
           </div>
-          </>
-        )}
 
-        {currentPage === 'query' && (
-          <>
-            <section className="card">
-              <h2>Query Documentation</h2>
-              <div className="query-mode-toggle">
-                <button
-                  className={`mode-button ${queryMode === 'quick' ? 'active' : ''}`}
-                  onClick={() => setQueryMode('quick')}
-                  type="button"
-                >
-                  Quick Search
-                </button>
-                <button
-                  className={`mode-button ${queryMode === 'deep' ? 'active' : ''}`}
-                  onClick={() => setQueryMode('deep')}
-                  type="button"
-                >
-                  Deep Research
-                </button>
-              </div>
-              <p className="mode-description">
-                {queryMode === 'quick'
-                  ? 'Fast semantic search with LLM-synthesized answer from indexed documentation.'
-                  : 'Multi-step AI agent that searches, reads code, and investigates complex questions.'}
-              </p>
-              <form onSubmit={handleQuery} className="query-form">
-                {queryMode === 'quick' && (
-                  <div className="form-row">
-                    <select
-                      value={queryCollection?.id || ''}
-                      onChange={(e) => {
-                        const coll = collections.find(c => c.id === e.target.value) || null
-                        setQueryCollection(coll)
-                      }}
-                      className="collection-select"
-                    >
-                      <option value="">All accessible collections</option>
-                      {collections.map((collection) => (
-                        <option key={collection.id} value={collection.id}>
-                          {collection.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+          <section className="card">
+            <h2>Query Documentation</h2>
+            <div className="query-mode-toggle">
+              <button
+                className={`mode-button ${queryMode === 'quick' ? 'active' : ''}`}
+                onClick={() => setQueryMode('quick')}
+                type="button"
+              >
+                Quick Search
+              </button>
+              <button
+                className={`mode-button ${queryMode === 'deep' ? 'active' : ''}`}
+                onClick={() => setQueryMode('deep')}
+                type="button"
+              >
+                Deep Research
+              </button>
+            </div>
+            <p className="mode-description">
+              {queryMode === 'quick'
+                ? 'Fast semantic search with LLM-synthesized answer from indexed documentation.'
+                : 'Multi-step AI agent that searches, reads code, and investigates complex questions.'}
+            </p>
+            <form onSubmit={handleQuery} className="query-form">
+              {queryMode === 'quick' && (
                 <div className="form-row">
-                  <textarea
-                    placeholder={queryMode === 'quick'
-                      ? "Enter your query... (e.g., 'How do I use the authentication API?')"
-                      : "Enter a complex question... (e.g., 'How does the error handling work in the API layer?')"}
-                    value={queryText}
-                    onChange={(e) => setQueryText(e.target.value)}
-                    className="query-input"
-                    rows={3}
-                  />
+                  <select
+                    value={queryCollection?.id || ''}
+                    onChange={(e) => {
+                      const coll = collections.find(c => c.id === e.target.value) || null
+                      setQueryCollection(coll)
+                    }}
+                    className="collection-select"
+                  >
+                    <option value="">All accessible collections</option>
+                    {collections.map((collection) => (
+                      <option key={collection.id} value={collection.id}>
+                        {collection.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <button type="submit" className="query-button" disabled={queryLoading || !queryText.trim()}>
-                  {queryLoading
-                    ? (researchStep || (queryMode === 'deep' ? 'Researching...' : 'Generating...'))
-                    : (queryMode === 'deep' ? 'Start Research' : 'Generate Context')}
-                </button>
-              </form>
-              {queryError && <p className="query-error">{queryError}</p>}
-            </section>
+              )}
+              <div className="form-row">
+                <textarea
+                  placeholder={queryMode === 'quick'
+                    ? "Enter your query... (e.g., 'How do I use the authentication API?')"
+                    : "Enter a complex question... (e.g., 'How does the error handling work in the API layer?')"}
+                  value={queryText}
+                  onChange={(e) => setQueryText(e.target.value)}
+                  className="query-input"
+                  rows={3}
+                />
+              </div>
+              <button type="submit" className="query-button" disabled={queryLoading || !queryText.trim()}>
+                {queryLoading
+                  ? (researchStep || (queryMode === 'deep' ? 'Researching...' : 'Generating...'))
+                  : (queryMode === 'deep' ? 'Start Research' : 'Generate Context')}
+              </button>
+            </form>
+            {queryError && <p className="query-error">{queryError}</p>}
+          </section>
 
-            {queryResult && (
-              <>
+          {queryResult && (
+            <>
+              <section className="card">
+                <h2>Result</h2>
+                <div className="query-meta">
+                  {queryMode === 'quick' ? (
+                    <span>Used {queryResult.chunks_used} chunks from {queryResult.sources.length} sources</span>
+                  ) : (
+                    <span>Research completed in {queryResult.chunks_used} steps with {researchCitations.length} citations</span>
+                  )}
+                </div>
+                <div className="markdown-content">
+                  <pre className="markdown-raw">{queryResult.markdown}</pre>
+                </div>
+              </section>
+
+              {queryMode === 'quick' && queryResult.sources.length > 0 && (
                 <section className="card">
-                  <h2>Result</h2>
-                  <div className="query-meta">
-                    {queryMode === 'quick' ? (
-                      <span>Used {queryResult.chunks_used} chunks from {queryResult.sources.length} sources</span>
-                    ) : (
-                      <span>Research completed in {queryResult.chunks_used} steps with {researchCitations.length} citations</span>
-                    )}
-                  </div>
-                  <div className="markdown-content">
-                    <pre className="markdown-raw">{queryResult.markdown}</pre>
-                  </div>
+                  <h2>Sources</h2>
+                  <ul className="sources-list">
+                    {queryResult.sources.map((source, index) => (
+                      <li key={index} className="source-item">
+                        <a href={source.uri} target="_blank" rel="noopener noreferrer">
+                          {source.title}
+                        </a>
+                        {source.file_path && (
+                          <span className="file-path">{source.file_path}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
                 </section>
+              )}
 
-                {queryMode === 'quick' && queryResult.sources.length > 0 && (
-                  <section className="card">
-                    <h2>Sources</h2>
-                    <ul className="sources-list">
-                      {queryResult.sources.map((source, index) => (
-                        <li key={index} className="source-item">
-                          <a href={source.uri} target="_blank" rel="noopener noreferrer">
-                            {source.title}
-                          </a>
-                          {source.file_path && (
-                            <span className="file-path">{source.file_path}</span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-
-                {queryMode === 'deep' && researchCitations.length > 0 && (
-                  <section className="card">
-                    <h2>Evidence Citations</h2>
-                    <ul className="sources-list citations-list">
-                      {researchCitations.map((citation, index) => (
-                        <li key={index} className="source-item citation-item">
-                          <code>{citation}</code>
-                        </li>
-                      ))}
-                    </ul>
-                    {researchRunId && (
-                      <p className="note">Run ID: {researchRunId}</p>
-                    )}
-                  </section>
-                )}
-              </>
-            )}
+              {queryMode === 'deep' && researchCitations.length > 0 && (
+                <section className="card">
+                  <h2>Evidence Citations</h2>
+                  <ul className="sources-list citations-list">
+                    {researchCitations.map((citation, index) => (
+                      <li key={index} className="source-item citation-item">
+                        <code>{citation}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  {researchRunId && (
+                    <p className="note">Run ID: {researchRunId}</p>
+                  )}
+                </section>
+              )}
+            </>
+          )}
           </>
         )}
 
