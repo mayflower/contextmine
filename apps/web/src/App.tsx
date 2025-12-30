@@ -1097,7 +1097,6 @@ function App() {
           </button>
           <img src="/logo-dark-sm.png" alt="ContextMine" className="header-logo" />
           <h1>ContextMine</h1>
-          <span className="subtitle">Admin Console</span>
           <button
             className="header-cta"
             onClick={() => setCurrentPage('collections')}
@@ -1134,6 +1133,17 @@ function App() {
 
       <main className="content">
         {currentPage === 'dashboard' && (
+          <>
+          <section className="card welcome-card">
+            <img src="/logo-dark-md.png" alt="ContextMine" className="welcome-logo" />
+            <div className="welcome-content">
+              <h2>Welcome to ContextMine</h2>
+              <p>
+                Index your documentation and code repositories, then access them via MCP in Claude, Cursor, or any AI assistant.
+                Add GitHub repos or web docs, and let your AI tools query up-to-date context with semantic search.
+              </p>
+            </div>
+          </section>
           <div className="dashboard-grid">
             <div className="dashboard-left">
               <section className="card stats-card">
@@ -1171,38 +1181,6 @@ function App() {
               </section>
 
               <section className="card">
-                <h2>Recent Sync Runs</h2>
-                {stats?.recent_runs && stats.recent_runs.length > 0 ? (
-                  <table className="runs-table compact">
-                    <thead>
-                      <tr>
-                        <th>Source</th>
-                        <th>Status</th>
-                        <th>Started</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stats.recent_runs.slice(0, 5).map((run) => (
-                        <tr key={run.id}>
-                          <td className="source-cell" title={run.source_url}>
-                            {formatSourceUrl(run.source_url)}
-                          </td>
-                          <td>
-                            <span className={`status-badge ${run.status}`}>
-                              {run.status}
-                            </span>
-                          </td>
-                          <td>{run.started_at ? new Date(run.started_at).toLocaleString() : '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p className="note">No sync runs yet.</p>
-                )}
-              </section>
-
-              <section className="card">
                 <h2>System Status</h2>
                 <div className="status-row">
                   <span className="label">API</span>
@@ -1228,74 +1206,59 @@ function App() {
             </div>
 
             <div className="dashboard-right">
-              <section className="card">
-                <h2>MCP Connection</h2>
-                <div className="mcp-endpoint">
-                  <code>{window.location.origin}/mcp</code>
-                </div>
-
-                <h3>Access Tokens</h3>
-                <form onSubmit={handleCreateToken} className="token-form">
-                  <input
-                    type="text"
-                    placeholder="Token name (e.g., 'Claude Desktop')"
-                    value={newTokenName}
-                    onChange={(e) => setNewTokenName(e.target.value)}
-                    className="token-input"
-                  />
-                  <button type="submit" className="create-button">Create</button>
-                </form>
-                {createdToken && (
-                  <div className="token-created">
-                    <p><strong>Token created!</strong> Copy it now:</p>
-                    <code className="token-value">{createdToken}</code>
-                    <button onClick={() => {
-                      navigator.clipboard.writeText(createdToken)
-                    }} className="copy-button">Copy</button>
-                    <button onClick={() => setCreatedToken(null)} className="dismiss-button">×</button>
-                  </div>
-                )}
-
-                {tokensLoading ? (
-                  <p>Loading...</p>
-                ) : tokens.length === 0 ? (
-                  <p className="note">No tokens yet.</p>
-                ) : (
-                  <table className="tokens-table compact">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Last Used</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tokens.filter(t => !t.revoked_at).map((token) => (
-                        <tr key={token.id}>
-                          <td>{token.name}</td>
-                          <td>{token.last_used_at ? new Date(token.last_used_at).toLocaleDateString() : 'Never'}</td>
-                          <td>
-                            <button
-                              onClick={() => handleRevokeToken(token.id)}
-                              className="revoke-button small"
-                            >
-                              Revoke
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </section>
 
               <section className="card">
-                <h2>Claude Code Setup</h2>
-                <p className="note">Add ContextMine to Claude Code with this command:</p>
-                <code className="usage-example">claude mcp add --transport http -H "Authorization: Bearer YOUR_TOKEN" contextmine {window.location.origin}/mcp</code>
+                <h2>MCP Setup</h2>
+                <p className="note">Connect your AI assistant to ContextMine. Authentication is handled via GitHub OAuth - you'll be prompted to login when first connecting.</p>
+
+                <h3>Claude Code (CLI)</h3>
+                <code className="usage-example">claude mcp add contextmine {window.location.origin}/mcp</code>
+
+                <h3>Claude Desktop</h3>
+                <p className="note">Add to <code>claude_desktop_config.json</code>:</p>
+                <pre className="config-block">{`{
+  "mcpServers": {
+    "contextmine": {
+      "url": "${window.location.origin}/mcp"
+    }
+  }
+}`}</pre>
+
+                <h3>Cursor</h3>
+                <p className="note">Add to <code>~/.cursor/mcp.json</code>:</p>
+                <pre className="config-block">{`{
+  "mcpServers": {
+    "contextmine": {
+      "url": "${window.location.origin}/mcp"
+    }
+  }
+}`}</pre>
+
+                <h3>VS Code</h3>
+                <p className="note">Add to <code>.vscode/mcp.json</code> or user settings:</p>
+                <pre className="config-block">{`{
+  "mcp": {
+    "servers": {
+      "contextmine": {
+        "url": "${window.location.origin}/mcp"
+      }
+    }
+  }
+}`}</pre>
+
+                <h3>Cline</h3>
+                <p className="note">Add to <code>cline_mcp_settings.json</code>:</p>
+                <pre className="config-block">{`{
+  "mcpServers": {
+    "contextmine": {
+      "url": "${window.location.origin}/mcp"
+    }
+  }
+}`}</pre>
               </section>
             </div>
           </div>
+          </>
         )}
 
         {currentPage === 'query' && (

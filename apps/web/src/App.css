@@ -250,6 +250,47 @@
   }
 }
 
+/* Welcome card */
+.welcome-card {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: white;
+}
+
+.welcome-logo {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+.welcome-content h2 {
+  color: white;
+  border-bottom: none;
+  margin-bottom: 8px;
+  padding-bottom: 0;
+}
+
+.welcome-content p {
+  color: #a0aec0;
+  line-height: 1.6;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .welcome-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .welcome-logo {
+    width: 64px;
+    height: 64px;
+  }
+}
+
 /* Dashboard 2-column layout */
 .dashboard-grid {
   display: grid;
@@ -784,6 +825,20 @@ code {
   background: #f1f5f9;
   border-radius: 4px;
   font-size: 0.9rem;
+}
+
+.config-block {
+  display: block;
+  margin: 12px 0 20px;
+  padding: 16px;
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 /* Collections page styles */

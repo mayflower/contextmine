@@ -1,6 +1,13 @@
-# ContextMine
+<p align="center">
+  <img src="logo.png" alt="ContextMine" width="120" />
+</p>
 
-Self-hosted documentation and code indexing with MCP integration. Give your AI assistant accurate, up-to-date context from your own sources.
+<h1 align="center">ContextMine</h1>
+
+<p align="center">
+  Self-hosted documentation and code indexing with MCP integration.<br/>
+  Give your AI assistant accurate, up-to-date context from your own sources.
+</p>
 
 ## What is ContextMine?
 
@@ -9,11 +16,27 @@ ContextMine indexes your documentation and code repositories, making them search
 **Key features:**
 
 - **Hybrid search** - Full-text + vector similarity with RRF ranking for accurate retrieval
-- **Code intelligence** - Symbol extraction, code outlines, and structural navigation
-- **Deep research** - Multi-step AI agent for complex codebase questions
+- **Deep research agent** - Multi-step AI agent with LSP and Tree-sitter for complex codebase questions
+- **Code intelligence** - Symbol extraction, code outlines, and structural navigation via Tree-sitter
 - **Web crawling** - Index documentation sites automatically
 - **Git indexing** - Index GitHub repositories with incremental updates
 - **Self-hosted** - Your data stays on your infrastructure
+
+### Deep Research Agent
+
+The deep research agent goes beyond simple search to answer complex questions about your codebase. It uses an iterative approach with multiple tools:
+
+| Tool | Description |
+|------|-------------|
+| **Hybrid Search** | BM25 + vector similarity search with RRF ranking |
+| **LSP Go to Definition** | Jump to symbol definitions across files |
+| **LSP Find References** | Find all usages of a symbol |
+| **LSP Hover** | Get type information and documentation |
+| **Tree-sitter Outline** | Extract file structure (classes, functions, methods) |
+| **Tree-sitter Find Symbol** | Locate symbols by name pattern |
+| **Graph Traversal** | Navigate call graphs and dependencies |
+
+The agent collects evidence from multiple sources, verifies findings, and synthesizes a comprehensive answer with citations.
 
 ## Quick Start
 
