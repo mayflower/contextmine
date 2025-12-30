@@ -1061,7 +1061,7 @@ function App() {
         {currentPage === 'dashboard' && (
           <>
           <section className="card welcome-card">
-            <img src="/logo-dark-md.png" alt="ContextMine" className="welcome-logo" />
+            <img src="/logo-512.png" alt="ContextMine" className="welcome-logo" />
             <div className="welcome-content">
               <h2>Welcome to ContextMine</h2>
               <p>

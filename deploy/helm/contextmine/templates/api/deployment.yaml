@@ -11,10 +11,12 @@ spec:
       {{- include "contextmine.api.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.api.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "contextmine.api.selectorLabels" . | nindent 8 }}
     spec:
