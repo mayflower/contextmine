@@ -4,8 +4,6 @@ These tests verify that all extractors work together and produce
 well-formed outputs without requiring a database connection.
 """
 
-import pytest
-
 # Fixture: Small Python codebase for testing
 FIXTURE_PYTHON_FILE = '''
 """User authentication module."""
@@ -172,74 +170,54 @@ def downgrade():
 
 
 class TestRuleExtractorE2E:
-    """End-to-end tests for rule candidate extraction."""
+    """End-to-end tests for rule extraction code parsing.
 
-    def test_extract_python_rules(self) -> None:
-        """Test extracting rules from Python code."""
-        from contextmine_core.analyzer.extractors.rules import (
-            FailureKind,
-            extract_rule_candidates,
+    Note: LLM-based rule extraction requires an API key.
+    These tests verify the code parsing (Tree-sitter) part works correctly.
+    """
+
+    def test_parse_python_code_units(self) -> None:
+        """Test parsing Python code into analyzable units."""
+        from contextmine_core.analyzer.extractors.rules import _parse_code_units
+        from contextmine_core.treesitter.languages import TreeSitterLanguage
+
+        units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
+
+        # Should find functions and classes
+        names = [u.name for u in units]
+        assert "validate_user" in names
+        assert "authenticate" in names
+        assert "delete_user" in names
+        assert "User" in names
+
+    def test_parse_typescript_code_units(self) -> None:
+        """Test parsing TypeScript code into analyzable units."""
+        from contextmine_core.analyzer.extractors.rules import _parse_code_units
+        from contextmine_core.treesitter.languages import TreeSitterLanguage
+
+        units = _parse_code_units(
+            "validation.ts", FIXTURE_TYPESCRIPT_FILE, TreeSitterLanguage.TYPESCRIPT
         )
 
-        result = extract_rule_candidates("auth.py", FIXTURE_PYTHON_FILE)
+        # Should find functions
+        names = [u.name for u in units]
+        assert "validateAge" in names
+        assert "processPayment" in names
 
-        # Should find multiple rule candidates
-        assert len(result.candidates) >= 3
+    def test_code_units_have_proper_structure(self) -> None:
+        """Test that parsed code units have correct metadata."""
+        from contextmine_core.analyzer.extractors.rules import _parse_code_units
+        from contextmine_core.treesitter.languages import TreeSitterLanguage
 
-        # Check specific rules
-        age_rule = next(
-            (c for c in result.candidates if "age" in c.predicate_text.lower()),
-            None,
-        )
-        assert age_rule is not None
-        assert age_rule.failure_kind == FailureKind.RAISE_EXCEPTION
-        assert "18" in age_rule.predicate_text or "18" in age_rule.failure_text
+        units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
 
-        admin_rule = next(
-            (c for c in result.candidates if "admin" in c.predicate_text.lower()),
-            None,
-        )
-        assert admin_rule is not None
-        assert "PermissionError" in admin_rule.failure_text
-
-    def test_extract_typescript_rules(self) -> None:
-        """Test extracting rules from TypeScript code."""
-        from contextmine_core.analyzer.extractors.rules import (
-            FailureKind,
-            extract_rule_candidates,
-        )
-
-        result = extract_rule_candidates("validation.ts", FIXTURE_TYPESCRIPT_FILE)
-
-        assert len(result.candidates) >= 2
-
-        # Check age validation
-        age_rule = next(
-            (c for c in result.candidates if "age" in c.predicate_text.lower()),
-            None,
-        )
-        assert age_rule is not None
-        assert age_rule.failure_kind == FailureKind.THROW_ERROR
-
-        # Check payment validation
-        payment_rule = next(
-            (c for c in result.candidates if "amount" in c.predicate_text.lower()),
-            None,
-        )
-        assert payment_rule is not None
-
-    def test_rule_candidates_have_evidence(self) -> None:
-        """Test that extracted rules have proper evidence."""
-        from contextmine_core.analyzer.extractors.rules import extract_rule_candidates
-
-        result = extract_rule_candidates("auth.py", FIXTURE_PYTHON_FILE)
-
-        for candidate in result.candidates:
-            assert candidate.start_line > 0
-            assert candidate.end_line >= candidate.start_line
-            assert candidate.predicate_text
-            assert candidate.failure_text
-            assert candidate.language == "python"
+        for unit in units:
+            assert unit.start_line > 0
+            assert unit.end_line >= unit.start_line
+            assert unit.name
+            assert unit.kind in ("function", "class")
+            assert unit.language == "python"
+            assert len(unit.content) > 0
 
 
 class TestSurfaceExtractorE2E:
@@ -282,7 +260,7 @@ class TestSurfaceExtractorE2E:
 
         test_job = next((j for j in result.jobs if j.name == "test"), None)
         assert test_job is not None
-        assert test_job.kind == JobKind.GITHUB_JOB
+        assert test_job.framework == JobKind.GITHUB_JOB
 
         lint_job = next((j for j in result.jobs if j.name == "lint"), None)
         assert lint_job is not None
@@ -470,60 +448,85 @@ class TestGraphRAGDataStructures:
 class TestLabelingSchemas:
     """Tests for LLM labeling schemas."""
 
-    def test_business_rule_output_validation(self) -> None:
-        """Test that BusinessRuleOutput validates correctly."""
-        from contextmine_core.analyzer.labeling import BusinessRuleOutput
+    def test_business_rule_def_validation(self) -> None:
+        """Test that BusinessRuleDef validates correctly."""
+        from contextmine_core.analyzer.extractors.rules import BusinessRuleDef
 
         # Valid rule
-        rule = BusinessRuleOutput(
+        rule = BusinessRuleDef(
             name="Age Validation",
             description="Validates user age",
             category="validation",
             severity="error",
             natural_language="Users must be at least 18 years old",
-            confidence=0.9,
-            is_valid_rule=True,
-            reasoning="Clear business requirement",
+            evidence_snippet="if user.age < 18: raise ValueError",
+            start_line=10,
+            end_line=12,
         )
 
         assert rule.name == "Age Validation"
-        assert rule.is_valid_rule is True
-        assert 0 <= rule.confidence <= 1
+        assert rule.category == "validation"
 
-    def test_business_rule_output_rejects_invalid(self) -> None:
-        """Test that invalid data is rejected."""
-        from contextmine_core.analyzer.labeling import BusinessRuleOutput
+    def test_extraction_output_structure(self) -> None:
+        """Test that ExtractionOutput can hold multiple rules."""
+        from contextmine_core.analyzer.extractors.rules import (
+            BusinessRuleDef,
+            ExtractionOutput,
+        )
 
-        # Invalid confidence (too high)
-        with pytest.raises(ValueError):
-            BusinessRuleOutput(
-                name="Test",
-                description="Test",
-                category="validation",
-                severity="error",
-                natural_language="Test",
-                confidence=1.5,  # Invalid
-                is_valid_rule=True,
-                reasoning="Test",
-            )
+        output = ExtractionOutput(
+            rules=[
+                BusinessRuleDef(
+                    name="Rule 1",
+                    description="First rule",
+                    category="validation",
+                    severity="error",
+                    natural_language="Must be positive",
+                    evidence_snippet="if x < 0: raise",
+                    start_line=1,
+                    end_line=2,
+                ),
+                BusinessRuleDef(
+                    name="Rule 2",
+                    description="Second rule",
+                    category="authorization",
+                    severity="error",
+                    natural_language="Must be admin",
+                    evidence_snippet="if not admin: raise",
+                    start_line=5,
+                    end_line=6,
+                ),
+            ],
+            reasoning="Found two business rules",
+        )
+
+        assert len(output.rules) == 2
+        assert output.reasoning == "Found two business rules"
 
 
 class TestIntegrationWorkflow:
-    """Tests verifying the full extraction workflow."""
+    """Tests verifying the full extraction workflow.
+
+    Note: LLM-based rule extraction requires an API key.
+    These tests verify the non-LLM extractors work together.
+    """
 
     def test_full_extraction_pipeline(self) -> None:
-        """Test running all extractors on fixture data."""
+        """Test running all non-LLM extractors on fixture data."""
         from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
         from contextmine_core.analyzer.extractors.erm import ERMExtractor, generate_mermaid_erd
-        from contextmine_core.analyzer.extractors.rules import extract_rule_candidates
+        from contextmine_core.analyzer.extractors.rules import _parse_code_units
         from contextmine_core.analyzer.extractors.surface import SurfaceCatalogExtractor
+        from contextmine_core.treesitter.languages import TreeSitterLanguage
 
-        # 1. Extract rule candidates
-        python_rules = extract_rule_candidates("auth.py", FIXTURE_PYTHON_FILE)
-        ts_rules = extract_rule_candidates("validation.ts", FIXTURE_TYPESCRIPT_FILE)
+        # 1. Parse code units (pre-LLM step)
+        python_units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
+        ts_units = _parse_code_units(
+            "validation.ts", FIXTURE_TYPESCRIPT_FILE, TreeSitterLanguage.TYPESCRIPT
+        )
 
-        assert len(python_rules.candidates) >= 3
-        assert len(ts_rules.candidates) >= 2
+        assert len(python_units) >= 3
+        assert len(ts_units) >= 2
 
         # 2. Extract surface catalog
         surface_extractor = SurfaceCatalogExtractor()
@@ -548,10 +551,10 @@ class TestIntegrationWorkflow:
         assert "erDiagram" in mermaid
 
         # 4. Verify all outputs are well-formed
-        for candidate in python_rules.candidates + ts_rules.candidates:
-            assert candidate.start_line > 0
-            assert candidate.predicate_text
-            assert candidate.failure_text
+        for unit in python_units + ts_units:
+            assert unit.start_line > 0
+            assert unit.name
+            assert unit.content
 
         for spec in catalog.openapi_specs:
             for endpoint in spec.endpoints:
@@ -561,27 +564,25 @@ class TestIntegrationWorkflow:
         for job_def in catalog.job_definitions:
             for job in job_def.jobs:
                 assert job.name
-                assert job.kind
+                assert job.framework
 
         for table in schema.tables.values():
             assert table.name
             assert len(table.columns) > 0
 
-    def test_outputs_are_idempotent(self) -> None:
-        """Test that extractors produce same output on repeated calls."""
-        from contextmine_core.analyzer.extractors.rules import (
-            extract_rule_candidates,
-            get_candidate_natural_key,
-        )
+    def test_code_parsing_is_idempotent(self) -> None:
+        """Test that code parsing produces same output on repeated calls."""
+        from contextmine_core.analyzer.extractors.rules import _parse_code_units
+        from contextmine_core.treesitter.languages import TreeSitterLanguage
 
-        # Run extraction twice
-        result1 = extract_rule_candidates("auth.py", FIXTURE_PYTHON_FILE)
-        result2 = extract_rule_candidates("auth.py", FIXTURE_PYTHON_FILE)
+        # Run parsing twice
+        result1 = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
+        result2 = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
 
-        # Same number of candidates
-        assert len(result1.candidates) == len(result2.candidates)
+        # Same number of units
+        assert len(result1) == len(result2)
 
-        # Same natural keys (stable across runs)
-        keys1 = {get_candidate_natural_key(c) for c in result1.candidates}
-        keys2 = {get_candidate_natural_key(c) for c in result2.candidates}
-        assert keys1 == keys2
+        # Same names (stable across runs)
+        names1 = {u.name for u in result1}
+        names2 = {u.name for u in result2}
+        assert names1 == names2

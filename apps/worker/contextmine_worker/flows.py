@@ -421,7 +421,6 @@ async def build_knowledge_graph(
     stats = {
         "kg_file_nodes": 0,
         "kg_symbol_nodes": 0,
-        "kg_rule_candidates": 0,
         "kg_business_rules": 0,
         "kg_tables": 0,
         "kg_endpoints": 0,
@@ -450,48 +449,60 @@ async def build_knowledge_graph(
         logger.warning("Failed to build FILE/SYMBOL nodes: %s", e)
         stats["kg_errors"].append(f"file_symbol: {e}")
 
-    # Step 2: Extract rule candidates from code files
+    # Step 2: Extract business rules from code files using LLM
     try:
-        from contextmine_core.analyzer.extractors.rules import (
-            build_rule_candidates_graph,
-            extract_rule_candidates,
-        )
-
-        all_candidates = []
-
-        async with get_session() as session:
-            # Get all documents for this source
-            result = await session.execute(
-                select(Document.id, Document.uri, Document.content_markdown).where(
-                    Document.source_id == source_uuid
-                )
+        settings = get_settings()
+        # Only run if LLM provider is available
+        if settings.openai_api_key or settings.anthropic_api_key or settings.gemini_api_key:
+            from contextmine_core.analyzer.extractors.rules import (
+                build_rules_graph,
+                extract_rules_from_file,
             )
-            docs = result.all()
+            from contextmine_core.research.llm import get_research_llm_provider
+            from contextmine_core.treesitter.languages import detect_language
 
-            for _doc_id, uri, content in docs:
-                if not content:
-                    continue
-                # Extract file path from URI
-                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                # Only process Python/JS/TS files
-                if file_path.endswith((".py", ".js", ".ts", ".tsx", ".jsx")):
-                    try:
-                        rule_result = extract_rule_candidates(file_path, content)
-                        all_candidates.extend(rule_result.candidates)
-                    except Exception as e:
-                        logger.debug("Rule extraction failed for %s: %s", file_path, e)
+            provider = get_research_llm_provider()
+            if provider:
+                all_extractions = []
 
-            # Build graph nodes for all candidates
-            if all_candidates:
-                rc_stats = await build_rule_candidates_graph(
-                    session, collection_uuid, all_candidates
-                )
-                stats["kg_rule_candidates"] = rc_stats.get("nodes_created", 0)
-                await session.commit()
-                logger.info("Extracted %d rule candidates", stats["kg_rule_candidates"])
+                async with get_session() as session:
+                    # Get all documents for this source
+                    result = await session.execute(
+                        select(Document.id, Document.uri, Document.content_markdown).where(
+                            Document.source_id == source_uuid
+                        )
+                    )
+                    docs = result.all()
+
+                    for _doc_id, uri, content in docs:
+                        if not content:
+                            continue
+                        # Extract file path from URI
+                        file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                        # Process all files with supported Tree-sitter languages
+                        if detect_language(file_path) is not None:
+                            try:
+                                rule_result = await extract_rules_from_file(
+                                    file_path, content, provider
+                                )
+                                if rule_result.rules:
+                                    all_extractions.append(rule_result)
+                            except Exception as e:
+                                logger.debug("Rule extraction failed for %s: %s", file_path, e)
+
+                    # Build graph nodes for all business rules
+                    if all_extractions:
+                        rule_stats = await build_rules_graph(
+                            session, collection_uuid, all_extractions
+                        )
+                        stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
+                        await session.commit()
+                        logger.info("Extracted %d business rules", stats["kg_business_rules"])
+        else:
+            logger.info("Skipping business rule extraction - no LLM provider configured")
 
     except Exception as e:
-        logger.warning("Failed to extract rule candidates: %s", e)
+        logger.warning("Failed to extract business rules: %s", e)
         stats["kg_errors"].append(f"rules: {e}")
 
     # Step 3: Extract ERM from Alembic migrations
@@ -586,24 +597,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to extract surfaces: %s", e)
         stats["kg_errors"].append(f"surface: {e}")
 
-    # Step 5: LLM labeling of rule candidates (if configured)
-    try:
-        settings = get_settings()
-        # Check if LLM provider is available
-        if settings.openai_api_key or settings.anthropic_api_key or settings.gemini_api_key:
-            from contextmine_core.analyzer.labeling import label_rule_candidates
-            from contextmine_core.research.llm import get_research_llm_provider
-
-            provider = get_research_llm_provider()
-            if provider:
-                async with get_session() as session:
-                    label_stats = await label_rule_candidates(session, collection_uuid, provider)
-                    stats["kg_business_rules"] = label_stats.rules_created
-                    await session.commit()
-                    logger.info("Labeled %d business rules", stats["kg_business_rules"])
-    except Exception as e:
-        logger.warning("Failed to label rule candidates: %s", e)
-        stats["kg_errors"].append(f"labeling: {e}")
+    # Step 5: (Removed - business rule extraction now uses LLM directly in Step 2)
 
     # Step 6: Generate arc42 architecture documentation
     try:
@@ -958,7 +952,6 @@ async def sync_github_source(
             # Knowledge Graph stats
             "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
             "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
-            "kg_rule_candidates": kg_stats.get("kg_rule_candidates", 0),
             "kg_business_rules": kg_stats.get("kg_business_rules", 0),
             "kg_tables": kg_stats.get("kg_tables", 0),
             "kg_endpoints": kg_stats.get("kg_endpoints", 0),
@@ -1198,7 +1191,6 @@ async def sync_web_source(
             # Knowledge Graph stats
             "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
             "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
-            "kg_rule_candidates": kg_stats.get("kg_rule_candidates", 0),
             "kg_business_rules": kg_stats.get("kg_business_rules", 0),
             "kg_tables": kg_stats.get("kg_tables", 0),
             "kg_endpoints": kg_stats.get("kg_endpoints", 0),

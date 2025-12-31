@@ -304,8 +304,8 @@ jobs:
         assert "build" in jobs_by_name
 
         test_job = jobs_by_name["test"]
-        assert test_job.kind == JobKind.GITHUB_JOB
-        assert test_job.runs_on == "ubuntu-latest"
+        assert test_job.framework == JobKind.GITHUB_JOB
+        # runs_on is no longer a direct field in the sync extraction
         assert len(test_job.steps) == 2
 
     def test_extract_github_scheduled_workflow(self) -> None:
@@ -354,7 +354,7 @@ spec:
 
         assert len(result.jobs) == 1
         job = result.jobs[0]
-        assert job.kind == JobKind.K8S_CRONJOB
+        assert job.framework == JobKind.K8S_CRONJOB
         assert job.name == "backup-job"
         assert job.schedule == "0 2 * * *"
         assert job.container_image == "backup:latest"
@@ -375,7 +375,7 @@ deployments:
 
         assert len(result.jobs) == 1
         job = result.jobs[0]
-        assert job.kind == JobKind.PREFECT_DEPLOYMENT
+        assert job.framework == JobKind.PREFECT_DEPLOYMENT
         assert job.name == "daily-sync"
         assert job.schedule == "0 6 * * *"
 

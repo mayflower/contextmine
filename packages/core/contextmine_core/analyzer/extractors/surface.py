@@ -354,7 +354,7 @@ async def build_surface_graph(
     # Process job definitions
     for job_extraction in catalog.job_definitions:
         for job in job_extraction.jobs:
-            natural_key = f"job:{job.kind.value}:{job.name}"
+            natural_key = f"job:{job.framework}:{job.name}"
 
             stmt = pg_insert(KnowledgeNode).values(
                 collection_id=collection_id,
@@ -362,10 +362,9 @@ async def build_surface_graph(
                 natural_key=natural_key,
                 name=job.name,
                 meta={
-                    "kind": job.kind.value,
+                    "framework": job.framework,
                     "schedule": job.schedule,
                     "triggers": [{"type": t.trigger_type, "cron": t.cron} for t in job.triggers],
-                    "runs_on": job.runs_on,
                     "container_image": job.container_image,
                     **job.meta,
                 },

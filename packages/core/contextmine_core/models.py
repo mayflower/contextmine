@@ -120,7 +120,9 @@ class KnowledgeEdgeKind(enum.Enum):
     SYSTEM_EXPOSES_ENDPOINT = "system_exposes_endpoint"
     ENDPOINT_USES_SCHEMA = "endpoint_uses_schema"
     RPC_USES_MESSAGE = "rpc_uses_message"
+    # Job relationships
     JOB_DEFINED_IN_FILE = "job_defined_in_file"
+    JOB_DEPENDS_ON = "job_depends_on"
     # Business rule relationships
     RULE_DERIVED_FROM_CANDIDATE = "rule_derived_from_candidate"
     RULE_EVIDENCED_BY = "rule_evidenced_by"
