@@ -1143,6 +1143,316 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             logger.warning("graph_trace failed: %s", e)
             return f"Graph trace failed: {e}"
 
+    # =========================================================================
+    # GRAPHRAG TOOLS (use Knowledge Graph with community-aware retrieval)
+    # =========================================================================
+
+    @tool
+    async def graphrag_search(query: str, max_entities: int = 15) -> str:
+        """Search using GraphRAG with community-aware retrieval.
+
+        This is the most powerful search tool - it combines:
+        1. Community summaries (global context from code clusters)
+        2. Hybrid search (BM25 + vector)
+        3. Knowledge Graph expansion (files, symbols, DB tables, APIs, rules)
+
+        Use this for broad architectural questions or to understand
+        how different parts of the codebase relate.
+
+        Args:
+            query: Natural language query
+            max_entities: Maximum entities to return (default 15)
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.graphrag import graph_rag_context
+
+            async with get_async_session() as session:
+                context = await graph_rag_context(
+                    session=session,
+                    query=query,
+                    collection_id=None,
+                    user_id=None,
+                    max_communities=5,
+                    max_entities=max_entities,
+                    max_depth=2,
+                )
+
+            # Convert to evidence
+            output_parts = []
+
+            # Add community context
+            if context.communities:
+                output_parts.append(f"## Global Context ({len(context.communities)} communities)\n")
+                for comm in context.communities[:3]:
+                    output_parts.append(f"**{comm.title}** (relevance: {comm.relevance_score:.0%})")
+                    if comm.summary:
+                        summary = (
+                            comm.summary[:300] + "..." if len(comm.summary) > 300 else comm.summary
+                        )
+                        output_parts.append(summary)
+                    output_parts.append("")
+
+            # Add entity context as evidence
+            if context.entities:
+                output_parts.append(f"## Local Context ({len(context.entities)} entities)\n")
+                for entity in context.entities[:max_entities]:
+                    # Create evidence for each entity
+                    citations = entity.evidence[:1]
+                    if citations:
+                        cit = citations[0]
+                        evidence = Evidence(
+                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                            file_path=cit.file_path,
+                            start_line=cit.start_line,
+                            end_line=cit.end_line,
+                            content=cit.snippet or "",
+                            reason=f"GraphRAG: {entity.kind} '{entity.name}'",
+                            provenance="graphrag",
+                        )
+                        run.add_evidence(evidence)
+                        output_parts.append(
+                            f"[{evidence.id}] {entity.kind}: {entity.name} "
+                            f"({cit.file_path}:{cit.start_line})"
+                        )
+                    else:
+                        output_parts.append(f"- {entity.kind}: {entity.name}")
+
+            # Add relationship summary
+            if context.edges:
+                edge_counts: dict[str, int] = {}
+                for edge in context.edges:
+                    edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
+                output_parts.append(f"\n## Relationships ({len(context.edges)} edges)")
+                for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1])[:5]:
+                    output_parts.append(f"- {kind}: {count}")
+
+            if not output_parts:
+                return "No relevant results found. Try a different query or use hybrid_search."
+
+            return "\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("graphrag_search failed: %s", e)
+            return f"GraphRAG search failed: {e}. Try hybrid_search as fallback."
+
+    @tool
+    async def kg_neighborhood(node_name: str, depth: int = 1, node_kind: str | None = None) -> str:
+        """Explore the Knowledge Graph neighborhood of a node.
+
+        Returns connected nodes including:
+        - Files and symbols
+        - Database tables and columns
+        - API endpoints and schemas
+        - Business rules
+
+        Args:
+            node_name: Name of the node to explore (file path, symbol name, table name)
+            depth: Expansion depth (1-3, default 1)
+            node_kind: Optional kind filter (FILE, SYMBOL, DB_TABLE, API_ENDPOINT, etc.)
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.graphrag import graph_neighborhood
+            from contextmine_core.models import KnowledgeNode
+            from sqlalchemy import select
+
+            depth = max(1, min(3, depth))
+
+            async with get_async_session() as session:
+                # Find node by name
+                stmt = select(KnowledgeNode).where(KnowledgeNode.name == node_name)
+                if node_kind:
+                    from contextmine_core.models import KnowledgeNodeKind
+
+                    try:
+                        kind_enum = KnowledgeNodeKind(node_kind.upper())
+                        stmt = stmt.where(KnowledgeNode.kind == kind_enum)
+                    except ValueError:
+                        pass
+                stmt = stmt.limit(1)
+
+                result = await session.execute(stmt)
+                node = result.scalar_one_or_none()
+
+                if not node:
+                    # Try by natural_key pattern
+                    stmt = (
+                        select(KnowledgeNode)
+                        .where(KnowledgeNode.natural_key.ilike(f"%{node_name}%"))
+                        .limit(1)
+                    )
+                    result = await session.execute(stmt)
+                    node = result.scalar_one_or_none()
+
+                if not node:
+                    return f"Node '{node_name}' not found in Knowledge Graph"
+
+                # Get neighborhood
+                context = await graph_neighborhood(
+                    session=session,
+                    node_id=node.id,
+                    collection_id=node.collection_id,
+                    depth=depth,
+                    max_nodes=30,
+                )
+
+            # Format output
+            output_parts = [
+                f"## Neighborhood of {node.kind.value}: {node.name}",
+                f"Found {len(context.entities)} nodes, {len(context.edges)} edges\n",
+            ]
+
+            # Group by kind
+            by_kind: dict[str, list] = {}
+            for entity in context.entities:
+                by_kind.setdefault(entity.kind, []).append(entity)
+
+            for kind, entities in sorted(by_kind.items()):
+                output_parts.append(f"**{kind}** ({len(entities)}):")
+                for entity in entities[:10]:
+                    # Create evidence
+                    if entity.evidence:
+                        cit = entity.evidence[0]
+                        evidence = Evidence(
+                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                            file_path=cit.file_path,
+                            start_line=cit.start_line,
+                            end_line=cit.end_line,
+                            content=cit.snippet or "",
+                            reason=f"KG neighbor: {entity.kind} '{entity.name}'",
+                            provenance="knowledge_graph",
+                        )
+                        run.add_evidence(evidence)
+                        output_parts.append(f"  [{evidence.id}] {entity.name}")
+                    else:
+                        output_parts.append(f"  - {entity.name}")
+                if len(entities) > 10:
+                    output_parts.append(f"  ... and {len(entities) - 10} more")
+                output_parts.append("")
+
+            # Show edge types
+            if context.edges:
+                edge_counts: dict[str, int] = {}
+                for edge in context.edges:
+                    edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
+                output_parts.append("**Relationships:**")
+                for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1]):
+                    output_parts.append(f"  - {kind}: {count}")
+
+            return "\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("kg_neighborhood failed: %s", e)
+            return f"Knowledge Graph neighborhood failed: {e}"
+
+    @tool
+    async def kg_path(from_name: str, to_name: str, max_hops: int = 6) -> str:
+        """Find path between two nodes in the Knowledge Graph.
+
+        Works across different node types (files, symbols, tables, APIs).
+        Useful for understanding dependencies and impact.
+
+        Args:
+            from_name: Source node name
+            to_name: Target node name
+            max_hops: Maximum path length (default 6)
+        """
+        run = run_holder["run"]
+        try:
+            from contextmine_core.database import get_async_session
+            from contextmine_core.graphrag import trace_path
+            from contextmine_core.models import KnowledgeNode
+            from sqlalchemy import select
+
+            max_hops = max(1, min(10, max_hops))
+
+            async with get_async_session() as session:
+                # Find source node
+                stmt = select(KnowledgeNode).where(KnowledgeNode.name == from_name).limit(1)
+                result = await session.execute(stmt)
+                from_node = result.scalar_one_or_none()
+
+                if not from_node:
+                    stmt = (
+                        select(KnowledgeNode)
+                        .where(KnowledgeNode.natural_key.ilike(f"%{from_name}%"))
+                        .limit(1)
+                    )
+                    result = await session.execute(stmt)
+                    from_node = result.scalar_one_or_none()
+
+                if not from_node:
+                    return f"Source node '{from_name}' not found"
+
+                # Find target node
+                stmt = select(KnowledgeNode).where(KnowledgeNode.name == to_name).limit(1)
+                result = await session.execute(stmt)
+                to_node = result.scalar_one_or_none()
+
+                if not to_node:
+                    stmt = (
+                        select(KnowledgeNode)
+                        .where(KnowledgeNode.natural_key.ilike(f"%{to_name}%"))
+                        .limit(1)
+                    )
+                    result = await session.execute(stmt)
+                    to_node = result.scalar_one_or_none()
+
+                if not to_node:
+                    return f"Target node '{to_name}' not found"
+
+                # Find path
+                context = await trace_path(
+                    session=session,
+                    from_node_id=from_node.id,
+                    to_node_id=to_node.id,
+                    collection_id=from_node.collection_id,
+                    max_hops=max_hops,
+                )
+
+            if not context.entities:
+                return f"No path found from '{from_name}' to '{to_name}' within {max_hops} hops"
+
+            # Format output
+            output_parts = [f"## Path: {from_name} → {to_name}\n"]
+
+            if context.paths:
+                output_parts.append(f"**Route:** {context.paths[0].description}\n")
+
+            output_parts.append("**Steps:**")
+            for i, entity in enumerate(context.entities):
+                arrow = "→" if i < len(context.entities) - 1 else ""
+                edge_kind = context.edges[i].kind if i < len(context.edges) else ""
+
+                # Create evidence
+                if entity.evidence:
+                    cit = entity.evidence[0]
+                    evidence = Evidence(
+                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                        file_path=cit.file_path,
+                        start_line=cit.start_line,
+                        end_line=cit.end_line,
+                        content=cit.snippet or "",
+                        reason=f"Path step {i + 1}: {entity.kind} '{entity.name}'",
+                        provenance="knowledge_graph",
+                    )
+                    run.add_evidence(evidence)
+                    output_parts.append(f"  {i + 1}. [{evidence.id}] {entity.kind}: {entity.name}")
+                else:
+                    output_parts.append(f"  {i + 1}. {entity.kind}: {entity.name}")
+
+                if edge_kind:
+                    output_parts.append(f"     {arrow} ({edge_kind})")
+
+            return "\n".join(output_parts)
+
+        except Exception as e:
+            logger.warning("kg_path failed: %s", e)
+            return f"Knowledge Graph path failed: {e}"
+
     # Build tools list - all tools use pre-indexed data
     tools = [
         # Core tools
@@ -1160,10 +1470,14 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
         symbol_enclosing,
         symbol_callers,
         symbol_callees,
-        # Graph traversal tools (pre-indexed)
+        # Graph traversal tools (pre-indexed Symbol graph)
         graph_expand,
         graph_pack,
         graph_trace,
+        # GraphRAG tools (Knowledge Graph with communities)
+        graphrag_search,
+        kg_neighborhood,
+        kg_path,
     ]
 
     return tools
@@ -1422,8 +1736,13 @@ Your task: {question}{scope_instruction}
 
 ## Available Tools (all use pre-indexed data)
 
+### GraphRAG (Recommended for architectural questions)
+- **graphrag_search** - MOST POWERFUL: Community-aware search combining global context (code clusters) + local entities (files, symbols, tables, APIs, rules)
+- **kg_neighborhood** - Explore Knowledge Graph around a node (files, symbols, DB tables, APIs, business rules)
+- **kg_path** - Find paths between any two nodes in the Knowledge Graph (cross-type: file→table, symbol→API, etc.)
+
 ### RAG Search
-- **hybrid_search** - Search the codebase using BM25 + vector retrieval
+- **hybrid_search** - Search the codebase using BM25 + vector retrieval (fallback if GraphRAG unavailable)
 
 ### Definition & References
 - **goto_definition** - Jump to where a symbol is defined
@@ -1437,7 +1756,7 @@ Your task: {question}{scope_instruction}
 - **symbol_callers** - Find all functions that call a given symbol
 - **symbol_callees** - Find all functions that a symbol calls
 
-### Graph Traversal
+### Symbol Graph Traversal
 - **graph_expand** - Expand from seed symbols following relationships (calls, references, imports)
 - **graph_pack** - Select the most relevant evidence items from collected evidence
 - **graph_trace** - Find paths between two symbols (for impact analysis)
@@ -1451,14 +1770,16 @@ Your task: {question}{scope_instruction}
 
 ## Instructions
 
-1. Start by searching for relevant code using hybrid_search (RAG)
-2. Use goto_definition/find_references for precise symbol navigation
-3. Use symbol_* tools to explore file structure and relationships
-4. Use graph_* tools for multi-hop traversal and impact analysis
-5. Use open_span to examine specific code sections in detail
-6. Use summarize_evidence when you have many items and need to organize
-7. Use graph_pack to select the most important evidence before finalizing
-8. Call finalize with your answer including citation IDs like [ev-abc-001]
+1. For architectural questions, start with **graphrag_search** (includes community summaries + entities)
+2. For specific symbol lookups, use hybrid_search or symbol_find
+3. Use goto_definition/find_references for precise symbol navigation
+4. Use kg_neighborhood to explore Knowledge Graph (includes DB tables, APIs, business rules)
+5. Use kg_path to trace dependencies across different node types
+6. Use symbol_* tools for detailed code structure exploration
+7. Use graph_* tools for symbol-level multi-hop traversal
+8. Use open_span to examine specific code sections in detail
+9. Use summarize_evidence when you have many items and need to organize
+10. Call finalize with your answer including citation IDs like [ev-abc-001]
 
 ## Important
 
