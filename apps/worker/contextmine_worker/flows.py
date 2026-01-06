@@ -409,17 +409,25 @@ async def build_knowledge_graph(
     - RULE_CANDIDATE nodes from code validation patterns
     - DB_TABLE/DB_COLUMN nodes from Alembic migrations
     - API_ENDPOINT/JOB/etc. nodes from spec files
-    - BUSINESS_RULE nodes (if LLM labeling enabled)
+    - BUSINESS_RULE nodes via LLM extraction
+    - Semantic entities via LLM extraction
+    - Hierarchical Leiden communities
+    - Community summaries and embeddings
     - arc42 architecture documentation
 
-    Errors are logged but don't fail the sync.
+    REQUIRES: LLM provider and embedder must be configured.
+    GraphRAG features require both for proper entity resolution and community summaries.
 
     Returns:
         Stats dict with KG extraction metrics
+
+    Raises:
+        ValueError: If LLM provider or embedder is not configured
     """
     import uuid as uuid_module
 
     from contextmine_core.models import Document
+    from contextmine_core.research.llm import get_llm_provider, get_research_llm_provider
 
     stats = {
         "kg_file_nodes": 0,
@@ -433,6 +441,46 @@ async def build_knowledge_graph(
 
     source_uuid = uuid_module.UUID(source_id)
     collection_uuid = uuid_module.UUID(collection_id)
+
+    # REQUIRED: Get LLM provider and embedder upfront
+    # GraphRAG is the core feature - no point running without these
+    settings = get_settings()
+
+    # Get LLM provider (required for entity extraction and community summaries)
+    llm_provider = None
+    if settings.default_llm_provider:
+        try:
+            llm_provider = get_llm_provider(settings.default_llm_provider)
+        except Exception as e:
+            raise ValueError(f"LLM provider configured but failed to initialize: {e}") from e
+    else:
+        raise ValueError(
+            "LLM provider required for Knowledge Graph. "
+            "Set DEFAULT_LLM_PROVIDER (e.g., 'openai', 'anthropic', 'gemini')."
+        )
+
+    research_llm = get_research_llm_provider()
+    if not research_llm:
+        raise ValueError(
+            "Research LLM provider required for business rule extraction. "
+            "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY."
+        )
+
+    # Get embedder (required for entity resolution and community retrieval)
+    try:
+        provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
+        embedder = get_embedder(provider_name, model_name)
+    except Exception as e:
+        raise ValueError(
+            f"Embedder required for Knowledge Graph but failed to initialize: {e}. "
+            f"Set DEFAULT_EMBEDDING_MODEL (e.g., 'openai:text-embedding-3-small')."
+        ) from e
+
+    logger.info(
+        "Knowledge Graph build starting with LLM=%s, embedder=%s",
+        settings.default_llm_provider,
+        settings.default_embedding_model,
+    )
 
     # Step 1: Build FILE and SYMBOL nodes from indexed documents
     try:
@@ -454,55 +502,45 @@ async def build_knowledge_graph(
 
     # Step 2: Extract business rules from code files using LLM
     try:
-        settings = get_settings()
-        # Only run if LLM provider is available
-        if settings.openai_api_key or settings.anthropic_api_key or settings.gemini_api_key:
-            from contextmine_core.analyzer.extractors.rules import (
-                build_rules_graph,
-                extract_rules_from_file,
+        from contextmine_core.analyzer.extractors.rules import (
+            build_rules_graph,
+            extract_rules_from_file,
+        )
+        from contextmine_core.treesitter.languages import detect_language
+
+        all_extractions = []
+
+        async with get_session() as session:
+            # Get all documents for this source
+            result = await session.execute(
+                select(Document.id, Document.uri, Document.content_markdown).where(
+                    Document.source_id == source_uuid
+                )
             )
-            from contextmine_core.research.llm import get_research_llm_provider
-            from contextmine_core.treesitter.languages import detect_language
+            docs = result.all()
 
-            provider = get_research_llm_provider()
-            if provider:
-                all_extractions = []
-
-                async with get_session() as session:
-                    # Get all documents for this source
-                    result = await session.execute(
-                        select(Document.id, Document.uri, Document.content_markdown).where(
-                            Document.source_id == source_uuid
+            for _doc_id, uri, content in docs:
+                if not content:
+                    continue
+                # Extract file path from URI
+                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                # Process all files with supported Tree-sitter languages
+                if detect_language(file_path) is not None:
+                    try:
+                        rule_result = await extract_rules_from_file(
+                            file_path, content, research_llm
                         )
-                    )
-                    docs = result.all()
+                        if rule_result.rules:
+                            all_extractions.append(rule_result)
+                    except Exception as e:
+                        logger.debug("Rule extraction failed for %s: %s", file_path, e)
 
-                    for _doc_id, uri, content in docs:
-                        if not content:
-                            continue
-                        # Extract file path from URI
-                        file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                        # Process all files with supported Tree-sitter languages
-                        if detect_language(file_path) is not None:
-                            try:
-                                rule_result = await extract_rules_from_file(
-                                    file_path, content, provider
-                                )
-                                if rule_result.rules:
-                                    all_extractions.append(rule_result)
-                            except Exception as e:
-                                logger.debug("Rule extraction failed for %s: %s", file_path, e)
-
-                    # Build graph nodes for all business rules
-                    if all_extractions:
-                        rule_stats = await build_rules_graph(
-                            session, collection_uuid, all_extractions
-                        )
-                        stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
-                        await session.commit()
-                        logger.info("Extracted %d business rules", stats["kg_business_rules"])
-        else:
-            logger.info("Skipping business rule extraction - no LLM provider configured")
+            # Build graph nodes for all business rules
+            if all_extractions:
+                rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
+                stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
+                await session.commit()
+                logger.info("Extracted %d business rules", stats["kg_business_rules"])
 
     except Exception as e:
         logger.warning("Failed to extract business rules: %s", e)
@@ -615,75 +653,38 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"arc42: {e}")
 
     # Step 6: Extract semantic entities using LLM (for proper GraphRAG)
-    # Requires both LLM provider (for extraction) and embedder (for entity resolution)
     try:
         from contextmine_core.knowledge.extraction import (
             extract_from_documents,
             persist_semantic_entities,
         )
-        from contextmine_core.research.llm import get_llm_provider
 
-        settings = get_settings()
-        llm_provider = None
-        entity_embedder = None
-
-        # Get LLM provider if configured
-        if settings.default_llm_provider:
-            try:
-                llm_provider = get_llm_provider(settings.default_llm_provider)
-            except Exception as e:
-                logger.warning("LLM provider not available for entity extraction: %s", e)
-
-        # Get embedder for semantic entity resolution (REQUIRED for proper GraphRAG)
-        try:
-            provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
-            entity_embedder = get_embedder(provider_name, model_name)
-        except Exception as e:
-            logger.warning("Embedder not available for entity resolution: %s", e)
-
-        # Both LLM and embedder are required for GraphRAG entity extraction
-        if llm_provider and entity_embedder:
-            async with get_session() as session:
-                # Extract semantic entities from documents
-                # Uses embedding similarity for cross-language entity resolution
-                extraction_batch = await extract_from_documents(
-                    session=session,
-                    collection_id=collection_uuid,
-                    llm_provider=llm_provider,
-                    embedder=entity_embedder,
-                    max_chunks=50,  # Limit for cost control
-                )
-
-                # Persist to knowledge graph
-                extraction_stats = await persist_semantic_entities(
-                    session=session,
-                    collection_id=collection_uuid,
-                    batch=extraction_batch,
-                )
-                await session.commit()
-
-                stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
-                stats["kg_semantic_relationships"] = extraction_stats.get(
-                    "relationships_created", 0
-                )
-                logger.info(
-                    "Extracted %d semantic entities, %d relationships",
-                    stats["kg_semantic_entities"],
-                    stats["kg_semantic_relationships"],
-                )
-        else:
-            missing = []
-            if not llm_provider:
-                missing.append("LLM provider")
-            if not entity_embedder:
-                missing.append("embedder")
-            logger.info(
-                "Skipping semantic entity extraction (missing: %s). "
-                "GraphRAG requires both LLM and embedder for proper entity resolution.",
-                ", ".join(missing),
+        async with get_session() as session:
+            # Extract semantic entities from documents
+            # Uses embedding similarity for cross-language entity resolution
+            extraction_batch = await extract_from_documents(
+                session=session,
+                collection_id=collection_uuid,
+                llm_provider=llm_provider,
+                embedder=embedder,
+                max_chunks=50,  # Limit for cost control
             )
-            stats["kg_semantic_entities"] = 0
-            stats["kg_semantic_relationships"] = 0
+
+            # Persist to knowledge graph
+            extraction_stats = await persist_semantic_entities(
+                session=session,
+                collection_id=collection_uuid,
+                batch=extraction_batch,
+            )
+            await session.commit()
+
+            stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
+            stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
+            logger.info(
+                "Extracted %d semantic entities, %d relationships",
+                stats["kg_semantic_entities"],
+                stats["kg_semantic_relationships"],
+            )
 
     except Exception as e:
         logger.warning("Failed to extract semantic entities: %s", e)
@@ -718,59 +719,25 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"communities: {e}")
 
     # Step 8: Generate community summaries and embeddings
-    # GraphRAG REQUIRES both LLM (for summaries) and embedder (for retrieval)
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries
-        from contextmine_core.research.llm import get_research_llm_provider
 
-        settings = get_settings()
-
-        # Get embedding provider - REQUIRED for GraphRAG
-        summary_embedder = None
-        try:
-            provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
-            summary_embedder = get_embedder(provider_name, model_name)
-        except Exception as e:
-            logger.warning("Embedder not available for community summaries: %s", e)
-
-        # Get LLM provider - REQUIRED for GraphRAG (no extractive fallback)
-        summary_llm_provider = None
-        try:
-            summary_llm_provider = get_research_llm_provider()
-        except Exception as e:
-            logger.warning("LLM provider not available for community summaries: %s", e)
-
-        # Both are required for proper GraphRAG
-        if summary_llm_provider and summary_embedder:
-            async with get_session() as session:
-                summary_stats = await generate_community_summaries(
-                    session,
-                    collection_uuid,
-                    provider=summary_llm_provider,
-                    embed_provider=summary_embedder,
-                )
-                await session.commit()
-
-                stats["kg_summaries_created"] = summary_stats.communities_summarized
-                stats["kg_embeddings_created"] = summary_stats.embeddings_created
-                logger.info(
-                    "Generated %d community summaries, %d embeddings",
-                    stats["kg_summaries_created"],
-                    stats["kg_embeddings_created"],
-                )
-        else:
-            missing = []
-            if not summary_llm_provider:
-                missing.append("LLM provider")
-            if not summary_embedder:
-                missing.append("embedder")
-            logger.info(
-                "Skipping community summaries (missing: %s). "
-                "GraphRAG requires both LLM and embedder for community summaries.",
-                ", ".join(missing),
+        async with get_session() as session:
+            summary_stats = await generate_community_summaries(
+                session,
+                collection_uuid,
+                provider=research_llm,
+                embed_provider=embedder,
             )
-            stats["kg_summaries_created"] = 0
-            stats["kg_embeddings_created"] = 0
+            await session.commit()
+
+            stats["kg_summaries_created"] = summary_stats.communities_summarized
+            stats["kg_embeddings_created"] = summary_stats.embeddings_created
+            logger.info(
+                "Generated %d community summaries, %d embeddings",
+                stats["kg_summaries_created"],
+                stats["kg_embeddings_created"],
+            )
 
     except Exception as e:
         logger.warning("Failed to generate community summaries: %s", e)
