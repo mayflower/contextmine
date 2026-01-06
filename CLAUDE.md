@@ -235,30 +235,33 @@ Tracking implementation of the Knowledge Graph / Derived Knowledge subsystem (se
 ### Step 7 Summary (GraphRAG Retrieval)
 
 **What was built:**
-- `graphrag.py` - Graph-augmented retrieval service
-  - `graph_rag_bundle()` - Main retrieval function combining:
+- `graphrag.py` - Graph-augmented retrieval service with Microsoft GraphRAG approach:
+  - `graph_rag_context()` - Context retrieval combining:
     1. Hybrid search to find relevant documents/chunks
     2. Mapping search hits to Knowledge Graph nodes
     3. Expanding graph neighborhood (configurable depth)
     4. Gathering evidence citations
-    5. Building markdown summary + structured JSON
+    5. Building ContextPack with communities + entities + edges
+  - `graph_rag_query()` - Full map-reduce answering using LLM
   - `graph_neighborhood()` - Local exploration from a single node
   - `trace_path()` - BFS shortest path between two nodes
 
 **Key features:**
 - Maps search results to FILE nodes via document_id or URI
 - BFS-based neighborhood expansion with depth limit
+- Community-aware retrieval (global + local context)
 - Evidence gathering from KnowledgeEvidence table
 - Markdown rendering with node categorization (FILE, SYMBOL, DB_TABLE, etc.)
-- Returns `GraphRAGResult` dataclass with nodes, edges, evidence, summary_markdown
+- Returns ContextPack with communities, entities, edges, paths, citations
 
 **Output formats:**
-- `GraphRAGResult.to_dict()` - JSON-serializable structure
-- `summary_markdown` - Human-readable Mermaid-style summary
+- `ContextPack.to_markdown()` - Human-readable summary with citations
+- `ContextPack.to_dict()` - JSON-serializable structure
 - Evidence citations with file_path:start_line-end_line format
 
 **Integration point:**
-- Call `graph_rag_bundle(session, query, collection_id, user_id)` from search endpoints
+- Call `graph_rag_context(session, query, collection_id, user_id)` for context retrieval
+- Call `graph_rag_query(session, query, collection_id, user_id, provider)` for answered queries
 - Call `graph_neighborhood(session, node_id)` for local exploration
 - Call `trace_path(session, from_node_id, to_node_id)` for dependency analysis
 

@@ -32,9 +32,11 @@ This plan adapts the requirements from `docs/prompts4.md` to the current Context
   - `get_markdown`, `graph_neighborhood`, `trace_path`, `graph_rag`
   - **Problem**: `graph_rag` is just BFS expansion + word matching
 
-- **Fake GraphRAG** (`packages/core/contextmine_core/graphrag.py`):
-  - `graph_rag_bundle()` - hybrid search + node mapping + BFS
-  - **Missing**: Leiden, communities, summaries, global retrieval
+- **GraphRAG** (`packages/core/contextmine_core/graphrag.py`):
+  - `graph_rag_context()` - context retrieval with community awareness
+  - `graph_rag_query()` - full map-reduce answering with LLM
+  - `graph_neighborhood()` - local exploration from a single node
+  - `trace_path()` - BFS shortest path between two nodes
 
 ### Missing Components
 1. **Semantic Snapshot** - SCIP/LSIF ingestion layer
@@ -370,15 +372,16 @@ End with git status.
 
 ## Step 5 — GraphRAG Retrieval (Global + Local)
 
-Replace fake graphrag.py with real implementation.
+Implement full GraphRAG retrieval.
 
 ```text
-Rewrite packages/core/contextmine_core/graphrag.py.
+Implement packages/core/contextmine_core/graphrag.py.
 
 Current state:
-- graph_rag_bundle() does hybrid search + BFS expansion
-- No community awareness, no global context
-- Natural key format mismatch (bug)
+- graph_rag_context() does hybrid search + BFS expansion + community context
+- graph_rag_query() provides full map-reduce answering with LLM
+- graph_neighborhood() for local exploration
+- trace_path() for dependency analysis
 
 New implementation:
 ```python
@@ -448,10 +451,9 @@ Retrieval procedure:
 7. **Path finding**: BFS shortest paths between top symbols
 8. **Citation gathering**: Attach KnowledgeEvidence to all nodes
 
-Delete or deprecate:
-- Old graph_rag_bundle() function
-- graph_neighborhood() if redundant
-- trace_path() if redundant (or keep as utility)
+Retained utilities:
+- graph_neighborhood() - useful for local exploration
+- trace_path() - useful for dependency analysis
 
 Tests:
 - Fixture with communities + nodes + embeddings

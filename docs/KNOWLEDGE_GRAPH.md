@@ -21,7 +21,8 @@ The Knowledge Graph captures semantic relationships between code elements:
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                    GraphRAG Retrieval                       │
-│  graph_rag_bundle, graph_neighborhood, trace_path          │
+│  graph_rag_context, graph_rag_query, graph_neighborhood,   │
+│  trace_path                                                 │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
@@ -172,10 +173,10 @@ To disable LLM labeling, simply don't call `label_rule_candidates()`.
 Graph-augmented retrieval combines semantic search with knowledge graph:
 
 ```python
-from contextmine_core.graphrag import graph_rag_bundle, graph_neighborhood, trace_path
+from contextmine_core.graphrag import graph_rag_context, graph_rag_query, graph_neighborhood, trace_path
 
-# Full GraphRAG query
-result = await graph_rag_bundle(
+# Context retrieval (for building prompts)
+context = await graph_rag_context(
     session=session,
     query="how does authentication work?",
     collection_id=collection_id,
@@ -183,8 +184,17 @@ result = await graph_rag_bundle(
     max_depth=2,
 )
 
-print(result.summary_markdown)  # Human-readable
-print(result.to_dict())         # JSON-serializable
+print(context.to_markdown())  # Human-readable with citations
+print(context.to_dict())      # JSON-serializable
+
+# Full answered query (with LLM)
+answer = await graph_rag_query(
+    session=session,
+    query="how does authentication work?",
+    collection_id=collection_id,
+    user_id=user_id,
+    provider=llm_provider,
+)
 
 # Local exploration
 neighborhood = await graph_neighborhood(

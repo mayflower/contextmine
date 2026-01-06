@@ -322,8 +322,10 @@ MVP behavior:
 Do NOT implement heavy community detection yet. Keep it simple and predictable.
 
 Integration:
-- Add to packages/core/contextmine_core/graph/retrieval.py or new graphrag.py
-- Core service function: `graph_rag_bundle(session, query, collection_id?, max_depth=2)`
+- Add to packages/core/contextmine_core/graphrag.py
+- Core service functions:
+  - `graph_rag_context(session, query, collection_id?, max_depth=2)` - context retrieval
+  - `graph_rag_query(session, query, collection_id?, provider)` - answered queries with LLM
 - Does not depend on MCP directly.
 
 Testing:
