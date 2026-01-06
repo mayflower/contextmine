@@ -600,9 +600,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to extract surfaces: %s", e)
         stats["kg_errors"].append(f"surface: {e}")
 
-    # Step 5: (Removed - business rule extraction now uses LLM directly in Step 2)
-
-    # Step 6: Generate arc42 architecture documentation
+    # Step 5: Generate arc42 architecture documentation
     try:
         from contextmine_core.analyzer.arc42 import generate_arc42, save_arc42_artifact
 
@@ -616,7 +614,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to generate arc42: %s", e)
         stats["kg_errors"].append(f"arc42: {e}")
 
-    # Step 7: Extract semantic entities using LLM (for proper GraphRAG)
+    # Step 6: Extract semantic entities using LLM (for proper GraphRAG)
     # Requires both LLM provider (for extraction) and embedder (for entity resolution)
     try:
         from contextmine_core.knowledge.extraction import (
@@ -691,7 +689,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to extract semantic entities: %s", e)
         stats["kg_errors"].append(f"semantic_extraction: {e}")
 
-    # Step 8: Detect communities using Leiden algorithm (GraphRAG)
+    # Step 7: Detect communities using Leiden algorithm (GraphRAG)
     try:
         from contextmine_core.knowledge.communities import detect_communities, persist_communities
 
@@ -719,7 +717,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to detect communities: %s", e)
         stats["kg_errors"].append(f"communities: {e}")
 
-    # Step 9: Generate community summaries and embeddings
+    # Step 8: Generate community summaries and embeddings
     # GraphRAG REQUIRES both LLM (for summaries) and embedder (for retrieval)
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries

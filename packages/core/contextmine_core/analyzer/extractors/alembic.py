@@ -14,7 +14,6 @@ from __future__ import annotations
 import ast
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -279,20 +278,3 @@ def extract_from_alembic(file_path: str, content: str) -> AlembicExtraction:
         logger.warning("Failed to parse %s: %s", file_path, e)
 
     return result
-
-
-def extract_from_alembic_file(file_path: Path | str) -> AlembicExtraction:
-    """Extract from an Alembic migration file on disk.
-
-    Args:
-        file_path: Path to the migration file
-
-    Returns:
-        AlembicExtraction with extracted definitions
-    """
-    path = Path(file_path)
-    if not path.exists():
-        return AlembicExtraction(file_path=str(file_path))
-
-    content = path.read_text(encoding="utf-8", errors="replace")
-    return extract_from_alembic(str(file_path), content)

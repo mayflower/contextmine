@@ -352,24 +352,3 @@ def _generate_title(node_keys: list[str], size: int) -> str:
         return title
 
     return f"Community ({size} members)"
-
-
-# Convenience function for flows.py compatibility
-async def detect_and_persist_communities(
-    session: AsyncSession,
-    collection_id: UUID,
-    resolutions: list[float] | None = None,
-) -> HierarchicalCommunities:
-    """Detect and persist communities in one call.
-
-    Args:
-        session: Database session
-        collection_id: Collection UUID
-        resolutions: Resolution parameters for hierarchical levels
-
-    Returns:
-        HierarchicalCommunities result
-    """
-    result = await detect_communities(session, collection_id, resolutions)
-    await persist_communities(session, collection_id, result)
-    return result

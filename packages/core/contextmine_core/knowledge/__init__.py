@@ -8,7 +8,6 @@ This module provides:
 
 from contextmine_core.knowledge.builder import (
     GraphBuildStats,
-    build_graph_from_snapshot,
     build_knowledge_graph_for_source,
     cleanup_orphan_nodes,
 )
@@ -48,7 +47,6 @@ from contextmine_core.knowledge.summaries import (
 __all__ = [
     # Builder functions
     "GraphBuildStats",
-    "build_graph_from_snapshot",
     "build_knowledge_graph_for_source",
     "cleanup_orphan_nodes",
     # Community detection
