@@ -57,6 +57,9 @@ from contextmine_worker.web_sync import (
 
 logger = logging.getLogger(__name__)
 
+# SCIP Polyglot Indexing Tag
+TAG_SCIP_INDEX = "scip-index"
+
 # Retry configuration
 DEFAULT_RETRIES = 2
 GITHUB_API_RETRIES = 3
@@ -613,7 +616,308 @@ async def build_knowledge_graph(
         logger.warning("Failed to generate arc42: %s", e)
         stats["kg_errors"].append(f"arc42: {e}")
 
+    # Step 7: Extract semantic entities using LLM (for proper GraphRAG)
+    # Requires both LLM provider (for extraction) and embedder (for entity resolution)
+    try:
+        from contextmine_core.knowledge.extraction import (
+            extract_from_documents,
+            persist_semantic_entities,
+        )
+        from contextmine_core.research.llm import get_llm_provider
+
+        settings = get_settings()
+        llm_provider = None
+        entity_embedder = None
+
+        # Get LLM provider if configured
+        if settings.default_llm_provider:
+            try:
+                llm_provider = get_llm_provider(settings.default_llm_provider)
+            except Exception as e:
+                logger.warning("LLM provider not available for entity extraction: %s", e)
+
+        # Get embedder for semantic entity resolution (REQUIRED for proper GraphRAG)
+        try:
+            provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
+            entity_embedder = get_embedder(provider_name, model_name)
+        except Exception as e:
+            logger.warning("Embedder not available for entity resolution: %s", e)
+
+        # Both LLM and embedder are required for GraphRAG entity extraction
+        if llm_provider and entity_embedder:
+            async with get_session() as session:
+                # Extract semantic entities from documents
+                # Uses embedding similarity for cross-language entity resolution
+                extraction_batch = await extract_from_documents(
+                    session=session,
+                    collection_id=collection_uuid,
+                    llm_provider=llm_provider,
+                    embedder=entity_embedder,
+                    max_chunks=50,  # Limit for cost control
+                )
+
+                # Persist to knowledge graph
+                extraction_stats = await persist_semantic_entities(
+                    session=session,
+                    collection_id=collection_uuid,
+                    batch=extraction_batch,
+                )
+                await session.commit()
+
+                stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
+                stats["kg_semantic_relationships"] = extraction_stats.get(
+                    "relationships_created", 0
+                )
+                logger.info(
+                    "Extracted %d semantic entities, %d relationships",
+                    stats["kg_semantic_entities"],
+                    stats["kg_semantic_relationships"],
+                )
+        else:
+            missing = []
+            if not llm_provider:
+                missing.append("LLM provider")
+            if not entity_embedder:
+                missing.append("embedder")
+            logger.info(
+                "Skipping semantic entity extraction (missing: %s). "
+                "GraphRAG requires both LLM and embedder for proper entity resolution.",
+                ", ".join(missing),
+            )
+            stats["kg_semantic_entities"] = 0
+            stats["kg_semantic_relationships"] = 0
+
+    except Exception as e:
+        logger.warning("Failed to extract semantic entities: %s", e)
+        stats["kg_errors"].append(f"semantic_extraction: {e}")
+
+    # Step 8: Detect communities using Leiden algorithm (GraphRAG)
+    try:
+        from contextmine_core.knowledge.communities import detect_communities, persist_communities
+
+        async with get_session() as session:
+            # Leiden with resolution parameters: [1.0, 0.5, 0.1] for levels 0, 1, 2
+            community_result = await detect_communities(session, collection_uuid)
+            await persist_communities(session, collection_uuid, community_result)
+            await session.commit()
+
+            # Report communities at each hierarchical level
+            stats["kg_communities_l0"] = community_result.community_count(level=0)
+            stats["kg_communities_l1"] = community_result.community_count(level=1)
+            stats["kg_communities_l2"] = community_result.community_count(level=2)
+            logger.info(
+                "Leiden communities: L0=%d, L1=%d, L2=%d (modularity: %.3f, %.3f, %.3f)",
+                stats["kg_communities_l0"],
+                stats["kg_communities_l1"],
+                stats["kg_communities_l2"],
+                community_result.modularity.get(0, 0),
+                community_result.modularity.get(1, 0),
+                community_result.modularity.get(2, 0),
+            )
+
+    except Exception as e:
+        logger.warning("Failed to detect communities: %s", e)
+        stats["kg_errors"].append(f"communities: {e}")
+
+    # Step 9: Generate community summaries and embeddings
+    # GraphRAG REQUIRES both LLM (for summaries) and embedder (for retrieval)
+    try:
+        from contextmine_core.knowledge.summaries import generate_community_summaries
+        from contextmine_core.research.llm import get_research_llm_provider
+
+        settings = get_settings()
+
+        # Get embedding provider - REQUIRED for GraphRAG
+        summary_embedder = None
+        try:
+            provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
+            summary_embedder = get_embedder(provider_name, model_name)
+        except Exception as e:
+            logger.warning("Embedder not available for community summaries: %s", e)
+
+        # Get LLM provider - REQUIRED for GraphRAG (no extractive fallback)
+        summary_llm_provider = None
+        try:
+            summary_llm_provider = get_research_llm_provider()
+        except Exception as e:
+            logger.warning("LLM provider not available for community summaries: %s", e)
+
+        # Both are required for proper GraphRAG
+        if summary_llm_provider and summary_embedder:
+            async with get_session() as session:
+                summary_stats = await generate_community_summaries(
+                    session,
+                    collection_uuid,
+                    provider=summary_llm_provider,
+                    embed_provider=summary_embedder,
+                )
+                await session.commit()
+
+                stats["kg_summaries_created"] = summary_stats.communities_summarized
+                stats["kg_embeddings_created"] = summary_stats.embeddings_created
+                logger.info(
+                    "Generated %d community summaries, %d embeddings",
+                    stats["kg_summaries_created"],
+                    stats["kg_embeddings_created"],
+                )
+        else:
+            missing = []
+            if not summary_llm_provider:
+                missing.append("LLM provider")
+            if not summary_embedder:
+                missing.append("embedder")
+            logger.info(
+                "Skipping community summaries (missing: %s). "
+                "GraphRAG requires both LLM and embedder for community summaries.",
+                ", ".join(missing),
+            )
+            stats["kg_summaries_created"] = 0
+            stats["kg_embeddings_created"] = 0
+
+    except Exception as e:
+        logger.warning("Failed to generate community summaries: %s", e)
+        stats["kg_errors"].append(f"summaries: {e}")
+
     return stats
+
+
+def _build_scip_index_config():
+    """Build IndexConfig from settings.
+
+    Returns:
+        IndexConfig instance configured from settings.
+    """
+    from contextmine_core.semantic_snapshot.models import (
+        IndexConfig,
+        InstallDepsMode,
+        Language,
+    )
+
+    settings = get_settings()
+
+    # Parse enabled languages
+    enabled_languages: set[Language] = set()
+    for lang_str in settings.scip_languages.split(","):
+        lang_str = lang_str.strip().lower()
+        try:
+            enabled_languages.add(Language(lang_str))
+        except ValueError:
+            logger.warning("Unknown SCIP language: %s", lang_str)
+
+    # Parse install deps mode
+    try:
+        install_mode = InstallDepsMode(settings.scip_install_deps_mode)
+    except ValueError:
+        install_mode = InstallDepsMode.AUTO
+
+    return IndexConfig(
+        enabled_languages=enabled_languages,
+        timeout_s_by_language={
+            Language.PYTHON: settings.scip_timeout_python,
+            Language.TYPESCRIPT: settings.scip_timeout_typescript,
+            Language.JAVASCRIPT: settings.scip_timeout_typescript,
+            Language.JAVA: settings.scip_timeout_java,
+            Language.PHP: settings.scip_timeout_php,
+        },
+        install_deps_mode=install_mode,
+        node_memory_mb=settings.scip_node_memory_mb,
+        best_effort=settings.scip_best_effort,
+    )
+
+
+@task(
+    retries=0,  # Don't retry - indexing is expensive
+    tags=[TAG_SCIP_INDEX],
+)
+async def task_detect_scip_projects(repo_path: Path) -> list[dict]:
+    """Detect projects suitable for SCIP indexing in a repository.
+
+    Returns list of ProjectTarget dicts for serialization.
+    """
+    from contextmine_core.semantic_snapshot import detect_projects
+
+    projects = detect_projects(repo_path)
+    return [p.to_dict() for p in projects]
+
+
+@task(
+    retries=0,  # Don't retry - indexing is expensive
+    timeout_seconds=900,  # 15 minute max
+    tags=[TAG_SCIP_INDEX],
+)
+async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict | None:
+    """Run SCIP indexer on a single project.
+
+    Args:
+        project_dict: ProjectTarget as dict
+        output_dir: Directory for SCIP output files
+
+    Returns:
+        IndexArtifact as dict, or None if indexing failed
+    """
+    from contextmine_core.semantic_snapshot.indexers import BACKENDS
+    from contextmine_core.semantic_snapshot.models import ProjectTarget
+
+    target = ProjectTarget.from_dict(project_dict)
+    cfg = _build_scip_index_config()
+    cfg.output_dir = output_dir
+
+    # Find appropriate backend
+    for backend in BACKENDS:
+        if backend.can_handle(target):
+            try:
+                artifact = backend.index(target, cfg)
+                if artifact.success:
+                    logger.info(
+                        "SCIP indexed %s project at %s in %.1fs",
+                        target.language.value,
+                        target.root_path,
+                        artifact.duration_s,
+                    )
+                    return artifact.to_dict()
+                else:
+                    logger.warning(
+                        "SCIP indexing failed for %s: %s",
+                        target.root_path,
+                        artifact.error_message,
+                    )
+                    if not cfg.best_effort:
+                        return None
+            except Exception as e:
+                logger.warning("SCIP backend error for %s: %s", target.root_path, e)
+                if not cfg.best_effort:
+                    raise
+            break
+
+    return None
+
+
+@task(
+    retries=0,
+    tags=[TAG_SCIP_INDEX],
+)
+async def task_parse_scip_snapshot(scip_path: str) -> dict | None:
+    """Parse a SCIP file into a Snapshot.
+
+    Args:
+        scip_path: Path to the .scip file
+
+    Returns:
+        Snapshot as dict, or None if parsing failed
+    """
+    from contextmine_core.semantic_snapshot import build_snapshot
+
+    try:
+        snapshot = build_snapshot(scip_path)
+        logger.info(
+            "Parsed SCIP: %d symbols, %d relations",
+            len(snapshot.symbols),
+            len(snapshot.relations),
+        )
+        return snapshot.to_dict()
+    except Exception as e:
+        logger.warning("Failed to parse SCIP file %s: %s", scip_path, e)
+        return None
 
 
 @task(
@@ -733,6 +1037,52 @@ async def sync_github_source(
     # Get current commit SHA
     new_sha = git_repo.head.commit.hexsha
     old_sha = source.cursor
+
+    # SCIP Polyglot Indexing
+    scip_stats = {
+        "scip_projects_detected": 0,
+        "scip_projects_indexed": 0,
+        "scip_symbols": 0,
+        "scip_relations": 0,
+    }
+    await update_progress_artifact(
+        progress_id, progress=10, description="Running SCIP polyglot indexing..."
+    )  # type: ignore[misc]
+
+    try:
+        import tempfile
+
+        # Detect projects
+        project_dicts = await task_detect_scip_projects(repo_path)
+        scip_stats["scip_projects_detected"] = len(project_dicts)
+
+        if project_dicts:
+            # Create temp output directory for SCIP files
+            scip_output_dir = Path(tempfile.mkdtemp(prefix="scip_"))
+
+            # Index each project
+            for proj_dict in project_dicts:
+                artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
+                if artifact_dict and artifact_dict.get("success"):
+                    scip_stats["scip_projects_indexed"] += 1
+
+                    # Parse SCIP snapshot
+                    scip_path = artifact_dict.get("scip_path")
+                    if scip_path:
+                        snapshot_dict = await task_parse_scip_snapshot(scip_path)
+                        if snapshot_dict:
+                            scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
+                            scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
+
+            logger.info(
+                "SCIP indexing complete: %d/%d projects, %d symbols, %d relations",
+                scip_stats["scip_projects_indexed"],
+                scip_stats["scip_projects_detected"],
+                scip_stats["scip_symbols"],
+                scip_stats["scip_relations"],
+            )
+    except Exception as e:
+        logger.warning("SCIP indexing failed: %s", e)
 
     await update_progress_artifact(
         progress_id, progress=15, description="Detecting changed files..."
@@ -949,6 +1299,11 @@ async def sync_github_source(
             "symbols_deleted": total_symbols_deleted,
             "commit_sha": new_sha,
             "previous_sha": old_sha,
+            # SCIP Polyglot Indexing stats
+            "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
+            "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+            "scip_symbols": scip_stats.get("scip_symbols", 0),
+            "scip_relations": scip_stats.get("scip_relations", 0),
             # Knowledge Graph stats
             "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
             "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
@@ -956,6 +1311,12 @@ async def sync_github_source(
             "kg_tables": kg_stats.get("kg_tables", 0),
             "kg_endpoints": kg_stats.get("kg_endpoints", 0),
             "kg_jobs": kg_stats.get("kg_jobs", 0),
+            # GraphRAG Leiden community stats
+            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
+            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
+            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
+            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
+            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
         }
 
         await session.commit()
@@ -1195,6 +1556,12 @@ async def sync_web_source(
             "kg_tables": kg_stats.get("kg_tables", 0),
             "kg_endpoints": kg_stats.get("kg_endpoints", 0),
             "kg_jobs": kg_stats.get("kg_jobs", 0),
+            # GraphRAG Leiden community stats
+            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
+            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
+            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
+            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
+            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
         }
 
         await session.commit()

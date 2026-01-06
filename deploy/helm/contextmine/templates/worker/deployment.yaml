@@ -40,19 +40,51 @@ spec:
                 name: {{ include "contextmine.fullname" . }}-config
             - secretRef:
                 name: {{ include "contextmine.fullname" . }}-secrets
-          {{- if .Values.worker.persistence.enabled }}
           volumeMounts:
+            {{- if .Values.worker.persistence.enabled }}
             - name: data
               mountPath: /data
-          {{- end }}
+            {{- end }}
+            {{- if .Values.worker.buildCache.enabled }}
+            - name: npm-cache
+              mountPath: /home/appuser/.npm
+            - name: maven-cache
+              mountPath: /home/appuser/.m2
+            - name: gradle-cache
+              mountPath: /home/appuser/.gradle
+            - name: composer-cache
+              mountPath: /home/appuser/.composer/cache
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
-      {{- if .Values.worker.persistence.enabled }}
       volumes:
+        {{- if .Values.worker.persistence.enabled }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "contextmine.fullname" . }}-worker-data
-      {{- end }}
+        {{- end }}
+        {{- if .Values.worker.buildCache.enabled }}
+        - name: npm-cache
+          emptyDir:
+            {{- if .Values.worker.buildCache.npmCacheSize }}
+            sizeLimit: {{ .Values.worker.buildCache.npmCacheSize }}
+            {{- end }}
+        - name: maven-cache
+          emptyDir:
+            {{- if .Values.worker.buildCache.mavenCacheSize }}
+            sizeLimit: {{ .Values.worker.buildCache.mavenCacheSize }}
+            {{- end }}
+        - name: gradle-cache
+          emptyDir:
+            {{- if .Values.worker.buildCache.gradleCacheSize }}
+            sizeLimit: {{ .Values.worker.buildCache.gradleCacheSize }}
+            {{- end }}
+        - name: composer-cache
+          emptyDir:
+            {{- if .Values.worker.buildCache.composerCacheSize }}
+            sizeLimit: {{ .Values.worker.buildCache.composerCacheSize }}
+            {{- end }}
+        {{- end }}
       {{- with .Values.worker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -184,7 +184,12 @@ class TestMCPToolSchemas:
         assert "query" in required
         assert "collection_id" in props
         assert "max_depth" in props
-        assert "max_results" in props
+        # GraphRAG parameters (Leiden community-based)
+        assert "max_communities" in props
+        assert "max_entities" in props
+        assert "format" in props
+        # Map-reduce answering parameter
+        assert "answer" in props
 
     def test_get_arc42_schema(self) -> None:
         """Test that get_arc42 has expected parameters."""

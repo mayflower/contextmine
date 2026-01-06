@@ -53,10 +53,21 @@ For simple questions: get_markdown(query="how do I X?")
 For complex investigations: deep_research(question="how does X work?")
 For knowledge graph queries: graph_rag(query="how do X and Y relate?")
 
-## Research Tools (Recommended)
+## Primary Research Tool
+
+**graph_rag(query)** - Graph-augmented retrieval with global + local context:
+- Global: Community summaries (high-level architecture understanding)
+- Local: Entity nodes (symbols, files, rules, tables) + graph expansion
+- Citations: Evidence from source files
+
+Examples:
+→ graph_rag(query="how does auth work?") - combines community summaries + entity context
+→ graph_rag(query="explain payment flow", format="json") - get structured output
+
+## Research Tools
 
 **I have a question about code/architecture:**
-→ graph_rag(query="how does auth work?") - combines semantic search with knowledge graph
+→ graph_rag(query="how does auth work?") - PRIMARY TOOL
 → deep_research(question="explain the payment flow") - multi-step investigation agent
 
 **I need to understand validation/business rules:**
@@ -65,7 +76,6 @@ For knowledge graph queries: graph_rag(query="how do X and Y relate?")
 
 **I need to understand data model:**
 → research_data_model(entity="users") - research tables, columns, relationships
-→ research_data_model(entity="order") - find data structures for a concept
 
 **I need to understand architecture:**
 → research_architecture(topic="deployment") - infrastructure, CI/CD, jobs
@@ -1403,10 +1413,10 @@ async def mcp_graph_neighborhood(
                 max_nodes=limit,
             )
 
-            if not result.nodes:
+            if not result.entities:
                 return f"# No Neighborhood Found\n\nNode {node_id} has no connections."
 
-            return result.summary_markdown
+            return result.to_markdown()
 
     except Exception as e:
         return f"# Error\n\nFailed to get graph neighborhood: {e}"
@@ -1441,10 +1451,10 @@ async def mcp_trace_path(
                 max_hops=min(max_hops, 10),
             )
 
-            if not result.nodes:
+            if not result.entities:
                 return f"# No Path Found\n\nNo connection between {from_node_id[:8]}... and {to_node_id[:8]}..."
 
-            return result.summary_markdown
+            return result.to_markdown()
 
     except Exception as e:
         return f"# Error\n\nFailed to trace path: {e}"
@@ -1454,40 +1464,102 @@ async def mcp_trace_path(
 async def mcp_graph_rag(
     query: Annotated[str, "Natural language query"],
     collection_id: Annotated[str | None, "Filter to specific collection"] = None,
+    max_communities: Annotated[int, "Maximum community summaries to include (global context)"] = 5,
+    max_entities: Annotated[int, "Maximum entities to include (local context)"] = 20,
     max_depth: Annotated[int, "Graph expansion depth (1-3)"] = 2,
-    max_results: Annotated[int, "Maximum search results to use as seeds"] = 10,
+    format: Annotated[str, "Output format: 'markdown' or 'json'"] = "markdown",
+    answer: Annotated[bool, "Use map-reduce to generate synthesized answer (requires LLM)"] = False,
 ) -> str:
-    """Graph-augmented retrieval: combines semantic search with knowledge graph.
+    """Graph-augmented retrieval with global (community) and local (entity) context.
 
-    1. Searches for relevant documents/code
-    2. Maps results to knowledge graph nodes (files, symbols, rules, tables)
-    3. Expands the graph neighborhood
-    4. Returns a rich context bundle with citations
+    This is the PRIMARY research tool implementing Microsoft GraphRAG:
+    1. Leiden-based hierarchical community detection
+    2. Global context: Community summaries ranked by vector similarity
+    3. Local context: Entity nodes from semantic search + community members
+    4. Map-reduce answering: Parallel LLM calls over communities, then synthesis
 
-    Use this for questions that benefit from understanding code structure
-    and relationships, not just text similarity.
+    Set answer=true to get a synthesized answer using map-reduce over community summaries.
+    Otherwise returns context (markdown/json) for you to analyze.
+
+    Use this for questions that benefit from understanding:
+    - High-level architecture (from community summaries)
+    - Code structure and relationships (from entity context)
+    - Evidence trail (from citations)
     """
     user_id = get_current_user_id()
 
     try:
-        from contextmine_core.graphrag import graph_rag_bundle
-
         collection_uuid = uuid.UUID(collection_id) if collection_id else None
 
-        async with get_db_session() as db:
-            result = await graph_rag_bundle(
-                session=db,
-                query=query,
-                collection_id=collection_uuid,
-                user_id=user_id,
-                max_depth=min(max_depth, 3),
-                max_results=max_results,
-            )
+        if answer:
+            # Full GraphRAG map-reduce answering
+            from contextmine_core import get_settings
+            from contextmine_core.graphrag import graph_rag_query
+            from contextmine_core.research.llm import get_llm_provider
 
-            if not result.summary_markdown:
-                return f"# No Results\n\nNo relevant content found for: {query}"
+            settings = get_settings()
 
-            return result.summary_markdown
+            async with get_db_session() as db:
+                # Get LLM provider for map-reduce
+                try:
+                    llm_provider = get_llm_provider(settings.default_llm_provider)
+                except Exception:
+                    return (
+                        "# Error\n\nNo LLM provider configured. Set DEFAULT_LLM_PROVIDER env var."
+                    )
+
+                result = await graph_rag_query(
+                    session=db,
+                    query=query,
+                    llm_provider=llm_provider,
+                    collection_id=collection_uuid,
+                    user_id=user_id,
+                    max_communities=min(max_communities, 10),
+                    max_entities=min(max_entities, 50),
+                )
+
+                # Format response
+                lines = [
+                    f"# GraphRAG Answer: {query}\n",
+                    result.final_answer,
+                    "",
+                    f"*Based on {result.communities_used} communities, {len(result.partial_answers)} relevant responses*",
+                ]
+
+                if result.context and result.context.citations:
+                    lines.append("\n## Key Citations")
+                    for cit in result.context.citations[:5]:
+                        lines.append(f"- `{cit.format()}`")
+
+                return "\n".join(lines)
+
+        else:
+            # Context retrieval only (no LLM)
+            from contextmine_core.graphrag import graph_rag_context
+
+            async with get_db_session() as db:
+                result = await graph_rag_context(
+                    session=db,
+                    query=query,
+                    collection_id=collection_uuid,
+                    user_id=user_id,
+                    max_communities=min(max_communities, 10),
+                    max_entities=min(max_entities, 50),
+                    max_depth=min(max_depth, 3),
+                )
+
+                if format.lower() == "json":
+                    return json.dumps(result.to_dict(), indent=2)
+
+                md = result.to_markdown()
+                if (
+                    not md.strip()
+                    or md
+                    == f"# GraphRAG Context: {query}\n\nFound 0 communities, 0 entities, 0 citations.\n"
+                ):
+                    return f"# No Results\n\nNo relevant content found for: {query}"
+
+                return md
 
     except Exception as e:
         return f"# Error\n\nGraphRAG query failed: {e}"

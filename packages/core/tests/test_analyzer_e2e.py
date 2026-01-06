@@ -393,50 +393,55 @@ class TestGraphRAGDataStructures:
     """Tests for GraphRAG data structures without DB."""
 
     def test_graphrag_result_structure(self) -> None:
-        """Test GraphRAGResult can be created and serialized."""
-        from contextmine_core.graphrag import Evidence, GraphEdge, GraphNode, GraphRAGResult
+        """Test ContextPack can be created and serialized."""
+        from uuid import uuid4
 
-        result = GraphRAGResult(
+        from contextmine_core.graphrag import (
+            Citation,
+            ContextPack,
+            EdgeContext,
+            EntityContext,
+        )
+
+        result = ContextPack(
             query="test query",
-            nodes=[
-                GraphNode(
-                    id="n1",
+            entities=[
+                EntityContext(
+                    node_id=uuid4(),
                     kind="file",
                     name="auth.py",
                     natural_key="file:auth.py",
-                    meta={"path": "/src/auth.py"},
                 ),
-                GraphNode(
-                    id="n2",
+                EntityContext(
+                    node_id=uuid4(),
                     kind="symbol",
                     name="authenticate",
                     natural_key="symbol:auth.py:authenticate",
                 ),
             ],
             edges=[
-                GraphEdge(
+                EdgeContext(
                     source_id="n1",
                     target_id="n2",
                     kind="file_defines_symbol",
                 ),
             ],
-            evidence=[
-                Evidence(
+            citations=[
+                Citation(
                     file_path="/src/auth.py",
                     start_line=10,
                     end_line=20,
                     snippet="def authenticate(...):",
                 ),
             ],
-            summary_markdown="# Results\n\nFound authentication code.",
         )
 
         # Test serialization
         data = result.to_dict()
         assert data["query"] == "test query"
-        assert len(data["nodes"]) == 2
+        assert len(data["entities"]) == 2
         assert len(data["edges"]) == 1
-        assert len(data["evidence"]) == 1
+        assert len(data["citations"]) == 1
 
         # Test JSON serializable
         import json

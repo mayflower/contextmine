@@ -154,6 +154,40 @@ class Settings(BaseSettings):
         description="Tolerance for confidence calibration (|stated - evidence| <= tolerance)",
     )
 
+    # SCIP Polyglot Indexing Settings
+    scip_languages: str = Field(
+        default="python,typescript,javascript,java,php",
+        description="Comma-separated list of enabled languages for SCIP indexing",
+    )
+    scip_install_deps_mode: str = Field(
+        default="auto",
+        description="Dependency installation mode: auto, always, or never",
+    )
+    scip_timeout_python: int = Field(
+        default=300,
+        description="Timeout in seconds for Python SCIP indexing",
+    )
+    scip_timeout_typescript: int = Field(
+        default=600,
+        description="Timeout in seconds for TypeScript/JavaScript SCIP indexing",
+    )
+    scip_timeout_java: int = Field(
+        default=900,
+        description="Timeout in seconds for Java SCIP indexing",
+    )
+    scip_timeout_php: int = Field(
+        default=300,
+        description="Timeout in seconds for PHP SCIP indexing",
+    )
+    scip_node_memory_mb: int = Field(
+        default=4096,
+        description="Node.js memory limit in MB for TS/JS/Python indexers",
+    )
+    scip_best_effort: bool = Field(
+        default=True,
+        description="Continue indexing other projects if one fails",
+    )
+
 
 # Singleton instance
 _settings: Settings | None = None

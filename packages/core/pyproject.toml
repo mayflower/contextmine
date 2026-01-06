@@ -20,10 +20,10 @@ dependencies = [
     "langchain-anthropic>=1.0.0",
     "langchain-openai>=1.0.0",
     "langgraph>=1.0.0",
-    # Tree-sitter for code analysis
-    "tree-sitter-language-pack>=0.9.0",
-    # LSP support for code intelligence
-    "multilspy>=0.0.15",
+    # SCIP protobuf parsing for code intelligence
+    "protobuf>=4.25.0",
+    # Tree-sitter for AST-based analysis (rule extraction, outline)
+    "tree-sitter-language-pack>=0.6.0",
 ]
 
 [build-system]

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -83,6 +84,8 @@ class KnowledgeNodeKind(enum.Enum):
     # Code entities
     FILE = "file"
     SYMBOL = "symbol"
+    # Semantic entities (LLM-extracted for GraphRAG)
+    SEMANTIC_ENTITY = "semantic_entity"
     # Database entities
     DB_TABLE = "db_table"
     DB_COLUMN = "db_column"
@@ -112,6 +115,10 @@ class KnowledgeEdgeKind(enum.Enum):
     FILE_IMPORTS_FILE = "file_imports_file"
     SYMBOL_CALLS_SYMBOL = "symbol_calls_symbol"
     SYMBOL_REFERENCES_SYMBOL = "symbol_references_symbol"
+    # Semantic relationships (LLM-extracted for GraphRAG)
+    SEMANTIC_RELATIONSHIP = "semantic_relationship"
+    # Connect semantic entities to source files (for graph connectivity)
+    FILE_MENTIONS_ENTITY = "file_mentions_entity"
     # Database relationships
     TABLE_HAS_COLUMN = "table_has_column"
     COLUMN_FK_TO_COLUMN = "column_fk_to_column"
@@ -138,6 +145,13 @@ class KnowledgeArtifactKind(enum.Enum):
     ARC42 = "arc42"
     RULE_CATALOG = "rule_catalog"
     SURFACE_CATALOG = "surface_catalog"
+
+
+class EmbeddingTargetType(enum.Enum):
+    """Target type for knowledge embeddings."""
+
+    NODE = "node"
+    COMMUNITY = "community"
 
 
 class AppKV(Base):
@@ -838,3 +852,146 @@ class KnowledgeArtifactEvidence(Base):
     # Relationships
     artifact: Mapped["KnowledgeArtifact"] = relationship(back_populates="evidence_links")
     evidence: Mapped["KnowledgeEvidence"] = relationship()
+
+
+# -----------------------------------------------------------------------------
+# GraphRAG Community Tables
+# -----------------------------------------------------------------------------
+
+
+class KnowledgeCommunity(Base):
+    """A community in the knowledge graph hierarchy.
+
+    Communities are detected via deterministic label propagation and form
+    a two-level hierarchy. Level 1 communities contain nodes, level 2
+    communities contain level 1 communities.
+    """
+
+    __tablename__ = "knowledge_communities"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id", "level", "natural_key", name="uq_knowledge_community_natural"
+        ),
+        Index("ix_knowledge_community_collection_level", "collection_id", "level"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Hierarchy level: 1 = node communities, 2 = meta-communities
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Stable natural key for idempotent upserts
+    natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Human-readable title (derived or LLM-generated)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Summary text (extractive or LLM-generated)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Flexible metadata (member count, top symbols, etc.)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    collection: Mapped["Collection"] = relationship()
+    members: Mapped[list["CommunityMember"]] = relationship(
+        back_populates="community", cascade="all, delete-orphan"
+    )
+
+
+class CommunityMember(Base):
+    """Membership of a node in a community with score.
+
+    Score represents the strength of membership (e.g., normalized internal
+    degree for graph communities).
+    """
+
+    __tablename__ = "community_members"
+    __table_args__ = (UniqueConstraint("community_id", "node_id", name="uq_community_member"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    community_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_communities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Membership strength (0-1, higher = stronger membership)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    community: Mapped["KnowledgeCommunity"] = relationship(back_populates="members")
+    node: Mapped["KnowledgeNode"] = relationship()
+
+
+class KnowledgeEmbedding(Base):
+    """Embedding vector for a knowledge node or community.
+
+    Used for semantic similarity search in GraphRAG retrieval.
+    Content hash enables idempotent updates (skip if unchanged).
+    """
+
+    __tablename__ = "knowledge_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id",
+            "target_type",
+            "target_id",
+            "model_name",
+            name="uq_knowledge_embedding_target",
+        ),
+        Index("ix_knowledge_embedding_collection", "collection_id", "target_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_type: Mapped[EmbeddingTargetType] = mapped_column(
+        Enum(
+            EmbeddingTargetType,
+            name="embedding_target_type",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    # UUID of the node or community
+    target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # Model identifier (e.g., "text-embedding-3-small")
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Provider (e.g., "openai", "gemini")
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Content hash for idempotency (hash of text that was embedded)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Note: embedding vector column added via raw SQL (pgvector)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    collection: Mapped["Collection"] = relationship()

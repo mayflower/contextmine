@@ -103,19 +103,28 @@ worker:
     tag: latest
   # -- Number of replicas
   replicaCount: 1
-  # -- Resource limits
+  # -- Resource limits (sized for SCIP indexing)
   resources:
     requests:
-      memory: "512Mi"
-      cpu: "200m"
-    limits:
       memory: "2Gi"
-      cpu: "1000m"
+      cpu: "500m"
+    limits:
+      memory: "8Gi"
+      cpu: "2000m"
   # -- Persistence for cloned repos and crawl cache
   persistence:
     enabled: true
     size: 20Gi
     storageClass: ""
+  # -- Build tool cache volumes (for faster SCIP indexing)
+  # Uses emptyDir by default (lost on pod restart)
+  buildCache:
+    enabled: false
+    # -- Size limits for emptyDir caches (set to "" for no limit)
+    npmCacheSize: "2Gi"
+    mavenCacheSize: "5Gi"
+    gradleCacheSize: "5Gi"
+    composerCacheSize: "1Gi"
   # -- Pod annotations
   podAnnotations: {}
   # -- Node selector
@@ -174,6 +183,21 @@ config:
     model: "claude-sonnet-4-5-20250929"
     maxTokens: "4096"
     budgetSteps: "10"
+  # -- SCIP Polyglot Indexing settings
+  scip:
+    # -- Comma-separated list of enabled languages
+    languages: "python,typescript,javascript,java,php"
+    # -- Dependency installation mode: auto, always, never
+    installDepsMode: "auto"
+    # -- Indexing timeouts per language (seconds)
+    timeoutPython: "300"
+    timeoutTypescript: "600"
+    timeoutJava: "900"
+    timeoutPhp: "300"
+    # -- Node.js memory limit for TS/JS/Python indexers (MB)
+    nodeMemoryMb: "4096"
+    # -- Continue indexing if individual projects fail
+    bestEffort: "true"
 
 # -- Secrets (set these in your values override or use external secrets)
 secrets:

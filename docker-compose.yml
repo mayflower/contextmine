@@ -78,6 +78,11 @@ services:
       - ./apps/worker:/app/apps/worker:ro
       # Persistent data for repos and crawl cache
       - worker_data:/data
+      # Build tool caches for faster SCIP indexing
+      - npm_cache:/home/appuser/.npm
+      - maven_cache:/home/appuser/.m2
+      - gradle_cache:/home/appuser/.gradle
+      - composer_cache:/home/appuser/.composer/cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,3 +92,7 @@ services:
 volumes:
   postgres_data:
   worker_data:
+  npm_cache:
+  maven_cache:
+  gradle_cache:
+  composer_cache:

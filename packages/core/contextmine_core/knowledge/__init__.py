@@ -7,8 +7,16 @@ This module provides:
 """
 
 from contextmine_core.knowledge.builder import (
+    GraphBuildStats,
+    build_graph_from_snapshot,
     build_knowledge_graph_for_source,
     cleanup_orphan_nodes,
+)
+from contextmine_core.knowledge.communities import (
+    Community,
+    HierarchicalCommunities,
+    detect_communities,
+    persist_communities,
 )
 from contextmine_core.knowledge.schemas import (
     BusinessRuleMetadata,
@@ -31,11 +39,27 @@ from contextmine_core.knowledge.schemas import (
     KnowledgeNodeWithEvidenceSchema,
     RuleCandidateMetadata,
 )
+from contextmine_core.knowledge.summaries import (
+    CommunitySummaryOutput,
+    SummaryStats,
+    generate_community_summaries,
+)
 
 __all__ = [
     # Builder functions
+    "GraphBuildStats",
+    "build_graph_from_snapshot",
     "build_knowledge_graph_for_source",
     "cleanup_orphan_nodes",
+    # Community detection
+    "Community",
+    "HierarchicalCommunities",
+    "detect_communities",
+    "persist_communities",
+    # Community summaries
+    "CommunitySummaryOutput",
+    "SummaryStats",
+    "generate_community_summaries",
     # Evidence
     "EvidenceSchema",
     "EvidenceCreate",

@@ -37,3 +37,13 @@ data:
   RESEARCH_MODEL: {{ .Values.config.research.model | quote }}
   RESEARCH_MAX_TOKENS: {{ .Values.config.research.maxTokens | quote }}
   RESEARCH_BUDGET_STEPS: {{ .Values.config.research.budgetSteps | quote }}
+
+  # SCIP Polyglot Indexing settings
+  SCIP_LANGUAGES: {{ .Values.config.scip.languages | quote }}
+  SCIP_INSTALL_DEPS_MODE: {{ .Values.config.scip.installDepsMode | quote }}
+  SCIP_TIMEOUT_PYTHON: {{ .Values.config.scip.timeoutPython | quote }}
+  SCIP_TIMEOUT_TYPESCRIPT: {{ .Values.config.scip.timeoutTypescript | quote }}
+  SCIP_TIMEOUT_JAVA: {{ .Values.config.scip.timeoutJava | quote }}
+  SCIP_TIMEOUT_PHP: {{ .Values.config.scip.timeoutPhp | quote }}
+  SCIP_NODE_MEMORY_MB: {{ .Values.config.scip.nodeMemoryMb | quote }}
+  SCIP_BEST_EFFORT: {{ .Values.config.scip.bestEffort | quote }}
