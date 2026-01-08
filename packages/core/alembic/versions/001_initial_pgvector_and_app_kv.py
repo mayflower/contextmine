@@ -19,8 +19,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Enable pgvector extension
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # Check pgvector extension exists (created by postgres-operator or manually)
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+    )
+    if result.fetchone() is None:
+        # Try to create - works in local dev, skipped if already exists
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     # Create app_kv table
     op.create_table(
