@@ -16,7 +16,7 @@ The Knowledge Graph captures semantic relationships between code elements:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     MCP Tools Layer                         │
-│  list_business_rules, get_erd, graph_rag, get_arc42, ...   │
+│  list_business_rules, get_erd, graph_rag, ...              │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
@@ -32,7 +32,7 @@ The Knowledge Graph captures semantic relationships between code elements:
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                      Extractors                             │
-│  ERM, OpenAPI, GraphQL, Protobuf, Jobs, Rules, arc42       │
+│  ERM, OpenAPI, GraphQL, Protobuf, Jobs, Rules              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,16 +253,6 @@ trace_path(from_node_id, to_node_id, max_hops=6)
 graph_rag(query, collection_id?, max_depth=2, max_results=10)
 ```
 
-### Architecture Documentation
-
-```
-# Get arc42 documentation
-get_arc42(collection_id?, section?, regenerate=false)
-
-# Check for architecture drift
-arc42_drift_report(collection_id?)
-```
-
 ## Integration
 
 ### Sync Pipeline
@@ -301,7 +291,7 @@ The migration creates:
 - `knowledge_node` - Graph nodes
 - `knowledge_edge` - Graph edges
 - `knowledge_evidence` - Source citations
-- `knowledge_artifact` - Generated documents (ERD, arc42)
+- `knowledge_artifact` - Generated documents (ERD, rule catalogs)
 - Junction tables for evidence linking
 
 ## Example Queries
@@ -322,16 +312,4 @@ graph_neighborhood(node_id="<function_node_id>", depth=2)
 
 ```
 trace_path(from_node_id="<api_endpoint>", to_node_id="<db_table>")
-```
-
-### Get architecture overview
-
-```
-get_arc42(regenerate=true)
-```
-
-### Check for schema changes
-
-```
-arc42_drift_report()
 ```

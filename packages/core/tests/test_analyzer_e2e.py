@@ -340,55 +340,6 @@ class TestERMExtractorE2E:
         assert "||--o{" in mermaid  # Relationship notation
 
 
-class TestArc42GeneratorE2E:
-    """End-to-end tests for arc42 generation."""
-
-    def test_arc42_document_structure(self) -> None:
-        """Test that arc42 document has all required sections."""
-        from contextmine_core.analyzer.arc42 import Arc42Document, Arc42Section
-
-        # Create a document manually (no DB needed)
-        doc = Arc42Document()
-        doc.sections = [
-            Arc42Section(id="context", title="1. Context", content="Context content"),
-            Arc42Section(id="building-blocks", title="2. Building Blocks", content="..."),
-            Arc42Section(id="runtime", title="3. Runtime View", content="..."),
-            Arc42Section(id="deployment", title="4. Deployment View", content="..."),
-            Arc42Section(id="crosscutting", title="5. Crosscutting Concepts", content="..."),
-            Arc42Section(id="risks", title="6. Risks & Technical Debt", content="..."),
-            Arc42Section(id="glossary", title="7. Glossary", content="..."),
-        ]
-
-        md = doc.to_markdown()
-
-        # Should have all sections
-        assert "# Architecture Documentation (arc42)" in md
-        assert "## 1. Context" in md
-        assert "## 2. Building Blocks" in md
-        assert "## 7. Glossary" in md
-
-    def test_drift_report_output(self) -> None:
-        """Test drift report formatting."""
-        from contextmine_core.analyzer.arc42 import DriftItem, DriftReport
-
-        report = DriftReport(
-            items=[
-                DriftItem(kind="added", category="API", name="POST /users", details="New endpoint"),
-                DriftItem(
-                    kind="removed", category="Table", name="legacy_users", details="Deprecated"
-                ),
-            ]
-        )
-
-        md = report.to_markdown()
-
-        assert "# Architecture Drift Report" in md
-        assert "## Added" in md
-        assert "POST /users" in md
-        assert "## Removed" in md
-        assert "legacy_users" in md
-
-
 class TestGraphRAGDataStructures:
     """Tests for GraphRAG data structures without DB."""
 

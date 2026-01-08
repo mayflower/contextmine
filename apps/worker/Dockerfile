@@ -20,16 +20,16 @@ FROM python:3.12-slim
 
 # SCIP tool versions (pinned for reproducibility)
 ARG SCIP_TYPESCRIPT_VERSION=0.3.14
-ARG SCIP_PYTHON_VERSION=0.5.4
+ARG SCIP_PYTHON_VERSION=0.6.6
 ARG SCIP_JAVA_VERSION=0.10.3
-ARG SCIP_PHP_VERSION=0.3.0
+ARG SCIP_PHP_VERSION=0.0.2
 ARG NODE_VERSION=20
 
 # Install system dependencies
 # - git: for cloning repos
 # - ca-certificates, libssl3: for spider_md and HTTPS
 # - curl: for installing Node.js and Coursier
-# - openjdk-17-jre-headless: for scip-java
+# - openjdk-21-jre-headless: for scip-java
 # - php-cli, composer: for scip-php
 RUN apt-get update && apt-get install -y \
     git \
@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     curl \
     gnupg \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     php-cli \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,13 +49,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
 # Install npm-based SCIP indexers globally
 RUN npm install -g \
     @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \
-    @anthropic/scip-python@${SCIP_PYTHON_VERSION}
+    @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}
 
-# Install Coursier and scip-java
+# Install Coursier and scip-java (--contrib required for scip-java channel)
 RUN curl -fL https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz | \
     gzip -d > /usr/local/bin/cs && \
     chmod +x /usr/local/bin/cs && \
-    /usr/local/bin/cs install scip-java:${SCIP_JAVA_VERSION} --install-dir /usr/local/bin
+    /usr/local/bin/cs install --contrib scip-java:${SCIP_JAVA_VERSION} --install-dir /usr/local/bin
 
 # Install Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
@@ -102,7 +102,7 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app /data /home/appuser
 
 # Set environment for SCIP tools
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH="${PATH}:${JAVA_HOME}/bin"
 ENV NPM_CONFIG_CACHE=/home/appuser/.npm
 ENV GRADLE_USER_HOME=/home/appuser/.gradle

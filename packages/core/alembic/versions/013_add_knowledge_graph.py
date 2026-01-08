@@ -99,7 +99,7 @@ def upgrade() -> None:
         ),
         sa.Column("natural_key", sa.String(length=2048), nullable=False),
         sa.Column("name", sa.String(length=512), nullable=False),
-        sa.Column("meta", postgresql.JSON(astext_type=sa.Text()), nullable=False),
+        sa.Column("meta", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -123,11 +123,9 @@ def upgrade() -> None:
         "knowledge_nodes",
         ["collection_id", "kind"],
     )
-    op.create_index(
-        "ix_knowledge_node_meta",
-        "knowledge_nodes",
-        ["meta"],
-        postgresql_using="gin",
+    # GIN index on JSONB meta column requires jsonb_path_ops operator class
+    op.execute(
+        "CREATE INDEX ix_knowledge_node_meta ON knowledge_nodes USING gin (meta jsonb_path_ops)"
     )
 
     # Create knowledge_edges table
@@ -160,7 +158,7 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
-        sa.Column("meta", postgresql.JSON(astext_type=sa.Text()), nullable=False),
+        sa.Column("meta", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -227,7 +225,7 @@ def upgrade() -> None:
         ),
         sa.Column("name", sa.String(length=512), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("meta", postgresql.JSON(astext_type=sa.Text()), nullable=False),
+        sa.Column("meta", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

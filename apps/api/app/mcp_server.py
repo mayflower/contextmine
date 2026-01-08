@@ -98,11 +98,6 @@ Examples:
 → graph_neighborhood(node_id="...") - explore around a known node
 → trace_path(from_node_id="...", to_node_id="...") - find connection between nodes
 
-## Architecture Documentation
-
-→ get_arc42(section="deployment") - get specific architecture section
-→ arc42_drift_report() - see what changed since last documentation
-
 ## Discovery (usually not needed)
 - list_collections - see available doc collections
 - list_documents - browse docs in a collection
@@ -1243,12 +1238,7 @@ async def research_architecture(
     user_id = get_current_user_id()
 
     try:
-        from contextmine_core.models import (
-            KnowledgeArtifact,
-            KnowledgeArtifactKind,
-            KnowledgeNode,
-            KnowledgeNodeKind,
-        )
+        from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
         from contextmine_core.search import get_accessible_collection_ids
 
         async with get_db_session() as db:
@@ -1261,37 +1251,8 @@ async def research_architecture(
                 return "# No Collections Available\n\nNo accessible collections found."
 
             topic_lower = topic.lower()
-            topic_words = set(topic_lower.replace("-", " ").replace("_", " ").split())
 
             lines = [f"# Architecture: {topic}\n"]
-
-            # Get arc42 documentation
-            stmt = (
-                select(KnowledgeArtifact)
-                .where(
-                    KnowledgeArtifact.collection_id.in_(collection_ids),
-                    KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
-                )
-                .order_by(KnowledgeArtifact.created_at.desc())
-                .limit(1)
-            )
-            result = await db.execute(stmt)
-            arc42 = result.scalar_one_or_none()
-
-            if arc42 and arc42.content:
-                # Extract relevant sections
-                sections = arc42.content.split("## ")
-                relevant_sections = []
-                for section in sections[1:]:  # Skip header
-                    section_lower = section.lower()
-                    if any(word in section_lower for word in topic_words if len(word) > 2):
-                        relevant_sections.append("## " + section[:1000])
-
-                if relevant_sections:
-                    lines.append("## From Architecture Documentation\n")
-                    for section in relevant_sections[:3]:
-                        lines.append(section)
-                        lines.append("")
 
             # Topic-specific knowledge
             if any(word in topic_lower for word in ["api", "endpoint", "rest", "http"]):
@@ -1563,128 +1524,6 @@ async def mcp_graph_rag(
 
     except Exception as e:
         return f"# Error\n\nGraphRAG query failed: {e}"
-
-
-@mcp.tool(name="get_arc42")
-async def mcp_get_arc42(
-    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
-    section: Annotated[
-        str | None,
-        "Specific section: 'context', 'building-blocks', 'runtime', 'deployment', 'crosscutting', 'risks', 'glossary'",
-    ] = None,
-    regenerate: Annotated[bool, "Force regeneration instead of using cached"] = False,
-) -> str:
-    """Get arc42 architecture documentation for the codebase.
-
-    Returns generated architecture documentation with sections for:
-    - Context (system boundary, external interfaces)
-    - Building Blocks (components, database schema)
-    - Runtime View (execution flows)
-    - Deployment View (infrastructure, jobs)
-    - Crosscutting Concepts (patterns, security)
-    - Risks & Technical Debt
-    - Glossary (domain terms)
-
-    Every statement is evidence-backed from the knowledge graph.
-    """
-    user_id = get_current_user_id()
-
-    try:
-        from contextmine_core.analyzer.arc42 import generate_arc42, save_arc42_artifact
-        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind
-        from contextmine_core.search import get_accessible_collection_ids
-
-        async with get_db_session() as db:
-            # Get accessible collections
-            if collection_id:
-                collection_ids = [uuid.UUID(collection_id)]
-            else:
-                collection_ids = await get_accessible_collection_ids(db, user_id)
-
-            if not collection_ids:
-                return "# No Collections Available\n\nNo accessible collections found."
-
-            target_collection = collection_ids[0]  # Use first accessible collection
-
-            # Check for cached artifact
-            if not regenerate:
-                result = await db.execute(
-                    select(KnowledgeArtifact)
-                    .where(
-                        KnowledgeArtifact.collection_id == target_collection,
-                        KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
-                    )
-                    .order_by(KnowledgeArtifact.created_at.desc())
-                    .limit(1)
-                )
-                artifact = result.scalar_one_or_none()
-
-                if artifact:
-                    if section:
-                        # Parse section from content
-                        content = artifact.content or ""
-                        section_marker = f"## {section.replace('-', ' ').title()}"
-                        if section_marker.lower() not in content.lower():
-                            return f"# Section Not Found\n\nSection '{section}' not found in arc42 document."
-                        return content  # Return full for now, could parse section
-
-                    return artifact.content or "# Empty Document"
-
-            # Generate fresh arc42 document
-            doc = await generate_arc42(db, target_collection)
-
-            # Save as artifact
-            await save_arc42_artifact(db, target_collection, doc)
-            await db.commit()
-
-            if section:
-                sec = doc.get_section(section)
-                if sec:
-                    return f"## {sec.title}\n\n{sec.content}"
-                return f"# Section Not Found\n\nSection '{section}' not found."
-
-            return doc.to_markdown()
-
-    except Exception as e:
-        return f"# Error\n\nFailed to get arc42 documentation: {e}"
-
-
-@mcp.tool(name="arc42_drift_report")
-async def mcp_arc42_drift_report(
-    collection_id: Annotated[str | None, "Filter to specific collection"] = None,
-) -> str:
-    """Generate a drift report comparing stored architecture with current state.
-
-    Shows what has changed since the last arc42 document was generated:
-    - New endpoints, tables, jobs added
-    - Components removed or changed
-    - Architecture drift indicators
-
-    Useful for keeping architecture documentation up to date.
-    """
-    user_id = get_current_user_id()
-
-    try:
-        from contextmine_core.analyzer.arc42 import compute_drift_report
-        from contextmine_core.search import get_accessible_collection_ids
-
-        async with get_db_session() as db:
-            # Get accessible collections
-            if collection_id:
-                collection_ids = [uuid.UUID(collection_id)]
-            else:
-                collection_ids = await get_accessible_collection_ids(db, user_id)
-
-            if not collection_ids:
-                return "# No Collections Available\n\nNo accessible collections found."
-
-            target_collection = collection_ids[0]
-
-            report = await compute_drift_report(db, target_collection)
-            return report.to_markdown()
-
-    except Exception as e:
-        return f"# Error\n\nFailed to generate drift report: {e}"
 
 
 # Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)

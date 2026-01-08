@@ -413,7 +413,6 @@ async def build_knowledge_graph(
     - Semantic entities via LLM extraction
     - Hierarchical Leiden communities
     - Community summaries and embeddings
-    - arc42 architecture documentation
 
     REQUIRES: LLM provider and embedder must be configured.
     GraphRAG features require both for proper entity resolution and community summaries.
@@ -638,21 +637,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to extract surfaces: %s", e)
         stats["kg_errors"].append(f"surface: {e}")
 
-    # Step 5: Generate arc42 architecture documentation
-    try:
-        from contextmine_core.analyzer.arc42 import generate_arc42, save_arc42_artifact
-
-        async with get_session() as session:
-            doc = await generate_arc42(session, collection_uuid)
-            await save_arc42_artifact(session, collection_uuid, doc)
-            await session.commit()
-            logger.info("Generated arc42 documentation with %d sections", len(doc.sections))
-
-    except Exception as e:
-        logger.warning("Failed to generate arc42: %s", e)
-        stats["kg_errors"].append(f"arc42: {e}")
-
-    # Step 6: Extract semantic entities using LLM (for proper GraphRAG)
+    # Step 5: Extract semantic entities using LLM (for proper GraphRAG)
     try:
         from contextmine_core.knowledge.extraction import (
             extract_from_documents,
@@ -690,7 +675,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to extract semantic entities: %s", e)
         stats["kg_errors"].append(f"semantic_extraction: {e}")
 
-    # Step 7: Detect communities using Leiden algorithm (GraphRAG)
+    # Step 6: Detect communities using Leiden algorithm (GraphRAG)
     try:
         from contextmine_core.knowledge.communities import detect_communities, persist_communities
 
@@ -718,7 +703,7 @@ async def build_knowledge_graph(
         logger.warning("Failed to detect communities: %s", e)
         stats["kg_errors"].append(f"communities: {e}")
 
-    # Step 8: Generate community summaries and embeddings
+    # Step 7: Generate community summaries and embeddings
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries
 

@@ -103,7 +103,6 @@ class KnowledgeNodeKind(enum.Enum):
     BUSINESS_RULE = "business_rule"
     # Architecture
     BOUNDED_CONTEXT = "bounded_context"
-    ARC42_SECTION = "arc42_section"
 
 
 class KnowledgeEdgeKind(enum.Enum):
@@ -142,7 +141,6 @@ class KnowledgeArtifactKind(enum.Enum):
     """Kind of knowledge artifact."""
 
     MERMAID_ERD = "mermaid_erd"
-    ARC42 = "arc42"
     RULE_CATALOG = "rule_catalog"
     SURFACE_CATALOG = "surface_catalog"
 
