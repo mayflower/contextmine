@@ -401,6 +401,7 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
 async def build_knowledge_graph(
     source_id: str,
     collection_id: str,
+    changed_doc_ids: list[str] | None = None,
 ) -> dict:
     """Build Knowledge Graph from indexed documents.
 
@@ -499,7 +500,8 @@ async def build_knowledge_graph(
         logger.warning("Failed to build FILE/SYMBOL nodes: %s", e)
         stats["kg_errors"].append(f"file_symbol: {e}")
 
-    # Step 2: Extract business rules from code files using LLM
+    # Step 2: Extract business rules from code files using LLM (INCREMENTAL)
+    # Only processes documents that were created/updated in this sync run
     try:
         from contextmine_core.analyzer.extractors.rules import (
             build_rules_graph,
@@ -509,37 +511,50 @@ async def build_knowledge_graph(
 
         all_extractions = []
 
-        async with get_session() as session:
-            # Get all documents for this source
-            result = await session.execute(
-                select(Document.id, Document.uri, Document.content_markdown).where(
-                    Document.source_id == source_uuid
-                )
-            )
-            docs = result.all()
-
-            for _doc_id, uri, content in docs:
-                if not content:
-                    continue
-                # Extract file path from URI
-                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                # Process all files with supported Tree-sitter languages
-                if detect_language(file_path) is not None:
-                    try:
-                        rule_result = await extract_rules_from_file(
-                            file_path, content, research_llm
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+            logger.info("No changed documents - skipping business rule extraction")
+        else:
+            async with get_session() as session:
+                # Get documents that need rule extraction
+                if changed_doc_ids:
+                    # Incremental: only changed documents
+                    result = await session.execute(
+                        select(Document.id, Document.uri, Document.content_markdown).where(
+                            Document.id.in_([uuid_module.UUID(d) for d in changed_doc_ids])
                         )
-                        if rule_result.rules:
-                            all_extractions.append(rule_result)
-                    except Exception as e:
-                        logger.debug("Rule extraction failed for %s: %s", file_path, e)
+                    )
+                else:
+                    # First run: all documents for this source
+                    result = await session.execute(
+                        select(Document.id, Document.uri, Document.content_markdown).where(
+                            Document.source_id == source_uuid
+                        )
+                    )
+                docs = result.all()
+                logger.info("Extracting business rules from %d documents", len(docs))
 
-            # Build graph nodes for all business rules
-            if all_extractions:
-                rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
-                stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
-                await session.commit()
-                logger.info("Extracted %d business rules", stats["kg_business_rules"])
+                for _doc_id, uri, content in docs:
+                    if not content:
+                        continue
+                    # Extract file path from URI
+                    file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                    # Process all files with supported Tree-sitter languages
+                    if detect_language(file_path) is not None:
+                        try:
+                            rule_result = await extract_rules_from_file(
+                                file_path, content, research_llm
+                            )
+                            if rule_result.rules:
+                                all_extractions.append(rule_result)
+                        except Exception as e:
+                            logger.debug("Rule extraction failed for %s: %s", file_path, e)
+
+                # Build graph nodes for all business rules
+                if all_extractions:
+                    rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
+                    stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
+                    await session.commit()
+                    logger.info("Extracted %d business rules", stats["kg_business_rules"])
 
     except Exception as e:
         logger.warning("Failed to extract business rules: %s", e)
@@ -1218,10 +1233,12 @@ async def sync_github_source(
         total_tokens_used += embed_stats["tokens_used"]
 
     # Build Knowledge Graph from indexed documents
+    # Pass changed doc IDs for incremental business rule extraction
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building knowledge graph..."
     )
-    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str)
+    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
+    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str, changed_doc_ids)
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -1472,10 +1489,12 @@ async def sync_web_source(
         total_tokens_used += embed_stats["tokens_used"]
 
     # Build Knowledge Graph from indexed documents
+    # Pass changed doc IDs for incremental business rule extraction
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building knowledge graph..."
     )
-    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str)
+    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
+    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str, changed_doc_ids)
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 

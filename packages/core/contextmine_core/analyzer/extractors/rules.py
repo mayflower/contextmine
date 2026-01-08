@@ -1,9 +1,8 @@
 """Business Rule extraction using LLM.
 
 Extracts business rules from code by:
-1. Using Tree-sitter to parse code into functions/methods/classes
-2. Sending each code unit to LLM for semantic analysis
-3. LLM identifies business rules regardless of pattern or language
+1. Sending the entire file to LLM for semantic analysis (one call per file)
+2. LLM identifies business rules regardless of pattern or language
 
 This approach handles:
 - Any programming language (all 12 Tree-sitter languages)
@@ -19,8 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from contextmine_core.treesitter.languages import TreeSitterLanguage, detect_language
-from contextmine_core.treesitter.manager import get_treesitter_manager
+from contextmine_core.treesitter.languages import detect_language
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -55,19 +53,6 @@ class ExtractionOutput(BaseModel):
         description="List of business rules found in this code. Empty if none found.",
     )
     reasoning: str = Field(description="Brief explanation of what was analyzed")
-
-
-@dataclass
-class CodeUnit:
-    """A unit of code to analyze (function, method, class)."""
-
-    name: str
-    kind: str  # function, method, class
-    file_path: str
-    start_line: int
-    end_line: int
-    content: str
-    language: str
 
 
 @dataclass
@@ -139,6 +124,8 @@ async def extract_rules_from_file(
 ) -> RulesExtraction:
     """Extract business rules from a source file using LLM.
 
+    Makes ONE LLM call per file to extract all business rules at once.
+
     Args:
         file_path: Path to the source file
         content: Source code content
@@ -154,208 +141,52 @@ async def extract_rules_from_file(
         logger.debug("Unsupported language for %s, skipping", file_path)
         return result
 
-    # Parse into code units using Tree-sitter
-    code_units = _parse_code_units(file_path, content, language)
+    # Truncate very large files to fit in context
+    lines = content.split("\n")
+    max_lines = 500  # ~15k tokens typically
+    if len(lines) > max_lines:
+        # Take first part, it usually has most business logic
+        content = "\n".join(lines[:max_lines])
+        content += f"\n... (truncated, {len(lines) - max_lines} more lines)"
 
-    if not code_units:
-        # If no functions/classes found, analyze the whole file
-        code_units = [
-            CodeUnit(
-                name="<module>",
-                kind="module",
-                file_path=file_path,
-                start_line=1,
-                end_line=len(content.split("\n")),
-                content=content[:8000],  # Limit size
-                language=language.value,
-            )
-        ]
-
-    # Analyze each code unit
-    for unit in code_units:
-        try:
-            rules = await _analyze_code_unit(unit, provider)
-            result.rules.extend(rules)
-        except Exception as e:
-            logger.warning("Failed to analyze %s in %s: %s", unit.name, file_path, e)
+    # Analyze entire file in one LLM call
+    try:
+        rules = await _analyze_file(file_path, content, language.value, provider)
+        result.rules.extend(rules)
+    except Exception as e:
+        logger.warning("Failed to analyze %s: %s", file_path, e)
 
     return result
 
 
-def _parse_code_units(
+async def _analyze_file(
     file_path: str,
     content: str,
-    language: TreeSitterLanguage,
-) -> list[CodeUnit]:
-    """Parse source code into analyzable units using Tree-sitter."""
-    units: list[CodeUnit] = []
-
-    manager = get_treesitter_manager()
-    if not manager.is_available():
-        return units
-
-    try:
-        tree = manager.parse(file_path, content)
-        root = tree.root_node
-        lines = content.split("\n")
-
-        # Get node types for this language
-        function_types = _get_function_node_types(language)
-        class_types = _get_class_node_types(language)
-
-        for node in _traverse(root):
-            if node.type in function_types:
-                unit = _extract_unit(node, lines, file_path, language, "function")
-                if unit:
-                    units.append(unit)
-            elif node.type in class_types:
-                unit = _extract_unit(node, lines, file_path, language, "class")
-                if unit:
-                    units.append(unit)
-
-    except Exception as e:
-        logger.warning("Failed to parse %s: %s", file_path, e)
-
-    return units
-
-
-def _get_function_node_types(language: TreeSitterLanguage) -> set[str]:
-    """Get AST node types that represent functions/methods for a language."""
-    mapping = {
-        TreeSitterLanguage.PYTHON: {"function_definition", "async_function_definition"},
-        TreeSitterLanguage.TYPESCRIPT: {
-            "function_declaration",
-            "method_definition",
-            "arrow_function",
-        },
-        TreeSitterLanguage.TSX: {"function_declaration", "method_definition", "arrow_function"},
-        TreeSitterLanguage.JAVASCRIPT: {
-            "function_declaration",
-            "method_definition",
-            "arrow_function",
-        },
-        TreeSitterLanguage.JAVA: {"method_declaration", "constructor_declaration"},
-        TreeSitterLanguage.CSHARP: {"method_declaration", "constructor_declaration"},
-        TreeSitterLanguage.GO: {"function_declaration", "method_declaration"},
-        TreeSitterLanguage.RUST: {"function_item"},
-        TreeSitterLanguage.RUBY: {"method", "singleton_method"},
-        TreeSitterLanguage.PHP: {"function_definition", "method_declaration"},
-        TreeSitterLanguage.C: {"function_definition"},
-        TreeSitterLanguage.CPP: {"function_definition"},
-    }
-    return mapping.get(language, {"function_definition", "function_declaration"})
-
-
-def _get_class_node_types(language: TreeSitterLanguage) -> set[str]:
-    """Get AST node types that represent classes for a language."""
-    mapping = {
-        TreeSitterLanguage.PYTHON: {"class_definition"},
-        TreeSitterLanguage.TYPESCRIPT: {"class_declaration"},
-        TreeSitterLanguage.TSX: {"class_declaration"},
-        TreeSitterLanguage.JAVASCRIPT: {"class_declaration"},
-        TreeSitterLanguage.JAVA: {"class_declaration", "interface_declaration"},
-        TreeSitterLanguage.CSHARP: {"class_declaration", "interface_declaration"},
-        TreeSitterLanguage.GO: {"type_declaration"},
-        TreeSitterLanguage.RUST: {"struct_item", "impl_item"},
-        TreeSitterLanguage.RUBY: {"class", "module"},
-        TreeSitterLanguage.PHP: {"class_declaration"},
-        TreeSitterLanguage.C: {"struct_specifier"},
-        TreeSitterLanguage.CPP: {"class_specifier", "struct_specifier"},
-    }
-    return mapping.get(language, {"class_definition", "class_declaration"})
-
-
-def _extract_unit(
-    node,
-    lines: list[str],
-    file_path: str,
-    language: TreeSitterLanguage,
-    kind: str,
-) -> CodeUnit | None:
-    """Extract a code unit from an AST node."""
-    start_line = node.start_point[0]
-    end_line = node.end_point[0]
-
-    # Get the name
-    name = _get_node_name(node, language)
-    if not name:
-        name = f"<anonymous_{kind}>"
-
-    # Extract content
-    content_lines = lines[start_line : end_line + 1]
-    content = "\n".join(content_lines)
-
-    # Skip very small units (likely not interesting)
-    if len(content_lines) < 3:
-        return None
-
-    # Limit content size for LLM
-    if len(content) > 8000:
-        content = content[:8000] + "\n... (truncated)"
-
-    return CodeUnit(
-        name=name,
-        kind=kind,
-        file_path=file_path,
-        start_line=start_line + 1,  # 1-indexed
-        end_line=end_line + 1,
-        content=content,
-        language=language.value,
-    )
-
-
-def _get_node_name(node, language: TreeSitterLanguage) -> str | None:
-    """Extract the name from a function/class AST node."""
-    for child in node.children:
-        if child.type in (
-            "identifier",
-            "name",
-            "property_identifier",
-            "type_identifier",
-            "constant",
-        ):
-            return child.text.decode("utf-8")
-    return None
-
-
-def _traverse(node):
-    """Traverse all nodes in the AST."""
-    yield node
-    for child in node.children:
-        yield from _traverse(child)
-
-
-async def _analyze_code_unit(
-    unit: CodeUnit,
+    language: str,
     provider: LLMProvider,
 ) -> list[ExtractedRule]:
-    """Analyze a code unit for business rules using LLM."""
-    prompt = f"""Analyze this {unit.language} code for business rules:
+    """Analyze an entire file for business rules using LLM (one call per file)."""
+    prompt = f"""Analyze this {language} source file for ALL business rules:
 
-File: {unit.file_path}
-{unit.kind.title()}: {unit.name}
-Lines: {unit.start_line}-{unit.end_line}
+File: {file_path}
 
-```{unit.language}
-{unit.content}
+```{language}
+{content}
 ```
 
-Identify all business rules in this code. Return an empty list if none found."""
+Find and list ALL business rules in this file. Line numbers should be relative to the file (starting from 1).
+Return an empty list if no business rules are found."""
 
     result = await provider.generate_structured(
         system=EXTRACTION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
         output_schema=ExtractionOutput,
-        max_tokens=2048,
+        max_tokens=4096,  # Allow more tokens for full file analysis
         temperature=0.0,
     )
 
     extracted: list[ExtractedRule] = []
     for rule in result.rules:
-        # Adjust line numbers relative to unit
-        actual_start = unit.start_line + rule.start_line - 1
-        actual_end = unit.start_line + rule.end_line - 1
-
         extracted.append(
             ExtractedRule(
                 name=rule.name,
@@ -363,12 +194,12 @@ Identify all business rules in this code. Return an empty list if none found."""
                 category=rule.category,
                 severity=rule.severity,
                 natural_language=rule.natural_language,
-                file_path=unit.file_path,
-                start_line=actual_start,
-                end_line=actual_end,
+                file_path=file_path,
+                start_line=rule.start_line,
+                end_line=rule.end_line,
                 evidence_snippet=rule.evidence_snippet,
-                container_name=unit.name,
-                language=unit.language,
+                container_name="<file>",  # No longer tracking per-function
+                language=language,
             )
         )
 
