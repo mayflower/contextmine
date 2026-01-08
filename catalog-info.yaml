@@ -1,0 +1,123 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: contextmine
+  title: ContextMine
+  description: Self-hosted documentation and code indexing with MCP integration
+  annotations:
+    github.com/project-slug: mayflower/contextmine
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/source-location: url:https://github.com/mayflower/contextmine
+  tags:
+    - python
+    - fastapi
+    - mcp
+    - documentation
+    - code-intelligence
+    - ai
+  links:
+    - url: https://github.com/mayflower/contextmine
+      title: GitHub Repository
+      icon: github
+spec:
+  type: service
+  lifecycle: production
+  owner: group:data-team
+  system: ai-platform
+  providesApis:
+    - contextmine-api
+    - contextmine-mcp
+  dependsOn:
+    - resource:contextmine-postgres
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: contextmine-api
+  title: ContextMine REST API
+  description: REST API for managing collections, sources, and documents
+  tags:
+    - rest
+    - fastapi
+spec:
+  type: openapi
+  lifecycle: production
+  owner: group:data-team
+  system: ai-platform
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: ContextMine API
+      version: 1.0.0
+    servers:
+      - url: /api
+    paths:
+      /health:
+        get:
+          summary: Health check
+          responses:
+            '200':
+              description: OK
+      /collections:
+        get:
+          summary: List collections
+      /sources:
+        get:
+          summary: List sources
+      /documents:
+        get:
+          summary: List documents
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: contextmine-mcp
+  title: ContextMine MCP Interface
+  description: Model Context Protocol interface for AI assistants
+  tags:
+    - mcp
+    - ai
+    - llm
+spec:
+  type: grpc
+  lifecycle: production
+  owner: group:data-team
+  system: ai-platform
+  definition: |
+    Model Context Protocol (MCP) interface providing:
+    - get_markdown: Semantic search across indexed content
+    - deep_research: Multi-step AI research agent
+    - graph_rag: Graph-augmented retrieval
+    - outline: Code structure navigation
+    - find_symbol: Symbol lookup
+    - definition: Go to definition
+    - references: Find all usages
+    - expand: Code relationship exploration
+    - research_validation: Business rule discovery
+    - research_data_model: Data model exploration
+    - research_architecture: Architecture research
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: contextmine-postgres
+  title: ContextMine PostgreSQL
+  description: PostgreSQL database with pgvector extension
+  tags:
+    - database
+    - postgresql
+    - pgvector
+spec:
+  type: database
+  lifecycle: production
+  owner: group:data-team
+  system: ai-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: ai-platform
+  title: AI Platform
+  description: AI and ML infrastructure services
+spec:
+  owner: group:data-team
