@@ -21,6 +21,8 @@ spec:
         {{- include "contextmine.worker.selectorLabels" . | nindent 8 }}
     spec:
       {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 1000
       initContainers:
         # Wait for PostgreSQL to be ready
         - name: wait-for-postgres
