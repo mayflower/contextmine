@@ -38,8 +38,9 @@ spec:
               value: "0.0.0.0"
             - name: PREFECT_UI_API_URL
               value: "http://localhost:4200/api"
-            - name: PREFECT_API_DATABASE_CONNECTION_URL
-              value: {{ include "contextmine.prefectDatabaseUrl" . | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "contextmine.secretName" . }}
           livenessProbe:
             httpGet:
               path: /api/health
