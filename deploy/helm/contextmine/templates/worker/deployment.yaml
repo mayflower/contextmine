@@ -39,7 +39,7 @@ spec:
             - configMapRef:
                 name: {{ include "contextmine.fullname" . }}-config
             - secretRef:
-                name: {{ include "contextmine.fullname" . }}-secrets
+                name: {{ include "contextmine.secretName" . }}
           volumeMounts:
             {{- if .Values.worker.persistence.enabled }}
             - name: data

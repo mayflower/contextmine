@@ -201,6 +201,8 @@ config:
 
 # -- Secrets (set these in your values override or use external secrets)
 secrets:
+  # -- Use an existing secret instead of creating one (must contain DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
+  existingSecret: ""
   # -- GitHub OAuth credentials
   github:
     clientId: ""

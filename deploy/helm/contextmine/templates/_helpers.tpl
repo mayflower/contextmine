@@ -169,3 +169,14 @@ Worker selector labels
 {{ include "contextmine.selectorLabels" . }}
 app.kubernetes.io/component: worker
 {{- end }}
+
+{{/*
+Secret name - returns existing secret name or generated one
+*/}}
+{{- define "contextmine.secretName" -}}
+{{- if .Values.secrets.existingSecret }}
+{{- .Values.secrets.existingSecret }}
+{{- else }}
+{{- printf "%s-secrets" (include "contextmine.fullname" .) }}
+{{- end }}
+{{- end }}
