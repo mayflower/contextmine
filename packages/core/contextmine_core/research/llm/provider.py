@@ -7,6 +7,7 @@ supporting multiple providers (Anthropic, OpenAI) with structured output validat
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, TypeVar
 
@@ -287,10 +288,14 @@ def get_llm_provider(
         from langchain_anthropic import ChatAnthropic
 
         selected_model = model or "claude-sonnet-4-5-20250929"
+        # Read from environment if not provided
+        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not resolved_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
         # LangChain type stubs may not match runtime API; timeout accepts these params
         chat_model = ChatAnthropic(
             model_name=selected_model,
-            api_key=api_key,  # ty: ignore[unknown-argument]
+            api_key=resolved_key,  # ty: ignore[unknown-argument]
             timeout=timeout,  # ty: ignore[unknown-argument]
             max_retries=max_retries,
         )
@@ -304,10 +309,14 @@ def get_llm_provider(
         from langchain_openai import ChatOpenAI
 
         selected_model = model or "gpt-4o"
+        # Read from environment if not provided
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not resolved_key:
+            raise ValueError("OPENAI_API_KEY environment variable not set")
         # LangChain type stubs may not match runtime API; timeout/api_key use different names
         chat_model = ChatOpenAI(
             model_name=selected_model,
-            api_key=api_key,  # ty: ignore[unknown-argument]
+            api_key=resolved_key,  # ty: ignore[unknown-argument]
             request_timeout=timeout,  # ty: ignore[unknown-argument]
             max_retries=max_retries,
         )
