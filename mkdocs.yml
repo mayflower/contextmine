@@ -1,0 +1,52 @@
+site_name: ContextMine
+site_description: Self-hosted documentation and code indexing with MCP integration
+repo_url: https://github.com/mayflower/contextmine
+edit_uri: edit/main/docs/
+
+nav:
+  - Overview: index.md
+  - MCP Interface: mcp.md
+  - Development Guide: development.md
+  - Knowledge Graph: KNOWLEDGE_GRAPH.md
+  - SCIP Polyglot Indexing: scip_polyglot_indexing.md
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - techdocs-core

@@ -77,7 +77,7 @@ MCP exposes tools: `get_markdown` (semantic search), `list_collections`, `list_d
 
 ## Analyzer Implementation Progress
 
-Tracking implementation of the Knowledge Graph / Derived Knowledge subsystem (see `docs/prompts3.md`).
+Tracking implementation of the Knowledge Graph / Derived Knowledge subsystem (see [Knowledge Graph docs](docs/KNOWLEDGE_GRAPH.md)).
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
