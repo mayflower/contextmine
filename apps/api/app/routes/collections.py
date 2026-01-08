@@ -44,6 +44,13 @@ class CollectionResponse(BaseModel):
     member_count: int
 
 
+class UpdateCollectionRequest(BaseModel):
+    """Request model for updating a collection."""
+
+    name: str | None = None
+    visibility: str | None = None  # "global" or "private"
+
+
 class ShareRequest(BaseModel):
     """Request model for sharing a collection."""
 
@@ -177,6 +184,61 @@ async def list_collections(request: Request) -> list[CollectionResponse]:
             )
 
         return collections
+
+
+@router.patch("/{collection_id}", response_model=CollectionResponse)
+async def update_collection(
+    request: Request, collection_id: str, body: UpdateCollectionRequest
+) -> CollectionResponse:
+    """Update a collection's name or visibility.
+
+    Only the owner can update a collection.
+    """
+    user_id = get_current_user_id(request)
+
+    async with get_db_session() as db:
+        # Get collection and check ownership
+        collection = await _get_collection_with_access(
+            db, collection_id, user_id, require_owner=True
+        )
+
+        # Get owner info
+        result = await db.execute(select(User).where(User.id == collection.owner_user_id))
+        owner = result.scalar_one()
+
+        # Update fields if provided
+        if body.name is not None:
+            collection.name = body.name
+
+        if body.visibility is not None:
+            try:
+                collection.visibility = CollectionVisibility(body.visibility)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail="Invalid visibility. Must be 'global' or 'private'"
+                ) from e
+
+        await db.flush()
+
+        # Count members
+        member_result = await db.execute(
+            select(func.count())
+            .select_from(CollectionMember)
+            .where(CollectionMember.collection_id == collection.id)
+        )
+        member_count = member_result.scalar() or 0
+
+        return CollectionResponse(
+            id=str(collection.id),
+            slug=collection.slug,
+            name=collection.name,
+            visibility=collection.visibility.value,
+            owner_id=str(collection.owner_user_id),
+            owner_github_login=owner.github_login,
+            created_at=collection.created_at,
+            is_owner=True,
+            member_count=member_count,
+        )
 
 
 @router.get("/{collection_id}/members", response_model=list[MemberResponse])
