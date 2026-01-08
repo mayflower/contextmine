@@ -11,10 +11,12 @@ spec:
       {{- include "contextmine.prefect.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.prefect.podAnnotations }}
       annotations:
+        # Force restart when chart version changes
+        helm.sh/chart-version: {{ .Chart.Version | quote }}
+        {{- with .Values.prefect.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "contextmine.prefect.selectorLabels" . | nindent 8 }}
     spec:
