@@ -205,6 +205,25 @@ config:
     # -- Continue indexing if individual projects fail
     bestEffort: "true"
 
+# -- Monitoring configuration
+monitoring:
+  # -- ServiceMonitor for Prometheus scraping
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  # -- PrometheusRule for alerts
+  prometheusRule:
+    enabled: false
+    labels: {}
+  # -- Grafana dashboard
+  grafana:
+    dashboards:
+      enabled: false
+      label: grafana_dashboard
+      folder: ContextMine
+
 # -- Secrets (set these in your values override or use external secrets)
 secrets:
   # -- Use an existing secret instead of creating one (must contain DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)

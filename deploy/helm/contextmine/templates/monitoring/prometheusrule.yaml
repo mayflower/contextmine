@@ -1,0 +1,100 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+{{- $fullName := include "contextmine.fullname" . }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "contextmine.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ $fullName }}.rules
+      rules:
+        # API Pod not ready
+        - alert: ContextmineApiPodNotReady
+          expr: |
+            kube_pod_status_ready{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}-api.*", condition="true"} == 0
+          for: 5m
+          labels:
+            severity: WARNING
+            app: contextmine
+            component: api
+            namespace: {{ .Release.Namespace }}
+          annotations:
+            summary: "ContextMine API pod not ready"
+            description: "Pod {{ "{{" }} $labels.pod {{ "}}" }} in namespace {{ .Release.Namespace }} is not ready"
+
+        # Worker Pod not ready
+        - alert: ContextmineWorkerPodNotReady
+          expr: |
+            kube_pod_status_ready{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}-worker.*", condition="true"} == 0
+          for: 5m
+          labels:
+            severity: WARNING
+            app: contextmine
+            component: worker
+            namespace: {{ .Release.Namespace }}
+          annotations:
+            summary: "ContextMine Worker pod not ready"
+            description: "Pod {{ "{{" }} $labels.pod {{ "}}" }} in namespace {{ .Release.Namespace }} is not ready"
+
+        # Prefect Pod not ready
+        - alert: ContextminePrefectPodNotReady
+          expr: |
+            kube_pod_status_ready{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}-prefect.*", condition="true"} == 0
+          for: 5m
+          labels:
+            severity: WARNING
+            app: contextmine
+            component: prefect
+            namespace: {{ .Release.Namespace }}
+          annotations:
+            summary: "ContextMine Prefect pod not ready"
+            description: "Pod {{ "{{" }} $labels.pod {{ "}}" }} in namespace {{ .Release.Namespace }} is not ready"
+
+        # Pod restarts
+        - alert: ContextminePodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}.*"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: WARNING
+            app: contextmine
+            namespace: {{ .Release.Namespace }}
+          annotations:
+            summary: "ContextMine pod restarting frequently"
+            description: "Pod {{ "{{" }} $labels.pod {{ "}}" }} has restarted {{ "{{" }} $value {{ "}}" }} times in the last hour"
+
+        # High memory usage
+        - alert: ContextmineHighMemoryUsage
+          expr: |
+            container_memory_working_set_bytes{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}.*", container!=""}
+            / on(pod) kube_pod_container_resource_limits{namespace="{{ .Release.Namespace }}", pod=~"{{ $fullName }}.*", resource="memory"}
+            > 0.9
+          for: 5m
+          labels:
+            severity: WARNING
+            app: contextmine
+            namespace: {{ .Release.Namespace }}
+          annotations:
+            summary: "ContextMine high memory usage"
+            description: "Container {{ "{{" }} $labels.container {{ "}}" }} is using more than 90% of its memory limit"
+
+        # No API replicas available
+        - alert: ContextmineApiNoReplicasAvailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="{{ .Release.Namespace }}", deployment="{{ $fullName }}-api"} == 0
+          for: 1m
+          labels:
+            severity: CRITICAL
+            app: contextmine
+            component: api
+            namespace: {{ .Release.Namespace }}
+            groupKey: contextmine-api
+          annotations:
+            summary: "ContextMine API has no available replicas"
+            description: "Deployment {{ $fullName }}-api in namespace {{ .Release.Namespace }} has no available replicas"
+{{- end }}

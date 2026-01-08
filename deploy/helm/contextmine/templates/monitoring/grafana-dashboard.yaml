@@ -1,0 +1,150 @@
+{{- if .Values.monitoring.grafana.dashboards.enabled }}
+{{- $fullName := include "contextmine.fullname" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-dashboard
+  labels:
+    {{- include "contextmine.labels" . | nindent 4 }}
+    {{ .Values.monitoring.grafana.dashboards.label | default "grafana_dashboard" }}: "1"
+  annotations:
+    {{- if .Values.monitoring.grafana.dashboards.folder }}
+    grafana_folder: {{ .Values.monitoring.grafana.dashboards.folder | quote }}
+    {{- end }}
+data:
+  contextmine.json: |-
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+          "id": 1,
+          "title": "Overview",
+          "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+          "id": 2,
+          "options": {"colorMode": "value", "graphMode": "none"},
+          "targets": [{"expr": "count(kube_pod_status_ready{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\", condition=\"true\"} == 1)", "refId": "A"}],
+          "title": "Pods Ready",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 5}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+          "id": 3,
+          "options": {"colorMode": "value", "graphMode": "area"},
+          "targets": [{"expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\"}[1h]))", "refId": "A"}],
+          "title": "Restarts (1h)",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 1},
+          "id": 4,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+          "targets": [{"expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\", container!=\"\"})", "legendFormat": "{{ "{{" }} pod {{ "}}" }}", "refId": "A"}],
+          "title": "Memory Usage",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 1},
+          "id": 5,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+          "targets": [{"expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\", container!=\"\"}[5m]))", "legendFormat": "{{ "{{" }} pod {{ "}}" }}", "refId": "A"}],
+          "title": "CPU Usage",
+          "type": "timeseries"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+          "id": 6,
+          "title": "Network",
+          "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 6, "w": 12, "x": 0, "y": 6},
+          "id": 7,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+          "targets": [{"expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\"}[5m]))", "legendFormat": "{{ "{{" }} pod {{ "}}" }} rx", "refId": "A"}],
+          "title": "Network Receive",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 6, "w": 12, "x": 12, "y": 6},
+          "id": 8,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+          "targets": [{"expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"{{ .Release.Namespace }}\", pod=~\"{{ $fullName }}.*\"}[5m]))", "legendFormat": "{{ "{{" }} pod {{ "}}" }} tx", "refId": "A"}],
+          "title": "Network Transmit",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "tags": ["contextmine", "mayflower"],
+      "templating": {
+        "list": [{
+          "name": "datasource",
+          "query": "prometheus",
+          "type": "datasource"
+        }]
+      },
+      "time": {"from": "now-1h", "to": "now"},
+      "title": "ContextMine - {{ .Release.Namespace }}",
+      "uid": "contextmine-{{ .Release.Namespace }}",
+      "version": 1
+    }
+{{- end }}
