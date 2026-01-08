@@ -61,6 +61,8 @@ api:
     port: 8000
   # -- Pod annotations
   podAnnotations: {}
+  # -- Pod labels
+  podLabels: {}
   # -- Node selector
   nodeSelector: {}
   # -- Tolerations
@@ -89,6 +91,8 @@ prefect:
     port: 4200
   # -- Pod annotations
   podAnnotations: {}
+  # -- Pod labels
+  podLabels: {}
   # -- Node selector
   nodeSelector: {}
   # -- Tolerations
@@ -127,6 +131,8 @@ worker:
     composerCacheSize: "1Gi"
   # -- Pod annotations
   podAnnotations: {}
+  # -- Pod labels
+  podLabels: {}
   # -- Node selector
   nodeSelector: {}
   # -- Tolerations

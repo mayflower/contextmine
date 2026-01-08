@@ -19,6 +19,9 @@ spec:
         {{- end }}
       labels:
         {{- include "contextmine.api.selectorLabels" . | nindent 8 }}
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
       initContainers:

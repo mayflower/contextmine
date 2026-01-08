@@ -19,6 +19,9 @@ spec:
         {{- end }}
       labels:
         {{- include "contextmine.prefect.selectorLabels" . | nindent 8 }}
+        {{- with .Values.prefect.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
       initContainers:
