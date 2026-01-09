@@ -7,8 +7,9 @@ See: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
