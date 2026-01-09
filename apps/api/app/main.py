@@ -107,9 +107,19 @@ def create_app() -> FastAPI:
         instrumentator.expose(app, include_in_schema=False)
 
         # SPA catch-all: serve index.html for all non-API routes
+        # Note: paths like /api, /mcp, /metrics are handled by their own routes
         @app.get("/{path:path}")
         async def serve_spa(path: str) -> FileResponse:
             """Serve the SPA frontend for all non-API routes."""
+            from fastapi.responses import PlainTextResponse
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+            # Handle /metrics directly - generate Prometheus metrics
+            if path == "metrics":
+                return PlainTextResponse(
+                    content=generate_latest(),
+                    media_type=CONTENT_TYPE_LATEST,
+                )
             # Try to serve the exact file if it exists
             file_path = (STATIC_DIR / path).resolve()
             # Prevent path traversal attacks
