@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
 
         # SPA catch-all: serve index.html for all non-API routes
         # Note: paths like /api, /mcp, /metrics are handled by their own routes
-        @app.get("/{path:path}")
+        @app.get("/{path:path}", response_model=None)
         async def serve_spa(path: str) -> FileResponse | PlainTextResponse:
             """Serve the SPA frontend for all non-API routes."""
             from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
