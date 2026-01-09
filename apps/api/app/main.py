@@ -8,7 +8,7 @@ from pathlib import Path
 from contextmine_core import close_engine
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
@@ -109,9 +109,8 @@ def create_app() -> FastAPI:
         # SPA catch-all: serve index.html for all non-API routes
         # Note: paths like /api, /mcp, /metrics are handled by their own routes
         @app.get("/{path:path}")
-        async def serve_spa(path: str) -> FileResponse:
+        async def serve_spa(path: str) -> FileResponse | PlainTextResponse:
             """Serve the SPA frontend for all non-API routes."""
-            from fastapi.responses import PlainTextResponse
             from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
             # Handle /metrics directly - generate Prometheus metrics
