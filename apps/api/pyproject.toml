@@ -12,6 +12,7 @@ dependencies = [
     "itsdangerous>=2.0.0",
     "httpx>=0.27.0",
     "slowapi>=0.1.9",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [build-system]

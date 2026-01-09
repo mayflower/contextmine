@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -84,12 +85,25 @@ def create_app() -> FastAPI:
     # Mount MCP server at /mcp
     app.mount("/mcp", mcp_app)
 
+    # Prometheus metrics instrumentation
+    # Exposes /metrics endpoint with request latency, count, and Python process metrics
+    Instrumentator(
+        should_group_status_codes=True,
+        should_ignore_untemplated=True,
+        should_respect_env_var=True,
+        should_instrument_requests_inprogress=True,
+        excluded_handlers=["/metrics", "/health", "/api/health"],
+        inprogress_name="http_requests_inprogress",
+        inprogress_labels=True,
+    ).instrument(app).expose(app, include_in_schema=False)
+
     # Serve static frontend files if directory exists
     if STATIC_DIR.exists() and STATIC_DIR.is_dir():
         # Mount static assets (js, css, images)
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
         # SPA catch-all: serve index.html for all non-API routes
+        # Note: /metrics is registered before this catch-all, so it takes priority
         @app.get("/{path:path}")
         async def serve_spa(path: str) -> FileResponse:
             """Serve the SPA frontend for all non-API routes."""
