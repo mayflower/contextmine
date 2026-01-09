@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
 
     # Prometheus metrics instrumentation
     # Exposes /metrics endpoint with request latency, count, and Python process metrics
-    Instrumentator(
+    instrumentator = Instrumentator(
         should_group_status_codes=True,
         should_ignore_untemplated=True,
         should_respect_env_var=True,
@@ -95,15 +95,18 @@ def create_app() -> FastAPI:
         excluded_handlers=["/metrics", "/health", "/api/health"],
         inprogress_name="http_requests_inprogress",
         inprogress_labels=True,
-    ).instrument(app).expose(app, include_in_schema=False)
+    )
+    instrumentator.instrument(app)
 
     # Serve static frontend files if directory exists
     if STATIC_DIR.exists() and STATIC_DIR.is_dir():
         # Mount static assets (js, css, images)
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
+        # Expose metrics BEFORE SPA catch-all to ensure it takes priority
+        instrumentator.expose(app, include_in_schema=False)
+
         # SPA catch-all: serve index.html for all non-API routes
-        # Note: /metrics is registered before this catch-all, so it takes priority
         @app.get("/{path:path}")
         async def serve_spa(path: str) -> FileResponse:
             """Serve the SPA frontend for all non-API routes."""
@@ -121,6 +124,9 @@ def create_app() -> FastAPI:
         async def serve_index() -> FileResponse:
             """Serve index.html at root."""
             return FileResponse(STATIC_DIR / "index.html")
+    else:
+        # No static files - just expose metrics
+        instrumentator.expose(app, include_in_schema=False)
 
     return app
 
