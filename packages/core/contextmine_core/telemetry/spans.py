@@ -64,9 +64,7 @@ def trace_llm_call(
                     if hasattr(result, "usage"):
                         usage = result.usage
                         if hasattr(usage, "prompt_tokens"):
-                            span.set_attribute(
-                                "gen_ai.usage.input_tokens", usage.prompt_tokens
-                            )
+                            span.set_attribute("gen_ai.usage.input_tokens", usage.prompt_tokens)
                         if hasattr(usage, "completion_tokens"):
                             span.set_attribute(
                                 "gen_ai.usage.output_tokens", usage.completion_tokens
@@ -198,9 +196,7 @@ def trace_sync_llm_call(
                     if hasattr(result, "usage"):
                         usage = result.usage
                         if hasattr(usage, "prompt_tokens"):
-                            span.set_attribute(
-                                "gen_ai.usage.input_tokens", usage.prompt_tokens
-                            )
+                            span.set_attribute("gen_ai.usage.input_tokens", usage.prompt_tokens)
                         if hasattr(usage, "completion_tokens"):
                             span.set_attribute(
                                 "gen_ai.usage.output_tokens", usage.completion_tokens

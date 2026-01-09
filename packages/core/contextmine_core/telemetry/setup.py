@@ -90,9 +90,7 @@ def init_telemetry(
         "always_on": ALWAYS_ON,
         "always_off": ALWAYS_OFF,
         "traceidratio": TraceIdRatioBased(settings.otel_traces_sampler_arg),
-        "parentbased_traceidratio": ParentBasedTraceIdRatio(
-            settings.otel_traces_sampler_arg
-        ),
+        "parentbased_traceidratio": ParentBasedTraceIdRatio(settings.otel_traces_sampler_arg),
     }
     sampler = sampler_map.get(settings.otel_traces_sampler, ALWAYS_ON)
 
@@ -105,9 +103,7 @@ def init_telemetry(
 
     # Setup Metrics
     metric_exporter = OTLPMetricExporter(endpoint=settings.otel_exporter_otlp_endpoint)
-    metric_reader = PeriodicExportingMetricReader(
-        metric_exporter, export_interval_millis=60000
-    )
+    metric_reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=60000)
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     metrics.set_meter_provider(meter_provider)
     _meter = metrics.get_meter(__name__)
