@@ -223,6 +223,22 @@ monitoring:
       enabled: false
       label: grafana_dashboard
       folder: ContextMine
+  # -- OpenTelemetry configuration
+  otel:
+    # -- Enable OpenTelemetry instrumentation (traces, metrics, logs)
+    enabled: false
+    # -- Service name prefix (will be suffixed with -api, -worker)
+    serviceName: "contextmine"
+    # -- OTLP exporter endpoint (e.g., http://tempo:4317 for gRPC)
+    exporterEndpoint: ""
+    # -- OTLP protocol: 'grpc' or 'http/protobuf'
+    exporterProtocol: "grpc"
+    # -- Trace sampler: always_on, always_off, traceidratio, parentbased_traceidratio
+    tracesSampler: "parentbased_traceidratio"
+    # -- Sampler argument (e.g., 0.1 for 10% sampling)
+    tracesSamplerArg: "1.0"
+    # -- Minimum log level to export: DEBUG, INFO, WARNING, ERROR
+    logLevel: "INFO"
 
 # -- Secrets (set these in your values override or use external secrets)
 secrets:

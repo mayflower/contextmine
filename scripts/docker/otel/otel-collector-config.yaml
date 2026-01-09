@@ -1,0 +1,70 @@
+# OpenTelemetry Collector configuration for local development
+# This configuration logs telemetry to stdout for debugging.
+# Replace exporters with your preferred backend (Tempo, Jaeger, Datadog, etc.)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+exporters:
+  # Debug exporter - logs telemetry to stdout
+  debug:
+    verbosity: detailed
+
+  # Uncomment and configure for your backend:
+
+  # Grafana Tempo (via OTLP)
+  # otlp/tempo:
+  #   endpoint: tempo:4317
+  #   tls:
+  #     insecure: true
+
+  # Jaeger (via OTLP)
+  # otlp/jaeger:
+  #   endpoint: jaeger:4317
+  #   tls:
+  #     insecure: true
+
+  # Datadog
+  # datadog:
+  #   api:
+  #     key: ${DD_API_KEY}
+
+  # Prometheus (for metrics only)
+  # prometheus:
+  #   endpoint: "0.0.0.0:8889"
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

@@ -167,22 +167,28 @@ class OpenAIEmbedder(Embedder):
     )
     async def embed_batch(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts using OpenAI API."""
+        from contextmine_core.telemetry.spans import trace_embedding_call
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self._api_key)
 
-        response = await client.embeddings.create(
-            model=self._model_name,
-            input=texts,
-        )
+        async with trace_embedding_call("openai", self._model_name, len(texts)) as span:
+            response = await client.embeddings.create(
+                model=self._model_name,
+                input=texts,
+            )
 
-        embeddings = [data.embedding for data in response.data]
+            embeddings = [data.embedding for data in response.data]
+            tokens_used = response.usage.total_tokens
+
+            # Record token usage on the span
+            span.set_attribute("embedding.tokens_used", tokens_used)
 
         return EmbeddingResult(
             embeddings=embeddings,
             model_name=self._model_name,
             dimension=self.dimension,
-            tokens_used=response.usage.total_tokens,
+            tokens_used=tokens_used,
         )
 
 
@@ -227,20 +233,22 @@ class GeminiEmbedder(Embedder):
     )
     async def embed_batch(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts using Gemini API."""
+        from contextmine_core.telemetry.spans import trace_embedding_call
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=self._api_key)
 
-        result = await client.aio.models.embed_content(
-            model=self._model_name,
-            contents=texts,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
-        )
+        async with trace_embedding_call("gemini", self._model_name, len(texts)):
+            result = await client.aio.models.embed_content(
+                model=self._model_name,
+                contents=texts,
+                config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+            )
 
-        if result.embeddings is None:
-            raise ValueError("Gemini API returned no embeddings")
-        embeddings = [e.values for e in result.embeddings if e.values is not None]
+            if result.embeddings is None:
+                raise ValueError("Gemini API returned no embeddings")
+            embeddings = [e.values for e in result.embeddings if e.values is not None]
 
         return EmbeddingResult(
             embeddings=embeddings,

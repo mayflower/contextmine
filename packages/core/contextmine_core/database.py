@@ -36,6 +36,16 @@ def get_engine() -> AsyncEngine:
             echo=settings.debug,
             pool_pre_ping=True,
         )
+
+        # Auto-instrument SQLAlchemy if OTEL is enabled
+        if settings.otel_enabled:
+            from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+            # Instrument the sync engine (async engines wrap a sync engine internally)
+            SQLAlchemyInstrumentor().instrument(
+                engine=_engine.sync_engine,
+                enable_commenter=True,
+            )
     return _engine
 
 

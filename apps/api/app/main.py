@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from contextmine_core import close_engine
+from contextmine_core.telemetry import init_telemetry, shutdown_telemetry
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -36,13 +37,25 @@ STATIC_DIR = Path(os.getenv("STATIC_DIR", "/app/static"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan handler - integrates MCP lifespan."""
+    """Application lifespan handler - integrates MCP and telemetry."""
+    # Initialize telemetry FIRST (before any other setup)
+    telemetry_enabled = init_telemetry(service_suffix="-api")
+
+    if telemetry_enabled:
+        # Auto-instrument FastAPI (must be done before routes are accessed)
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+        HTTPXClientInstrumentor().instrument()
+
     # Run MCP lifespan (initializes StreamableHTTPSessionManager)
     async with mcp_lifespan(app):
         # Startup
         yield
     # Shutdown
     await close_engine()
+    await shutdown_telemetry()
 
 
 def create_app() -> FastAPI:

@@ -8,6 +8,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from contextmine_core.telemetry import init_telemetry
 from prefect import serve
 
 from contextmine_worker.flows import sync_due_sources, sync_single_source
@@ -34,6 +35,9 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+    # Initialize telemetry FIRST (before any other setup)
+    init_telemetry(service_suffix="-worker")
 
     # Initialize Prefect infrastructure (concurrency limits, etc.)
     logger.info("Initializing Prefect infrastructure...")

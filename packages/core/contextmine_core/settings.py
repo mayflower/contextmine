@@ -188,6 +188,36 @@ class Settings(BaseSettings):
         description="Continue indexing other projects if one fails",
     )
 
+    # OpenTelemetry Settings (disabled by default - no overhead when disabled)
+    otel_enabled: bool = Field(
+        default=False,
+        description="Enable OpenTelemetry instrumentation (traces, metrics, logs)",
+    )
+    otel_service_name: str = Field(
+        default="contextmine",
+        description="Service name for OTEL (will be suffixed with -api, -worker)",
+    )
+    otel_exporter_otlp_endpoint: str = Field(
+        default="http://localhost:4317",
+        description="OTLP exporter endpoint (gRPC). E.g., http://tempo:4317",
+    )
+    otel_exporter_otlp_protocol: str = Field(
+        default="grpc",
+        description="OTLP protocol: 'grpc' or 'http/protobuf'",
+    )
+    otel_traces_sampler: str = Field(
+        default="parentbased_traceidratio",
+        description="Trace sampler: always_on, always_off, traceidratio, parentbased_traceidratio",
+    )
+    otel_traces_sampler_arg: float = Field(
+        default=1.0,
+        description="Sampler argument (e.g., 0.1 for 10% sampling)",
+    )
+    otel_log_level: str = Field(
+        default="INFO",
+        description="Minimum log level to export via OTEL: DEBUG, INFO, WARNING, ERROR",
+    )
+
 
 # Singleton instance
 _settings: Settings | None = None

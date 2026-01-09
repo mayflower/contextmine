@@ -89,6 +89,23 @@ services:
       prefect-server:
         condition: service_healthy
 
+  # Optional: OpenTelemetry Collector for local development
+  # Start with: docker compose --profile otel up
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    profiles: ["otel"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "55679:55679" # zpages (debugging)
+    volumes:
+      - ./scripts/docker/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
   worker_data:

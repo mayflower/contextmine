@@ -47,3 +47,16 @@ data:
   SCIP_TIMEOUT_PHP: {{ .Values.config.scip.timeoutPhp | quote }}
   SCIP_NODE_MEMORY_MB: {{ .Values.config.scip.nodeMemoryMb | quote }}
   SCIP_BEST_EFFORT: {{ .Values.config.scip.bestEffort | quote }}
+
+  # OpenTelemetry settings
+  {{- if .Values.monitoring.otel.enabled }}
+  OTEL_ENABLED: "true"
+  OTEL_SERVICE_NAME: {{ .Values.monitoring.otel.serviceName | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.monitoring.otel.exporterEndpoint | quote }}
+  OTEL_EXPORTER_OTLP_PROTOCOL: {{ .Values.monitoring.otel.exporterProtocol | quote }}
+  OTEL_TRACES_SAMPLER: {{ .Values.monitoring.otel.tracesSampler | quote }}
+  OTEL_TRACES_SAMPLER_ARG: {{ .Values.monitoring.otel.tracesSamplerArg | quote }}
+  OTEL_LOG_LEVEL: {{ .Values.monitoring.otel.logLevel | quote }}
+  {{- else }}
+  OTEL_ENABLED: "false"
+  {{- end }}

@@ -165,16 +165,48 @@ class LangChainProvider(LLMProvider):
         temperature: float = 0.0,
     ) -> str:
         """Generate text response with retry logic."""
-        lc_messages = self._build_messages(system, messages)
+        from opentelemetry import trace
+        from opentelemetry.trace import Status, StatusCode
 
-        # Configure model with parameters
-        configured_model = self._model.bind(
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        tracer = trace.get_tracer(__name__)
 
-        response = await configured_model.ainvoke(lc_messages)
-        return str(response.content)
+        # Determine provider from model name
+        provider = "anthropic" if "claude" in self._model_name.lower() else "openai"
+
+        with tracer.start_as_current_span(
+            "llm.generate_text",
+            attributes={
+                "gen_ai.system": provider,
+                "gen_ai.request.model": self._model_name,
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.max_tokens": max_tokens,
+                "gen_ai.request.temperature": temperature,
+            },
+        ) as span:
+            try:
+                lc_messages = self._build_messages(system, messages)
+
+                # Configure model with parameters
+                configured_model = self._model.bind(
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+
+                response = await configured_model.ainvoke(lc_messages)
+
+                # Record usage metrics if available
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    usage = response.usage_metadata
+                    if hasattr(usage, "input_tokens"):
+                        span.set_attribute("gen_ai.usage.input_tokens", usage.input_tokens)
+                    if hasattr(usage, "output_tokens"):
+                        span.set_attribute("gen_ai.usage.output_tokens", usage.output_tokens)
+
+                return str(response.content)
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
 
     @retry(
         retry=retry_if_exception_type((ConnectionError, TimeoutError, ValidationError, ValueError)),
