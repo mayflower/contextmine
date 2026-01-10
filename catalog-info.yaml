@@ -8,6 +8,13 @@ metadata:
     github.com/project-slug: mayflower/contextmine
     backstage.io/techdocs-ref: dir:.
     backstage.io/source-location: url:https://github.com/mayflower/contextmine
+    backstage.io/kubernetes-id: contextmine
+    backstage.io/kubernetes-namespace: contextmine
+    argocd/app-name: contextmine
+    prometheus.io/alert: "true"
+    prometheus.io/rule: contextmine
+    grafana/dashboard-selector: contextmine
+    grafana/alert-label-selector: app=contextmine
   tags:
     - python
     - fastapi
