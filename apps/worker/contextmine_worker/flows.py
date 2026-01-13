@@ -47,6 +47,7 @@ from contextmine_worker.github_sync import (
     read_file_content,
 )
 from contextmine_worker.symbol_indexing import maintain_symbols_for_document
+from contextmine_worker.telemetry import traced_flow, traced_task
 from contextmine_worker.web_sync import (
     DEFAULT_DELAY_MS,
     DEFAULT_MAX_PAGES,
@@ -393,6 +394,7 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
     return await embed_chunks_for_document(document_id, embedding_model)
 
 
+@traced_task()
 @task(
     retries=DEFAULT_RETRIES,
     retry_delay_seconds=1,
@@ -947,6 +949,7 @@ async def get_deploy_key_for_source(source_id: str) -> str | None:
         return decrypt_token(encrypted_key)
 
 
+@traced_task()
 @task(
     retries=GITHUB_API_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=2),
@@ -1293,6 +1296,7 @@ async def sync_github_source(
     return stats
 
 
+@traced_task()
 @task(
     retries=DEFAULT_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=3),
@@ -1540,6 +1544,7 @@ async def sync_web_source(
     return stats
 
 
+@traced_task()
 @task(
     retries=DEFAULT_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=2),
@@ -1621,6 +1626,7 @@ async def sync_source(source: Source) -> SyncRun | None:
         return result.scalar_one()
 
 
+@traced_flow()
 @flow(name="sync_due_sources")
 async def sync_due_sources() -> dict:
     """Flow to sync all sources that are due.
@@ -1662,6 +1668,7 @@ async def sync_due_sources() -> dict:
     return {"synced": len(results), "skipped": skipped, "sources": results}
 
 
+@traced_flow()
 @flow(name="sync_single_source")
 async def sync_single_source(source_id: str, source_url: str | None = None) -> dict:
     """Flow to sync a single source by ID.
