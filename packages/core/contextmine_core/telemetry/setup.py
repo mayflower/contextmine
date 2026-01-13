@@ -53,13 +53,10 @@ def init_telemetry(
 
     # Import OTEL SDK components (only when enabled)
     from opentelemetry import metrics, trace
-    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
     from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
         OTLPMetricExporter,
     )
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
@@ -108,15 +105,9 @@ def init_telemetry(
     metrics.set_meter_provider(meter_provider)
     _meter = metrics.get_meter(__name__)
 
-    # Setup Logs with trace correlation
-    log_exporter = OTLPLogExporter(endpoint=settings.otel_exporter_otlp_endpoint)
-    logger_provider = LoggerProvider(resource=resource)
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-
-    # Add OTEL logging handler to root logger for trace-correlated logs
-    log_level = getattr(logging, settings.otel_log_level.upper(), logging.INFO)
-    handler = LoggingHandler(level=log_level, logger_provider=logger_provider)
-    logging.getLogger().addHandler(handler)
+    # Note: Log export is disabled because Tempo only supports traces.
+    # Logs are collected by Promtail and sent to Loki instead.
+    # To enable OTEL logs, configure a separate logs endpoint (e.g., Alloy/Loki OTLP).
 
     _initialized = True
     logger.info(
