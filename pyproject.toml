@@ -14,6 +14,7 @@ dev = [
     "ruff>=0.8.0",
     "ty>=0.0.1a1",
     "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
     "anyio[trio]>=4.0.0",
     "pytest-anyio>=0.0.0",
     "httpx>=0.28.0",
@@ -59,7 +60,7 @@ unresolved-import = "ignore"
 unsupported-operator = "ignore"
 
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/core/tests"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "node_modules"]

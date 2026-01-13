@@ -5,22 +5,64 @@ on:
     branches:
       - main
 
-
 jobs:
   build:
     name: Build and analyze
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: contextmine
+          POSTGRES_PASSWORD: contextmine
+          POSTGRES_DB: contextmine
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      # Python setup and coverage
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Run migrations
+        working-directory: packages/core
+        env:
+          DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine
+        run: uv run alembic upgrade head
+
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine
+          DEBUG: "true"
+        run: |
+          uv run pytest --cov=apps --cov=packages --cov-report=xml:coverage.xml --cov-report=term -v || true
+        continue-on-error: true
+
+      # SonarQube scan
       - uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      # If you wish to fail your job when the Quality Gate is red, uncomment the
-      # following lines. This would typically be used to fail a deployment.
+
+      # Uncomment to fail on Quality Gate red
       # - uses: SonarSource/sonarqube-quality-gate-action@v1
       #   timeout-minutes: 5
       #   env:
