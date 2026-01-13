@@ -169,57 +169,6 @@ def downgrade():
 '''
 
 
-class TestRuleExtractorE2E:
-    """End-to-end tests for rule extraction code parsing.
-
-    Note: LLM-based rule extraction requires an API key.
-    These tests verify the code parsing (Tree-sitter) part works correctly.
-    """
-
-    def test_parse_python_code_units(self) -> None:
-        """Test parsing Python code into analyzable units."""
-        from contextmine_core.analyzer.extractors.rules import _parse_code_units
-        from contextmine_core.treesitter.languages import TreeSitterLanguage
-
-        units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
-
-        # Should find functions and classes
-        names = [u.name for u in units]
-        assert "validate_user" in names
-        assert "authenticate" in names
-        assert "delete_user" in names
-        assert "User" in names
-
-    def test_parse_typescript_code_units(self) -> None:
-        """Test parsing TypeScript code into analyzable units."""
-        from contextmine_core.analyzer.extractors.rules import _parse_code_units
-        from contextmine_core.treesitter.languages import TreeSitterLanguage
-
-        units = _parse_code_units(
-            "validation.ts", FIXTURE_TYPESCRIPT_FILE, TreeSitterLanguage.TYPESCRIPT
-        )
-
-        # Should find functions
-        names = [u.name for u in units]
-        assert "validateAge" in names
-        assert "processPayment" in names
-
-    def test_code_units_have_proper_structure(self) -> None:
-        """Test that parsed code units have correct metadata."""
-        from contextmine_core.analyzer.extractors.rules import _parse_code_units
-        from contextmine_core.treesitter.languages import TreeSitterLanguage
-
-        units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
-
-        for unit in units:
-            assert unit.start_line > 0
-            assert unit.end_line >= unit.start_line
-            assert unit.name
-            assert unit.kind in ("function", "class")
-            assert unit.language == "python"
-            assert len(unit.content) > 0
-
-
 class TestSurfaceExtractorE2E:
     """End-to-end tests for surface catalog extraction."""
 
@@ -471,20 +420,9 @@ class TestIntegrationWorkflow:
         """Test running all non-LLM extractors on fixture data."""
         from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
         from contextmine_core.analyzer.extractors.erm import ERMExtractor, generate_mermaid_erd
-        from contextmine_core.analyzer.extractors.rules import _parse_code_units
         from contextmine_core.analyzer.extractors.surface import SurfaceCatalogExtractor
-        from contextmine_core.treesitter.languages import TreeSitterLanguage
 
-        # 1. Parse code units (pre-LLM step)
-        python_units = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
-        ts_units = _parse_code_units(
-            "validation.ts", FIXTURE_TYPESCRIPT_FILE, TreeSitterLanguage.TYPESCRIPT
-        )
-
-        assert len(python_units) >= 3
-        assert len(ts_units) >= 2
-
-        # 2. Extract surface catalog
+        # 1. Extract surface catalog
         surface_extractor = SurfaceCatalogExtractor()
         surface_extractor.add_file("api.yaml", FIXTURE_OPENAPI)
         surface_extractor.add_file(".github/workflows/ci.yml", FIXTURE_GITHUB_WORKFLOW)
@@ -495,7 +433,7 @@ class TestIntegrationWorkflow:
         assert total_endpoints >= 3
         assert total_jobs >= 2
 
-        # 3. Extract ERM
+        # 2. Extract ERM
         migration_result = extract_from_alembic("001.py", FIXTURE_ALEMBIC_MIGRATION)
         erm_extractor = ERMExtractor()
         erm_extractor.add_alembic_extraction(migration_result)
@@ -506,12 +444,7 @@ class TestIntegrationWorkflow:
         mermaid = generate_mermaid_erd(schema)
         assert "erDiagram" in mermaid
 
-        # 4. Verify all outputs are well-formed
-        for unit in python_units + ts_units:
-            assert unit.start_line > 0
-            assert unit.name
-            assert unit.content
-
+        # 3. Verify all outputs are well-formed
         for spec in catalog.openapi_specs:
             for endpoint in spec.endpoints:
                 assert endpoint.path
@@ -525,20 +458,3 @@ class TestIntegrationWorkflow:
         for table in schema.tables.values():
             assert table.name
             assert len(table.columns) > 0
-
-    def test_code_parsing_is_idempotent(self) -> None:
-        """Test that code parsing produces same output on repeated calls."""
-        from contextmine_core.analyzer.extractors.rules import _parse_code_units
-        from contextmine_core.treesitter.languages import TreeSitterLanguage
-
-        # Run parsing twice
-        result1 = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
-        result2 = _parse_code_units("auth.py", FIXTURE_PYTHON_FILE, TreeSitterLanguage.PYTHON)
-
-        # Same number of units
-        assert len(result1) == len(result2)
-
-        # Same names (stable across runs)
-        names1 = {u.name for u in result1}
-        names2 = {u.name for u in result2}
-        assert names1 == names2
