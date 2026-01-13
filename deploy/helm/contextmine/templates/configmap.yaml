@@ -60,3 +60,8 @@ data:
   {{- else }}
   OTEL_ENABLED: "false"
   {{- end }}
+
+  # Grafana Faro (frontend observability) settings
+  {{- if .Values.monitoring.faro.enabled }}
+  FARO_COLLECTOR_URL: {{ .Values.monitoring.faro.collectorUrl | quote }}
+  {{- end }}

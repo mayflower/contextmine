@@ -239,6 +239,12 @@ monitoring:
     tracesSamplerArg: "1.0"
     # -- Minimum log level to export: DEBUG, INFO, WARNING, ERROR
     logLevel: "INFO"
+  # -- Grafana Faro configuration (frontend observability)
+  faro:
+    # -- Enable Faro frontend instrumentation
+    enabled: false
+    # -- Faro collector URL (e.g., https://faro.example.com/collect)
+    collectorUrl: ""
 
 # -- Secrets (set these in your values override or use external secrets)
 secrets:
