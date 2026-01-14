@@ -6,7 +6,7 @@ metadata:
   description: Self-hosted documentation and code indexing with MCP integration
   annotations:
     github.com/project-slug: mayflower/contextmine
-    backstage.io/techdocs-ref: dir:.
+    backstage.io/techdocs-ref: url:https://github.com/mayflower/contextmine/tree/main
     backstage.io/source-location: url:https://github.com/mayflower/contextmine
     backstage.io/kubernetes-id: contextmine
     backstage.io/kubernetes-namespace: contextmine
