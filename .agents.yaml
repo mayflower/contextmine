@@ -1,0 +1,18 @@
+version: v2
+agents:
+  documentation:
+    enabled: true
+    triggers:
+      - type: on-pr
+    priority: 5
+    policy:
+      mode: pr
+      auto_merge: false
+    conditions:
+      paths:
+        include:
+          - "docs/**"
+          - "README.md"
+          - "CLAUDE.md"
+    params:
+      format: markdown
