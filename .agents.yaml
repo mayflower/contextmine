@@ -2,84 +2,29 @@ version: v2
 
 agents:
   # ===========================================================================
-  # Tier 0: Read-Only (comment only)
+  # Tier 2: Medium Risk (PR required, no auto-merge)
   # ===========================================================================
 
-  code-reviewer:
+  sonarqube-issue-fixer:
     enabled: true
     triggers:
-      - type: on-pr
-    priority: 1
-    policy:
-      mode: comment_only
-    params:
-      review_types:
-        - security
-        - performance
-        - bugs
-        - python-best-practices
-        - async-patterns
-      max_comments: 15
-      severity_threshold: warning
-      focus_areas:
-        - "apps/api/**"
-        - "packages/core/**"
-
-  security-scanner:
-    enabled: true
-    triggers:
-      - type: on-pr
       - type: nightly
+        cron: "0 3 * * *"  # Daily 3am UTC
     priority: 1
-    policy:
-      mode: comment_only
-    params:
-      scan_types:
-        - secrets
-        - vulnerabilities
-        - sql-injection
-        - dependency-vulnerabilities
-      fail_on_critical: true
-      # Extra important for a code indexing tool
-      check_for:
-        - hardcoded_credentials
-        - api_keys
-        - database_urls
-
-  # ===========================================================================
-  # Tier 1: Low Risk (can direct commit or PR, no auto-merge)
-  # ===========================================================================
-
-  linter-fixer:
-    enabled: true
-    triggers:
-      - type: on-pr
-    priority: 2
     policy:
       mode: pr
       auto_merge: false
-    conditions:
-      paths:
-        include:
-          - "**/*.py"
-          - "**/*.ts"
-          - "**/*.tsx"
-          - "**/*.js"
-        exclude:
-          - "*_pb2.py"
-          - "*_pb2.pyi"
-          - "**/proto/**"
     params:
-      tools:
-        python:
-          - ruff
-        typescript:
-          - eslint
-      auto_fix_only: true
-
-  # ===========================================================================
-  # Tier 2: Medium Risk (PR required, no auto-merge)
-  # ===========================================================================
+      sonar_project_key: contextmine
+      fix_types:
+        - bugs
+        - code_smells
+        - vulnerabilities
+      severity_threshold: major  # major, minor, critical, blocker
+      max_issues_per_run: 10
+      exclude_rules:
+        # Add rule IDs to skip if needed
+        # - "python:S1066"
 
   documentation:
     enabled: true
@@ -172,7 +117,3 @@ agents:
       major_updates: false
       security_only: false
       group_updates: true
-      ignore:
-        # Pin specific versions if needed
-        # - package: "some-package"
-        #   versions: ["2.x"]
