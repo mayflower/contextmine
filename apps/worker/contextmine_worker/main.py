@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from contextmine_core.telemetry import init_telemetry
 
-from contextmine_worker.flows import sync_due_sources, sync_single_source
+from contextmine_worker.flows import sync_due_sources
 from contextmine_worker.init_prefect import init_prefect
 
 logger = logging.getLogger(__name__)
