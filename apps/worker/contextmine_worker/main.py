@@ -1,34 +1,85 @@
 """Main entry point for the ContextMine worker.
 
-Uses Prefect's native scheduling instead of a custom scheduler loop.
-Deployments are configured with intervals and work pools for scalability.
+Uses a simple asyncio scheduler instead of Prefect's subprocess-based serve().
+This avoids OOM issues from zombie subprocesses that don't terminate properly.
 """
 
 import asyncio
 import logging
+import signal
 from datetime import timedelta
 
 from contextmine_core.telemetry import init_telemetry
-from prefect import serve
 
 from contextmine_worker.flows import sync_due_sources, sync_single_source
 from contextmine_worker.init_prefect import init_prefect
 
 logger = logging.getLogger(__name__)
 
+# Scheduler interval
+SCHEDULER_INTERVAL = timedelta(minutes=1)
+
+
+async def scheduler_loop() -> None:
+    """Run the scheduler loop that checks for due sources.
+
+    This replaces Prefect's subprocess-based serve() to avoid OOM issues
+    from zombie processes that don't terminate due to OTEL/asyncio cleanup issues.
+
+    Flows are executed directly in the main process.
+    """
+    logger.info("Starting scheduler loop (interval: %s)", SCHEDULER_INTERVAL)
+
+    while True:
+        try:
+            logger.info("Checking for due sources...")
+            # Call the flow function directly (bypasses subprocess isolation)
+            # This runs the flow in the current process
+            result = await sync_due_sources.fn()
+            logger.info("Scheduler run complete: %s", result)
+        except Exception as e:
+            logger.exception("Scheduler error: %s", e)
+
+        # Wait for next interval
+        await asyncio.sleep(SCHEDULER_INTERVAL.total_seconds())
+
+
+async def run_worker() -> None:
+    """Run the worker with graceful shutdown support."""
+    # Create the scheduler task
+    scheduler_task = asyncio.create_task(scheduler_loop())
+
+    # Set up signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def signal_handler() -> None:
+        logger.info("Received shutdown signal, stopping...")
+        stop_event.set()
+        scheduler_task.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, signal_handler)
+
+    try:
+        # Wait for either the scheduler to complete (shouldn't happen)
+        # or the stop event to be set
+        await asyncio.gather(scheduler_task, stop_event.wait(), return_exceptions=True)
+    except asyncio.CancelledError:
+        logger.info("Worker cancelled")
+    finally:
+        logger.info("Worker shutdown complete")
+
 
 def main() -> None:
-    """Start the worker with Prefect-native scheduling.
+    """Start the worker with a simple scheduler.
 
-    Deployments:
-    - sync-due-sources: Runs every minute to check for due sources
-    - sync-single-source: On-demand, triggered by API or scheduler
+    This worker:
+    - Runs sync_due_sources every minute to check for due sources
+    - Executes flows directly in the main process (no subprocess isolation)
+    - Properly handles shutdown signals
 
-    Concurrency limits (initialized at startup):
-    - github-api: 5 concurrent GitHub API calls
-    - embedding-api: 10 concurrent embedding API calls
-    - web-crawl: 3 concurrent web crawlers
-    - db-heavy: 20 concurrent heavy DB operations
+    Note: sync_single_source is still available via Prefect API for on-demand syncs.
     """
     # Configure logging
     logging.basicConfig(
@@ -43,29 +94,9 @@ def main() -> None:
     logger.info("Initializing Prefect infrastructure...")
     asyncio.run(init_prefect())
 
-    # Main scheduler deployment - checks for due sources every minute
-    # This replaces the custom check_and_trigger_due_sources() loop
-    due_sources_deployment = sync_due_sources.to_deployment(
-        name="sync-due-sources-deployment",
-        interval=timedelta(minutes=1),
-        description="Checks for sources due for syncing and triggers individual syncs",
-        tags=["scheduler"],
-    )
-
-    # Single source sync deployment - triggered on-demand by scheduler or API
-    single_source_deployment = sync_single_source.to_deployment(
-        name="sync-single-source-deployment",
-        description="Syncs a single source (GitHub or web)",
-        tags=["sync"],
-    )
-
-    # Serve deployments (this blocks)
-    # Prefect handles scheduling, retries, and concurrency automatically
-    logger.info("Starting Prefect worker with deployments...")
-    serve(
-        due_sources_deployment,  # type: ignore[arg-type]
-        single_source_deployment,  # type: ignore[arg-type]
-    )
+    # Run the scheduler
+    logger.info("Starting ContextMine worker...")
+    asyncio.run(run_worker())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ metadata:
     {{- include "contextmine.worker.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.worker.replicaCount }}
+  # Use Recreate strategy to avoid Multi-Attach errors with RWO PVC
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "contextmine.worker.selectorLabels" . | nindent 6 }}
@@ -45,6 +48,12 @@ spec:
                 name: {{ include "contextmine.fullname" . }}-config
             - secretRef:
                 name: {{ include "contextmine.secretName" . }}
+          env:
+            # Disable OTEL in worker to prevent subprocess cleanup issues
+            - name: OTEL_ENABLED
+              value: "false"
+            - name: OTEL_SDK_DISABLED
+              value: "true"
           volumeMounts:
             {{- if .Values.worker.persistence.enabled }}
             - name: data

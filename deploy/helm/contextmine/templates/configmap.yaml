@@ -17,6 +17,8 @@ data:
 
   # Prefect settings (for worker)
   PREFECT_API_URL: {{ include "contextmine.prefectApiUrl" . | quote }}
+  # Disable subprocess isolation to prevent zombie processes from OTEL threads
+  PREFECT_RUNNER_PROCESS_ISOLATION: "0"
 
   # Default LLM settings
   {{- if .Values.config.llm.defaultEmbeddingModel }}

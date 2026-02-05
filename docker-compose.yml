@@ -72,6 +72,8 @@ services:
       # Override for Docker network
       DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
       PREFECT_API_URL: http://prefect-server:4200/api
+      # Disable subprocess isolation to prevent zombie processes from OTEL threads
+      PREFECT_RUNNER_PROCESS_ISOLATION: "0"
     volumes:
       # Mount source for development hot reload
       - ./packages:/app/packages:ro
