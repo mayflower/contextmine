@@ -15,6 +15,10 @@ metadata:
     prometheus.io/rule: contextmine
     grafana/dashboard-selector: contextmine
     grafana/alert-label-selector: app=contextmine
+    # Agent Fleet configuration
+    agent-fleet.io/enabled: "true"
+    agent-fleet.io/agents: "changelog-generator"
+    agent-fleet.io/schedule: "manual"
   tags:
     - python
     - fastapi
