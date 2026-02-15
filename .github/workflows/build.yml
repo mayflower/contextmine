@@ -13,9 +13,6 @@ jobs:
     services:
       postgres:
         image: ghcr.io/mayflower/pg4ai:latest
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: contextmine
           POSTGRES_PASSWORD: contextmine
