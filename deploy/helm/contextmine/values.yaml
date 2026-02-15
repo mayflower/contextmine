@@ -13,8 +13,8 @@ postgresql:
   # -- Enable built-in PostgreSQL (set to false for external DB)
   enabled: true
   image:
-    repository: pgvector/pgvector
-    tag: pg16
+    repository: ghcr.io/mayflower/pg4ai
+    tag: latest
   # -- External PostgreSQL configuration (used when enabled: false)
   external:
     host: ""

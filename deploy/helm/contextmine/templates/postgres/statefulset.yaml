@@ -93,7 +93,13 @@ data:
     #!/bin/sh
     set -e
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS age;
         CREATE DATABASE {{ .Values.postgresql.auth.prefectDatabase }};
         GRANT ALL PRIVILEGES ON DATABASE {{ .Values.postgresql.auth.prefectDatabase }} TO {{ .Values.postgresql.auth.username }};
+    EOSQL
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "{{ .Values.postgresql.auth.prefectDatabase }}" <<-EOSQL
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS age;
     EOSQL
 {{- end }}

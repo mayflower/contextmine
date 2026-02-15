@@ -17,7 +17,7 @@ ContextMine is a self-hosted documentation and code indexing system that exposes
 ```
 ┌───────────────────────────────┐     ┌─────────────┐
 │     FastAPI + React SPA       │────▶│  PostgreSQL │
-│  /api/* /mcp/* /* (frontend)  │     │  + pgvector │
+│  /api/* /mcp/* /* (frontend)  │     │    pg4ai    │
 └───────────────────────────────┘     └─────────────┘
                │
         ┌──────┴──────┐
@@ -124,7 +124,7 @@ helm install contextmine oci://ghcr.io/mayflower/contextmine -f my-values.yaml
 | Layer | Technology |
 |-------|------------|
 | **Backend** | Python 3.12, FastAPI, SQLAlchemy 2.x async, Alembic |
-| **Database** | PostgreSQL with pgvector extension |
+| **Database** | pg4ai (PostgreSQL with pgvector + Apache AGE) |
 | **Frontend** | React, Vite, TypeScript |
 | **Orchestration** | Prefect for scheduled sync jobs |
 | **Crawling** | spider-rs (Rust binary for HTML→Markdown) |

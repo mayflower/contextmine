@@ -181,10 +181,11 @@ postgresql:
     prefectDatabase: "prefect"
 ```
 
-**Note**: You must create both the `contextmine` and `prefect` databases manually, and ensure the pgvector extension is installed:
+**Note**: You must create both the `contextmine` and `prefect` databases manually, and ensure required extensions are installed (or use `ghcr.io/mayflower/pg4ai`):
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS age;
 ```
 
 ## Production Deployment

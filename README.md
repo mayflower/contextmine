@@ -191,6 +191,7 @@ Copy `.env.example` to `.env` and configure these variables:
 | `GEMINI_API_KEY` | Alternative to OpenAI for embeddings |
 | `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
 | `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
+| `POSTGRES_PLATFORM` | Docker Compose postgres image platform override (default: `linux/amd64`) |
 
 ### Setting Up GitHub OAuth
 
@@ -244,7 +245,7 @@ Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
 ```
 ┌───────────────────────────────┐     ┌─────────────┐
 │     FastAPI + React SPA       │────▶│  PostgreSQL │
-│  /api/* /mcp/* /* (frontend)  │     │  + pgvector │
+│  /api/* /mcp/* /* (frontend)  │     │    pg4ai    │
 └───────────────────────────────┘     └─────────────┘
                │
         ┌──────┴──────┐
@@ -267,13 +268,16 @@ Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
 - Python 3.12+
 - Node.js 20+
 - [uv](https://github.com/astral-sh/uv) for Python dependency management
-- Docker (for PostgreSQL with pgvector)
+- Docker (for pg4ai: PostgreSQL + pgvector + Apache AGE)
 
 ### Local Development Setup
 
 ```bash
 # Start database
 docker compose up -d postgres
+
+# Optional: verify vector + graph capabilities in postgres
+./scripts/docker/smoke-pg4ai.sh
 
 # Install Python dependencies
 uv sync --all-packages

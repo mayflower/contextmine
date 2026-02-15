@@ -7,7 +7,7 @@ This guide covers setting up a development environment and contributing to Conte
 - Python 3.12+
 - Node.js 20+
 - [uv](https://github.com/astral-sh/uv) for Python dependency management
-- Docker (for PostgreSQL with pgvector)
+- Docker (for pg4ai: PostgreSQL + pgvector + Apache AGE)
 
 ## Project Structure
 
@@ -40,6 +40,9 @@ contextmine/
 
 ```bash
 docker compose up -d postgres
+
+# Optional: verify vector + graph capabilities
+./scripts/docker/smoke-pg4ai.sh
 ```
 
 ### 2. Install Python Dependencies
@@ -184,11 +187,11 @@ Uses uv workspaces with a root `pyproject.toml` defining:
 
 ### Database
 
-PostgreSQL with pgvector extension for:
+pg4ai (PostgreSQL with pgvector + Apache AGE) for:
 - Document storage
 - Vector embeddings
 - Full-text search
-- Knowledge graph nodes/edges
+- Twin graph and Cypher queries
 
 ### Async Everywhere
 

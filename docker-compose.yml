@@ -1,8 +1,7 @@
 services:
   postgres:
-    build:
-      context: ./scripts/docker/postgres
-      dockerfile: Dockerfile
+    image: ghcr.io/mayflower/pg4ai:latest
+    platform: ${POSTGRES_PLATFORM:-linux/amd64}
     ports:
       - "5432:5432"
     environment:
@@ -11,6 +10,7 @@ services:
       POSTGRES_DB: contextmine
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/docker/init-db.sql:/docker-entrypoint-initdb.d/10-init-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U contextmine -d contextmine"]
       interval: 5s
