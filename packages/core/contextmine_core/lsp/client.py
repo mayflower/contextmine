@@ -264,7 +264,7 @@ class LspClient:
             result = await self._server.request_document_symbols(resolved_path)
             # Cast result to expected type - LSP returns various symbol types
             if result:
-                return list(result)  # type: ignore[return-value]
+                return list(result)
             return []
         except Exception as e:
             logger.error("LSP document symbols request failed: %s", e)

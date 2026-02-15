@@ -908,7 +908,7 @@ async def graph_rag_query(
     # Filter valid partial answers
     valid_partials: list[str] = []
     for i, answer in enumerate(partial_answers):
-        if isinstance(answer, Exception):
+        if isinstance(answer, BaseException):
             logger.warning("Map failed for community %s: %s", context.communities[i].title, answer)
             continue
         if answer and answer.strip() and answer.strip().upper() != "NOT_RELEVANT":
