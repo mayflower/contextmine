@@ -2976,6 +2976,32 @@ tr.state-running {
   background: #fff;
 }
 
+.cockpit-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.cockpit-tabs button {
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  color: #344054;
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.cockpit-tabs button.active {
+  background: #155eef;
+  border-color: #155eef;
+  color: #fff;
+}
+
+.cockpit-error {
+  color: #b42318;
+  font-size: 0.9rem;
+}
+
 .cockpit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
@@ -2992,17 +3018,44 @@ tr.state-running {
   gap: 0.6rem;
 }
 
-.cockpit-panel textarea {
-  width: 100%;
+.cockpit-meta {
+  color: #475467;
+  font-size: 0.85rem;
+}
+
+.cockpit-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.8rem;
+}
+
+.cockpit-summary-grid > div {
   border: 1px solid #d0d5dd;
   border-radius: 8px;
-  padding: 0.5rem 0.6rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78rem;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.cockpit-summary-grid strong {
+  font-size: 1.1rem;
+  color: #111827;
+}
+
+.cockpit-summary-grid span {
+  font-size: 0.8rem;
+  color: #667085;
 }
 
 .cockpit-panel button {
   width: fit-content;
+  background: #155eef;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
 }
 
 .cockpit-panel pre {
@@ -3013,4 +3066,54 @@ tr.state-running {
   font-size: 0.72rem;
   max-height: 220px;
   overflow: auto;
+}
+
+.cockpit-table-wrap {
+  overflow: auto;
+}
+
+.cockpit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.cockpit-table th,
+.cockpit-table td {
+  border-bottom: 1px solid #eaecf0;
+  text-align: left;
+  padding: 0.4rem 0.35rem;
+}
+
+.cockpit-table th {
+  background: #f9fafb;
+  color: #344054;
+}
+
+.cockpit-mermaid-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 0.8rem;
+}
+
+.cockpit-mermaid-compare article {
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: #fff;
+}
+
+.cockpit-export-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.cockpit-export-controls select {
+  min-width: 220px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
 }
