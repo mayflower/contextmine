@@ -25,6 +25,9 @@ spec:
             - name: postgres
               containerPort: 5432
               protocol: TCP
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           envFrom:
             - secretRef:
                 name: {{ include "contextmine.fullname" . }}-postgres-secrets
