@@ -748,6 +748,74 @@ async def build_knowledge_graph(
     return stats
 
 
+@traced_task()
+@task(
+    retries=DEFAULT_RETRIES,
+    retry_delay_seconds=1,
+    tags=[TAG_DB_HEAVY],
+)
+async def build_twin_graph(
+    source_id: str,
+    collection_id: str,
+    snapshot_dicts: list[dict] | None = None,
+    changed_doc_ids: list[str] | None = None,
+) -> dict:
+    """Build digital twin graph from semantic snapshots (SCIP/LSIF) and existing KG."""
+    del source_id, changed_doc_ids
+    import uuid as uuid_module
+
+    from contextmine_core.graph.age import sync_scenario_to_age
+    from contextmine_core.semantic_snapshot.models import Snapshot
+    from contextmine_core.twin import (
+        get_or_create_as_is_scenario,
+        ingest_snapshot_into_as_is,
+        refresh_metric_snapshots,
+        seed_scenario_from_knowledge_graph,
+    )
+    from contextmine_core.validation import refresh_validation_snapshots
+
+    collection_uuid = uuid_module.UUID(collection_id)
+    stats: dict[str, int | str] = {
+        "twin_nodes_upserted": 0,
+        "twin_edges_upserted": 0,
+        "twin_metrics_snapshots": 0,
+        "twin_validation_snapshots": 0,
+    }
+
+    async with get_session() as session:
+        as_is = await get_or_create_as_is_scenario(session, collection_uuid, user_id=None)
+        stats["twin_asis_scenario_id"] = str(as_is.id)
+
+        if snapshot_dicts:
+            for snapshot_dict in snapshot_dicts:
+                snapshot = Snapshot.from_dict(snapshot_dict)
+                _, ingest_stats = await ingest_snapshot_into_as_is(
+                    session, collection_uuid, snapshot, user_id=None
+                )
+                stats["twin_nodes_upserted"] += int(ingest_stats.get("nodes_upserted", 0))
+                stats["twin_edges_upserted"] += int(ingest_stats.get("edges_upserted", 0))
+        else:
+            nodes, edges = await seed_scenario_from_knowledge_graph(
+                session,
+                as_is.id,
+                collection_uuid,
+                clear_existing=False,
+            )
+            stats["twin_nodes_upserted"] += int(nodes)
+            stats["twin_edges_upserted"] += int(edges)
+
+        stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
+        stats["twin_validation_snapshots"] = await refresh_validation_snapshots(
+            session, collection_uuid
+        )
+
+        # Keep AGE in sync as a mandatory M1 requirement.
+        await sync_scenario_to_age(session, as_is.id)
+        await session.commit()
+
+    return stats
+
+
 def _build_scip_index_config():
     """Build IndexConfig from settings.
 
@@ -1013,6 +1081,7 @@ async def sync_github_source(
         "scip_symbols": 0,
         "scip_relations": 0,
     }
+    snapshot_dicts: list[dict] = []
     await update_progress_artifact(
         progress_id, progress=10, description="Running SCIP polyglot indexing..."
     )  # type: ignore[misc]
@@ -1039,6 +1108,7 @@ async def sync_github_source(
                     if scip_path:
                         snapshot_dict = await task_parse_scip_snapshot(scip_path)
                         if snapshot_dict:
+                            snapshot_dicts.append(snapshot_dict)
                             scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
                             scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
 
@@ -1235,13 +1305,17 @@ async def sync_github_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
-    # Build Knowledge Graph from indexed documents
-    # Pass changed doc IDs for incremental business rule extraction
+    # Build digital twin from indexed documents and semantic snapshots
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=96, description="Building knowledge graph..."
+        progress_id, progress=96, description="Building digital twin..."
     )
     changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
-    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str, changed_doc_ids)
+    twin_stats = await build_twin_graph(
+        str(source.id),
+        collection_id_str,
+        snapshot_dicts=snapshot_dicts,
+        changed_doc_ids=changed_doc_ids,
+    )
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -1274,19 +1348,12 @@ async def sync_github_source(
             "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
             "scip_symbols": scip_stats.get("scip_symbols", 0),
             "scip_relations": scip_stats.get("scip_relations", 0),
-            # Knowledge Graph stats
-            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
-            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
-            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
-            "kg_tables": kg_stats.get("kg_tables", 0),
-            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
-            "kg_jobs": kg_stats.get("kg_jobs", 0),
-            # GraphRAG Leiden community stats
-            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
-            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
-            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
-            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
-            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
+            # Twin stats
+            "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
+            "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),
+            "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
+            "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
+            "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
         }
 
         await session.commit()
@@ -1492,13 +1559,17 @@ async def sync_web_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
-    # Build Knowledge Graph from indexed documents
-    # Pass changed doc IDs for incremental business rule extraction
+    # Build Twin graph from indexed documents
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=96, description="Building knowledge graph..."
+        progress_id, progress=96, description="Building digital twin..."
     )
     changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
-    kg_stats = await build_knowledge_graph(str(source.id), collection_id_str, changed_doc_ids)
+    twin_stats = await build_twin_graph(
+        str(source.id),
+        collection_id_str,
+        snapshot_dicts=[],
+        changed_doc_ids=changed_doc_ids,
+    )
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -1522,19 +1593,12 @@ async def sync_web_source(
             "embedding_tokens_used": total_tokens_used,
             "symbols_created": total_symbols_created,
             "symbols_deleted": total_symbols_deleted,
-            # Knowledge Graph stats
-            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
-            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
-            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
-            "kg_tables": kg_stats.get("kg_tables", 0),
-            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
-            "kg_jobs": kg_stats.get("kg_jobs", 0),
-            # GraphRAG Leiden community stats
-            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
-            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
-            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
-            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
-            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
+            # Twin stats
+            "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
+            "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),
+            "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
+            "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
+            "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
         }
 
         await session.commit()

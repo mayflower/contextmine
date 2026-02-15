@@ -2954,3 +2954,63 @@ tr.state-running {
     margin-left: auto;
   }
 }
+
+/* Cockpit */
+.cockpit-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.cockpit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.cockpit-toolbar select {
+  min-width: 220px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+}
+
+.cockpit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1rem;
+}
+
+.cockpit-panel {
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  padding: 0.85rem;
+  background: #fcfcfd;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.cockpit-panel textarea {
+  width: 100%;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+}
+
+.cockpit-panel button {
+  width: fit-content;
+}
+
+.cockpit-panel pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 0.6rem;
+  font-size: 0.72rem;
+  max-height: 220px;
+  overflow: auto;
+}

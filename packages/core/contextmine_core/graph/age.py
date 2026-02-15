@@ -1,0 +1,112 @@
+"""Apache AGE adapter for twin scenario graph queries."""
+
+from __future__ import annotations
+
+import re
+from uuid import UUID
+
+from contextmine_core.models import TwinEdge, TwinNode
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+_MUTATING_PATTERNS = re.compile(
+    r"\b(create|merge|set|delete|remove|drop|alter|grant|revoke|copy|call)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def scenario_graph_name(scenario_id: UUID) -> str:
+    """Deterministic AGE graph name for a scenario."""
+    return f"twin_{str(scenario_id).replace('-', '_')}"
+
+
+def ensure_read_only_cypher(query: str) -> None:
+    """Raise if a Cypher query appears mutating."""
+    if _MUTATING_PATTERNS.search(query):
+        raise ValueError("Only read-only Cypher queries are allowed")
+
+
+async def ensure_age_ready(session: AsyncSession) -> None:
+    """Load AGE and set search path for cypher() calls."""
+    await session.execute(text("CREATE EXTENSION IF NOT EXISTS age"))
+    await session.execute(text("LOAD 'age'"))
+    await session.execute(text('SET search_path = ag_catalog, "$user", public'))
+
+
+async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None:
+    """Replace AGE graph contents with the current scenario graph."""
+    await ensure_age_ready(session)
+
+    graph_name = scenario_graph_name(scenario_id)
+    await session.execute(
+        text(
+            """
+            SELECT create_graph(:graph_name)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM ag_catalog.ag_graph WHERE name = :graph_name
+            )
+            """
+        ),
+        {"graph_name": graph_name},
+    )
+
+    await session.execute(
+        text("SELECT * FROM cypher(:graph_name, $$ MATCH (n) DETACH DELETE n $$) AS (v agtype)"),
+        {"graph_name": graph_name},
+    )
+
+    nodes = (
+        (await session.execute(select(TwinNode).where(TwinNode.scenario_id == scenario_id)))
+        .scalars()
+        .all()
+    )
+    for node in nodes:
+        q = (
+            "CREATE (n:Node {"
+            f"id: '{_esc(str(node.id))}', "
+            f"natural_key: '{_esc(node.natural_key)}', "
+            f"kind: '{_esc(node.kind)}', "
+            f"name: '{_esc(node.name)}'"
+            "})"
+        )
+        await session.execute(
+            text("SELECT * FROM cypher(:graph_name, :query) AS (v agtype)"),
+            {"graph_name": graph_name, "query": q},
+        )
+
+    edges = (
+        (await session.execute(select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)))
+        .scalars()
+        .all()
+    )
+    for edge in edges:
+        q = (
+            f"MATCH (s:Node {{id: '{_esc(str(edge.source_node_id))}'}}), "
+            f"(t:Node {{id: '{_esc(str(edge.target_node_id))}'}}) "
+            f"CREATE (s)-[:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
+        )
+        await session.execute(
+            text("SELECT * FROM cypher(:graph_name, :query) AS (v agtype)"),
+            {"graph_name": graph_name, "query": q},
+        )
+
+
+async def run_read_only_cypher(
+    session: AsyncSession,
+    scenario_id: UUID,
+    query: str,
+) -> list[str]:
+    """Execute a read-only cypher query and return agtype rows as text."""
+    ensure_read_only_cypher(query)
+    await ensure_age_ready(session)
+
+    graph_name = scenario_graph_name(scenario_id)
+    result = await session.execute(
+        text("SELECT result::text FROM cypher(:graph_name, :query) AS (result agtype)"),
+        {"graph_name": graph_name, "query": query},
+    )
+    return [row[0] for row in result.all()]
+
+
+def _esc(value: str) -> str:
+    return value.replace("'", "''")

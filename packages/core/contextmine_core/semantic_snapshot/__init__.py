@@ -19,6 +19,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from contextmine_core.semantic_snapshot.lsif import (
+    LSIFProvider,
+    build_snapshot_lsif,
+)
 from contextmine_core.semantic_snapshot.models import (
     # Snapshot models
     FileInfo,
@@ -62,32 +66,31 @@ __all__ = [
     "InstallDepsMode",
     # SCIP Provider
     "SCIPProvider",
+    "LSIFProvider",
     # Entry functions
     "build_snapshot",
     "build_snapshot_scip",
+    "build_snapshot_lsif",
     # Indexer functions (lazy import)
     "detect_projects",
     "index_repo",
 ]
 
 
-def build_snapshot(scip_path: Path | str) -> Snapshot:
-    """Build a semantic snapshot from a SCIP index file.
+def build_snapshot(index_path: Path | str) -> Snapshot:
+    """Build a semantic snapshot from SCIP or LSIF index files.
 
-    This is the primary entry point for parsing SCIP indexes.
-    SCIP files are produced by running language-specific indexers
-    via index_repo() or external tools.
-
-    Args:
-        scip_path: Path to the .scip index file
-
-    Returns:
-        Snapshot containing semantic information
-
-    Raises:
-        FileNotFoundError: If SCIP file doesn't exist
+    Supported:
+    - `.scip` protobuf files
+    - LSIF JSON/JSONL (`.lsif`, `.json`, `.jsonl`)
     """
-    return build_snapshot_scip(scip_path)
+    path = Path(index_path)
+    suffix = path.suffix.lower()
+    if suffix == ".scip":
+        return build_snapshot_scip(path)
+    if suffix in {".lsif", ".json", ".jsonl"}:
+        return build_snapshot_lsif(path)
+    raise ValueError(f"Unsupported semantic index format: {path}")
 
 
 def detect_projects(repo_root: Path | str) -> list[ProjectTarget]:

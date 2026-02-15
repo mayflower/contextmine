@@ -29,6 +29,8 @@ from app.routes import (
     runs,
     search,
     sources,
+    twin,
+    validation,
 )
 
 # Static files directory (built frontend)
@@ -94,6 +96,8 @@ def create_app() -> FastAPI:
     app.include_router(search.router, prefix="/api")
     app.include_router(context.router, prefix="/api")
     app.include_router(prefect.router, prefix="/api")
+    app.include_router(twin.router, prefix="/api")
+    app.include_router(validation.router, prefix="/api")
 
     # Mount MCP server at /mcp
     app.mount("/mcp", mcp_app)

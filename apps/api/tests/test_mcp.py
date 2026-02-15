@@ -6,12 +6,15 @@ from app.mcp_server import get_context_markdown_sync, get_tools
 def test_mcp_tools_exist() -> None:
     """Test that all MCP tools are defined."""
     tools = get_tools()
-    assert len(tools) == 3
+    assert len(tools) >= 3
 
     tool_names = {t["name"] for t in tools}
     assert "context.list_collections" in tool_names
     assert "context.list_documents" in tool_names
     assert "context.get_markdown" in tool_names
+    assert "context.get_twin_graph" in tool_names
+    assert "context.query_twin_cypher" in tool_names
+    assert "context.create_architecture_intent" in tool_names
 
     # Find get_markdown tool and verify its schema
     get_markdown = next(t for t in tools if t["name"] == "context.get_markdown")

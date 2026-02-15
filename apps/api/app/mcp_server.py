@@ -1526,6 +1526,281 @@ async def mcp_graph_rag(
         return f"# Error\n\nGraphRAG query failed: {e}"
 
 
+@mcp.tool(name="create_architecture_intent")
+async def mcp_create_architecture_intent(
+    scenario_id: Annotated[str, "Scenario UUID"],
+    action: Annotated[
+        str,
+        "Intent action: EXTRACT_DOMAIN|SPLIT_CONTAINER|MOVE_COMPONENT|DEFINE_INTERFACE|SET_VALIDATOR|APPLY_DATA_BOUNDARY",
+    ],
+    target_type: Annotated[str, "Target type: node|edge|context|service"],
+    target_id: Annotated[str, "Target identifier"],
+    expected_scenario_version: Annotated[int, "Optimistic locking scenario version"],
+    params_json: Annotated[str | None, "Optional JSON object with action params"] = None,
+) -> str:
+    """Create and auto-execute an architecture intent."""
+    try:
+        from contextmine_core.architecture_intents import ArchitectureIntentV1
+        from contextmine_core.models import Collection, TwinScenario
+        from contextmine_core.twin import submit_intent
+
+        user_id = get_current_user_id()
+        if not user_id:
+            return "# Error\n\nAuthentication required."
+
+        scenario_uuid = uuid.UUID(scenario_id)
+        params = json.loads(params_json) if params_json else {}
+
+        async with get_db_session() as db:
+            scenario = (
+                await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
+            ).scalar_one_or_none()
+            if not scenario:
+                return "# Error\n\nScenario not found."
+
+            collection = (
+                await db.execute(select(Collection).where(Collection.id == scenario.collection_id))
+            ).scalar_one_or_none()
+            if not collection or collection.owner_user_id != user_id:
+                return "# Error\n\nOnly the collection owner can execute intents."
+
+            payload = ArchitectureIntentV1(
+                intent_version="1.0",
+                scenario_id=scenario_uuid,
+                action=action,
+                target={"type": target_type, "id": target_id},
+                params=params,
+                expected_scenario_version=expected_scenario_version,
+                requested_by=user_id,
+            )
+
+            intent = await submit_intent(
+                session=db,
+                scenario=scenario,
+                intent=payload,
+                requested_by=user_id,
+                auto_execute=True,
+            )
+            await db.commit()
+
+            return (
+                f"# Intent Created\n\n"
+                f"- ID: `{intent.id}`\n"
+                f"- Status: `{intent.status.value}`\n"
+                f"- Risk: `{intent.risk_level.value}`\n"
+                f"- Requires Approval: `{intent.requires_approval}`\n"
+                f"- Scenario Version: `{scenario.version}`"
+            )
+
+    except Exception as e:
+        return f"# Error\n\nFailed to create intent: {e}"
+
+
+@mcp.tool(name="approve_architecture_intent")
+async def mcp_approve_architecture_intent(
+    scenario_id: Annotated[str, "Scenario UUID"],
+    intent_id: Annotated[str, "Blocked intent UUID to approve and execute"],
+) -> str:
+    """Approve a blocked high-risk intent and execute it."""
+    try:
+        from contextmine_core.models import Collection, TwinScenario
+        from contextmine_core.twin import approve_and_execute_intent
+
+        user_id = get_current_user_id()
+        if not user_id:
+            return "# Error\n\nAuthentication required."
+
+        scenario_uuid = uuid.UUID(scenario_id)
+        intent_uuid = uuid.UUID(intent_id)
+
+        async with get_db_session() as db:
+            scenario = (
+                await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
+            ).scalar_one_or_none()
+            if not scenario:
+                return "# Error\n\nScenario not found."
+
+            collection = (
+                await db.execute(select(Collection).where(Collection.id == scenario.collection_id))
+            ).scalar_one_or_none()
+            if not collection or collection.owner_user_id != user_id:
+                return "# Error\n\nOnly the collection owner can approve intents."
+
+            intent = await approve_and_execute_intent(db, scenario, intent_uuid)
+            await db.commit()
+            return (
+                f"# Intent Approved\n\n"
+                f"- ID: `{intent.id}`\n"
+                f"- Status: `{intent.status.value}`\n"
+                f"- Scenario Version: `{scenario.version}`"
+            )
+    except Exception as e:
+        return f"# Error\n\nFailed to approve intent: {e}"
+
+
+@mcp.tool(name="get_twin_graph")
+async def mcp_get_twin_graph(
+    scenario_id: Annotated[str, "Scenario UUID"],
+    layer: Annotated[
+        str | None,
+        "Optional layer: portfolio_system|domain_container|component_interface|code_controlflow",
+    ] = None,
+    page: Annotated[int, "Page index"] = 0,
+    limit: Annotated[int, "Nodes per page"] = 200,
+    format: Annotated[str, "Output format: markdown or json"] = "markdown",
+) -> str:
+    """Read a paginated twin graph view."""
+    try:
+        from contextmine_core.models import TwinLayer
+        from contextmine_core.twin import get_scenario_graph
+
+        scenario_uuid = uuid.UUID(scenario_id)
+        layer_value = TwinLayer(layer) if layer else None
+
+        async with get_db_session() as db:
+            graph = await get_scenario_graph(db, scenario_uuid, layer_value, page, min(limit, 5000))
+
+        if format.lower() == "json":
+            return json.dumps(graph, indent=2)
+
+        lines = [
+            f"# Twin Graph `{scenario_id}`",
+            "",
+            f"- Nodes: {len(graph['nodes'])}/{graph['total_nodes']}",
+            f"- Edges: {len(graph['edges'])}",
+            "",
+            "## Nodes",
+        ]
+        for node in graph["nodes"][:50]:
+            lines.append(f"- `{node['natural_key']}` ({node['kind']})")
+        if len(graph["nodes"]) > 50:
+            lines.append(f"- ... and {len(graph['nodes']) - 50} more")
+
+        lines.append("")
+        lines.append("## Edges")
+        for edge in graph["edges"][:50]:
+            lines.append(
+                f"- `{edge['source_node_id']}` -[{edge['kind']}]-> `{edge['target_node_id']}`"
+            )
+        if len(graph["edges"]) > 50:
+            lines.append(f"- ... and {len(graph['edges']) - 50} more")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"# Error\n\nFailed to read twin graph: {e}"
+
+
+@mcp.tool(name="query_twin_cypher")
+async def mcp_query_twin_cypher(
+    scenario_id: Annotated[str, "Scenario UUID"],
+    query: Annotated[str, "Read-only Cypher query"],
+) -> str:
+    """Run a read-only Cypher query against Apache AGE twin graph."""
+    try:
+        from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
+
+        scenario_uuid = uuid.UUID(scenario_id)
+        async with get_db_session() as db:
+            await sync_scenario_to_age(db, scenario_uuid)
+            rows = await run_read_only_cypher(db, scenario_uuid, query)
+            return json.dumps({"rows": rows, "count": len(rows)}, indent=2)
+    except Exception as e:
+        return f"# Error\n\nCypher query failed: {e}"
+
+
+@mcp.tool(name="export_twin_view")
+async def mcp_export_twin_view(
+    scenario_id: Annotated[str, "Scenario UUID"],
+    format: Annotated[str, "lpg_jsonl|cc_json|cx2|jgf|mermaid_c4"],
+) -> str:
+    """Generate and persist an export artifact for a scenario."""
+    try:
+        from contextmine_core.exports import (
+            export_codecharta_json,
+            export_cx2,
+            export_jgf,
+            export_lpg_jsonl,
+            export_mermaid_c4,
+        )
+        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
+
+        scenario_uuid = uuid.UUID(scenario_id)
+
+        async with get_db_session() as db:
+            scenario = (
+                await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
+            ).scalar_one_or_none()
+            if not scenario:
+                return "# Error\n\nScenario not found."
+
+            if format == "lpg_jsonl":
+                content = await export_lpg_jsonl(db, scenario.id)
+                kind = KnowledgeArtifactKind.LPG_JSONL
+                name = f"{scenario.name}.lpg.jsonl"
+            elif format == "cc_json":
+                content = await export_codecharta_json(db, scenario.id)
+                kind = KnowledgeArtifactKind.CC_JSON
+                name = f"{scenario.name}.cc.json"
+            elif format == "cx2":
+                content = await export_cx2(db, scenario.id)
+                kind = KnowledgeArtifactKind.CX2
+                name = f"{scenario.name}.cx2.json"
+            elif format == "jgf":
+                content = await export_jgf(db, scenario.id)
+                kind = KnowledgeArtifactKind.JGF
+                name = f"{scenario.name}.jgf.json"
+            elif format == "mermaid_c4":
+                content = await export_mermaid_c4(db, scenario.id)
+                kind = (
+                    KnowledgeArtifactKind.MERMAID_C4_ASIS
+                    if scenario.is_as_is
+                    else KnowledgeArtifactKind.MERMAID_C4_TOBE
+                )
+                name = f"{scenario.name}.mmd"
+            else:
+                return "# Error\n\nUnsupported export format."
+
+            artifact = KnowledgeArtifact(
+                id=uuid.uuid4(),
+                collection_id=scenario.collection_id,
+                kind=kind,
+                name=name,
+                content=content,
+                meta={"scenario_id": str(scenario.id), "format": format},
+            )
+            db.add(artifact)
+            await db.commit()
+
+            return (
+                f"# Export Created\n\n"
+                f"- ID: `{artifact.id}`\n"
+                f"- Name: `{artifact.name}`\n"
+                f"- Kind: `{artifact.kind.value}`"
+            )
+    except Exception as e:
+        return f"# Error\n\nExport failed: {e}"
+
+
+@mcp.tool(name="get_validation_dashboard")
+async def mcp_get_validation_dashboard(
+    collection_id: Annotated[str | None, "Optional collection UUID"] = None,
+) -> str:
+    """Get normalized Tekton/Argo/Temporal status summary."""
+    try:
+        from contextmine_core.validation import (
+            get_latest_validation_status,
+            refresh_validation_snapshots,
+        )
+
+        collection_uuid = uuid.UUID(collection_id) if collection_id else None
+        async with get_db_session() as db:
+            await refresh_validation_snapshots(db, collection_uuid)
+            payload = await get_latest_validation_status(db, collection_uuid)
+            await db.commit()
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch validation dashboard: {e}"
+
+
 # Get the HTTP app from FastMCP with root path (mounted at /mcp in main.py)
 # FastMCP handles OAuth authentication via GitHubProvider
 mcp_app = mcp.http_app(path="/", stateless_http=True)
@@ -1615,6 +1890,79 @@ def get_tools() -> list[dict]:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "context.create_architecture_intent",
+            "description": "Create an architecture intent and auto-execute low-risk actions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "scenario_id": {"type": "string"},
+                    "action": {"type": "string"},
+                    "target_type": {"type": "string"},
+                    "target_id": {"type": "string"},
+                    "expected_scenario_version": {"type": "integer"},
+                    "params_json": {"type": "string"},
+                },
+                "required": [
+                    "scenario_id",
+                    "action",
+                    "target_type",
+                    "target_id",
+                    "expected_scenario_version",
+                ],
+            },
+        },
+        {
+            "name": "context.approve_architecture_intent",
+            "description": "Approve and execute a blocked architecture intent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"scenario_id": {"type": "string"}, "intent_id": {"type": "string"}},
+                "required": ["scenario_id", "intent_id"],
+            },
+        },
+        {
+            "name": "context.get_twin_graph",
+            "description": "Read a paginated twin graph view with optional layer filter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "scenario_id": {"type": "string"},
+                    "layer": {"type": "string"},
+                    "page": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "format": {"type": "string"},
+                },
+                "required": ["scenario_id"],
+            },
+        },
+        {
+            "name": "context.query_twin_cypher",
+            "description": "Run read-only Cypher query against Apache AGE twin graph.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"scenario_id": {"type": "string"}, "query": {"type": "string"}},
+                "required": ["scenario_id", "query"],
+            },
+        },
+        {
+            "name": "context.export_twin_view",
+            "description": "Generate and persist lpg_jsonl, cc_json, cx2, jgf, or mermaid_c4 exports.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"scenario_id": {"type": "string"}, "format": {"type": "string"}},
+                "required": ["scenario_id", "format"],
+            },
+        },
+        {
+            "name": "context.get_validation_dashboard",
+            "description": "Fetch normalized Tekton/Argo/Temporal metrics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"collection_id": {"type": "string"}},
+                "required": [],
             },
         },
     ]

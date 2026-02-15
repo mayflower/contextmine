@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import CockpitPage from './CockpitPage'
 
 interface HealthStatus {
   status: string
@@ -84,7 +85,7 @@ interface SyncRun {
   error: string | null
 }
 
-type Page = 'dashboard' | 'collections' | 'runs'
+type Page = 'dashboard' | 'collections' | 'runs' | 'cockpit'
 
 const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
 
@@ -916,7 +917,7 @@ function App() {
 
   // Load collections for dashboard (needed for query form)
   useEffect(() => {
-    if (currentPage === 'dashboard' && user) {
+    if ((currentPage === 'dashboard' || currentPage === 'cockpit') && user) {
       fetchCollections()
     }
   }, [currentPage, user])
@@ -1203,6 +1204,7 @@ function App() {
           <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }}>Dashboard</li>
           <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => { setCurrentPage('collections'); setMobileMenuOpen(false); }}>Collections</li>
           <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => { setCurrentPage('runs'); setMobileMenuOpen(false); }}>Runs</li>
+          <li className={currentPage === 'cockpit' ? 'active' : ''} onClick={() => { setCurrentPage('cockpit'); setMobileMenuOpen(false); }}>Cockpit</li>
         </ul>
       </nav>
 
@@ -2155,6 +2157,10 @@ function App() {
               </section>
             )}
           </>
+        )}
+
+        {currentPage === 'cockpit' && (
+          <CockpitPage collections={collections.map((c) => ({ id: c.id, name: c.name }))} />
         )}
       </main>
 

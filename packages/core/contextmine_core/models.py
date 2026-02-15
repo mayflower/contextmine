@@ -143,6 +143,12 @@ class KnowledgeArtifactKind(enum.Enum):
     MERMAID_ERD = "mermaid_erd"
     RULE_CATALOG = "rule_catalog"
     SURFACE_CATALOG = "surface_catalog"
+    LPG_JSONL = "lpg_jsonl"
+    CC_JSON = "cc_json"
+    CX2 = "cx2"
+    JGF = "jgf"
+    MERMAID_C4_ASIS = "mermaid_c4_asis"
+    MERMAID_C4_TOBE = "mermaid_c4_tobe"
 
 
 class EmbeddingTargetType(enum.Enum):
@@ -150,6 +156,51 @@ class EmbeddingTargetType(enum.Enum):
 
     NODE = "node"
     COMMUNITY = "community"
+
+
+class TwinLayer(enum.Enum):
+    """Architecture layers for twin nodes and edges."""
+
+    PORTFOLIO_SYSTEM = "portfolio_system"
+    DOMAIN_CONTAINER = "domain_container"
+    COMPONENT_INTERFACE = "component_interface"
+    CODE_CONTROLFLOW = "code_controlflow"
+
+
+class ArchitectureIntentAction(enum.Enum):
+    """Supported architecture intent actions."""
+
+    EXTRACT_DOMAIN = "extract_domain"
+    SPLIT_CONTAINER = "split_container"
+    MOVE_COMPONENT = "move_component"
+    DEFINE_INTERFACE = "define_interface"
+    SET_VALIDATOR = "set_validator"
+    APPLY_DATA_BOUNDARY = "apply_data_boundary"
+
+
+class ArchitectureIntentStatus(enum.Enum):
+    """Lifecycle status of architecture intents."""
+
+    PENDING = "pending"
+    BLOCKED = "blocked"
+    APPROVED = "approved"
+    EXECUTED = "executed"
+    FAILED = "failed"
+
+
+class IntentRiskLevel(enum.Enum):
+    """Risk levels used by auto execution gates."""
+
+    LOW = "low"
+    HIGH = "high"
+
+
+class ValidationSourceKind(enum.Enum):
+    """Sources for validation and orchestration data."""
+
+    TEKTON = "tekton"
+    ARGO = "argo"
+    TEMPORAL = "temporal"
 
 
 class AppKV(Base):
@@ -993,3 +1044,383 @@ class KnowledgeEmbedding(Base):
 
     # Relationships
     collection: Mapped["Collection"] = relationship()
+
+
+# -----------------------------------------------------------------------------
+# Digital Twin / Intent Engine Tables
+# -----------------------------------------------------------------------------
+
+
+class TwinScenario(Base):
+    """Versioned twin scenario (AS-IS baseline or TO-BE branch)."""
+
+    __tablename__ = "twin_scenarios"
+    __table_args__ = (
+        Index("ix_twin_scenario_collection", "collection_id"),
+        Index("ix_twin_scenario_parent", "base_scenario_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    base_scenario_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_as_is: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    collection: Mapped["Collection"] = relationship()
+    base_scenario: Mapped["TwinScenario | None"] = relationship(remote_side=[id])
+    created_by: Mapped["User | None"] = relationship()
+
+
+class TwinNode(Base):
+    """Node in a scenario graph."""
+
+    __tablename__ = "twin_nodes"
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "natural_key", name="uq_twin_node_natural"),
+        Index("ix_twin_node_scenario_kind", "scenario_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    provenance_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_nodes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+    provenance_node: Mapped["KnowledgeNode | None"] = relationship()
+
+
+class TwinEdge(Base):
+    """Edge in a scenario graph."""
+
+    __tablename__ = "twin_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "scenario_id",
+            "source_node_id",
+            "target_node_id",
+            "kind",
+            name="uq_twin_edge_unique",
+        ),
+        Index("ix_twin_edge_scenario_kind", "scenario_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+    source_node: Mapped["TwinNode"] = relationship(foreign_keys=[source_node_id])
+    target_node: Mapped["TwinNode"] = relationship(foreign_keys=[target_node_id])
+
+
+class TwinNodeLayer(Base):
+    """Many-to-many layer assignment for twin nodes."""
+
+    __tablename__ = "twin_node_layers"
+    __table_args__ = (UniqueConstraint("node_id", "layer", name="uq_twin_node_layer"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    layer: Mapped[TwinLayer] = mapped_column(
+        Enum(
+            TwinLayer,
+            name="twin_layer",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    node: Mapped["TwinNode"] = relationship()
+
+
+class TwinEdgeLayer(Base):
+    """Many-to-many layer assignment for twin edges."""
+
+    __tablename__ = "twin_edge_layers"
+    __table_args__ = (UniqueConstraint("edge_id", "layer", name="uq_twin_edge_layer"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    edge_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_edges.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    layer: Mapped[TwinLayer] = mapped_column(
+        Enum(
+            TwinLayer,
+            name="twin_layer",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    edge: Mapped["TwinEdge"] = relationship()
+
+
+class ArchitectureIntent(Base):
+    """Architecture intent request attached to a scenario."""
+
+    __tablename__ = "architecture_intents"
+    __table_args__ = (
+        Index("ix_arch_intent_scenario", "scenario_id", "status"),
+        Index("ix_arch_intent_requested_by", "requested_by_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    intent_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    action: Mapped[ArchitectureIntentAction] = mapped_column(
+        Enum(
+            ArchitectureIntentAction,
+            name="architecture_intent_action",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(2048), nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    expected_scenario_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ArchitectureIntentStatus] = mapped_column(
+        Enum(
+            ArchitectureIntentStatus,
+            name="architecture_intent_status",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        default=ArchitectureIntentStatus.PENDING,
+    )
+    risk_level: Mapped[IntentRiskLevel] = mapped_column(
+        Enum(
+            IntentRiskLevel,
+            name="intent_risk_level",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        default=IntentRiskLevel.LOW,
+    )
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+    requested_by: Mapped["User | None"] = relationship()
+
+
+class ArchitectureIntentRun(Base):
+    """Execution journal entry for an intent."""
+
+    __tablename__ = "architecture_intent_runs"
+    __table_args__ = (Index("ix_arch_intent_run_intent", "intent_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    intent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("architecture_intents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scenario_version_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    scenario_version_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    intent: Mapped["ArchitectureIntent"] = relationship()
+
+
+class TwinPatch(Base):
+    """RFC6902 patch history for a scenario."""
+
+    __tablename__ = "twin_patches"
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "scenario_version", name="uq_twin_patch_version"),
+        Index("ix_twin_patch_scenario", "scenario_id", "scenario_version"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scenario_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("architecture_intents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    patch_ops: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+    intent: Mapped["ArchitectureIntent | None"] = relationship()
+    created_by: Mapped["User | None"] = relationship()
+
+
+class ValidationSnapshot(Base):
+    """Normalized validation/orchestration metrics snapshot."""
+
+    __tablename__ = "validation_snapshots"
+    __table_args__ = (
+        Index("ix_validation_snapshot_collection", "collection_id", "captured_at"),
+        Index("ix_validation_snapshot_source", "source_kind", "metric_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    source_kind: Mapped[ValidationSourceKind] = mapped_column(
+        Enum(
+            ValidationSourceKind,
+            name="validation_source_kind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    metric_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_value: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    collection: Mapped["Collection | None"] = relationship()
+
+
+class MetricSnapshot(Base):
+    """Code city metrics per scenario/node."""
+
+    __tablename__ = "metric_snapshots"
+    __table_args__ = (
+        Index("ix_metric_snapshot_scenario", "scenario_id", "captured_at"),
+        Index("ix_metric_snapshot_node", "scenario_id", "node_natural_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    loc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    symbol_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coupling: Mapped[float | None] = mapped_column(Float, nullable=True)
+    coverage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    complexity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_frequency: Mapped[float | None] = mapped_column(Float, nullable=True)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
