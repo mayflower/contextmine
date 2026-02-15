@@ -29,7 +29,8 @@ agents:
   documentation:
     enabled: true
     triggers:
-      - type: on-merge
+      - type: nightly
+        cron: "0 4 * * 1"  # Monday 4am UTC
     priority: 3
     policy:
       mode: pr

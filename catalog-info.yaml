@@ -17,8 +17,8 @@ metadata:
     grafana/alert-label-selector: app=contextmine
     # Agent Fleet configuration
     agent-fleet.io/enabled: "true"
-    agent-fleet.io/agents: "changelog-generator"
-    agent-fleet.io/schedule: "manual"
+    agent-fleet.io/agents: "documentation"
+    agent-fleet.io/schedule: "weekly"
   tags:
     - python
     - fastapi
