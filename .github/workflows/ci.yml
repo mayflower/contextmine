@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: ghcr.io/mayflower/pg4ai:latest
         env:
           POSTGRES_USER: contextmine
           POSTGRES_PASSWORD: contextmine
