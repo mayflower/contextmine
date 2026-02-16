@@ -366,6 +366,37 @@
   margin-bottom: 0;
 }
 
+.cockpit-cta-card {
+  border: 1px solid #c9d6ff;
+  background: linear-gradient(145deg, #f4f7ff 0%, #ffffff 55%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cockpit-cta-copy p {
+  margin-top: 10px;
+  color: #475467;
+  line-height: 1.5;
+}
+
+.cockpit-cta-button {
+  width: fit-content;
+  border: 1px solid #1d4ed8;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cockpit-cta-button:hover {
+  background: #1e40af;
+  border-color: #1e40af;
+}
+
 /* Stats card */
 .stats-card .stats-grid {
   display: grid;
@@ -2281,6 +2312,21 @@ tr.state-running {
   transition: background 0.2s;
 }
 
+.collection-actions-inline .action-btn.cockpit-btn {
+  border: 1px solid #1d4ed8;
+  border-radius: 8px;
+  min-width: 132px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 5px 10px;
+}
+
+.collection-actions-inline .action-btn.cockpit-btn:hover {
+  background: #dbeafe;
+}
+
 .collection-actions-inline .action-btn:hover {
   background: #f1f5f9;
 }
@@ -2953,167 +2999,4 @@ tr.state-running {
     order: 2;
     margin-left: auto;
   }
-}
-
-/* Cockpit */
-.cockpit-card {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.cockpit-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.cockpit-toolbar select {
-  min-width: 220px;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 0.45rem 0.6rem;
-  background: #fff;
-}
-
-.cockpit-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.cockpit-tabs button {
-  border: 1px solid #d0d5dd;
-  background: #fff;
-  color: #344054;
-  border-radius: 999px;
-  padding: 0.35rem 0.8rem;
-  font-size: 0.85rem;
-}
-
-.cockpit-tabs button.active {
-  background: #155eef;
-  border-color: #155eef;
-  color: #fff;
-}
-
-.cockpit-error {
-  color: #b42318;
-  font-size: 0.9rem;
-}
-
-.cockpit-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 1rem;
-}
-
-.cockpit-panel {
-  border: 1px solid #e4e7ec;
-  border-radius: 10px;
-  padding: 0.85rem;
-  background: #fcfcfd;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.cockpit-meta {
-  color: #475467;
-  font-size: 0.85rem;
-}
-
-.cockpit-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.8rem;
-}
-
-.cockpit-summary-grid > div {
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.cockpit-summary-grid strong {
-  font-size: 1.1rem;
-  color: #111827;
-}
-
-.cockpit-summary-grid span {
-  font-size: 0.8rem;
-  color: #667085;
-}
-
-.cockpit-panel button {
-  width: fit-content;
-  background: #155eef;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  padding: 0.45rem 0.75rem;
-  cursor: pointer;
-}
-
-.cockpit-panel pre {
-  background: #0f172a;
-  color: #e2e8f0;
-  border-radius: 8px;
-  padding: 0.6rem;
-  font-size: 0.72rem;
-  max-height: 220px;
-  overflow: auto;
-}
-
-.cockpit-table-wrap {
-  overflow: auto;
-}
-
-.cockpit-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
-}
-
-.cockpit-table th,
-.cockpit-table td {
-  border-bottom: 1px solid #eaecf0;
-  text-align: left;
-  padding: 0.4rem 0.35rem;
-}
-
-.cockpit-table th {
-  background: #f9fafb;
-  color: #344054;
-}
-
-.cockpit-mermaid-compare {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 0.8rem;
-}
-
-.cockpit-mermaid-compare article {
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 0.5rem;
-  background: #fff;
-}
-
-.cockpit-export-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
-
-.cockpit-export-controls select {
-  min-width: 220px;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 0.45rem 0.6rem;
-  background: #fff;
 }

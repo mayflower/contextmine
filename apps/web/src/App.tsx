@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import CockpitPage from './CockpitPage'
+import CockpitPage from './cockpit/CockpitPage'
+import type { CockpitLayer, CockpitView } from './cockpit/types'
 
 interface HealthStatus {
   status: string
@@ -88,6 +89,77 @@ interface SyncRun {
 type Page = 'dashboard' | 'collections' | 'runs' | 'cockpit'
 
 const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
+const VALID_PAGES: Page[] = ['dashboard', 'collections', 'runs', 'cockpit']
+const DEFAULT_COCKPIT_VIEW: CockpitView = 'overview'
+const DEFAULT_COCKPIT_LAYER: CockpitLayer = 'domain_container'
+
+interface CockpitNavigationOptions {
+  collectionId?: string
+  scenarioId?: string
+  view?: CockpitView
+  layer?: CockpitLayer
+}
+
+function parseInitialPage(): Page {
+  if (typeof window === 'undefined') {
+    return 'dashboard'
+  }
+
+  const params = new URLSearchParams(window.location.search)
+  const rawPage = params.get('page')
+  if (!rawPage) {
+    return 'dashboard'
+  }
+
+  return VALID_PAGES.includes(rawPage as Page) ? (rawPage as Page) : 'dashboard'
+}
+
+function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const params = new URLSearchParams(window.location.search)
+  params.set('page', page)
+
+  if (page === 'cockpit') {
+    const nextView = cockpitOptions?.view
+    const nextLayer = cockpitOptions?.layer
+
+    if (cockpitOptions?.collectionId) {
+      params.set('collection', cockpitOptions.collectionId)
+    } else if (cockpitOptions && !cockpitOptions.collectionId) {
+      params.delete('collection')
+    }
+
+    if (cockpitOptions?.scenarioId) {
+      params.set('scenario', cockpitOptions.scenarioId)
+    } else if (cockpitOptions && !cockpitOptions.scenarioId) {
+      params.delete('scenario')
+    }
+
+    if (nextView) {
+      params.set('view', nextView)
+    } else if (!params.get('view')) {
+      params.set('view', DEFAULT_COCKPIT_VIEW)
+    }
+
+    if (nextLayer) {
+      params.set('layer', nextLayer)
+    } else if (!params.get('layer')) {
+      params.set('layer', DEFAULT_COCKPIT_LAYER)
+    }
+  } else {
+    params.delete('collection')
+    params.delete('scenario')
+    params.delete('view')
+    params.delete('layer')
+  }
+
+  const nextQuery = params.toString()
+  const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname
+  window.history.replaceState({}, '', nextUrl)
+}
 
 /**
  * Format a source URL for display.
@@ -178,7 +250,7 @@ function App() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [user, setUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
-  const [currentPage, setCurrentPage] = useState<Page>('dashboard')
+  const [currentPage, setCurrentPage] = useState<Page>(() => parseInitialPage())
 
   // Collections state
   const [collections, setCollections] = useState<Collection[]>([])
@@ -262,6 +334,15 @@ function App() {
       }
     }
     checkAuth()
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      setCurrentPage(parseInitialPage())
+    }
+
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
   // Check health status
@@ -1136,6 +1217,20 @@ function App() {
     fetchRuns(source)
   }
 
+  const navigateToPage = (page: Page, cockpitOptions?: CockpitNavigationOptions) => {
+    updatePageQuery(page, cockpitOptions)
+    setCurrentPage(page)
+    setMobileMenuOpen(false)
+  }
+
+  const openCockpitForCollection = (collection?: Collection | null) => {
+    navigateToPage('cockpit', {
+      collectionId: collection?.id,
+      view: DEFAULT_COCKPIT_VIEW,
+      layer: DEFAULT_COCKPIT_LAYER,
+    })
+  }
+
   // Show login page if not authenticated
   if (!authLoading && !user) {
     return (
@@ -1176,7 +1271,7 @@ function App() {
           <h1>ContextMine</h1>
           <button
             className="header-cta"
-            onClick={() => setCurrentPage('collections')}
+            onClick={() => navigateToPage('collections')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 5v14M5 12h14" />
@@ -1201,10 +1296,10 @@ function App() {
 
       <nav className={`sidebar ${mobileMenuOpen ? 'open' : ''}`}>
         <ul>
-          <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }}>Dashboard</li>
-          <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => { setCurrentPage('collections'); setMobileMenuOpen(false); }}>Collections</li>
-          <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => { setCurrentPage('runs'); setMobileMenuOpen(false); }}>Runs</li>
-          <li className={currentPage === 'cockpit' ? 'active' : ''} onClick={() => { setCurrentPage('cockpit'); setMobileMenuOpen(false); }}>Cockpit</li>
+          <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => navigateToPage('dashboard')}>Dashboard</li>
+          <li className={currentPage === 'cockpit' ? 'active' : ''} onClick={() => navigateToPage('cockpit', { view: DEFAULT_COCKPIT_VIEW, layer: DEFAULT_COCKPIT_LAYER })}>Architecture Cockpit</li>
+          <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => navigateToPage('collections')}>Collections</li>
+          <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => navigateToPage('runs')}>Runs</li>
         </ul>
       </nav>
 
@@ -1427,6 +1522,19 @@ function App() {
             </div>
 
             <div className="dashboard-right">
+              <section className="card cockpit-cta-card">
+                <div className="cockpit-cta-copy">
+                  <h2>Architecture Cockpit</h2>
+                  <p>Inspect extracted views across Overview, Topology, Deep Dive, C4 Diff, and Exports.</p>
+                </div>
+                <button
+                  type="button"
+                  className="cockpit-cta-button"
+                  onClick={() => openCockpitForCollection(collections[0] || null)}
+                >
+                  Open Cockpit
+                </button>
+              </section>
 
               <section className="card">
                 <h2>MCP Setup</h2>
@@ -1606,6 +1714,16 @@ function App() {
                           </div>
 
                           <div className="collection-actions-inline" onClick={e => e.stopPropagation()}>
+                            <button
+                              className="action-btn cockpit-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openCockpitForCollection(collection)
+                              }}
+                              title="Open in Architecture Cockpit"
+                            >
+                              Open in Cockpit
+                            </button>
                             {collection.is_owner && (
                               <>
                                 <button
@@ -2160,7 +2278,11 @@ function App() {
         )}
 
         {currentPage === 'cockpit' && (
-          <CockpitPage collections={collections.map((c) => ({ id: c.id, name: c.name }))} />
+          <CockpitPage
+            collections={collections.map((c) => ({ id: c.id, name: c.name }))}
+            onOpenCollections={() => navigateToPage('collections')}
+            onOpenRuns={() => navigateToPage('runs')}
+          />
         )}
       </main>
 
