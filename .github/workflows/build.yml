@@ -56,6 +56,44 @@ jobs:
           uv run pytest --cov=apps --cov=packages --cov-report=xml:coverage.xml --cov-report=term -v || true
         continue-on-error: true
 
+      # Optional ContextMine coverage ingest (CI push model).
+      # Requires repository secrets:
+      # - CONTEXTMINE_URL (e.g., https://contextmine.example.com)
+      # - CONTEXTMINE_SOURCE_ID
+      # - CONTEXTMINE_INGEST_TOKEN
+      - name: Push coverage to ContextMine
+        if: >-
+          ${{
+            always() &&
+            github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' &&
+            secrets.CONTEXTMINE_URL != '' &&
+            secrets.CONTEXTMINE_SOURCE_ID != '' &&
+            secrets.CONTEXTMINE_INGEST_TOKEN != ''
+          }}
+        env:
+          CONTEXTMINE_URL: ${{ secrets.CONTEXTMINE_URL }}
+          CONTEXTMINE_SOURCE_ID: ${{ secrets.CONTEXTMINE_SOURCE_ID }}
+          CONTEXTMINE_INGEST_TOKEN: ${{ secrets.CONTEXTMINE_INGEST_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f coverage.xml ]; then
+            echo "coverage.xml not found. Skipping ContextMine ingest."
+            exit 0
+          fi
+
+          response=$(curl --silent --show-error --fail-with-body \
+            -X POST "${CONTEXTMINE_URL}/api/sources/${CONTEXTMINE_SOURCE_ID}/metrics/coverage-ingest" \
+            -H "X-ContextMine-Ingest-Token: ${CONTEXTMINE_INGEST_TOKEN}" \
+            -F "commit_sha=${{ github.sha }}" \
+            -F "branch=${{ github.ref_name }}" \
+            -F "workflow_run_id=${{ github.run_id }}" \
+            -F "provider=github_actions" \
+            -F "reports=@coverage.xml")
+          echo "ContextMine ingest response: ${response}"
+        continue-on-error: true
+
       # SonarQube scan
       - uses: SonarSource/sonarqube-scan-action@v6
         env:

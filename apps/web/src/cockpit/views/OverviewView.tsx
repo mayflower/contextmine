@@ -11,6 +11,7 @@ interface OverviewViewProps {
   error: string
   filter: string
   onRetry: () => void
+  onOpenTopology: () => void
   onCopyJson: () => void
   onDownloadJson: () => void
 }
@@ -72,6 +73,7 @@ export default function OverviewView({
   error,
   filter,
   onRetry,
+  onOpenTopology,
   onCopyJson,
   onDownloadJson,
 }: OverviewViewProps) {
@@ -141,9 +143,16 @@ export default function OverviewView({
         <article className="cockpit2-panel">
           <h3>System health summary</h3>
           {metricsUnavailable ? (
-            <p className="muted">
-              {metricsUnavailableMessage(unavailableReason)}
-            </p>
+            <>
+              <p className="muted">
+                {metricsUnavailableMessage(unavailableReason)}
+              </p>
+              <div className="actions">
+                <button type="button" className="secondary" onClick={onOpenTopology}>
+                  Open Topology (Code / Controlflow)
+                </button>
+              </div>
+            </>
           ) : null}
           <div className="cockpit2-kpis">
             <div>

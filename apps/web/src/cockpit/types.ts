@@ -114,7 +114,7 @@ export interface CockpitToast {
   message: string
 }
 
-export const DEFAULT_LAYER: CockpitLayer = 'domain_container'
+export const DEFAULT_LAYER: CockpitLayer = 'code_controlflow'
 export const DEFAULT_VIEW: CockpitView = 'overview'
 
 export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
@@ -126,10 +126,10 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
 ]
 
 export const COCKPIT_LAYERS: Array<{ key: CockpitLayer; label: string }> = [
+  { key: 'code_controlflow', label: 'Code / Controlflow' },
   { key: 'portfolio_system', label: 'Portfolio / System' },
   { key: 'domain_container', label: 'Domain / Container' },
   { key: 'component_interface', label: 'Component / Interface' },
-  { key: 'code_controlflow', label: 'Code / Controlflow' },
 ]
 
 export const EXPORT_FORMATS: Array<{ key: ExportFormat; label: string; extension: string }> = [

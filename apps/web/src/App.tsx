@@ -91,7 +91,7 @@ type Page = 'dashboard' | 'collections' | 'runs' | 'cockpit'
 const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
 const VALID_PAGES: Page[] = ['dashboard', 'collections', 'runs', 'cockpit']
 const DEFAULT_COCKPIT_VIEW: CockpitView = 'overview'
-const DEFAULT_COCKPIT_LAYER: CockpitLayer = 'domain_container'
+const DEFAULT_COCKPIT_LAYER: CockpitLayer = 'code_controlflow'
 
 interface CockpitNavigationOptions {
   collectionId?: string
@@ -572,19 +572,21 @@ function App() {
     }
   }
 
-  const handleDeleteSource = async (sourceId: string) => {
-    if (!selectedCollection) return
-
+  const handleDeleteSource = async (sourceId: string, collection: Collection) => {
     try {
       const response = await fetch(`/api/sources/${sourceId}`, {
         method: 'DELETE',
         credentials: 'include',
       })
       if (response.ok) {
-        fetchCollectionDetails(selectedCollection)
+        await fetchCollectionDetails(collection)
+        await fetchCollectionSources(collection.id)
+      } else {
+        const error = await response.json().catch(() => ({}))
+        alert(error.detail || 'Failed to delete source')
       }
     } catch {
-      // Error deleting source
+      alert('Failed to delete source')
     }
   }
 
@@ -2022,7 +2024,7 @@ function App() {
                                                     Edit
                                                   </button>
                                                   <button
-                                                    onClick={() => { setSelectedCollection(collection); handleDeleteSource(source.id); fetchCollectionSources(collection.id); }}
+                                                    onClick={async () => { setSelectedCollection(collection); await handleDeleteSource(source.id, collection) }}
                                                     className="delete-btn"
                                                   >
                                                     ×

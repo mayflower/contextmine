@@ -403,6 +403,7 @@ async def ingest_snapshot_into_as_is(
             meta={
                 "file_path": symbol.file_path,
                 "def_id": symbol.def_id,
+                "symbol_kind": symbol.kind.value,
                 "range": symbol.range.to_dict(),
             },
             provenance_node_id=None,

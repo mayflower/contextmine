@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
 
 from contextmine_core.semantic_snapshot.models import (
@@ -130,15 +131,28 @@ class SCIPProvider:
             # Process symbol definitions in this document
             for sym_info in doc.symbols:
                 symbol_str = sym_info.symbol
+                if symbol_str.startswith("local "):
+                    continue
                 if symbol_str in seen_symbols:
                     continue
                 seen_symbols.add(symbol_str)
 
                 # Parse symbol kind
                 kind = SCIP_KIND_TO_SYMBOL_KIND.get(sym_info.kind, SymbolKind.UNKNOWN)
+                inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
+                if kind == SymbolKind.UNKNOWN:
+                    kind = inferred_kind
 
                 # Get display name
-                name = sym_info.display_name or self._extract_name_from_symbol(symbol_str)
+                name = sym_info.display_name or inferred_name or self._extract_name_from_symbol(
+                    symbol_str
+                )
+
+                # Keep only relevant symbols with a resolvable kind and name.
+                if kind == SymbolKind.UNKNOWN or not name:
+                    continue
+                if kind == SymbolKind.PARAMETER:
+                    continue
 
                 # Find the definition occurrence for this symbol to get range
                 def_range = self._find_definition_range(doc, symbol_str)
@@ -210,12 +224,22 @@ class SCIPProvider:
         # Process external symbols (symbols defined in external packages)
         for ext_sym in index.external_symbols:
             symbol_str = ext_sym.symbol
+            if symbol_str.startswith("local "):
+                continue
             if symbol_str in seen_symbols:
                 continue
             seen_symbols.add(symbol_str)
 
             kind = SCIP_KIND_TO_SYMBOL_KIND.get(ext_sym.kind, SymbolKind.UNKNOWN)
-            name = ext_sym.display_name or self._extract_name_from_symbol(symbol_str)
+            inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
+            if kind == SymbolKind.UNKNOWN:
+                kind = inferred_kind
+            name = ext_sym.display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
+
+            if kind == SymbolKind.UNKNOWN or not name:
+                continue
+            if kind == SymbolKind.PARAMETER:
+                continue
 
             # External symbols don't have a file path or range in this index
             # We still track them for reference resolution
@@ -304,16 +328,79 @@ class SCIPProvider:
         # The descriptor part is everything after scheme, manager, package, version
         descriptors = " ".join(parts[4:]) if len(parts) > 4 else ""
 
-        # Find the last meaningful name
-        # Look for patterns like: name/ name# name. name().
-        import re
-
-        # Match name followed by descriptor suffix
+        # Match name followed by descriptor suffix.
         matches = re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)[/#.\[\]():!]", descriptors)
         if matches:
             return matches[-1]
 
         return None
+
+    def _infer_kind_and_name_from_symbol(self, symbol_str: str) -> tuple[SymbolKind, str | None]:
+        """Infer kind and human-readable name from SCIP symbol descriptors.
+
+        This is primarily used when scip-python emits UnspecifiedKind and no
+        display_name for document symbols.
+        """
+        if not symbol_str or symbol_str.startswith("local "):
+            return SymbolKind.UNKNOWN, None
+
+        descriptor_tail = self._descriptor_tail(symbol_str)
+        if not descriptor_tail:
+            return SymbolKind.UNKNOWN, None
+
+        # Parameter descriptor: "...().(param)"
+        parameter_match = re.search(r"\(([^()]+)\)$", descriptor_tail)
+        if parameter_match:
+            return SymbolKind.PARAMETER, parameter_match.group(1)
+
+        # Method/function descriptor: "...name()."
+        if descriptor_tail.endswith("()."):
+            name = self._last_identifier(descriptor_tail.removesuffix("()."))
+            if "#" in descriptor_tail:
+                return SymbolKind.METHOD, name
+            return SymbolKind.FUNCTION, name
+
+        # Type/class descriptor: "...Type#"
+        if descriptor_tail.endswith("#"):
+            return SymbolKind.CLASS, self._last_identifier(descriptor_tail.removesuffix("#"))
+
+        # Term/property descriptor: "...field."
+        if descriptor_tail.endswith("."):
+            name = self._last_identifier(descriptor_tail.removesuffix("."))
+            if "#" in descriptor_tail:
+                return SymbolKind.PROPERTY, name
+            return SymbolKind.FUNCTION, name
+
+        # Namespace/module descriptors.
+        if descriptor_tail.endswith("/") or descriptor_tail.endswith(":"):
+            return SymbolKind.MODULE, self._last_identifier(descriptor_tail[:-1])
+
+        # Type parameter descriptor: "...[T]"
+        if descriptor_tail.endswith("]"):
+            m = re.search(r"\[([^\]]+)\]$", descriptor_tail)
+            return SymbolKind.TYPE_ALIAS, m.group(1) if m else None
+
+        # Macro/meta descriptors.
+        if descriptor_tail.endswith("!"):
+            return SymbolKind.FUNCTION, self._last_identifier(descriptor_tail.removesuffix("!"))
+
+        return SymbolKind.UNKNOWN, self._last_identifier(descriptor_tail)
+
+    def _descriptor_tail(self, symbol_str: str) -> str:
+        """Return the descriptor section of a SCIP symbol string."""
+        parts = symbol_str.split(maxsplit=4)
+        if len(parts) < 5:
+            return ""
+        return parts[4]
+
+    def _last_identifier(self, raw: str) -> str | None:
+        """Extract the trailing identifier token from descriptor text."""
+        # Strip backticks used by scip-python module names.
+        cleaned = raw.replace("`", "")
+        matches = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", cleaned)
+        if not matches:
+            return None
+        return matches[-1]
 
 
 def build_snapshot_scip(scip_path: Path | str) -> Snapshot:

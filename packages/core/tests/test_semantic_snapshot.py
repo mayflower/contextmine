@@ -25,6 +25,7 @@ from contextmine_core.semantic_snapshot import (
     build_snapshot,
     detect_projects,
 )
+from contextmine_core.semantic_snapshot.scip import SCIPProvider
 
 
 class TestModels:
@@ -328,3 +329,47 @@ class TestBuildSnapshot:
         """Test that missing SCIP file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
             build_snapshot("/nonexistent.scip")
+
+
+class TestSCIPSymbolInference:
+    """Tests for symbol-kind/name fallback inference from SCIP descriptors."""
+
+    def test_infer_function_symbol(self) -> None:
+        provider = SCIPProvider("/nonexistent.scip")
+        kind, name = provider._infer_kind_and_name_from_symbol(  # noqa: SLF001
+            "scip-python python project 0.0.0 `pkg.mod`/run_sync()."
+        )
+        assert kind == SymbolKind.FUNCTION
+        assert name == "run_sync"
+
+    def test_infer_method_and_parameter_symbols(self) -> None:
+        provider = SCIPProvider("/nonexistent.scip")
+        method_kind, method_name = provider._infer_kind_and_name_from_symbol(  # noqa: SLF001
+            "scip-python python project 0.0.0 `pkg.mod`/Worker#execute()."
+        )
+        parameter_kind, parameter_name = provider._infer_kind_and_name_from_symbol(  # noqa: SLF001
+            "scip-python python project 0.0.0 `pkg.mod`/Worker#execute().(context)"
+        )
+        assert method_kind == SymbolKind.METHOD
+        assert method_name == "execute"
+        assert parameter_kind == SymbolKind.PARAMETER
+        assert parameter_name == "context"
+
+    def test_infer_class_and_property_symbols(self) -> None:
+        provider = SCIPProvider("/nonexistent.scip")
+        class_kind, class_name = provider._infer_kind_and_name_from_symbol(  # noqa: SLF001
+            "scip-python python project 0.0.0 `pkg.mod`/SyncConfig#"
+        )
+        field_kind, field_name = provider._infer_kind_and_name_from_symbol(  # noqa: SLF001
+            "scip-python python project 0.0.0 `pkg.mod`/SyncConfig#batch_size."
+        )
+        assert class_kind == SymbolKind.CLASS
+        assert class_name == "SyncConfig"
+        assert field_kind == SymbolKind.PROPERTY
+        assert field_name == "batch_size"
+
+    def test_ignore_local_symbol(self) -> None:
+        provider = SCIPProvider("/nonexistent.scip")
+        kind, name = provider._infer_kind_and_name_from_symbol("local 42")  # noqa: SLF001
+        assert kind == SymbolKind.UNKNOWN
+        assert name is None

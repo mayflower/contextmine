@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import cytoscape, { type Core } from 'cytoscape'
 
-import type { CockpitLoadState, TwinGraphResponse } from '../types'
+import type { CockpitLayer, CockpitLoadState, TwinGraphResponse } from '../types'
 
 interface DeepDiveViewProps {
   graph: TwinGraphResponse
   state: CockpitLoadState
   error: string
+  layer: CockpitLayer
   density: number
   onDensityChange: (density: number) => void
+  onSwitchToCodeLayer: () => void
   onRetry: () => void
 }
 
@@ -16,12 +18,21 @@ function getLayoutName(density: number): 'cose' | 'breadthfirst' {
   return density > 5000 ? 'breadthfirst' : 'cose'
 }
 
+function layerLabel(layer: CockpitLayer): string {
+  if (layer === 'portfolio_system') return 'Portfolio / System'
+  if (layer === 'domain_container') return 'Domain / Container'
+  if (layer === 'component_interface') return 'Component / Interface'
+  return 'Code / Controlflow'
+}
+
 export default function DeepDiveView({
   graph,
   state,
   error,
+  layer,
   density,
   onDensityChange,
+  onSwitchToCodeLayer,
   onRetry,
 }: DeepDiveViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -153,7 +164,29 @@ export default function DeepDiveView({
         </label>
       </div>
 
-      <div ref={containerRef} className="cockpit2-canvas deep" aria-label="Deep dive graph" />
+      {graph.nodes.length > 0 ? (
+        <div ref={containerRef} className="cockpit2-canvas deep" aria-label="Deep dive graph" />
+      ) : (
+        <section className="cockpit2-empty">
+          <h3>No nodes for this layer</h3>
+          {graph.total_nodes > 0 ? (
+            <>
+              <p>
+                The selected layer (<strong>{layerLabel(layer)}</strong>) has no nodes in this scenario.
+              </p>
+              {layer !== 'code_controlflow' ? (
+                <button type="button" onClick={onSwitchToCodeLayer}>
+                  Switch to Code / Controlflow
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <p>
+              No twin nodes are available yet. Run source sync and ensure semantic snapshots were generated.
+            </p>
+          )}
+        </section>
+      )}
     </section>
   )
 }

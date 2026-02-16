@@ -8,23 +8,34 @@ import ReactFlow, {
   type ReactFlowInstance,
 } from 'reactflow'
 
-import type { CockpitLoadState, TwinGraphResponse } from '../types'
+import type { CockpitLayer, CockpitLoadState, TwinGraphResponse } from '../types'
 
 interface TopologyViewProps {
   graph: TwinGraphResponse
   state: CockpitLoadState
   error: string
+  layer: CockpitLayer
   density: number
   onDensityChange: (density: number) => void
+  onSwitchToCodeLayer: () => void
   onRetry: () => void
+}
+
+function layerLabel(layer: CockpitLayer): string {
+  if (layer === 'portfolio_system') return 'Portfolio / System'
+  if (layer === 'domain_container') return 'Domain / Container'
+  if (layer === 'component_interface') return 'Component / Interface'
+  return 'Code / Controlflow'
 }
 
 export default function TopologyView({
   graph,
   state,
   error,
+  layer,
   density,
   onDensityChange,
+  onSwitchToCodeLayer,
   onRetry,
 }: TopologyViewProps) {
   const [layoutTick, setLayoutTick] = useState(0)
@@ -115,20 +126,43 @@ export default function TopologyView({
       </div>
 
       <div className="cockpit2-canvas">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          fitView
-          onInit={setInstance}
-          nodesDraggable={false}
-          panOnDrag
-          zoomOnScroll
-          aria-label="Topology graph"
-        >
-          <Controls />
-          <MiniMap pannable zoomable />
-          <Background gap={20} size={1} />
-        </ReactFlow>
+        {graph.nodes.length > 0 ? (
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            fitView
+            onInit={setInstance}
+            nodesDraggable={false}
+            panOnDrag
+            zoomOnScroll
+            aria-label="Topology graph"
+          >
+            <Controls />
+            <MiniMap pannable zoomable />
+            <Background gap={20} size={1} />
+          </ReactFlow>
+        ) : (
+          <section className="cockpit2-empty">
+            <h3>No nodes for this layer</h3>
+            {graph.total_nodes > 0 ? (
+              <>
+                <p>
+                  The selected layer (<strong>{layerLabel(layer)}</strong>) is currently empty for this scenario.
+                </p>
+                {layer !== 'code_controlflow' ? (
+                  <button type="button" onClick={onSwitchToCodeLayer}>
+                    Switch to Code / Controlflow
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <p>
+                This scenario has no extracted twin nodes yet. Run sync again and verify SCIP indexing produced
+                symbols.
+              </p>
+            )}
+          </section>
+        )}
       </div>
     </section>
   )

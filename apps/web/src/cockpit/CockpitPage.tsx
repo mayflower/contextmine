@@ -144,6 +144,11 @@ export default function CockpitPage({
     pushToast('info', 'Downloaded cc.json preview.')
   }
 
+  const handleOpenTopologyFromOverview = () => {
+    setLayer('code_controlflow')
+    setView('topology')
+  }
+
   const handleGenerateExport = async () => {
     const result = await generateExport()
     if (!result) {
@@ -293,6 +298,7 @@ export default function CockpitPage({
           error={activeError}
           filter={hotspotFilter}
           onRetry={refreshActiveView}
+          onOpenTopology={handleOpenTopologyFromOverview}
           onCopyJson={handleCopyJson}
           onDownloadJson={handleDownloadJson}
         />
@@ -303,8 +309,10 @@ export default function CockpitPage({
           graph={graph}
           state={activeState}
           error={activeError}
+          layer={selection.layer}
           density={topologyDensity}
           onDensityChange={setTopologyDensity}
+          onSwitchToCodeLayer={() => setLayer('code_controlflow')}
           onRetry={refreshActiveView}
         />
       ) : null}
@@ -314,8 +322,10 @@ export default function CockpitPage({
           graph={graph}
           state={activeState}
           error={activeError}
+          layer={selection.layer}
           density={deepDiveDensity}
           onDensityChange={setDeepDiveDensity}
+          onSwitchToCodeLayer={() => setLayer('code_controlflow')}
           onRetry={refreshActiveView}
         />
       ) : null}

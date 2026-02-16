@@ -107,7 +107,7 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
         cypher = (
             f"MATCH (s:Node {{id: '{_esc(str(edge.source_node_id))}'}}), "
             f"(t:Node {{id: '{_esc(str(edge.target_node_id))}'}}) "
-            f"CREATE (s)-[:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
+            f"CREATE (s)-[r:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
         )
         await session.execute(text(_age_cypher_sql(graph_name, cypher)))
 
