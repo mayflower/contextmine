@@ -1124,9 +1124,11 @@ async def sync_github_source(
                         if snapshot_dict:
                             project_root = Path(str(proj_dict.get("root_path", repo_path)))
                             try:
-                                repo_relative_root = project_root.resolve().relative_to(
-                                    repo_path.resolve()
-                                ).as_posix()
+                                repo_relative_root = (
+                                    project_root.resolve()
+                                    .relative_to(repo_path.resolve())
+                                    .as_posix()
+                                )
                             except ValueError:
                                 repo_relative_root = ""
 

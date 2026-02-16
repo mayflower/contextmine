@@ -217,9 +217,7 @@ def test_strict_gate_missing_metric_raises(monkeypatch: pytest.MonkeyPatch, tmp_
 
     snapshot = Snapshot(
         files=[FileInfo("src/main.py", "python")],
-        symbols=[
-            Symbol("main", SymbolKind.FUNCTION, "src/main.py", Range(1, 0, 1, 1), "main")
-        ],
+        symbols=[Symbol("main", SymbolKind.FUNCTION, "src/main.py", Range(1, 0, 1, 1), "main")],
         occurrences=[],
         relations=[],
         meta={
@@ -233,7 +231,9 @@ def test_strict_gate_missing_metric_raises(monkeypatch: pytest.MonkeyPatch, tmp_
 
     import contextmine_core.metrics.pipeline as pipeline_mod
 
-    monkeypatch.setattr(pipeline_mod, "discover_coverage_reports", lambda **_: [repo_root / "cov.xml"])
+    monkeypatch.setattr(
+        pipeline_mod, "discover_coverage_reports", lambda **_: [repo_root / "cov.xml"]
+    )
     monkeypatch.setattr(
         pipeline_mod,
         "parse_coverage_reports",
