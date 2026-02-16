@@ -50,6 +50,11 @@ data:
   SCIP_NODE_MEMORY_MB: {{ .Values.config.scip.nodeMemoryMb | quote }}
   SCIP_BEST_EFFORT: {{ .Values.config.scip.bestEffort | quote }}
 
+  # Real metrics pipeline settings
+  METRICS_STRICT_MODE: {{ .Values.config.metrics.strictMode | quote }}
+  METRICS_LANGUAGES: {{ .Values.config.metrics.languages | quote }}
+  METRICS_AUTODISCOVERY_ENABLED: {{ .Values.config.metrics.autodiscoveryEnabled | quote }}
+
   # OpenTelemetry settings
   {{- if .Values.monitoring.otel.enabled }}
   OTEL_ENABLED: "true"
