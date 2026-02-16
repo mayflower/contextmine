@@ -48,10 +48,32 @@ def infer_node_layers(kind: str, meta: dict[str, Any] | None = None) -> set[Twin
     """Infer layers for a node kind."""
     del meta
     norm = kind.lower()
-    if norm in {"file", "module", "symbol", "function", "method", "class", "validator"}:
-        return {TwinLayer.CODE_CONTROLFLOW}
+    if norm in {
+        "file",
+        "module",
+        "symbol",
+        "function",
+        "method",
+        "class",
+        "struct",
+        "trait",
+        "type_alias",
+        "enum",
+        "property",
+        "parameter",
+        "constant",
+        "variable",
+        "validator",
+    }:
+        # Raw code entities should remain visible in architecture-oriented views
+        # until explicit domain/container extraction is available.
+        return {
+            TwinLayer.CODE_CONTROLFLOW,
+            TwinLayer.COMPONENT_INTERFACE,
+            TwinLayer.DOMAIN_CONTAINER,
+        }
     if norm in {"api_endpoint", "interface", "rpc", "service", "component"}:
-        return {TwinLayer.COMPONENT_INTERFACE}
+        return {TwinLayer.COMPONENT_INTERFACE, TwinLayer.DOMAIN_CONTAINER}
     if norm in {"bounded_context", "container", "db_table", "db_column"}:
         return {TwinLayer.DOMAIN_CONTAINER}
     return {TwinLayer.PORTFOLIO_SYSTEM}
@@ -60,10 +82,20 @@ def infer_node_layers(kind: str, meta: dict[str, Any] | None = None) -> set[Twin
 def infer_edge_layers(kind: str) -> set[TwinLayer]:
     """Infer layers for edge kinds."""
     k = kind.lower()
+    if k == "file_defines_symbol" or k.startswith("symbol_"):
+        return {
+            TwinLayer.CODE_CONTROLFLOW,
+            TwinLayer.COMPONENT_INTERFACE,
+            TwinLayer.DOMAIN_CONTAINER,
+        }
     if "calls" in k or "references" in k or "contains" in k:
-        return {TwinLayer.CODE_CONTROLFLOW}
+        return {
+            TwinLayer.CODE_CONTROLFLOW,
+            TwinLayer.COMPONENT_INTERFACE,
+            TwinLayer.DOMAIN_CONTAINER,
+        }
     if "interface" in k or "endpoint" in k or "rpc" in k:
-        return {TwinLayer.COMPONENT_INTERFACE}
+        return {TwinLayer.COMPONENT_INTERFACE, TwinLayer.DOMAIN_CONTAINER}
     if "context" in k or "domain" in k:
         return {TwinLayer.DOMAIN_CONTAINER}
     return {TwinLayer.PORTFOLIO_SYSTEM}

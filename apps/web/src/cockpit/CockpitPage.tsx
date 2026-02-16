@@ -120,6 +120,25 @@ export default function CockpitPage({
   }, [selection.view, selection.layer])
 
   useEffect(() => {
+    const isGraphView = selection.view === 'topology' || selection.view === 'deep_dive'
+    if (!isGraphView) {
+      return
+    }
+    if (activeState !== 'ready') {
+      return
+    }
+    if (selection.layer === 'code_controlflow') {
+      return
+    }
+    if (graph.total_nodes === 0 || graph.nodes.length > 0) {
+      return
+    }
+
+    setLayer('code_controlflow')
+    pushToast('info', 'No nodes in this layer. Switched to Code / Controlflow.')
+  }, [activeState, graph.nodes.length, graph.total_nodes, pushToast, selection.layer, selection.view, setLayer])
+
+  useEffect(() => {
     if (!toast) {
       return
     }
