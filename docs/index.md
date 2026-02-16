@@ -7,10 +7,21 @@ ContextMine is a self-hosted documentation and code indexing system that exposes
 - **Hybrid Search** - Full-text + vector similarity with RRF (Reciprocal Rank Fusion) ranking for accurate retrieval
 - **Deep Research Agent** - Multi-step AI agent with LSP and Tree-sitter for complex codebase questions
 - **Code Intelligence** - Symbol extraction, code outlines, and structural navigation via Tree-sitter
+- **Architecture Cockpit** - Read-only Twin views (`Overview`, `Topology`, `Deep Dive`, `C4 Diff`, `Exports`) per collection/scenario
+- **Strict Real Metrics** - File-level LOC/complexity/coupling/coverage for GitHub sources with explicit `metrics_status`
 - **Knowledge Graph** - GraphRAG-powered retrieval with business rules, data models, and architecture
 - **Web Crawling** - Index documentation sites automatically
 - **Git Indexing** - Index GitHub repositories with incremental updates
 - **Self-Hosted** - Your data stays on your infrastructure
+
+## Diataxis Documentation
+
+Use the documentation by need:
+
+1. **Tutorial**: first end-to-end Cockpit run with real metrics.
+2. **How-To**: practical browser checks and validation steps.
+3. **Reference**: API contracts and payload shapes (`metrics_status`, coverage pattern config).
+4. **Explanation**: strict gate rationale and failure semantics.
 
 ## Architecture Overview
 

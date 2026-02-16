@@ -6,6 +6,11 @@ This document describes the polyglot SCIP indexing system for ContextMine, which
 
 SCIP (Sourcegraph Code Intelligence Protocol) is a language-agnostic format for code intelligence data. This system runs language-specific SCIP indexers and parses their output into a unified `Snapshot` model for integration with ContextMine's knowledge graph.
 
+The same snapshot data is also the structural input for Twin/Cockpit real metrics:
+1. relevant production file detection,
+2. coupling calculation (symbol relations -> file graph),
+3. strict per-file metrics gate during GitHub sync.
+
 ## Architecture
 
 ```

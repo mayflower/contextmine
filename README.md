@@ -18,6 +18,8 @@ ContextMine indexes your documentation and code repositories, making them search
 - **Hybrid search** - Full-text + vector similarity with RRF ranking for accurate retrieval
 - **Deep research agent** - Multi-step AI agent with LSP and Tree-sitter for complex codebase questions
 - **Code intelligence** - Symbol extraction, code outlines, and structural navigation via Tree-sitter
+- **Architecture Cockpit** - Read-only extracted Twin views per collection/scenario (`Overview`, `Topology`, `Deep Dive`, `C4 Diff`, `Exports`)
+- **Strict real metrics** - File-level LOC/complexity/coupling/coverage for GitHub sources with explicit availability status
 - **Web crawling** - Index documentation sites automatically
 - **Git indexing** - Index GitHub repositories with incremental updates
 - **Self-hosted** - Your data stays on your infrastructure
@@ -143,6 +145,37 @@ What authentication methods does this codebase support?
 Show me the outline of src/auth/handlers.py
 ```
 
+## Architecture Cockpit (Extracted Views)
+
+The web app includes an **Architecture Cockpit** for project/collection-level Twin inspection in the browser.
+
+### Views
+
+1. `Overview` - City KPIs, hotspots, and `cc.json` preview.
+2. `Topology` - Layered architecture graph view.
+3. `Deep Dive` - Large graph slices for dependency/controlflow inspection.
+4. `C4 Diff` - AS-IS / TO-BE Mermaid compare.
+5. `Exports` - Generate `cc_json`, `cx2`, `jgf`, `lpg_jsonl`, `mermaid_c4`.
+
+### Real Metrics Semantics
+
+Overview uses `GET /api/twin/collections/{collection_id}/views/city` and reads:
+
+```json
+{
+  "metrics_status": {
+    "status": "ready|unavailable",
+    "reason": "ok|no_real_metrics",
+    "strict_mode": true
+  }
+}
+```
+
+Rules:
+1. `ready`: real metric snapshots are available.
+2. `unavailable`: no valid real metrics for the selected scenario.
+3. UI shows `N/A` for unavailable KPI values (not placeholder `0.00`).
+
 ## Available MCP Tools
 
 ### Context Retrieval
@@ -192,6 +225,9 @@ Copy `.env.example` to `.env` and configure these variables:
 | `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
 | `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
 | `POSTGRES_PLATFORM` | Docker Compose postgres image platform override (default: `linux/amd64`) |
+| `METRICS_STRICT_MODE` | Enforce strict real metrics gate for GitHub syncs (default: `true`) |
+| `METRICS_LANGUAGES` | Metrics language scope (default: `python,typescript,javascript,java,php`) |
+| `METRICS_AUTODISCOVERY_ENABLED` | Fallback coverage report auto-discovery toggle (default: `true`) |
 
 ### Setting Up GitHub OAuth
 
@@ -235,10 +271,19 @@ Best for: Source code, README files, inline documentation
 3. Optionally specify:
    - **Branch**: defaults to the default branch
    - **Path filter**: limit to specific directories (e.g., `src/`, `docs/`)
+   - **Coverage report patterns**: repo-relative globs via API (`coverage_report_patterns`)
 4. Code files are parsed for symbols (functions, classes, methods)
 
 **Supported languages for symbol extraction:**
 Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
+
+**Supported languages for strict real metrics (Twin/City):**
+Python, TypeScript, JavaScript, Java, PHP
+
+Strict metrics gate behavior for GitHub sources:
+1. Coverage is report-ingested (no test execution by ContextMine).
+2. Missing/mismatched coverage fails sync with `METRICS_GATE_FAILED:*`.
+3. Gate applies to relevant production files in the semantic snapshot scope.
 
 ## Architecture
 
@@ -364,6 +409,13 @@ docker pull ghcr.io/mayflower/contextmine-web:latest
 Symbol extraction works for supported languages only. Check that:
 1. The file has a recognized extension (`.py`, `.ts`, `.js`, `.go`, etc.)
 2. The sync has completed (symbols are extracted during sync)
+
+### Cockpit Overview shows `N/A` metrics
+
+1. Inspect `GET /api/twin/collections/{collection_id}/views/city`.
+2. If `metrics_status.status=unavailable`, verify GitHub source coverage reports.
+3. Configure `coverage_report_patterns` for non-standard report locations.
+4. Re-run sync and confirm no `METRICS_GATE_FAILED:*` errors in sync run details.
 
 ## License
 

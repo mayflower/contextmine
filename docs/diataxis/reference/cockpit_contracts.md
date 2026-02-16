@@ -1,0 +1,100 @@
+# Reference: Cockpit Contracts
+
+This page documents the current backend contracts used by the read-only Architecture Cockpit.
+
+## Core View Endpoints
+
+1. `GET /api/twin/collections/{collection_id}/views/city`
+2. `GET /api/twin/collections/{collection_id}/views/topology`
+3. `GET /api/twin/collections/{collection_id}/views/deep-dive`
+4. `GET /api/twin/collections/{collection_id}/views/mermaid`
+
+## Scenario and Export Endpoints
+
+1. `GET /api/twin/scenarios?collection_id=<uuid>`
+2. `POST /api/twin/scenarios/{scenario_id}/exports`
+3. `GET /api/twin/scenarios/{scenario_id}/exports/{export_id}`
+
+## City View Response (important)
+
+`GET /api/twin/collections/{collection_id}/views/city`
+
+```json
+{
+  "collection_id": "uuid",
+  "scenario": {
+    "id": "uuid",
+    "collection_id": "uuid",
+    "name": "AS-IS",
+    "version": 12,
+    "is_as_is": true,
+    "base_scenario_id": null
+  },
+  "summary": {
+    "metric_nodes": 120,
+    "coverage_avg": 71.4,
+    "complexity_avg": 9.8,
+    "coupling_avg": 3.2
+  },
+  "metrics_status": {
+    "status": "ready",
+    "reason": "ok",
+    "strict_mode": true
+  },
+  "hotspots": [],
+  "cc_json": {}
+}
+```
+
+If metrics are unavailable:
+1. `metrics_status.status = "unavailable"`
+2. `metrics_status.reason = "no_real_metrics"`
+3. `summary.coverage_avg|complexity_avg|coupling_avg = null`
+
+## Source Config Contract for Coverage Reports
+
+`POST /api/collections/{collection_id}/sources`
+`PATCH /api/sources/{source_id}`
+
+Optional field:
+
+```json
+{
+  "coverage_report_patterns": ["**/coverage/lcov.info", "**/coverage.xml"]
+}
+```
+
+Rules:
+1. Allowed only for `type=github`.
+2. Patterns must be repository-relative globs.
+3. Empty arrays are invalid.
+4. Stored under `Source.config.metrics.coverage_report_patterns`.
+
+## Strict Metrics Gate Semantics
+
+For GitHub sources, metrics extraction enforces real file metrics on relevant production files:
+1. `loc`
+2. `complexity` (sum CCN per file)
+3. `coupling` (`coupling_in + coupling_out`)
+4. `coverage` (report-ingested)
+
+Gate failures surface as sync errors with `METRICS_GATE_FAILED:*` codes.
+
+## Relevant File Filter (production scope)
+
+Included:
+1. Files present in semantic snapshot and detected project scope.
+
+Excluded (examples):
+1. `node_modules`, `vendor`, `dist`, `build`, `target`, `.venv`, `venv`, `__pycache__`
+2. `**/test/**`, `**/tests/**`, `**/__tests__/**`, `*.spec.*`, `*.test.*`, `*_test.py`, `*Test.java`
+3. `**/generated/**`, `**/gen/**`, `*.generated.*`
+
+## Language Scope
+
+Real metrics scope currently matches SCIP support:
+1. Python
+2. TypeScript
+3. JavaScript
+4. Java
+5. PHP

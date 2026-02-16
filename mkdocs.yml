@@ -5,6 +5,16 @@ edit_uri: edit/main/docs/
 
 nav:
   - Overview: index.md
+  - Diataxis:
+      - Tutorials:
+          - First Cockpit Walkthrough: diataxis/tutorials/first_cockpit_walkthrough.md
+      - How-To Guides:
+          - Validate Cockpit in Browser: diataxis/how-to/validate_cockpit_browser.md
+          - Extracted Views QA Checklist: extracted_views_qa_checklist.md
+      - Reference:
+          - Cockpit Contracts: diataxis/reference/cockpit_contracts.md
+      - Explanation:
+          - Strict Metrics Pipeline: diataxis/explanation/strict_metrics_pipeline.md
   - MCP Interface: mcp.md
   - Development Guide: development.md
   - Knowledge Graph: KNOWLEDGE_GRAPH.md

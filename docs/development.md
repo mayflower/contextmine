@@ -23,8 +23,10 @@ contextmine/
 │       │   ├── models.py           # SQLAlchemy models
 │       │   ├── settings.py         # Configuration
 │       │   ├── analyzer/           # Knowledge extraction
+│       │   ├── metrics/            # Real metrics pipeline (LOC/complexity/coupling/coverage)
 │       │   ├── knowledge/          # Graph builder
 │       │   ├── research/           # Deep research agent
+│       │   ├── twin/               # Digital twin services (scenarios, patches, views)
 │       │   └── treesitter/         # Code parsing
 │       └── alembic/                # Database migrations
 ├── rust/
@@ -106,6 +108,13 @@ uv run pytest apps/api/tests/test_health.py::test_health_check -v
 
 # With coverage
 uv run pytest --cov=contextmine_core --cov-report=term-missing
+```
+
+Targeted Cockpit/metrics checks:
+
+```bash
+uv run pytest packages/core/tests/test_metrics_pipeline.py -v
+DEBUG=true uv run pytest apps/api/tests/test_sources.py apps/api/tests/test_twin_views.py -v
 ```
 
 ## Code Quality
@@ -239,6 +248,19 @@ Knowledge extraction:
 - Business rule mining from code
 - ERM extraction from Alembic migrations
 - System surface catalog (OpenAPI, GraphQL, Protobuf)
+
+### `contextmine_core.metrics`
+
+Strict real-metrics extraction for Twin/City:
+1. coverage report ingest (`lcov`, `cobertura`, `jacoco`, `clover/phpunit`),
+2. complexity + LOC via `lizard`,
+3. coupling from semantic snapshot relations,
+4. strict gate per relevant production file.
+
+Environment knobs:
+1. `METRICS_STRICT_MODE` (default `true`)
+2. `METRICS_LANGUAGES` (default `python,typescript,javascript,java,php`)
+3. `METRICS_AUTODISCOVERY_ENABLED` (default `true`)
 
 ## Docker Development
 

@@ -1,63 +1,77 @@
-# QA Checklist: Extracted Views im Browser (pro Projekt/Collection)
+# QA Checklist: Extracted Cockpit Views (Per Project/Collection)
 
-## Zweck
-Diese Checkliste validiert, dass die extrahierten Readonly-Sichten im Cockpit korrekt aus dem Twin pro Collection geladen werden.
+## Purpose
 
-## Voraussetzungen
-1. Mindestens zwei Collections mit Datenbestand.
-2. Für mindestens eine Collection existiert ein AS-IS-Szenario.
-3. Optional: Ein TO-BE-Szenario mit `base_scenario_id` für den Mermaid-Vergleich.
+Validate that the read-only Cockpit views are loaded from the correct Twin scenario per collection, and that metrics semantics are explicit (`ready` vs `unavailable`).
 
-## Test 1: Projekt-Isolation
-1. Cockpit öffnen.
-2. Collection A wählen und sichtbare Daten merken (Szenarien, Graph, Hotspots).
-3. Auf Collection B wechseln.
-4. Erwartung:
-   - Inhalte wechseln sichtbar.
-   - Keine Daten aus Collection A bleiben stehen.
+## Preconditions
 
-## Test 2: Layer-Filter in Topology/Deep Dive
-1. Tab `Topology` öffnen.
-2. Layer nacheinander umschalten:
+1. At least two collections exist.
+2. At least one collection has an AS-IS scenario.
+3. Optional: one TO-BE scenario with `base_scenario_id` for C4 compare.
+
+## Test 1: Collection Isolation
+
+1. Open `Architecture Cockpit`.
+2. Select Collection A and note scenarios + visible data.
+3. Switch to Collection B.
+
+Expected:
+1. Scenario list and content change to Collection B data.
+2. No stale data from Collection A remains.
+
+## Test 2: Layered Graph Filtering
+
+1. Open `Topology`.
+2. Switch all layers:
    - `portfolio_system`
    - `domain_container`
    - `component_interface`
    - `code_controlflow`
-3. Erwartung:
-   - Knoten/Kanten ändern sich je Layer.
-   - Keine Fehlermeldung im Cockpit.
 
-## Test 3: City-Sicht Konsistenz
-1. Tab `City` öffnen.
-2. Prüfen, ob `Metric Nodes`, `Avg Coverage`, `Avg Complexity`, `Avg Coupling` angezeigt werden.
-3. In DevTools die Response von `GET /api/twin/collections/{collection_id}/views/city` prüfen.
-4. Erwartung:
-   - `summary.metric_nodes` entspricht `cc_json.nodes.length`.
-   - `hotspots` ist bei nicht-leerer Collection nicht leer.
+Expected:
+1. Node/edge set changes per layer.
+2. No request errors.
 
-## Test 4: Mermaid AS-IS vs TO-BE
-1. AS-IS-Szenario wählen, Tab `Mermaid C4`.
-2. TO-BE-Szenario wählen (mit `base_scenario_id`), Tab `Mermaid C4`.
-3. Erwartung:
-   - AS-IS: Single-Ausgabe.
-   - TO-BE: Vergleichsausgabe mit zwei Blöcken (`AS-IS` und `TO-BE`).
+## Test 3: Overview Metrics Semantics
 
-## Test 5: Exportformate Smoke Test
-1. Tab `Exporte` öffnen.
-2. Jeweils Export erzeugen für:
+1. Open `Overview`.
+2. Check KPI cards and hotspot table.
+3. Inspect `GET /api/twin/collections/{collection_id}/views/city` in DevTools.
+
+Expected:
+1. If `metrics_status.status=ready`: KPIs are numeric.
+2. If `metrics_status.status=unavailable`: KPIs show `N/A` (not `0.00`).
+3. Hotspots render only when real metric rows exist.
+
+## Test 4: C4 Diff AS-IS vs TO-BE
+
+1. Select AS-IS scenario and open `C4 Diff`.
+2. Select TO-BE scenario (with base) and open `C4 Diff`.
+
+Expected:
+1. AS-IS scenario: single representation.
+2. TO-BE scenario: compare mode with explicit `AS-IS` and `TO-BE` sections.
+
+## Test 5: Export Smoke Test
+
+1. Open `Exports`.
+2. Generate each format:
    - `cc_json`
    - `cx2`
    - `jgf`
    - `lpg_jsonl`
    - `mermaid_c4`
-3. Erwartung:
-   - `cc_json`: enthält `projectName`, `nodes`, `edges`.
-   - `cx2`: enthält `CXVersion`.
-   - `jgf`: enthält `graph`.
-   - `lpg_jsonl`: enthält JSONL-Zeilen mit `type=node|edge`.
-   - `mermaid_c4`: enthält `C4Container`.
 
-## API-Referenz (für Debug)
+Expected:
+1. `cc_json`: contains `projectName`, `nodes`, `edges`.
+2. `cx2`: contains `CXVersion`.
+3. `jgf`: contains `graph`.
+4. `lpg_jsonl`: contains JSONL entries with `type=node|edge`.
+5. `mermaid_c4`: contains C4 Mermaid content.
+
+## API Endpoints (Debug)
+
 1. `GET /api/twin/collections/{collection_id}/views/topology`
 2. `GET /api/twin/collections/{collection_id}/views/deep-dive`
 3. `GET /api/twin/collections/{collection_id}/views/city`
