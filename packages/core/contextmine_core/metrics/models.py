@@ -17,7 +17,7 @@ class FileMetricRecord:
     coupling_in: int
     coupling_out: int
     coupling: float
-    coverage: float
+    coverage: float | None = None
     sources: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,7 +43,11 @@ class FileMetricRecord:
             coupling_in=int(payload["coupling_in"]),
             coupling_out=int(payload["coupling_out"]),
             coupling=float(payload["coupling"]),
-            coverage=float(payload["coverage"]),
+            coverage=(
+                float(payload["coverage"])
+                if payload.get("coverage") is not None
+                else None
+            ),
             sources=dict(payload.get("sources", {})),
         )
 

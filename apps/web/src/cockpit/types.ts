@@ -80,7 +80,7 @@ export interface CityHotspot {
 
 export interface MetricsStatus {
   status: 'ready' | 'unavailable'
-  reason: 'ok' | 'no_real_metrics'
+  reason: 'ok' | 'no_real_metrics' | 'awaiting_ci_coverage' | 'coverage_ingest_failed'
   strict_mode: boolean
 }
 

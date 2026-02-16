@@ -19,10 +19,14 @@ from contextmine_core.exports import (
 )
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.models import (
+    CoverageIngestJob,
     KnowledgeArtifact,
     KnowledgeArtifactKind,
     MetricSnapshot,
+    Source,
+    SourceType,
     TwinLayer,
+    TwinNode,
     TwinScenario,
 )
 from contextmine_core.twin import (
@@ -465,9 +469,62 @@ async def city_view(
 
         settings = get_settings()
         metrics_ready = len(metrics) > 0
+        metrics_reason = "ok" if metrics_ready else "no_real_metrics"
+        if not metrics_ready:
+            sources = (
+                (
+                    await db.execute(
+                        select(Source).where(Source.collection_id == collection_uuid)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            github_source_ids = [source.id for source in sources if source.type == SourceType.GITHUB]
+
+            if github_source_ids:
+                jobs = (
+                    (
+                        await db.execute(
+                            select(CoverageIngestJob)
+                            .where(CoverageIngestJob.source_id.in_(github_source_ids))
+                            .order_by(CoverageIngestJob.created_at.desc())
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                has_pending = any(job.status in {"queued", "processing"} for job in jobs)
+                latest_failed = next(
+                    (job for job in jobs if job.status in {"failed", "rejected"}),
+                    None,
+                )
+                if has_pending:
+                    metrics_reason = "awaiting_ci_coverage"
+                elif latest_failed is not None:
+                    metrics_reason = "coverage_ingest_failed"
+                else:
+                    file_nodes = (
+                        (
+                            await db.execute(
+                                select(TwinNode).where(
+                                    TwinNode.scenario_id == scenario.id,
+                                    TwinNode.kind == "file",
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    has_structural = any(
+                        bool((node.meta or {}).get("metrics_structural_ready")) for node in file_nodes
+                    )
+                    if has_structural:
+                        metrics_reason = "awaiting_ci_coverage"
+
         metrics_status = {
             "status": "ready" if metrics_ready else "unavailable",
-            "reason": "ok" if metrics_ready else "no_real_metrics",
+            "reason": metrics_reason,
             "strict_mode": bool(settings.metrics_strict_mode),
         }
 

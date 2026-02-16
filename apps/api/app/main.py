@@ -25,6 +25,7 @@ from app.routes import (
     db,
     documents,
     health,
+    metrics_ingest,
     prefect,
     runs,
     search,
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(context.router, prefix="/api")
     app.include_router(prefect.router, prefix="/api")
     app.include_router(twin.router, prefix="/api")
+    app.include_router(metrics_ingest.router, prefix="/api")
     app.include_router(validation.router, prefix="/api")
 
     # Mount MCP server at /mcp

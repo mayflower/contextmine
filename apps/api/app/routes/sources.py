@@ -1,6 +1,8 @@
 """Sources management routes."""
 
+import hashlib
 import re
+import secrets
 import uuid
 from datetime import UTC, datetime
 
@@ -10,6 +12,7 @@ from contextmine_core import (
     CollectionVisibility,
     Document,
     Source,
+    SourceIngestToken,
     SourceType,
     compute_ssh_key_fingerprint,
     encrypt_token,
@@ -34,6 +37,7 @@ class CreateSourceRequest(BaseModel):
     url: str
     enabled: bool = True
     schedule_interval_minutes: int = 60
+    # Deprecated M2 no-op, kept for compatibility.
     coverage_report_patterns: list[str] | None = None
 
 
@@ -60,7 +64,8 @@ class UpdateSourceRequest(BaseModel):
     enabled: bool | None = None
     schedule_interval_minutes: int | None = None
     max_pages: int | None = None  # For web sources only
-    coverage_report_patterns: list[str] | None = None  # For GitHub sources only
+    # Deprecated M2 no-op, kept for compatibility.
+    coverage_report_patterns: list[str] | None = None
 
 
 class SetDeployKeyRequest(BaseModel):
@@ -76,6 +81,25 @@ class DeployKeyResponse(BaseModel):
     has_key: bool
 
 
+class RotateCoverageIngestTokenResponse(BaseModel):
+    """Response for ingest token rotation (raw token returned once)."""
+
+    token: str
+    token_preview: str
+    created_at: datetime
+    rotated_at: datetime | None
+
+
+class CoverageIngestTokenMetadataResponse(BaseModel):
+    """Metadata-only view of source ingest token."""
+
+    has_token: bool
+    token_preview: str | None
+    created_at: datetime | None
+    rotated_at: datetime | None
+    last_used_at: datetime | None
+
+
 def get_current_user_id(request: Request) -> uuid.UUID:
     """Get the current user ID from session or raise 401."""
     session = get_session(request)
@@ -86,11 +110,7 @@ def get_current_user_id(request: Request) -> uuid.UUID:
 
 
 def validate_github_url(url: str) -> dict:
-    """Validate and parse a GitHub repository URL.
-
-    Returns config dict with owner, repo, and branch.
-    """
-    # Match https://github.com/owner/repo or https://github.com/owner/repo.git
+    """Validate and parse a GitHub repository URL."""
     pattern = r"^https://github\.com/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+?)(?:\.git)?$"
     match = re.match(pattern, url)
     if not match:
@@ -102,67 +122,52 @@ def validate_github_url(url: str) -> dict:
     return {
         "owner": match.group(1),
         "repo": match.group(2),
-        "branch": "main",  # Default branch
+        "branch": "main",
     }
 
 
 def validate_web_url(url: str) -> dict:
-    """Validate a web URL for crawling.
-
-    Returns config dict with start_url and base_url.
-    - start_url: The URL to begin crawling from (user's input)
-    - base_url: The path prefix for scoping (derived from start_url)
-
-    The base_url is derived by taking the parent directory of the start_url.
-    For example:
-    - https://example.com/docs/intro → base_url = https://example.com/docs/
-    - https://example.com/docs/ → base_url = https://example.com/docs/
-    """
+    """Validate a web URL for crawling."""
     from urllib.parse import urlparse, urlunparse
 
-    # Basic URL validation
     if not url.startswith(("http://", "https://")):
         raise HTTPException(
             status_code=400,
             detail="Invalid URL. Must start with http:// or https://",
         )
 
-    # Parse URL to derive base_url
     parsed = urlparse(url)
     path = parsed.path
-
-    # Derive base path: if path doesn't end with /, strip the last component
     if path and not path.endswith("/"):
-        # Strip last path component (the "page")
         last_slash = path.rfind("/")
         path = path[: last_slash + 1] if last_slash > 0 else "/"
 
-    # Reconstruct base_url with derived path
     base_url = urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
-
-    return {
-        "start_url": url,  # Original URL to start crawling from
-        "base_url": base_url,  # Derived path prefix for scoping
-    }
+    return {"start_url": url, "base_url": base_url}
 
 
-def validate_coverage_report_patterns(patterns: list[str]) -> list[str]:
-    """Validate repo-relative coverage report glob patterns."""
-    normalized = [pattern.strip() for pattern in patterns if pattern and pattern.strip()]
-    if not normalized:
-        raise HTTPException(
-            status_code=400,
-            detail="coverage_report_patterns must contain at least one repo-relative glob",
-        )
+def mark_coverage_patterns_deprecated(config: dict, patterns: list[str] | None) -> dict:
+    """Keep deprecated coverage field as compatibility marker."""
+    next_config = dict(config or {})
+    metrics_cfg = dict(next_config.get("metrics") or {})
+    metrics_cfg["deprecated"] = True
+    metrics_cfg["deprecated_field"] = "coverage_report_patterns"
+    if patterns is not None:
+        metrics_cfg["coverage_report_patterns_ignored"] = list(patterns)
+    next_config["metrics"] = metrics_cfg
+    return next_config
 
-    for pattern in normalized:
-        if pattern.startswith("/"):
-            raise HTTPException(
-                status_code=400,
-                detail="coverage_report_patterns must be repo-relative globs",
-            )
 
-    return normalized
+def hash_ingest_token(token: str) -> str:
+    """Hash ingest token for at-rest storage."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def make_token_preview(token: str) -> str:
+    """Build masked preview value."""
+    if len(token) < 10:
+        return "********"
+    return f"{token[:6]}...{token[-4:]}"
 
 
 async def _get_collection_with_access(
@@ -183,19 +188,14 @@ async def _get_collection_with_access(
     if require_owner:
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can perform this action")
-    else:
-        # Check access: global, owner, or member
-        if (
-            collection.visibility == CollectionVisibility.PRIVATE
-            and collection.owner_user_id != user_id
-        ):
-            result = await db.execute(
-                select(CollectionMember)
-                .where(CollectionMember.collection_id == collection.id)
-                .where(CollectionMember.user_id == user_id)
-            )
-            if not result.scalar_one_or_none():
-                raise HTTPException(status_code=403, detail="Access denied to this collection")
+    elif collection.visibility == CollectionVisibility.PRIVATE and collection.owner_user_id != user_id:
+        result = await db.execute(
+            select(CollectionMember)
+            .where(CollectionMember.collection_id == collection.id)
+            .where(CollectionMember.user_id == user_id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this collection")
 
     return collection
 
@@ -207,7 +207,6 @@ async def create_source(
     """Create a new source in a collection."""
     user_id = get_current_user_id(request)
 
-    # Validate source type
     try:
         source_type = SourceType(body.type)
     except ValueError as e:
@@ -215,30 +214,12 @@ async def create_source(
             status_code=400, detail="Invalid type. Must be 'github' or 'web'"
         ) from e
 
-    # Validate URL and get config
-    if source_type == SourceType.GITHUB:
-        config = validate_github_url(body.url)
-    else:
-        config = validate_web_url(body.url)
-
+    config = validate_github_url(body.url) if source_type == SourceType.GITHUB else validate_web_url(body.url)
     if body.coverage_report_patterns is not None:
-        if source_type != SourceType.GITHUB:
-            raise HTTPException(
-                status_code=400,
-                detail="coverage_report_patterns is only supported for GitHub sources",
-            )
-        validated_patterns = validate_coverage_report_patterns(body.coverage_report_patterns)
-        config["metrics"] = {
-            "coverage_report_patterns": validated_patterns,
-        }
+        config = mark_coverage_patterns_deprecated(config, body.coverage_report_patterns)
 
     async with get_db_session() as db:
-        # Check collection access (only owner can add sources)
-        collection = await _get_collection_with_access(
-            db, collection_id, user_id, require_owner=True
-        )
-
-        # Create source – set next_run_at to now so the worker picks it up immediately
+        collection = await _get_collection_with_access(db, collection_id, user_id, require_owner=True)
         source = Source(
             id=uuid.uuid4(),
             collection_id=collection.id,
@@ -273,10 +254,7 @@ async def list_sources(request: Request, collection_id: str) -> list[SourceRespo
     user_id = get_current_user_id(request)
 
     async with get_db_session() as db:
-        # Check collection access
         collection = await _get_collection_with_access(db, collection_id, user_id)
-
-        # Get sources with document counts
         doc_count_subq = (
             select(Document.source_id, func.count(Document.id).label("doc_count"))
             .group_by(Document.source_id)
@@ -321,23 +299,18 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        # Get source
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
-
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Check collection ownership
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
-
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can delete sources")
 
         await db.delete(source)
         await db.flush()
-
         return {"status": "deleted"}
 
 
@@ -354,21 +327,16 @@ async def update_source(
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        # Get source
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
-
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Check collection ownership
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
-
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can update sources")
 
-        # Update fields if provided
         if body.enabled is not None:
             source.enabled = body.enabled
 
@@ -381,31 +349,20 @@ async def update_source(
 
         if body.max_pages is not None:
             if source.type != SourceType.WEB:
-                raise HTTPException(
-                    status_code=400, detail="max_pages is only supported for web sources"
-                )
+                raise HTTPException(status_code=400, detail="max_pages is only supported for web sources")
             if body.max_pages < 1 or body.max_pages > 1000:
                 raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
-            config = source.config or {}
+            config = dict(source.config or {})
             config["max_pages"] = body.max_pages
             source.config = config
 
         if body.coverage_report_patterns is not None:
-            if source.type != SourceType.GITHUB:
-                raise HTTPException(
-                    status_code=400,
-                    detail="coverage_report_patterns is only supported for GitHub sources",
-                )
-            validated_patterns = validate_coverage_report_patterns(body.coverage_report_patterns)
-            config = source.config or {}
-            metrics_config = dict(config.get("metrics") or {})
-            metrics_config["coverage_report_patterns"] = validated_patterns
-            config["metrics"] = metrics_config
-            source.config = config
+            source.config = mark_coverage_patterns_deprecated(
+                source.config or {}, body.coverage_report_patterns
+            )
 
         await db.flush()
 
-        # Get document count
         doc_count_result = await db.execute(
             select(func.count(Document.id)).where(Document.source_id == source.id)
         )
@@ -438,22 +395,121 @@ async def sync_now(request: Request, source_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        # Get source
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
-
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Check collection access (owner or member can trigger sync)
         await _get_collection_with_access(db, str(source.collection_id), user_id)
-
-        # Set next_run_at to now
         next_run = datetime.now(UTC)
         source.next_run_at = next_run
         await db.flush()
-
         return {"status": "sync_scheduled", "next_run_at": next_run.isoformat()}
+
+
+@router.post(
+    "/sources/{source_id}/metrics/coverage-ingest-token/rotate",
+    response_model=RotateCoverageIngestTokenResponse,
+)
+async def rotate_coverage_ingest_token(
+    request: Request, source_id: str
+) -> RotateCoverageIngestTokenResponse:
+    """Rotate source-scoped CI ingest token (owner only)."""
+    user_id = get_current_user_id(request)
+
+    try:
+        src_uuid = uuid.UUID(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+
+    async with get_db_session() as db:
+        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        collection = (
+            await db.execute(select(Collection).where(Collection.id == source.collection_id))
+        ).scalar_one()
+        if collection.owner_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Only the owner can rotate ingest tokens")
+
+        raw_token = f"cmi_{secrets.token_urlsafe(36)}"
+        digest = hash_ingest_token(raw_token)
+        preview = make_token_preview(raw_token)
+        now = datetime.now(UTC)
+
+        token_row = (
+            await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+        ).scalar_one_or_none()
+        if token_row:
+            token_row.token_hash = digest
+            token_row.token_preview = preview
+            token_row.rotated_at = now
+        else:
+            token_row = SourceIngestToken(
+                id=uuid.uuid4(),
+                source_id=source.id,
+                token_hash=digest,
+                token_preview=preview,
+                created_at=now,
+                rotated_at=now,
+            )
+            db.add(token_row)
+
+        await db.flush()
+        return RotateCoverageIngestTokenResponse(
+            token=raw_token,
+            token_preview=token_row.token_preview,
+            created_at=token_row.created_at,
+            rotated_at=token_row.rotated_at,
+        )
+
+
+@router.get(
+    "/sources/{source_id}/metrics/coverage-ingest-token",
+    response_model=CoverageIngestTokenMetadataResponse,
+)
+async def get_coverage_ingest_token(
+    request: Request, source_id: str
+) -> CoverageIngestTokenMetadataResponse:
+    """Read source ingest token metadata (owner only)."""
+    user_id = get_current_user_id(request)
+
+    try:
+        src_uuid = uuid.UUID(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+
+    async with get_db_session() as db:
+        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        collection = (
+            await db.execute(select(Collection).where(Collection.id == source.collection_id))
+        ).scalar_one()
+        if collection.owner_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Only the owner can view ingest token metadata")
+
+        token_row = (
+            await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+        ).scalar_one_or_none()
+        if not token_row:
+            return CoverageIngestTokenMetadataResponse(
+                has_token=False,
+                token_preview=None,
+                created_at=None,
+                rotated_at=None,
+                last_used_at=None,
+            )
+
+        return CoverageIngestTokenMetadataResponse(
+            has_token=True,
+            token_preview=token_row.token_preview,
+            created_at=token_row.created_at,
+            rotated_at=token_row.rotated_at,
+            last_used_at=token_row.last_used_at,
+        )
 
 
 @router.get("/sources/{source_id}/deploy-key", response_model=DeployKeyResponse)
@@ -467,17 +523,13 @@ async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        # Get source
-        result = await db.execute(select(Source).where(Source.id == src_uuid))
-        source = result.scalar_one_or_none()
-
+        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Check collection ownership (only owner can view deploy key info)
-        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
-        collection = result.scalar_one()
-
+        collection = (
+            await db.execute(select(Collection).where(Collection.id == source.collection_id))
+        ).scalar_one()
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can view deploy key info")
 
@@ -499,7 +551,6 @@ async def set_deploy_key(
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
-    # Validate the private key format
     private_key = body.private_key.strip()
     if not validate_ssh_private_key(private_key):
         raise HTTPException(
@@ -508,39 +559,23 @@ async def set_deploy_key(
         )
 
     async with get_db_session() as db:
-        # Get source
-        result = await db.execute(select(Source).where(Source.id == src_uuid))
-        source = result.scalar_one_or_none()
-
+        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
-
-        # Only GitHub sources can have deploy keys
         if source.type != SourceType.GITHUB:
-            raise HTTPException(
-                status_code=400, detail="Deploy keys are only supported for GitHub sources"
-            )
+            raise HTTPException(status_code=400, detail="Deploy keys are only supported for GitHub sources")
 
-        # Check collection ownership
-        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
-        collection = result.scalar_one()
-
+        collection = (
+            await db.execute(select(Collection).where(Collection.id == source.collection_id))
+        ).scalar_one()
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can set deploy keys")
 
-        # Compute fingerprint and encrypt the key
-        fingerprint = compute_ssh_key_fingerprint(private_key)
-        encrypted_key = encrypt_token(private_key)
-
-        # Update source
-        source.deploy_key_encrypted = encrypted_key
-        source.deploy_key_fingerprint = fingerprint
+        source.deploy_key_encrypted = encrypt_token(private_key)
+        source.deploy_key_fingerprint = compute_ssh_key_fingerprint(private_key)
         await db.flush()
 
-        return DeployKeyResponse(
-            fingerprint=fingerprint,
-            has_key=True,
-        )
+        return DeployKeyResponse(fingerprint=source.deploy_key_fingerprint, has_key=True)
 
 
 @router.delete("/sources/{source_id}/deploy-key")
@@ -554,23 +589,17 @@ async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        # Get source
-        result = await db.execute(select(Source).where(Source.id == src_uuid))
-        source = result.scalar_one_or_none()
-
+        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Check collection ownership
-        result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
-        collection = result.scalar_one()
-
+        collection = (
+            await db.execute(select(Collection).where(Collection.id == source.collection_id))
+        ).scalar_one()
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can delete deploy keys")
 
-        # Clear deploy key
         source.deploy_key_encrypted = None
         source.deploy_key_fingerprint = None
         await db.flush()
-
         return {"status": "deleted"}

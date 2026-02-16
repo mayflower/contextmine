@@ -201,6 +201,14 @@ class Settings(BaseSettings):
         default=True,
         description="Enable fallback auto-discovery for coverage reports when no config patterns match",
     )
+    coverage_ingest_max_payload_mb: int = Field(
+        default=25,
+        description="Maximum total multipart payload size for CI coverage ingest endpoint",
+    )
+    coverage_ingest_prefect_flow_name: str = Field(
+        default="ingest_coverage_metrics",
+        description="Prefect flow name used for asynchronous coverage ingest processing",
+    )
 
     # OpenTelemetry Settings (disabled by default - no overhead when disabled)
     otel_enabled: bool = Field(

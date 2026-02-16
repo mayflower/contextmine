@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -391,6 +392,109 @@ class Source(Base):
     documents: Mapped[list["Document"]] = relationship(
         back_populates="source", cascade="all, delete-orphan"
     )
+    ingest_token: Mapped["SourceIngestToken | None"] = relationship(
+        back_populates="source", cascade="all, delete-orphan", uselist=False
+    )
+    coverage_ingest_jobs: Mapped[list["CoverageIngestJob"]] = relationship(
+        back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+class SourceIngestToken(Base):
+    """Single active CI ingest token for one source."""
+
+    __tablename__ = "source_ingest_tokens"
+    __table_args__ = (UniqueConstraint("source_id", name="uq_source_ingest_token_source"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_preview: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    source: Mapped["Source"] = relationship(back_populates="ingest_token")
+
+
+class CoverageIngestJob(Base):
+    """Coverage ingest job pushed from CI and processed asynchronously."""
+
+    __tablename__ = "coverage_ingest_jobs"
+    __table_args__ = (
+        Index("ix_coverage_ingest_job_source_created", "source_id", "created_at"),
+        Index("ix_coverage_ingest_job_status", "status", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scenario_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="github_actions")
+    workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stats: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    source: Mapped["Source"] = relationship(back_populates="coverage_ingest_jobs")
+    collection: Mapped["Collection"] = relationship()
+    scenario: Mapped["TwinScenario | None"] = relationship()
+    reports: Mapped[list["CoverageIngestReport"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan"
+    )
+
+
+class CoverageIngestReport(Base):
+    """Raw uploaded report payload attached to one ingest job."""
+
+    __tablename__ = "coverage_ingest_reports"
+    __table_args__ = (Index("ix_coverage_ingest_report_job", "job_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("coverage_ingest_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    protocol_detected: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    report_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    diagnostics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    job: Mapped["CoverageIngestJob"] = relationship(back_populates="reports")
 
 
 class SyncRun(Base):

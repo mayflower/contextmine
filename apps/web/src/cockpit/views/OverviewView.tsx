@@ -28,6 +28,16 @@ function formatMetricValue(value: number | null | undefined): string {
   return value.toFixed(2)
 }
 
+function metricsUnavailableMessage(reason: string | undefined): string {
+  if (reason === 'awaiting_ci_coverage') {
+    return 'Structural metrics are ready. Waiting for CI-pushed coverage reports for this commit.'
+  }
+  if (reason === 'coverage_ingest_failed') {
+    return 'Coverage ingest failed for the latest CI upload. Check ingest job diagnostics and retry.'
+  }
+  return 'Real metrics are currently unavailable for this scenario.'
+}
+
 function sortHotspots(
   city: CityPayload | null,
   sortKey: SortKey,
@@ -116,6 +126,7 @@ export default function OverviewView({
   const preview = JSON.stringify(city?.cc_json || {}, null, 2)
   const previewLines = preview.split('\n').slice(0, 32).join('\n')
   const metricsUnavailable = city?.metrics_status?.status === 'unavailable'
+  const unavailableReason = city?.metrics_status?.reason
 
   return (
     <section className="cockpit2-workspace" id="cockpit-panel-overview" role="tabpanel">
@@ -131,8 +142,7 @@ export default function OverviewView({
           <h3>System health summary</h3>
           {metricsUnavailable ? (
             <p className="muted">
-              Real metrics are currently unavailable for this scenario. Run a GitHub sync with valid
-              coverage reports to unlock City metrics.
+              {metricsUnavailableMessage(unavailableReason)}
             </p>
           ) : null}
           <div className="cockpit2-kpis">
@@ -183,7 +193,7 @@ export default function OverviewView({
                   <tr>
                     <td colSpan={5} className="empty-row">
                       {metricsUnavailable
-                        ? 'Real metrics are unavailable for this scenario.'
+                        ? metricsUnavailableMessage(unavailableReason)
                         : 'No hotspots match the current filter.'}
                     </td>
                   </tr>

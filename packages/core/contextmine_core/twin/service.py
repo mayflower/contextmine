@@ -361,6 +361,7 @@ async def ingest_snapshot_into_as_is(
     session: AsyncSession,
     collection_id: UUID,
     snapshot: Snapshot,
+    source_id: UUID | None = None,
     user_id: UUID | None = None,
 ) -> tuple[TwinScenario, dict[str, int]]:
     """Upsert SCIP/LSIF snapshot entities into the AS-IS scenario."""
@@ -380,7 +381,11 @@ async def ingest_snapshot_into_as_is(
             natural_key=file_key,
             kind="file",
             name=file_info.path,
-            meta={"language": file_info.language, **(snapshot.meta or {})},
+            meta={
+                "language": file_info.language,
+                "source_id": str(source_id) if source_id else None,
+                **(snapshot.meta or {}),
+            },
             provenance_node_id=None,
         )
         node_count += 1
@@ -783,7 +788,9 @@ async def refresh_metric_snapshots(
             continue
 
         meta = node.meta or {}
-        if not bool(meta.get("metrics_real")):
+        if not bool(meta.get("metrics_structural_ready")):
+            continue
+        if not bool(meta.get("coverage_ready")):
             continue
 
         if any(meta.get(field) is None for field in required_fields):
@@ -811,7 +818,7 @@ async def apply_file_metrics_to_scenario(
     scenario_id: UUID,
     file_metrics: list[dict[str, Any]],
 ) -> int:
-    """Apply validated file-level metrics onto scenario file nodes."""
+    """Apply structural file-level metrics onto scenario file nodes."""
     if not file_metrics:
         return 0
 
@@ -847,18 +854,77 @@ async def apply_file_metrics_to_scenario(
         meta = dict(node.meta or {})
         meta.update(
             {
-                "metrics_real": True,
+                "metrics_real": False,
+                "metrics_structural_ready": True,
+                "coverage_ready": False,
                 "loc": int(metric["loc"]),
                 "complexity": float(metric["complexity"]),
                 "coupling_in": int(metric["coupling_in"]),
                 "coupling_out": int(metric["coupling_out"]),
                 "coupling": float(metric["coupling"]),
-                "coverage": float(metric["coverage"]),
+                "coverage": None,
                 "metrics_sources": metric.get("sources", {}),
                 "metrics_language": metric.get("language"),
             }
         )
         node.meta = meta
+        updated += 1
+
+    return updated
+
+
+async def apply_coverage_metrics_to_scenario(
+    session: AsyncSession,
+    scenario_id: UUID,
+    source_id: UUID,
+    coverage_map: dict[str, float],
+    coverage_sources: dict[str, dict[str, Any]] | None = None,
+    commit_sha: str | None = None,
+    ingest_job_id: UUID | None = None,
+) -> int:
+    """Apply coverage-only metrics onto existing file nodes for a source."""
+    if not coverage_map:
+        return 0
+
+    coverage_sources = coverage_sources or {}
+    nodes = (
+        (await session.execute(select(TwinNode).where(TwinNode.scenario_id == scenario_id)))
+        .scalars()
+        .all()
+    )
+
+    updated = 0
+    source_id_str = str(source_id)
+    for node in nodes:
+        if node.kind != "file":
+            continue
+        if not node.natural_key.startswith("file:"):
+            continue
+
+        meta = dict(node.meta or {})
+        if str(meta.get("source_id") or "") != source_id_str:
+            continue
+
+        file_path = node.natural_key.removeprefix("file:")
+        if file_path not in coverage_map:
+            continue
+
+        metrics_sources = dict(meta.get("metrics_sources") or {})
+        metrics_sources["coverage"] = coverage_sources.get(file_path, {})
+        meta.update(
+            {
+                "coverage": float(coverage_map[file_path]),
+                "coverage_ready": True,
+                "metrics_real": bool(meta.get("metrics_structural_ready")),
+                "metrics_sources": metrics_sources,
+            }
+        )
+        if commit_sha:
+            meta["coverage_commit_sha"] = commit_sha
+        if ingest_job_id:
+            meta["coverage_ingest_job_id"] = str(ingest_job_id)
+        node.meta = meta
+        node.updated_at = datetime.now(UTC)
         updated += 1
 
     return updated

@@ -14,6 +14,8 @@ from pathlib import Path
 from contextmine_core import (
     Chunk,
     Collection,
+    CoverageIngestJob,
+    CoverageIngestReport,
     Document,
     EmbeddingModel,
     EmbeddingProvider,
@@ -762,7 +764,7 @@ async def build_twin_graph(
     file_metrics: list[dict] | None = None,
 ) -> dict:
     """Build digital twin graph from semantic snapshots (SCIP/LSIF) and existing KG."""
-    del source_id, changed_doc_ids
+    del changed_doc_ids
     import uuid as uuid_module
 
     from contextmine_core.graph.age import sync_scenario_to_age
@@ -777,6 +779,7 @@ async def build_twin_graph(
     from contextmine_core.validation import refresh_validation_snapshots
 
     collection_uuid = uuid_module.UUID(collection_id)
+    source_uuid = uuid_module.UUID(source_id)
     stats: dict[str, int | str] = {
         "twin_nodes_upserted": 0,
         "twin_edges_upserted": 0,
@@ -793,7 +796,11 @@ async def build_twin_graph(
             for snapshot_dict in snapshot_dicts:
                 snapshot = Snapshot.from_dict(snapshot_dict)
                 _, ingest_stats = await ingest_snapshot_into_as_is(
-                    session, collection_uuid, snapshot, user_id=None
+                    session,
+                    collection_uuid,
+                    snapshot,
+                    source_id=source_uuid,
+                    user_id=None,
                 )
                 stats["twin_nodes_upserted"] += int(ingest_stats.get("nodes_upserted", 0))
                 stats["twin_edges_upserted"] += int(ingest_stats.get("edges_upserted", 0))
@@ -1156,26 +1163,22 @@ async def sync_github_source(
         logger.warning("SCIP indexing failed: %s", e)
 
     await update_progress_artifact(
-        progress_id, progress=14, description="Extracting real code metrics..."
+        progress_id, progress=14, description="Extracting structural code metrics..."
     )  # type: ignore[misc]
     if snapshot_dicts and project_dicts:
         from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
 
         settings = get_settings()
-        metrics_cfg = dict((source.config or {}).get("metrics") or {})
-        coverage_patterns = metrics_cfg.get("coverage_report_patterns")
 
         bundles = run_polyglot_metrics_pipeline(
             repo_root=repo_path,
             project_dicts=project_dicts,
             snapshot_dicts=snapshot_dicts,
-            coverage_report_patterns=list(coverage_patterns or []),
             strict_mode=settings.metrics_strict_mode,
             metrics_languages=settings.metrics_languages,
-            autodiscovery_enabled=settings.metrics_autodiscovery_enabled,
         )
         file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles)]
-        scip_stats["real_metric_files"] = len(file_metric_dicts)
+        scip_stats["structural_metric_files"] = len(file_metric_dicts)
 
     await update_progress_artifact(
         progress_id, progress=15, description="Detecting changed files..."
@@ -1411,7 +1414,7 @@ async def sync_github_source(
             "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
-            "real_metric_files": scip_stats.get("real_metric_files", 0),
+            "structural_metric_files": scip_stats.get("structural_metric_files", 0),
         }
 
         await session.commit()
@@ -1746,6 +1749,275 @@ async def sync_source(source: Source) -> SyncRun | None:
     async with get_session() as session:
         result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
         return result.scalar_one()
+
+
+async def _fail_coverage_ingest_job(
+    job_id: str,
+    *,
+    status: str = "failed",
+    error_code: str,
+    error_detail: str,
+    stats: dict | None = None,
+) -> dict:
+    """Persist a terminal ingest job state."""
+    import uuid as uuid_module
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(CoverageIngestJob).where(CoverageIngestJob.id == uuid_module.UUID(job_id))
+        )
+        job = result.scalar_one_or_none()
+        if not job:
+            return {"status": "missing_job"}
+
+        job.status = status
+        job.error_code = error_code
+        job.error_detail = error_detail
+        job.stats = stats or {}
+        await session.commit()
+
+    return {"status": status, "error_code": error_code, "error_detail": error_detail}
+
+
+@traced_flow()
+@flow(name="ingest_coverage_metrics", retries=2, retry_delay_seconds=5)
+async def ingest_coverage_metrics(job_id: str) -> dict:
+    """Ingest CI-pushed coverage reports and apply coverage to Twin metrics."""
+    import tempfile
+    import uuid as uuid_module
+
+    from contextmine_core.metrics.coverage_reports import parse_coverage_reports
+    from contextmine_core.models import TwinNode
+    from contextmine_core.twin import (
+        apply_coverage_metrics_to_scenario,
+        get_or_create_as_is_scenario,
+        refresh_metric_snapshots,
+    )
+
+    from contextmine_worker.github_sync import get_repo_path
+
+    try:
+        job_uuid = uuid_module.UUID(job_id)
+    except ValueError:
+        return {
+            "status": "failed",
+            "error_code": "INGEST_APPLY_FAILED",
+            "error_detail": f"Invalid job_id: {job_id}",
+        }
+
+    async with get_session() as session:
+        locked = await session.execute(
+            select(CoverageIngestJob)
+            .where(CoverageIngestJob.id == job_uuid)
+            .with_for_update(skip_locked=True)
+        )
+        job = locked.scalar_one_or_none()
+        if not job:
+            return {"status": "missing"}
+        if job.status in {"applied", "failed", "rejected"}:
+            return {
+                "status": job.status,
+                "error_code": job.error_code,
+                "error_detail": job.error_detail,
+            }
+        job.status = "processing"
+        job.error_code = None
+        job.error_detail = None
+        await session.commit()
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(CoverageIngestJob).where(CoverageIngestJob.id == job_uuid)
+        )
+        job = result.scalar_one_or_none()
+        if not job:
+            return {"status": "missing"}
+
+        source = (
+            await session.execute(select(Source).where(Source.id == job.source_id))
+        ).scalar_one_or_none()
+        if not source:
+            return await _fail_coverage_ingest_job(
+                job_id,
+                status="rejected",
+                error_code="INGEST_APPLY_FAILED",
+                error_detail="Source not found",
+            )
+        if source.type != SourceType.GITHUB:
+            return await _fail_coverage_ingest_job(
+                job_id,
+                status="rejected",
+                error_code="INGEST_APPLY_FAILED",
+                error_detail="Coverage ingest is only supported for GitHub sources",
+            )
+        if not source.cursor or str(source.cursor) != str(job.commit_sha):
+            return await _fail_coverage_ingest_job(
+                job_id,
+                status="rejected",
+                error_code="INGEST_SHA_MISMATCH",
+                error_detail=f"Expected source cursor {source.cursor}, got {job.commit_sha}",
+            )
+
+        scenario = await get_or_create_as_is_scenario(session, source.collection_id, user_id=None)
+        job.scenario_id = scenario.id
+        await session.flush()
+
+        file_nodes = (
+            (await session.execute(select(TwinNode).where(TwinNode.scenario_id == scenario.id)))
+            .scalars()
+            .all()
+        )
+        source_id_str = str(source.id)
+        relevant_files: set[str] = set()
+        for node in file_nodes:
+            if node.kind != "file":
+                continue
+            if not node.natural_key.startswith("file:"):
+                continue
+            meta = dict(node.meta or {})
+            if str(meta.get("source_id") or "") != source_id_str:
+                continue
+            if not bool(meta.get("metrics_structural_ready")):
+                continue
+            relevant_files.add(node.natural_key.removeprefix("file:"))
+
+        if not relevant_files:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_NO_RELEVANT_FILES",
+                error_detail="No structural metric files found for source in current AS-IS scenario",
+            )
+
+        repo_path = get_repo_path(str(source.id))
+        if not repo_path.exists():
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_APPLY_FAILED",
+                error_detail=f"Repository path not found: {repo_path}",
+            )
+
+        reports = (
+            (
+                await session.execute(
+                    select(CoverageIngestReport).where(CoverageIngestReport.job_id == job.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not reports:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_PARSE_FAILED",
+                error_detail="No report files attached to ingest job",
+            )
+
+        settings = get_settings()
+        max_payload = settings.coverage_ingest_max_payload_mb * 1024 * 1024
+        total_bytes = sum(len(report.report_bytes or b"") for report in reports)
+        if total_bytes > max_payload:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                status="rejected",
+                error_code="INGEST_PAYLOAD_TOO_LARGE",
+                error_detail=(
+                    f"Payload size {total_bytes} exceeds limit {settings.coverage_ingest_max_payload_mb}MB"
+                ),
+            )
+
+        with tempfile.TemporaryDirectory(prefix=f"coverage_ingest_{job.id}_") as tmp_dir:
+            report_paths: list[Path] = []
+            for idx, report in enumerate(reports):
+                safe_name = Path(report.filename or f"report_{idx}").name
+                temp_path = Path(tmp_dir) / safe_name
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_bytes(report.report_bytes or b"")
+                report_paths.append(temp_path)
+
+            coverage_map, coverage_sources, protocol_by_report = parse_coverage_reports(
+                report_paths=report_paths,
+                repo_root=repo_path,
+                project_root=repo_path,
+            )
+
+            for report, report_path in zip(reports, report_paths, strict=True):
+                report.protocol_detected = protocol_by_report.get(str(report_path))
+                diagnostics = dict(report.diagnostics or {})
+                diagnostics["file_size"] = len(report.report_bytes or b"")
+                if report.protocol_detected is None:
+                    diagnostics["warning"] = "unsupported_or_unrecognized_protocol"
+                report.diagnostics = diagnostics
+
+        if not coverage_map:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_PROTOCOL_UNSUPPORTED",
+                error_detail="No supported coverage protocol detected in uploaded reports",
+                stats={"reports_total": len(reports)},
+            )
+
+        matched_coverage = {k: v for k, v in coverage_map.items() if k in relevant_files}
+        if not matched_coverage:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_COVERAGE_PATH_MISMATCH",
+                error_detail=(
+                    "Coverage parsed successfully, but no files matched relevant Twin file nodes"
+                ),
+                stats={
+                    "reports_total": len(reports),
+                    "coverage_files": len(coverage_map),
+                    "relevant_files": len(relevant_files),
+                },
+            )
+
+        matched_sources = {
+            file_path: coverage_sources.get(file_path, {})
+            for file_path in matched_coverage
+        }
+        applied_files = await apply_coverage_metrics_to_scenario(
+            session=session,
+            scenario_id=scenario.id,
+            source_id=source.id,
+            coverage_map=matched_coverage,
+            coverage_sources=matched_sources,
+            commit_sha=job.commit_sha,
+            ingest_job_id=job.id,
+        )
+        if applied_files == 0:
+            await session.commit()
+            return await _fail_coverage_ingest_job(
+                job_id,
+                error_code="INGEST_NO_RELEVANT_FILES",
+                error_detail="Coverage matched files but no Twin nodes were updated",
+            )
+
+        snapshot_rows = await refresh_metric_snapshots(session, scenario.id)
+        job.status = "applied"
+        job.error_code = None
+        job.error_detail = None
+        job.stats = {
+            "reports_total": len(reports),
+            "files_parsed": len(coverage_map),
+            "files_matched": len(matched_coverage),
+            "files_applied": applied_files,
+            "metric_snapshots": snapshot_rows,
+        }
+        await session.commit()
+
+        return {
+            "status": "applied",
+            "job_id": str(job.id),
+            "scenario_id": str(scenario.id),
+            "files_applied": applied_files,
+            "metric_snapshots": snapshot_rows,
+        }
 
 
 @traced_flow()

@@ -1,4 +1,4 @@
-"""End-to-end polyglot metrics extraction pipeline with strict gating."""
+"""End-to-end polyglot structural metrics extraction pipeline."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from typing import Any
 
 from contextmine_core.metrics.complexity_loc_lizard import extract_complexity_loc_metrics
 from contextmine_core.metrics.coupling_from_snapshot import compute_file_coupling_from_snapshots
-from contextmine_core.metrics.coverage_reports import parse_coverage_reports
-from contextmine_core.metrics.discovery import discover_coverage_reports, to_repo_relative_path
+from contextmine_core.metrics.discovery import to_repo_relative_path
 from contextmine_core.metrics.models import FileMetricRecord, MetricsGateError, ProjectMetricBundle
 from contextmine_core.semantic_snapshot.models import Snapshot
 
@@ -115,47 +114,12 @@ def _collect_relevant_files(
     return relevant_files
 
 
-def _enforce_missing_coverage(
-    strict_mode: bool,
-    project_root: Path,
-    report_paths: list[Path],
-) -> None:
-    if strict_mode and not report_paths:
-        raise MetricsGateError(
-            "missing_coverage_report",
-            details={"project_root": str(project_root)},
-        )
-
-
-def _enforce_coverage_mismatch(
-    strict_mode: bool,
-    project_root: Path,
-    relevant_files: set[str],
-    coverage_map: dict[str, float],
-) -> None:
-    if not strict_mode or not relevant_files:
-        return
-
-    matched = [path for path in relevant_files if path in coverage_map]
-    if not matched:
-        raise MetricsGateError(
-            "coverage_path_mismatch",
-            details={
-                "project_root": str(project_root),
-                "relevant_file_count": len(relevant_files),
-                "coverage_file_count": len(coverage_map),
-            },
-        )
-
-
 def _build_file_metrics(
     language: str,
     relevant_files: set[str],
     complexity_map: dict[str, dict[str, float | int]],
     coupling_map: dict[str, dict[str, int | float]],
     coupling_provenance: dict[str, Any],
-    coverage_map: dict[str, float],
-    coverage_sources: dict[str, dict[str, object]],
     strict_mode: bool,
 ) -> list[FileMetricRecord]:
     records: list[FileMetricRecord] = []
@@ -164,7 +128,6 @@ def _build_file_metrics(
     for file_path in sorted(relevant_files):
         complexity_entry = complexity_map.get(file_path) or {}
         coupling_entry = coupling_map.get(file_path) or {}
-        coverage = coverage_map.get(file_path)
 
         loc_value = complexity_entry.get("loc")
         complexity_value = complexity_entry.get("complexity")
@@ -183,8 +146,6 @@ def _build_file_metrics(
             required_missing.append("coupling_out")
         if coupling_value is None:
             required_missing.append("coupling")
-        if coverage is None:
-            required_missing.append("coverage")
 
         if required_missing:
             missing.append({"file_path": file_path, "missing": required_missing})
@@ -198,10 +159,9 @@ def _build_file_metrics(
             coupling_in=int(coupling_in),
             coupling_out=int(coupling_out),
             coupling=float(coupling_value),
-            coverage=float(coverage),
+            coverage=None,
             sources={
                 "complexity": "lizard",
-                "coverage": coverage_sources.get(file_path, {}),
                 "coupling": coupling_provenance,
             },
         )
@@ -220,12 +180,10 @@ def run_polyglot_metrics_pipeline(
     repo_root: Path,
     project_dicts: list[dict[str, Any]],
     snapshot_dicts: list[dict[str, Any]],
-    coverage_report_patterns: list[str] | None,
     strict_mode: bool,
     metrics_languages: str,
-    autodiscovery_enabled: bool,
 ) -> list[ProjectMetricBundle]:
-    """Run real metric extraction and strict gate validation."""
+    """Run real structural metric extraction and strict validation."""
     repo_root = repo_root.resolve()
     enabled_languages = parse_metrics_languages(metrics_languages)
     grouped_snapshots = _group_snapshots_by_project(snapshot_dicts)
@@ -248,21 +206,6 @@ def run_polyglot_metrics_pipeline(
         if not relevant_files:
             continue
 
-        report_paths = discover_coverage_reports(
-            repo_root=repo_root,
-            project_root=project_root,
-            configured_patterns=coverage_report_patterns,
-            autodiscovery_enabled=autodiscovery_enabled,
-        )
-        _enforce_missing_coverage(strict_mode, project_root, report_paths)
-
-        coverage_map, coverage_sources = parse_coverage_reports(
-            report_paths=report_paths,
-            repo_root=repo_root,
-            project_root=project_root,
-        )
-        _enforce_coverage_mismatch(strict_mode, project_root, relevant_files, coverage_map)
-
         complexity_map = extract_complexity_loc_metrics(
             repo_root=repo_root,
             project_root=project_root,
@@ -281,8 +224,6 @@ def run_polyglot_metrics_pipeline(
             complexity_map=complexity_map,
             coupling_map=coupling_map,
             coupling_provenance=coupling_provenance,
-            coverage_map=coverage_map,
-            coverage_sources=coverage_sources,
             strict_mode=strict_mode,
         )
 

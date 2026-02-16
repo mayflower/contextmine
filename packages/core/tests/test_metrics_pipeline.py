@@ -41,8 +41,7 @@ def test_parse_lcov_coverage(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    coverage, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
-
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
     assert coverage["src/main.py"] == pytest.approx(50.0)
 
 
@@ -70,7 +69,7 @@ def test_parse_cobertura_coverage(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    coverage, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
 
     assert coverage["src/main.py"] == pytest.approx(50.0)
 
@@ -92,7 +91,7 @@ def test_parse_jacoco_coverage(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    coverage, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
 
     assert coverage["com/example/App.java"] == pytest.approx(70.0)
 
@@ -115,9 +114,62 @@ def test_parse_clover_coverage(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    coverage, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
 
-    assert coverage["src/main.php"] == pytest.approx(50.0)
+
+def test_parse_opencover_coverage(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "src").mkdir()
+    (repo_root / "src" / "main.cs").write_text("class App {}\n", encoding="utf-8")
+    report = repo_root / "coverage.opencover.xml"
+    report.write_text(
+        """<CoverageSession>
+  <Modules>
+    <Module>
+      <Files>
+        <File uid="1" fullPath="src/main.cs" />
+      </Files>
+      <Classes>
+        <Class>
+          <Methods>
+            <Method>
+              <SequencePoints>
+                <SequencePoint vc="1" fileid="1" />
+                <SequencePoint vc="0" fileid="1" />
+              </SequencePoints>
+            </Method>
+          </Methods>
+        </Class>
+      </Classes>
+    </Module>
+  </Modules>
+</CoverageSession>""",
+        encoding="utf-8",
+    )
+
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
+    assert coverage["src/main.cs"] == pytest.approx(50.0)
+
+
+def test_parse_generic_json_coverage(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "src").mkdir()
+    (repo_root / "src" / "main.py").write_text("print('x')\n", encoding="utf-8")
+    report = repo_root / "coverage.json"
+    report.write_text(
+        """{
+  "schema": "generic-file-coverage-v1",
+  "files": [
+    {"path": "src/main.py", "coverage": 87.5}
+  ]
+}""",
+        encoding="utf-8",
+    )
+
+    coverage, _, _ = parse_coverage_reports([report], repo_root=repo_root, project_root=repo_root)
+    assert coverage["src/main.py"] == pytest.approx(87.5)
 
 
 def test_aggregate_lizard_metrics() -> None:
@@ -231,17 +283,6 @@ def test_strict_gate_missing_metric_raises(monkeypatch: pytest.MonkeyPatch, tmp_
 
     import contextmine_core.metrics.pipeline as pipeline_mod
 
-    monkeypatch.setattr(
-        pipeline_mod, "discover_coverage_reports", lambda **_: [repo_root / "cov.xml"]
-    )
-    monkeypatch.setattr(
-        pipeline_mod,
-        "parse_coverage_reports",
-        lambda **_: (
-            {"src/main.py": 91.0},
-            {"src/main.py": {"reports": [str(repo_root / "cov.xml")]}},
-        ),
-    )
     monkeypatch.setattr(pipeline_mod, "extract_complexity_loc_metrics", lambda **_: {})
     monkeypatch.setattr(
         pipeline_mod,
@@ -257,10 +298,8 @@ def test_strict_gate_missing_metric_raises(monkeypatch: pytest.MonkeyPatch, tmp_
             repo_root=repo_root,
             project_dicts=project_dicts,
             snapshot_dicts=[snapshot],
-            coverage_report_patterns=None,
             strict_mode=True,
             metrics_languages="python",
-            autodiscovery_enabled=True,
         )
 
     assert exc_info.value.code == "missing_required_metrics"

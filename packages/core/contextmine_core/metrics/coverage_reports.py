@@ -1,14 +1,23 @@
-"""Coverage report parsers for polyglot projects."""
+"""Coverage report parsers and protocol detection for polyglot projects."""
 
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from contextmine_core.metrics.discovery import to_repo_relative_path
+
+PROTOCOL_LCOV = "lcov"
+PROTOCOL_COBERTURA = "cobertura_xml"
+PROTOCOL_JACOCO = "jacoco_xml"
+PROTOCOL_CLOVER = "clover_xml"
+PROTOCOL_OPENCOVER = "opencover_xml"
+PROTOCOL_GENERIC_JSON = "generic_file_coverage_json"
 
 
 @dataclass
@@ -274,52 +283,194 @@ def parse_clover_xml(
     return result
 
 
-def parse_coverage_report(
+def parse_opencover_xml(
+    root: ET.Element,
     report_path: Path,
     repo_root: Path,
     project_root: Path,
 ) -> dict[str, float]:
-    """Parse one coverage report into file->coverage percentage."""
+    """Parse OpenCover XML coverage into file->percentage."""
+    file_id_to_path: dict[str, str] = {}
+    for file_node in _iter_nodes(root, "File"):
+        file_id = file_node.attrib.get("uid")
+        full_path = file_node.attrib.get("fullPath")
+        if not file_id or not full_path:
+            continue
+        normalized = to_repo_relative_path(
+            full_path,
+            repo_root=repo_root,
+            project_root=project_root,
+            base_dir=report_path.parent,
+        )
+        if normalized:
+            file_id_to_path[file_id] = normalized
+
+    coverage_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+
+    for seq_point in _iter_nodes(root, "SequencePoint"):
+        file_id = seq_point.attrib.get("fileid") or seq_point.attrib.get("fileId")
+        visits_raw = seq_point.attrib.get("vc") or seq_point.attrib.get("visitcount")
+        if not file_id or visits_raw is None:
+            continue
+
+        file_path = file_id_to_path.get(file_id)
+        if not file_path:
+            continue
+
+        counts = coverage_counts[file_path]
+        counts[1] += 1
+        try:
+            if int(visits_raw) > 0:
+                counts[0] += 1
+        except ValueError:
+            continue
+
+    result: dict[str, float] = {}
+    for file_path, (covered, total) in coverage_counts.items():
+        pct = _coverage_from_counts(covered, total)
+        if pct is not None:
+            result[file_path] = pct
+    return result
+
+
+def parse_generic_file_coverage_json(
+    payload: dict[str, Any],
+    report_path: Path,
+    repo_root: Path,
+    project_root: Path,
+) -> dict[str, float]:
+    """Parse generic-file-coverage-v1 into file->percentage."""
+    if payload.get("schema") != "generic-file-coverage-v1":
+        return {}
+
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return {}
+
+    result: dict[str, float] = {}
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        raw_path = str(entry.get("path", "")).strip()
+        if not raw_path:
+            continue
+        try:
+            coverage = float(entry.get("coverage"))
+        except (TypeError, ValueError):
+            continue
+
+        file_path = to_repo_relative_path(
+            raw_path,
+            repo_root=repo_root,
+            project_root=project_root,
+            base_dir=report_path.parent,
+        )
+        if not file_path:
+            continue
+        result[file_path] = max(0.0, min(100.0, coverage))
+
+    return result
+
+
+def detect_coverage_protocol(report_path: Path) -> str | None:
+    """Detect coverage report protocol by filename/signatures."""
     lower_name = report_path.name.lower()
 
     if lower_name.endswith(".info"):
-        return parse_lcov_report(report_path, repo_root, project_root)
+        return PROTOCOL_LCOV
 
-    root = ET.parse(report_path).getroot()
-    tag = _tag_local_name(root.tag).lower()
+    if lower_name.endswith(".json"):
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("schema") == "generic-file-coverage-v1":
+            return PROTOCOL_GENERIC_JSON
 
-    if tag == "report" and any(_tag_local_name(node.tag) == "sourcefile" for node in root.iter()):
-        return parse_jacoco_xml(root, report_path, repo_root, project_root)
+    try:
+        root = ET.parse(report_path).getroot()
+    except ET.ParseError:
+        return None
 
-    if any(_tag_local_name(node.tag) == "class" for node in root.iter()):
-        cobertura = parse_cobertura_xml(root, report_path, repo_root, project_root)
-        if cobertura:
-            return cobertura
+    root_tag = _tag_local_name(root.tag).lower()
+    all_tags = {_tag_local_name(node.tag) for node in root.iter()}
 
-    if tag in {"coverage", "project"} or any(
-        _tag_local_name(node.tag) == "file" for node in root.iter()
-    ):
-        clover = parse_clover_xml(root, report_path, repo_root, project_root)
-        if clover:
-            return clover
+    if root_tag == "coveragesession":
+        return PROTOCOL_OPENCOVER
 
-    return {}
+    if root_tag == "report" and "sourcefile" in all_tags:
+        return PROTOCOL_JACOCO
+
+    if "class" in all_tags and "line" in all_tags:
+        return PROTOCOL_COBERTURA
+
+    if "file" in all_tags and ("metrics" in all_tags or root_tag in {"coverage", "project"}):
+        return PROTOCOL_CLOVER
+
+    return None
+
+
+def parse_coverage_report(
+    report_path: Path,
+    repo_root: Path,
+    project_root: Path,
+) -> tuple[str | None, dict[str, float]]:
+    """Parse one coverage report into protocol + file->coverage percentage."""
+    protocol = detect_coverage_protocol(report_path)
+    if protocol == PROTOCOL_LCOV:
+        return protocol, parse_lcov_report(report_path, repo_root, project_root)
+
+    if protocol == PROTOCOL_GENERIC_JSON:
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            return protocol, {}
+        return protocol, parse_generic_file_coverage_json(
+            payload=payload,
+            report_path=report_path,
+            repo_root=repo_root,
+            project_root=project_root,
+        )
+
+    if protocol is None:
+        return None, {}
+
+    try:
+        root = ET.parse(report_path).getroot()
+    except ET.ParseError:
+        return protocol, {}
+
+    if protocol == PROTOCOL_JACOCO:
+        return protocol, parse_jacoco_xml(root, report_path, repo_root, project_root)
+    if protocol == PROTOCOL_COBERTURA:
+        return protocol, parse_cobertura_xml(root, report_path, repo_root, project_root)
+    if protocol == PROTOCOL_CLOVER:
+        return protocol, parse_clover_xml(root, report_path, repo_root, project_root)
+    if protocol == PROTOCOL_OPENCOVER:
+        return protocol, parse_opencover_xml(root, report_path, repo_root, project_root)
+
+    return protocol, {}
 
 
 def parse_coverage_reports(
     report_paths: list[Path],
     repo_root: Path,
     project_root: Path,
-) -> tuple[dict[str, float], dict[str, dict[str, object]]]:
+) -> tuple[dict[str, float], dict[str, dict[str, object]], dict[str, str]]:
     """Parse and aggregate multiple coverage reports.
 
     Returns:
-        tuple(file->coverage_percent, file->provenance)
+        tuple(file->coverage_percent, file->provenance, report->protocol)
     """
     aggregates: dict[str, CoverageAggregate] = defaultdict(CoverageAggregate)
+    protocol_by_report: dict[str, str] = {}
 
     for report_path in report_paths:
-        parsed = parse_coverage_report(report_path, repo_root=repo_root, project_root=project_root)
+        protocol, parsed = parse_coverage_report(
+            report_path, repo_root=repo_root, project_root=project_root
+        )
+        if protocol:
+            protocol_by_report[str(report_path)] = protocol
         for file_path, coverage in parsed.items():
             aggregates[file_path].add(coverage, report_path)
 
@@ -333,4 +484,4 @@ def parse_coverage_reports(
             "samples": aggregate.sample_count,
         }
 
-    return coverage_map, provenance_map
+    return coverage_map, provenance_map, protocol_by_report

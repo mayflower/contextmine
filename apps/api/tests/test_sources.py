@@ -1,5 +1,6 @@
 """Tests for sources management."""
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -144,48 +145,140 @@ class TestSourceValidation:
         assert "Invalid URL" in response.json()["detail"]
 
     @patch("app.routes.sources.get_session")
-    async def test_coverage_patterns_rejected_for_web_sources(
+    @patch("app.routes.sources.get_db_session")
+    async def test_coverage_patterns_deprecated_marker_for_web_source(
         self,
+        mock_get_db_session: Any,
         mock_get_session: Any,
         client: AsyncClient,
     ) -> None:
-        """Test that coverage report patterns are GitHub-only."""
+        """Test that coverage_report_patterns is accepted as deprecated no-op for web sources."""
         import uuid
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
 
-        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        from contextmine_core import SourceType
 
-        response = await client.post(
-            "/api/collections/some-id/sources",
-            json={
-                "type": "web",
-                "url": "https://example.com/docs/",
-                "coverage_report_patterns": ["**/coverage.xml"],
-            },
+        user_id = uuid.uuid4()
+        source_id = uuid.uuid4()
+        collection_id = uuid.uuid4()
+        mock_get_session.return_value = {"user_id": str(user_id)}
+
+        mock_source = MagicMock()
+        mock_source.id = source_id
+        mock_source.collection_id = collection_id
+        mock_source.type = SourceType.WEB
+        mock_source.url = "https://example.com/docs"
+        mock_source.config = {"start_url": "https://example.com/docs"}
+        mock_source.enabled = True
+        mock_source.schedule_interval_minutes = 60
+        mock_source.next_run_at = None
+        mock_source.last_run_at = None
+        mock_source.created_at = datetime.now(UTC)
+        mock_source.deploy_key_fingerprint = None
+
+        mock_collection = MagicMock()
+        mock_collection.id = collection_id
+        mock_collection.owner_user_id = user_id
+
+        mock_db = MagicMock()
+
+        async def mock_execute(query: Any) -> MagicMock:
+            result = MagicMock()
+            query_text = str(query)
+            if "FROM sources" in query_text:
+                result.scalar_one_or_none.return_value = mock_source
+            elif "FROM collections" in query_text:
+                result.scalar_one.return_value = mock_collection
+            else:
+                result.scalar.return_value = 0
+            return result
+
+        mock_db.execute = AsyncMock(side_effect=mock_execute)
+        mock_db.flush = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_session():
+            yield mock_db
+
+        mock_get_db_session.return_value = mock_session()
+
+        response = await client.patch(
+            f"/api/sources/{source_id}",
+            json={"coverage_report_patterns": ["**/coverage.xml"]},
         )
-        assert response.status_code == 400
-        assert "only supported for GitHub sources" in response.json()["detail"]
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["config"]["metrics"]["deprecated"] is True
+        assert payload["config"]["metrics"]["deprecated_field"] == "coverage_report_patterns"
 
     @patch("app.routes.sources.get_session")
-    async def test_empty_coverage_patterns_rejected_for_github_sources(
+    @patch("app.routes.sources.get_db_session")
+    async def test_empty_coverage_patterns_deprecated_marker_for_github_source(
         self,
+        mock_get_db_session: Any,
         mock_get_session: Any,
         client: AsyncClient,
     ) -> None:
-        """Test that empty coverage report patterns are rejected."""
+        """Test that empty coverage_report_patterns is accepted as deprecated no-op."""
         import uuid
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
 
-        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        from contextmine_core import SourceType
 
-        response = await client.post(
-            "/api/collections/some-id/sources",
-            json={
-                "type": "github",
-                "url": "https://github.com/owner/repo",
-                "coverage_report_patterns": [],
-            },
+        user_id = uuid.uuid4()
+        source_id = uuid.uuid4()
+        collection_id = uuid.uuid4()
+        mock_get_session.return_value = {"user_id": str(user_id)}
+
+        mock_source = MagicMock()
+        mock_source.id = source_id
+        mock_source.collection_id = collection_id
+        mock_source.type = SourceType.GITHUB
+        mock_source.url = "https://github.com/org/repo"
+        mock_source.config = {"owner": "org", "repo": "repo", "branch": "main"}
+        mock_source.enabled = True
+        mock_source.schedule_interval_minutes = 60
+        mock_source.next_run_at = None
+        mock_source.last_run_at = None
+        mock_source.created_at = datetime.now(UTC)
+        mock_source.deploy_key_fingerprint = None
+
+        mock_collection = MagicMock()
+        mock_collection.id = collection_id
+        mock_collection.owner_user_id = user_id
+
+        mock_db = MagicMock()
+
+        async def mock_execute(query: Any) -> MagicMock:
+            result = MagicMock()
+            query_text = str(query)
+            if "FROM sources" in query_text:
+                result.scalar_one_or_none.return_value = mock_source
+            elif "FROM collections" in query_text:
+                result.scalar_one.return_value = mock_collection
+            else:
+                result.scalar.return_value = 0
+            return result
+
+        mock_db.execute = AsyncMock(side_effect=mock_execute)
+        mock_db.flush = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_session():
+            yield mock_db
+
+        mock_get_db_session.return_value = mock_session()
+
+        response = await client.patch(
+            f"/api/sources/{source_id}",
+            json={"coverage_report_patterns": []},
         )
-        assert response.status_code == 400
-        assert "must contain at least one repo-relative glob" in response.json()["detail"]
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["config"]["metrics"]["deprecated"] is True
+        assert payload["config"]["metrics"]["coverage_report_patterns_ignored"] == []
 
 
 @pytest.mark.anyio
