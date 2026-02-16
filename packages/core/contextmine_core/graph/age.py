@@ -1,4 +1,10 @@
-"""Apache AGE adapter for twin scenario graph queries."""
+"""Apache AGE adapter for twin scenario graph queries.
+
+Apache AGE requires graph names and Cypher queries as literal SQL strings,
+not bind parameters. The helper ``_age_cypher_sql`` safely inlines both
+using the deterministic graph name (UUID-derived, alphanumeric + underscore)
+and $$-delimited Cypher text.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +20,29 @@ _MUTATING_PATTERNS = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Graph names are strictly alphanumeric + underscore (from UUID hex)
+_SAFE_NAME = re.compile(r"^[a-z0-9_]+$")
+
 
 def scenario_graph_name(scenario_id: UUID) -> str:
     """Deterministic AGE graph name for a scenario."""
     return f"twin_{str(scenario_id).replace('-', '_')}"
+
+
+def _validate_graph_name(name: str) -> None:
+    """Ensure graph name is safe for SQL interpolation."""
+    if not _SAFE_NAME.match(name):
+        raise ValueError(f"Invalid graph name: {name!r}")
+
+
+def _age_cypher_sql(graph_name: str, cypher: str, result_cols: str = "v agtype") -> str:
+    """Build a literal SQL string for AGE cypher() calls.
+
+    AGE does not support bind parameters for graph names or queries.
+    Graph names are UUID-derived (safe), Cypher is $$-delimited.
+    """
+    _validate_graph_name(graph_name)
+    return f"SELECT * FROM cypher('{graph_name}', $$ {cypher} $$) AS ({result_cols})"
 
 
 def ensure_read_only_cypher(query: str) -> None:
@@ -38,30 +63,31 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
     await ensure_age_ready(session)
 
     graph_name = scenario_graph_name(scenario_id)
+    _validate_graph_name(graph_name)
+
+    # Create graph if it doesn't exist
     await session.execute(
         text(
-            """
-            SELECT create_graph(:graph_name)
+            f"""
+            SELECT create_graph('{graph_name}')
             WHERE NOT EXISTS (
-                SELECT 1 FROM ag_catalog.ag_graph WHERE name = :graph_name
+                SELECT 1 FROM ag_catalog.ag_graph WHERE name = '{graph_name}'
             )
             """
         ),
-        {"graph_name": graph_name},
     )
 
-    await session.execute(
-        text("SELECT * FROM cypher(:graph_name, $$ MATCH (n) DETACH DELETE n $$) AS (v agtype)"),
-        {"graph_name": graph_name},
-    )
+    # Clear existing graph data
+    await session.execute(text(_age_cypher_sql(graph_name, "MATCH (n) DETACH DELETE n")))
 
+    # Load nodes
     nodes = (
         (await session.execute(select(TwinNode).where(TwinNode.scenario_id == scenario_id)))
         .scalars()
         .all()
     )
     for node in nodes:
-        q = (
+        cypher = (
             "CREATE (n:Node {"
             f"id: '{_esc(str(node.id))}', "
             f"natural_key: '{_esc(node.natural_key)}', "
@@ -69,26 +95,21 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
             f"name: '{_esc(node.name)}'"
             "})"
         )
-        await session.execute(
-            text("SELECT * FROM cypher(:graph_name, :query) AS (v agtype)"),
-            {"graph_name": graph_name, "query": q},
-        )
+        await session.execute(text(_age_cypher_sql(graph_name, cypher)))
 
+    # Load edges
     edges = (
         (await session.execute(select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)))
         .scalars()
         .all()
     )
     for edge in edges:
-        q = (
+        cypher = (
             f"MATCH (s:Node {{id: '{_esc(str(edge.source_node_id))}'}}), "
             f"(t:Node {{id: '{_esc(str(edge.target_node_id))}'}}) "
             f"CREATE (s)-[:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
         )
-        await session.execute(
-            text("SELECT * FROM cypher(:graph_name, :query) AS (v agtype)"),
-            {"graph_name": graph_name, "query": q},
-        )
+        await session.execute(text(_age_cypher_sql(graph_name, cypher)))
 
 
 async def run_read_only_cypher(
@@ -101,10 +122,9 @@ async def run_read_only_cypher(
     await ensure_age_ready(session)
 
     graph_name = scenario_graph_name(scenario_id)
-    result = await session.execute(
-        text("SELECT result::text FROM cypher(:graph_name, :query) AS (result agtype)"),
-        {"graph_name": graph_name, "query": query},
-    )
+    _validate_graph_name(graph_name)
+    sql = f"SELECT result::text FROM cypher('{graph_name}', $$ {query} $$) AS (result agtype)"
+    result = await session.execute(text(sql))
     return [row[0] for row in result.all()]
 
 
