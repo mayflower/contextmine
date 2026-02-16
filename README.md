@@ -165,7 +165,7 @@ Overview uses `GET /api/twin/collections/{collection_id}/views/city` and reads:
 {
   "metrics_status": {
     "status": "ready|unavailable",
-    "reason": "ok|no_real_metrics",
+    "reason": "ok|no_real_metrics|awaiting_ci_coverage|coverage_ingest_failed",
     "strict_mode": true
   }
 }
@@ -174,7 +174,48 @@ Overview uses `GET /api/twin/collections/{collection_id}/views/city` and reads:
 Rules:
 1. `ready`: real metric snapshots are available.
 2. `unavailable`: no valid real metrics for the selected scenario.
-3. UI shows `N/A` for unavailable KPI values (not placeholder `0.00`).
+3. `reason=awaiting_ci_coverage`: structural metrics are ready, coverage has not been ingested yet.
+4. `reason=coverage_ingest_failed`: the latest coverage ingest job failed or was rejected.
+5. UI shows `N/A` for unavailable KPI values (not placeholder `0.00`).
+
+### GitHub Actions Coverage Ingest (CI Push)
+
+Coverage is no longer discovered from repository files. CI pushes raw coverage reports to ContextMine.
+
+#### One-time setup
+
+1. Identify your GitHub source ID (`/api/collections/{collection_id}/sources`).
+2. Rotate the ingest token once as source owner:
+   - `POST /api/sources/{source_id}/metrics/coverage-ingest-token/rotate`
+3. Store returned token in GitHub Secrets as `CONTEXTMINE_INGEST_TOKEN`.
+4. Store source ID in GitHub Secrets as `CONTEXTMINE_SOURCE_ID`.
+
+#### GitHub Actions example
+
+```yaml
+- name: Push coverage to ContextMine
+  if: always()
+  env:
+    CONTEXTMINE_URL: https://contextmine.example.com
+    CONTEXTMINE_SOURCE_ID: ${{ secrets.CONTEXTMINE_SOURCE_ID }}
+    CONTEXTMINE_INGEST_TOKEN: ${{ secrets.CONTEXTMINE_INGEST_TOKEN }}
+  run: |
+    curl --fail-with-body \
+      -X POST "$CONTEXTMINE_URL/api/sources/$CONTEXTMINE_SOURCE_ID/metrics/coverage-ingest" \
+      -H "X-ContextMine-Ingest-Token: $CONTEXTMINE_INGEST_TOKEN" \
+      -F "commit_sha=${{ github.sha }}" \
+      -F "branch=${{ github.ref_name }}" \
+      -F "workflow_run_id=${{ github.run_id }}" \
+      -F "provider=github_actions" \
+      -F "reports=@coverage/lcov.info" \
+      -F "reports=@coverage/coverage.xml"
+```
+
+Notes:
+1. `commit_sha` must exactly match the current source cursor SHA.
+2. Multiple report files are supported and merged by file-level average.
+3. Supported protocols (Core 6): `lcov`, `Cobertura XML`, `JaCoCo XML`, `Clover/PHPUnit XML`, `OpenCover XML`, `generic-file-coverage-v1` JSON.
+4. Check job status via `GET /api/sources/{source_id}/metrics/coverage-ingest/{job_id}`.
 
 ## Available MCP Tools
 
@@ -227,7 +268,8 @@ Copy `.env.example` to `.env` and configure these variables:
 | `POSTGRES_PLATFORM` | Docker Compose postgres image platform override (default: `linux/amd64`) |
 | `METRICS_STRICT_MODE` | Enforce strict real metrics gate for GitHub syncs (default: `true`) |
 | `METRICS_LANGUAGES` | Metrics language scope (default: `python,typescript,javascript,java,php`) |
-| `METRICS_AUTODISCOVERY_ENABLED` | Fallback coverage report auto-discovery toggle (default: `true`) |
+| `COVERAGE_INGEST_MAX_PAYLOAD_MB` | Max multipart payload size for CI coverage uploads (default: `25`) |
+| `COVERAGE_INGEST_PREFECT_FLOW_NAME` | Prefect flow name for async coverage ingest (default: `ingest_coverage_metrics`) |
 
 ### Setting Up GitHub OAuth
 
@@ -271,7 +313,6 @@ Best for: Source code, README files, inline documentation
 3. Optionally specify:
    - **Branch**: defaults to the default branch
    - **Path filter**: limit to specific directories (e.g., `src/`, `docs/`)
-   - **Coverage report patterns**: repo-relative globs via API (`coverage_report_patterns`)
 4. Code files are parsed for symbols (functions, classes, methods)
 
 **Supported languages for symbol extraction:**
@@ -281,9 +322,10 @@ Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, PHP
 Python, TypeScript, JavaScript, Java, PHP
 
 Strict metrics gate behavior for GitHub sources:
-1. Coverage is report-ingested (no test execution by ContextMine).
-2. Missing/mismatched coverage fails sync with `METRICS_GATE_FAILED:*`.
-3. Gate applies to relevant production files in the semantic snapshot scope.
+1. Sync computes structural metrics (`loc`, `complexity`, `coupling`) without blocking on coverage.
+2. Coverage is ingested asynchronously from CI and bound to exact commit SHA.
+3. Coverage ingest is strict: invalid token/payload/SHA mismatch/path mismatch fails the ingest job.
+4. City metrics become fully ready only after successful coverage ingest.
 
 ## Architecture
 
@@ -413,9 +455,13 @@ Symbol extraction works for supported languages only. Check that:
 ### Cockpit Overview shows `N/A` metrics
 
 1. Inspect `GET /api/twin/collections/{collection_id}/views/city`.
-2. If `metrics_status.status=unavailable`, verify GitHub source coverage reports.
-3. Configure `coverage_report_patterns` for non-standard report locations.
-4. Re-run sync and confirm no `METRICS_GATE_FAILED:*` errors in sync run details.
+2. Check `metrics_status.reason`:
+   - `awaiting_ci_coverage`: CI has not pushed coverage yet.
+   - `coverage_ingest_failed`: review ingest job diagnostics.
+   - `no_real_metrics`: no structural metric snapshots were produced.
+3. Verify latest ingest job:
+   - `GET /api/sources/{source_id}/metrics/coverage-ingest/{job_id}`
+4. Re-run CI upload with matching `commit_sha=${{ github.sha }}` and valid reports.
 
 ## License
 

@@ -1536,6 +1536,45 @@ function App() {
                 </button>
               </section>
 
+              <section className="card coverage-ingest-card">
+                <h2>GitHub Actions Coverage Ingest</h2>
+                <p className="note">
+                  Coverage reports are pushed from CI. ContextMine validates commit SHA and applies coverage
+                  asynchronously to Twin metrics.
+                </p>
+
+                <ol className="coverage-ingest-steps">
+                  <li>Get the source ID from Collections → Source details.</li>
+                  <li>Rotate a source ingest token once (owner session required).</li>
+                  <li>Store the token as GitHub secret <code>CONTEXTMINE_INGEST_TOKEN</code>.</li>
+                  <li>Post coverage reports from GitHub Actions after tests.</li>
+                </ol>
+
+                <h3>Rotate Token (run in browser console while logged in)</h3>
+                <pre className="config-block">{`await fetch("/api/sources/<SOURCE_ID>/metrics/coverage-ingest-token/rotate", {
+  method: "POST",
+  credentials: "include"
+}).then((r) => r.json())`}</pre>
+
+                <h3>GitHub Actions Snippet</h3>
+                <pre className="config-block">{`- name: Push coverage to ContextMine
+  if: always()
+  env:
+    CONTEXTMINE_URL: ${window.location.origin}
+    CONTEXTMINE_SOURCE_ID: \${{ secrets.CONTEXTMINE_SOURCE_ID }}
+    CONTEXTMINE_INGEST_TOKEN: \${{ secrets.CONTEXTMINE_INGEST_TOKEN }}
+  run: |
+    curl --fail-with-body \\
+      -X POST "$CONTEXTMINE_URL/api/sources/$CONTEXTMINE_SOURCE_ID/metrics/coverage-ingest" \\
+      -H "X-ContextMine-Ingest-Token: $CONTEXTMINE_INGEST_TOKEN" \\
+      -F "commit_sha=\${{ github.sha }}" \\
+      -F "branch=\${{ github.ref_name }}" \\
+      -F "workflow_run_id=\${{ github.run_id }}" \\
+      -F "provider=github_actions" \\
+      -F "reports=@coverage/lcov.info" \\
+      -F "reports=@coverage/coverage.xml"`}</pre>
+              </section>
+
               <section className="card">
                 <h2>MCP Setup</h2>
                 <p className="note">Connect your AI assistant to ContextMine. Authentication is handled via GitHub OAuth - you'll be prompted to login when first connecting.</p>

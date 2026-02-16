@@ -397,6 +397,26 @@
   border-color: #1e40af;
 }
 
+.coverage-ingest-card {
+  border: 1px solid #d6e0ff;
+  background: linear-gradient(160deg, #fbfdff 0%, #f6f9ff 100%);
+}
+
+.coverage-ingest-steps {
+  margin: 10px 0 16px;
+  padding-left: 20px;
+  color: #334155;
+  line-height: 1.55;
+}
+
+.coverage-ingest-steps li {
+  margin-bottom: 6px;
+}
+
+.coverage-ingest-card .config-block {
+  margin-top: 8px;
+}
+
 /* Stats card */
 .stats-card .stats-grid {
   display: grid;
