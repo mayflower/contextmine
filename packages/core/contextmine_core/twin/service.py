@@ -767,7 +767,7 @@ async def refresh_metric_snapshots(
     session: AsyncSession,
     scenario_id: UUID,
 ) -> int:
-    """Refresh code city metric snapshots from current twin graph."""
+    """Refresh code city metric snapshots from real file metrics in twin graph."""
     await session.execute(delete(MetricSnapshot).where(MetricSnapshot.scenario_id == scenario_id))
 
     nodes = (
@@ -776,21 +776,89 @@ async def refresh_metric_snapshots(
         .all()
     )
 
+    required_fields = ("loc", "complexity", "coupling", "coverage")
     created = 0
     for node in nodes:
+        if node.kind != "file":
+            continue
+
         meta = node.meta or {}
+        if not bool(meta.get("metrics_real")):
+            continue
+
+        if any(meta.get(field) is None for field in required_fields):
+            continue
+
         snapshot = MetricSnapshot(
             id=uuid.uuid4(),
             scenario_id=scenario_id,
             node_natural_key=node.natural_key,
-            loc=int(meta.get("loc", 0) or 0),
+            loc=int(meta["loc"]),
             symbol_count=int(meta.get("symbol_count", 0) or 0),
-            coupling=float(meta.get("coupling", 0.0) or 0.0),
-            coverage=float(meta.get("coverage", 0.0) or 0.0),
-            complexity=float(meta.get("complexity", 0.0) or 0.0),
+            coupling=float(meta["coupling"]),
+            coverage=float(meta["coverage"]),
+            complexity=float(meta["complexity"]),
             change_frequency=float(meta.get("change_frequency", 0.0) or 0.0),
             meta=meta,
         )
         session.add(snapshot)
         created += 1
     return created
+
+
+async def apply_file_metrics_to_scenario(
+    session: AsyncSession,
+    scenario_id: UUID,
+    file_metrics: list[dict[str, Any]],
+) -> int:
+    """Apply validated file-level metrics onto scenario file nodes."""
+    if not file_metrics:
+        return 0
+
+    by_key: dict[str, dict[str, Any]] = {}
+    for metric in file_metrics:
+        file_path = str(metric.get("file_path", "")).strip()
+        if not file_path:
+            continue
+        by_key[f"file:{file_path}"] = metric
+
+    if not by_key:
+        return 0
+
+    nodes = (
+        (
+            await session.execute(
+                select(TwinNode).where(
+                    TwinNode.scenario_id == scenario_id,
+                    TwinNode.natural_key.in_(list(by_key.keys())),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    updated = 0
+    for node in nodes:
+        metric = by_key.get(node.natural_key)
+        if not metric:
+            continue
+
+        meta = dict(node.meta or {})
+        meta.update(
+            {
+                "metrics_real": True,
+                "loc": int(metric["loc"]),
+                "complexity": float(metric["complexity"]),
+                "coupling_in": int(metric["coupling_in"]),
+                "coupling_out": int(metric["coupling_out"]),
+                "coupling": float(metric["coupling"]),
+                "coverage": float(metric["coverage"]),
+                "metrics_sources": metric.get("sources", {}),
+                "metrics_language": metric.get("language"),
+            }
+        )
+        node.meta = meta
+        updated += 1
+
+    return updated

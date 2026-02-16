@@ -78,15 +78,22 @@ export interface CityHotspot {
   coupling: number
 }
 
+export interface MetricsStatus {
+  status: 'ready' | 'unavailable'
+  reason: 'ok' | 'no_real_metrics'
+  strict_mode: boolean
+}
+
 export interface CityPayload {
   collection_id: string
   scenario: ViewScenario
   summary: {
     metric_nodes: number
-    coverage_avg: number
-    complexity_avg: number
-    coupling_avg: number
+    coverage_avg: number | null
+    complexity_avg: number | null
+    coupling_avg: number | null
   }
+  metrics_status: MetricsStatus
   hotspots: CityHotspot[]
   cc_json: Record<string, unknown>
 }

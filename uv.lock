@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -466,6 +466,7 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langgraph" },
+    { name = "lizard" },
     { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -494,6 +495,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
     { name = "langgraph", specifier = ">=1.0.0" },
+    { name = "lizard", specifier = ">=1.17.10" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "opentelemetry-api", specifier = ">=1.25.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.25.0" },
@@ -521,6 +523,7 @@ dependencies = [
     { name = "gitpython" },
     { name = "google-genai" },
     { name = "langchain-text-splitters" },
+    { name = "lizard" },
     { name = "lxml-html-clean" },
     { name = "openai" },
     { name = "prefect" },
@@ -535,6 +538,7 @@ requires-dist = [
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
     { name = "langchain-text-splitters", specifier = ">=0.2.0" },
+    { name = "lizard", specifier = ">=1.17.10" },
     { name = "lxml-html-clean", specifier = ">=0.4.0" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "prefect", specifier = ">=3.0.0" },
@@ -1725,6 +1729,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bb/e5/c968d43a65128cd54fb685f257aafb90cd5e4e1c67d084a58f0e4cbed557/limits-5.6.0.tar.gz", hash = "sha256:807fac75755e73912e894fdd61e2838de574c5721876a19f7ab454ae1fffb4b5", size = 182984, upload-time = "2025-09-29T17:15:22.689Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/96/4fcd44aed47b8fcc457653b12915fcad192cd646510ef3f29fd216f4b0ab/limits-5.6.0-py3-none-any.whl", hash = "sha256:b585c2104274528536a5b68864ec3835602b3c4a802cd6aa0b07419798394021", size = 60604, upload-time = "2025-09-29T17:15:18.419Z" },
+]
+
+[[package]]
+name = "lizard"
+version = "1.21.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pathspec" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/09/52deafdd70a33461022bbc72e494d1e88e99e16818d09beda4fc001aaf31/lizard-1.21.0.tar.gz", hash = "sha256:35e62e2a42e06d379de4545f5866eb562c0b4fce5aeae779ec9dbda946e0b958", size = 89620, upload-time = "2026-02-03T09:50:36.866Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/af/df81c6e824fab14fc5d3e961c3c4812309ff582f9f8125d10d58b5b6a78c/lizard-1.21.0-py2.py3-none-any.whl", hash = "sha256:0d47e603bee2616790c73a2fa415bbba720926f72997008c9a738ff560ba78ae", size = 97762, upload-time = "2026-02-03T09:50:34.925Z" },
 ]
 
 [[package]]

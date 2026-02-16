@@ -21,6 +21,13 @@ function levelFromComplexity(complexity: number): 'high' | 'medium' | 'low' {
   return 'low'
 }
 
+function formatMetricValue(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return 'N/A'
+  }
+  return value.toFixed(2)
+}
+
 function sortHotspots(
   city: CityPayload | null,
   sortKey: SortKey,
@@ -108,6 +115,7 @@ export default function OverviewView({
 
   const preview = JSON.stringify(city?.cc_json || {}, null, 2)
   const previewLines = preview.split('\n').slice(0, 32).join('\n')
+  const metricsUnavailable = city?.metrics_status?.status === 'unavailable'
 
   return (
     <section className="cockpit2-workspace" id="cockpit-panel-overview" role="tabpanel">
@@ -121,21 +129,27 @@ export default function OverviewView({
       <div className="cockpit2-main">
         <article className="cockpit2-panel">
           <h3>System health summary</h3>
+          {metricsUnavailable ? (
+            <p className="muted">
+              Real metrics are currently unavailable for this scenario. Run a GitHub sync with valid
+              coverage reports to unlock City metrics.
+            </p>
+          ) : null}
           <div className="cockpit2-kpis">
             <div>
               <strong>{city?.summary.metric_nodes ?? 0}</strong>
               <span>Metric nodes</span>
             </div>
             <div>
-              <strong>{(city?.summary.coverage_avg ?? 0).toFixed(2)}</strong>
+              <strong>{formatMetricValue(city?.summary.coverage_avg)}</strong>
               <span>Average coverage</span>
             </div>
             <div>
-              <strong>{(city?.summary.complexity_avg ?? 0).toFixed(2)}</strong>
+              <strong>{formatMetricValue(city?.summary.complexity_avg)}</strong>
               <span>Average complexity</span>
             </div>
             <div>
-              <strong>{(city?.summary.coupling_avg ?? 0).toFixed(2)}</strong>
+              <strong>{formatMetricValue(city?.summary.coupling_avg)}</strong>
               <span>Average coupling</span>
             </div>
           </div>
@@ -167,7 +181,11 @@ export default function OverviewView({
                 ))}
                 {hotspots.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="empty-row">No hotspots match the current filter.</td>
+                    <td colSpan={5} className="empty-row">
+                      {metricsUnavailable
+                        ? 'Real metrics are unavailable for this scenario.'
+                        : 'No hotspots match the current filter.'}
+                    </td>
                   </tr>
                 ) : null}
               </tbody>

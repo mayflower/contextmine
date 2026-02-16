@@ -6,7 +6,7 @@ import json
 import uuid
 from typing import Literal
 
-from contextmine_core import Collection, CollectionMember
+from contextmine_core import Collection, CollectionMember, get_settings
 from contextmine_core import get_session as get_db_session
 from contextmine_core.architecture_intents import ArchitectureIntentV1
 from contextmine_core.exports import (
@@ -463,6 +463,14 @@ async def city_view(
                 .all()
             )
 
+        settings = get_settings()
+        metrics_ready = len(metrics) > 0
+        metrics_status = {
+            "status": "ready" if metrics_ready else "unavailable",
+            "reason": "ok" if metrics_ready else "no_real_metrics",
+            "strict_mode": bool(settings.metrics_strict_mode),
+        }
+
         sorted_hotspots = sorted(
             metrics,
             key=lambda metric: (
@@ -472,17 +480,23 @@ async def city_view(
             ),
             reverse=True,
         )
-        hotspots = sorted_hotspots[:hotspots_limit]
+        hotspots = sorted_hotspots[:hotspots_limit] if metrics_ready else []
 
         total = len(metrics)
         coverage_avg = (
-            sum(float(metric.coverage or 0.0) for metric in metrics) / total if total else 0.0
+            sum(float(metric.coverage or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
         )
         complexity_avg = (
-            sum(float(metric.complexity or 0.0) for metric in metrics) / total if total else 0.0
+            sum(float(metric.complexity or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
         )
         coupling_avg = (
-            sum(float(metric.coupling or 0.0) for metric in metrics) / total if total else 0.0
+            sum(float(metric.coupling or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
         )
 
         cc_json_payload = json.loads(await export_codecharta_json(db, scenario.id))
@@ -496,6 +510,7 @@ async def city_view(
                 "complexity_avg": complexity_avg,
                 "coupling_avg": coupling_avg,
             },
+            "metrics_status": metrics_status,
             "hotspots": [
                 {
                     "node_natural_key": metric.node_natural_key,

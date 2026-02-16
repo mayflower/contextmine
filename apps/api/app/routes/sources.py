@@ -34,6 +34,7 @@ class CreateSourceRequest(BaseModel):
     url: str
     enabled: bool = True
     schedule_interval_minutes: int = 60
+    coverage_report_patterns: list[str] | None = None
 
 
 class SourceResponse(BaseModel):
@@ -59,6 +60,7 @@ class UpdateSourceRequest(BaseModel):
     enabled: bool | None = None
     schedule_interval_minutes: int | None = None
     max_pages: int | None = None  # For web sources only
+    coverage_report_patterns: list[str] | None = None  # For GitHub sources only
 
 
 class SetDeployKeyRequest(BaseModel):
@@ -144,6 +146,25 @@ def validate_web_url(url: str) -> dict:
     }
 
 
+def validate_coverage_report_patterns(patterns: list[str]) -> list[str]:
+    """Validate repo-relative coverage report glob patterns."""
+    normalized = [pattern.strip() for pattern in patterns if pattern and pattern.strip()]
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail="coverage_report_patterns must contain at least one repo-relative glob",
+        )
+
+    for pattern in normalized:
+        if pattern.startswith("/"):
+            raise HTTPException(
+                status_code=400,
+                detail="coverage_report_patterns must be repo-relative globs",
+            )
+
+    return normalized
+
+
 async def _get_collection_with_access(
     db, collection_id: str, user_id: uuid.UUID, require_owner: bool = False
 ) -> Collection:
@@ -199,6 +220,17 @@ async def create_source(
         config = validate_github_url(body.url)
     else:
         config = validate_web_url(body.url)
+
+    if body.coverage_report_patterns is not None:
+        if source_type != SourceType.GITHUB:
+            raise HTTPException(
+                status_code=400,
+                detail="coverage_report_patterns is only supported for GitHub sources",
+            )
+        validated_patterns = validate_coverage_report_patterns(body.coverage_report_patterns)
+        config["metrics"] = {
+            "coverage_report_patterns": validated_patterns,
+        }
 
     async with get_db_session() as db:
         # Check collection access (only owner can add sources)
@@ -356,6 +388,19 @@ async def update_source(
                 raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
             config = source.config or {}
             config["max_pages"] = body.max_pages
+            source.config = config
+
+        if body.coverage_report_patterns is not None:
+            if source.type != SourceType.GITHUB:
+                raise HTTPException(
+                    status_code=400,
+                    detail="coverage_report_patterns is only supported for GitHub sources",
+                )
+            validated_patterns = validate_coverage_report_patterns(body.coverage_report_patterns)
+            config = source.config or {}
+            metrics_config = dict(config.get("metrics") or {})
+            metrics_config["coverage_report_patterns"] = validated_patterns
+            config["metrics"] = metrics_config
             source.config = config
 
         await db.flush()

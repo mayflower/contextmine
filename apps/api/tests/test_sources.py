@@ -143,6 +143,50 @@ class TestSourceValidation:
         assert response.status_code == 400
         assert "Invalid URL" in response.json()["detail"]
 
+    @patch("app.routes.sources.get_session")
+    async def test_coverage_patterns_rejected_for_web_sources(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        """Test that coverage report patterns are GitHub-only."""
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        response = await client.post(
+            "/api/collections/some-id/sources",
+            json={
+                "type": "web",
+                "url": "https://example.com/docs/",
+                "coverage_report_patterns": ["**/coverage.xml"],
+            },
+        )
+        assert response.status_code == 400
+        assert "only supported for GitHub sources" in response.json()["detail"]
+
+    @patch("app.routes.sources.get_session")
+    async def test_empty_coverage_patterns_rejected_for_github_sources(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        """Test that empty coverage report patterns are rejected."""
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        response = await client.post(
+            "/api/collections/some-id/sources",
+            json={
+                "type": "github",
+                "url": "https://github.com/owner/repo",
+                "coverage_report_patterns": [],
+            },
+        )
+        assert response.status_code == 400
+        assert "must contain at least one repo-relative glob" in response.json()["detail"]
+
 
 @pytest.mark.anyio
 class TestSourceAccess:

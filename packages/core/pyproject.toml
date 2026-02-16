@@ -22,6 +22,7 @@ dependencies = [
     "langgraph>=1.0.0",
     # SCIP protobuf parsing for code intelligence
     "protobuf>=4.25.0",
+    "lizard>=1.17.10",
     # Tree-sitter for AST-based analysis (rule extraction, outline)
     "tree-sitter-language-pack>=0.6.0",
     # OpenTelemetry (optional - only imports when OTEL_ENABLED=true)

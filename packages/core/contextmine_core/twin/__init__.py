@@ -1,6 +1,7 @@
 """Digital twin services."""
 
 from contextmine_core.twin.service import (
+    apply_file_metrics_to_scenario,
     approve_and_execute_intent,
     create_to_be_scenario,
     get_or_create_as_is_scenario,
@@ -13,6 +14,7 @@ from contextmine_core.twin.service import (
 )
 
 __all__ = [
+    "apply_file_metrics_to_scenario",
     "approve_and_execute_intent",
     "create_to_be_scenario",
     "get_or_create_as_is_scenario",

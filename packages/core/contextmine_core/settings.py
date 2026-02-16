@@ -188,6 +188,20 @@ class Settings(BaseSettings):
         description="Continue indexing other projects if one fails",
     )
 
+    # Real metrics pipeline settings
+    metrics_strict_mode: bool = Field(
+        default=True,
+        description="Require real LOC/complexity/coupling/coverage for relevant GitHub files",
+    )
+    metrics_languages: str = Field(
+        default="python,typescript,javascript,java,php",
+        description="Comma-separated language scope for real metrics extraction",
+    )
+    metrics_autodiscovery_enabled: bool = Field(
+        default=True,
+        description="Enable fallback auto-discovery for coverage reports when no config patterns match",
+    )
+
     # OpenTelemetry Settings (disabled by default - no overhead when disabled)
     otel_enabled: bool = Field(
         default=False,

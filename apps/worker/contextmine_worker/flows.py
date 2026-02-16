@@ -759,6 +759,7 @@ async def build_twin_graph(
     collection_id: str,
     snapshot_dicts: list[dict] | None = None,
     changed_doc_ids: list[str] | None = None,
+    file_metrics: list[dict] | None = None,
 ) -> dict:
     """Build digital twin graph from semantic snapshots (SCIP/LSIF) and existing KG."""
     del source_id, changed_doc_ids
@@ -767,6 +768,7 @@ async def build_twin_graph(
     from contextmine_core.graph.age import sync_scenario_to_age
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
+        apply_file_metrics_to_scenario,
         get_or_create_as_is_scenario,
         ingest_snapshot_into_as_is,
         refresh_metric_snapshots,
@@ -778,6 +780,7 @@ async def build_twin_graph(
     stats: dict[str, int | str] = {
         "twin_nodes_upserted": 0,
         "twin_edges_upserted": 0,
+        "twin_metric_nodes_enriched": 0,
         "twin_metrics_snapshots": 0,
         "twin_validation_snapshots": 0,
     }
@@ -803,6 +806,15 @@ async def build_twin_graph(
             )
             stats["twin_nodes_upserted"] += int(nodes)
             stats["twin_edges_upserted"] += int(edges)
+
+        if file_metrics:
+            enriched = await apply_file_metrics_to_scenario(session, as_is.id, file_metrics)
+            if enriched < len(file_metrics):
+                raise RuntimeError(
+                    "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
+                    f"(mapped={enriched}, metrics={len(file_metrics)})"
+                )
+            stats["twin_metric_nodes_enriched"] = enriched
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
         stats["twin_validation_snapshots"] = await refresh_validation_snapshots(
@@ -1081,7 +1093,9 @@ async def sync_github_source(
         "scip_symbols": 0,
         "scip_relations": 0,
     }
+    project_dicts: list[dict] = []
     snapshot_dicts: list[dict] = []
+    file_metric_dicts: list[dict] = []
     await update_progress_artifact(
         progress_id, progress=10, description="Running SCIP polyglot indexing..."
     )  # type: ignore[misc]
@@ -1108,6 +1122,23 @@ async def sync_github_source(
                     if scip_path:
                         snapshot_dict = await task_parse_scip_snapshot(scip_path)
                         if snapshot_dict:
+                            project_root = Path(str(proj_dict.get("root_path", repo_path)))
+                            try:
+                                repo_relative_root = project_root.resolve().relative_to(
+                                    repo_path.resolve()
+                                ).as_posix()
+                            except ValueError:
+                                repo_relative_root = ""
+
+                            snapshot_meta = dict(snapshot_dict.get("meta") or {})
+                            snapshot_meta.update(
+                                {
+                                    "project_root": str(project_root.resolve()),
+                                    "repo_relative_root": repo_relative_root,
+                                    "language": str(proj_dict.get("language", "")).lower(),
+                                }
+                            )
+                            snapshot_dict["meta"] = snapshot_meta
                             snapshot_dicts.append(snapshot_dict)
                             scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
                             scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
@@ -1121,6 +1152,28 @@ async def sync_github_source(
             )
     except Exception as e:
         logger.warning("SCIP indexing failed: %s", e)
+
+    await update_progress_artifact(
+        progress_id, progress=14, description="Extracting real code metrics..."
+    )  # type: ignore[misc]
+    if snapshot_dicts and project_dicts:
+        from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
+
+        settings = get_settings()
+        metrics_cfg = dict((source.config or {}).get("metrics") or {})
+        coverage_patterns = metrics_cfg.get("coverage_report_patterns")
+
+        bundles = run_polyglot_metrics_pipeline(
+            repo_root=repo_path,
+            project_dicts=project_dicts,
+            snapshot_dicts=snapshot_dicts,
+            coverage_report_patterns=list(coverage_patterns or []),
+            strict_mode=settings.metrics_strict_mode,
+            metrics_languages=settings.metrics_languages,
+            autodiscovery_enabled=settings.metrics_autodiscovery_enabled,
+        )
+        file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles)]
+        scip_stats["real_metric_files"] = len(file_metric_dicts)
 
     await update_progress_artifact(
         progress_id, progress=15, description="Detecting changed files..."
@@ -1315,6 +1368,7 @@ async def sync_github_source(
         collection_id_str,
         snapshot_dicts=snapshot_dicts,
         changed_doc_ids=changed_doc_ids,
+        file_metrics=file_metric_dicts,
     )
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
@@ -1351,9 +1405,11 @@ async def sync_github_source(
             # Twin stats
             "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
             "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),
+            "twin_metric_nodes_enriched": twin_stats.get("twin_metric_nodes_enriched", 0),
             "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
+            "real_metric_files": scip_stats.get("real_metric_files", 0),
         }
 
         await session.commit()
