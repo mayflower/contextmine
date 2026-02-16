@@ -472,15 +472,13 @@ async def city_view(
         metrics_reason = "ok" if metrics_ready else "no_real_metrics"
         if not metrics_ready:
             sources = (
-                (
-                    await db.execute(
-                        select(Source).where(Source.collection_id == collection_uuid)
-                    )
-                )
+                (await db.execute(select(Source).where(Source.collection_id == collection_uuid)))
                 .scalars()
                 .all()
             )
-            github_source_ids = [source.id for source in sources if source.type == SourceType.GITHUB]
+            github_source_ids = [
+                source.id for source in sources if source.type == SourceType.GITHUB
+            ]
 
             if github_source_ids:
                 jobs = (
@@ -517,7 +515,8 @@ async def city_view(
                         .all()
                     )
                     has_structural = any(
-                        bool((node.meta or {}).get("metrics_structural_ready")) for node in file_nodes
+                        bool((node.meta or {}).get("metrics_structural_ready"))
+                        for node in file_nodes
                     )
                     if has_structural:
                         metrics_reason = "awaiting_ci_coverage"

@@ -47,7 +47,9 @@ def upgrade() -> None:
         sa.Column("scenario_id", sa.UUID(), nullable=True),
         sa.Column("commit_sha", sa.String(length=64), nullable=False),
         sa.Column("branch", sa.String(length=255), nullable=True),
-        sa.Column("provider", sa.String(length=64), nullable=False, server_default="github_actions"),
+        sa.Column(
+            "provider", sa.String(length=64), nullable=False, server_default="github_actions"
+        ),
         sa.Column("workflow_run_id", sa.String(length=255), nullable=True),
         sa.Column("status", sa.String(length=32), nullable=False, server_default="queued"),
         sa.Column("error_code", sa.String(length=128), nullable=True),

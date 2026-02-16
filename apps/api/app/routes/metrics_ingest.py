@@ -132,7 +132,9 @@ def _detect_protocol_from_bytes(filename: str, payload: bytes) -> str | None:
         return detect_coverage_protocol(Path(tmp.name))
 
 
-def _serialize_job(job: CoverageIngestJob, reports: list[CoverageIngestReport]) -> CoverageIngestJobResponse:
+def _serialize_job(
+    job: CoverageIngestJob, reports: list[CoverageIngestReport]
+) -> CoverageIngestJobResponse:
     return CoverageIngestJobResponse(
         id=str(job.id),
         source_id=str(job.source_id),
@@ -205,14 +207,20 @@ async def upload_coverage_ingest(
         manifest_payload = loaded
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
         if source.type != SourceType.GITHUB:
-            raise HTTPException(status_code=400, detail="Coverage ingest is only supported for GitHub sources")
+            raise HTTPException(
+                status_code=400, detail="Coverage ingest is only supported for GitHub sources"
+            )
 
         token_row = (
-            await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+            await db.execute(
+                select(SourceIngestToken).where(SourceIngestToken.source_id == source.id)
+            )
         ).scalar_one_or_none()
         if not token_row:
             raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
@@ -326,7 +334,9 @@ async def get_coverage_ingest_job(
         raise HTTPException(status_code=400, detail="Invalid job_id") from e
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 

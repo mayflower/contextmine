@@ -1978,8 +1978,7 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
             )
 
         matched_sources = {
-            file_path: coverage_sources.get(file_path, {})
-            for file_path in matched_coverage
+            file_path: coverage_sources.get(file_path, {}) for file_path in matched_coverage
         }
         applied_files = await apply_coverage_metrics_to_scenario(
             session=session,

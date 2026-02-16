@@ -188,7 +188,10 @@ async def _get_collection_with_access(
     if require_owner:
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can perform this action")
-    elif collection.visibility == CollectionVisibility.PRIVATE and collection.owner_user_id != user_id:
+    elif (
+        collection.visibility == CollectionVisibility.PRIVATE
+        and collection.owner_user_id != user_id
+    ):
         result = await db.execute(
             select(CollectionMember)
             .where(CollectionMember.collection_id == collection.id)
@@ -214,12 +217,18 @@ async def create_source(
             status_code=400, detail="Invalid type. Must be 'github' or 'web'"
         ) from e
 
-    config = validate_github_url(body.url) if source_type == SourceType.GITHUB else validate_web_url(body.url)
+    config = (
+        validate_github_url(body.url)
+        if source_type == SourceType.GITHUB
+        else validate_web_url(body.url)
+    )
     if body.coverage_report_patterns is not None:
         config = mark_coverage_patterns_deprecated(config, body.coverage_report_patterns)
 
     async with get_db_session() as db:
-        collection = await _get_collection_with_access(db, collection_id, user_id, require_owner=True)
+        collection = await _get_collection_with_access(
+            db, collection_id, user_id, require_owner=True
+        )
         source = Source(
             id=uuid.uuid4(),
             collection_id=collection.id,
@@ -349,7 +358,9 @@ async def update_source(
 
         if body.max_pages is not None:
             if source.type != SourceType.WEB:
-                raise HTTPException(status_code=400, detail="max_pages is only supported for web sources")
+                raise HTTPException(
+                    status_code=400, detail="max_pages is only supported for web sources"
+                )
             if body.max_pages < 1 or body.max_pages > 1000:
                 raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
             config = dict(source.config or {})
@@ -423,7 +434,9 @@ async def rotate_coverage_ingest_token(
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
@@ -439,7 +452,9 @@ async def rotate_coverage_ingest_token(
         now = datetime.now(UTC)
 
         token_row = (
-            await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+            await db.execute(
+                select(SourceIngestToken).where(SourceIngestToken.source_id == source.id)
+            )
         ).scalar_one_or_none()
         if token_row:
             token_row.token_hash = digest
@@ -481,7 +496,9 @@ async def get_coverage_ingest_token(
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
@@ -489,10 +506,14 @@ async def get_coverage_ingest_token(
             await db.execute(select(Collection).where(Collection.id == source.collection_id))
         ).scalar_one()
         if collection.owner_user_id != user_id:
-            raise HTTPException(status_code=403, detail="Only the owner can view ingest token metadata")
+            raise HTTPException(
+                status_code=403, detail="Only the owner can view ingest token metadata"
+            )
 
         token_row = (
-            await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+            await db.execute(
+                select(SourceIngestToken).where(SourceIngestToken.source_id == source.id)
+            )
         ).scalar_one_or_none()
         if not token_row:
             return CoverageIngestTokenMetadataResponse(
@@ -523,7 +544,9 @@ async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 
@@ -559,11 +582,15 @@ async def set_deploy_key(
         )
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
         if source.type != SourceType.GITHUB:
-            raise HTTPException(status_code=400, detail="Deploy keys are only supported for GitHub sources")
+            raise HTTPException(
+                status_code=400, detail="Deploy keys are only supported for GitHub sources"
+            )
 
         collection = (
             await db.execute(select(Collection).where(Collection.id == source.collection_id))
@@ -589,7 +616,9 @@ async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Invalid source ID") from e
 
     async with get_db_session() as db:
-        source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+        source = (
+            await db.execute(select(Source).where(Source.id == src_uuid))
+        ).scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail="Source not found")
 

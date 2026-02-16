@@ -43,11 +43,7 @@ class FileMetricRecord:
             coupling_in=int(payload["coupling_in"]),
             coupling_out=int(payload["coupling_out"]),
             coupling=float(payload["coupling"]),
-            coverage=(
-                float(payload["coverage"])
-                if payload.get("coverage") is not None
-                else None
-            ),
+            coverage=(float(payload["coverage"]) if payload.get("coverage") is not None else None),
             sources=dict(payload.get("sources", {})),
         )
 
