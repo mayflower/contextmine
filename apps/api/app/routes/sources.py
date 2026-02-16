@@ -206,7 +206,7 @@ async def create_source(
             db, collection_id, user_id, require_owner=True
         )
 
-        # Create source
+        # Create source – set next_run_at to now so the worker picks it up immediately
         source = Source(
             id=uuid.uuid4(),
             collection_id=collection.id,
@@ -215,6 +215,7 @@ async def create_source(
             config=config,
             enabled=body.enabled,
             schedule_interval_minutes=body.schedule_interval_minutes,
+            next_run_at=datetime.now(UTC),
         )
         db.add(source)
         await db.flush()
