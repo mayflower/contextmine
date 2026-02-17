@@ -78,6 +78,18 @@ ingress:
       hosts:
         - contextmine.your-domain.com
 
+# -- CodeCharta visualization for production
+codecharta:
+  enabled: true
+  ingress:
+    path: /codecharta(/|$)(.*)
+    pathType: ImplementationSpecific
+    annotations:
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+    stripPrefix:
+      enabled: false
+
 # -- Application configuration for production
 config:
   debug: "false"

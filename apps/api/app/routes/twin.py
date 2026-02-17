@@ -138,6 +138,41 @@ async def _ensure_member(db, collection_id: uuid.UUID, user_id: uuid.UUID) -> No
         raise HTTPException(status_code=403, detail="Access denied")
 
 
+async def _upsert_artifact(
+    db,
+    *,
+    collection_id: uuid.UUID,
+    kind: KnowledgeArtifactKind,
+    name: str,
+    content: str,
+    meta: dict,
+) -> KnowledgeArtifact:
+    existing = (
+        await db.execute(
+            select(KnowledgeArtifact).where(
+                KnowledgeArtifact.collection_id == collection_id,
+                KnowledgeArtifact.kind == kind,
+                KnowledgeArtifact.name == name,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.content = content
+        existing.meta = meta
+        return existing
+
+    artifact = KnowledgeArtifact(
+        id=uuid.uuid4(),
+        collection_id=collection_id,
+        kind=kind,
+        name=name,
+        content=content,
+        meta=meta,
+    )
+    db.add(artifact)
+    return artifact
+
+
 async def _can_access_collection(db, collection_id: uuid.UUID, user_id: uuid.UUID) -> bool:
     collection = (
         await db.execute(select(Collection).where(Collection.id == collection_id))
@@ -932,24 +967,22 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                     as_is_scenario_id=scenario.base_scenario_id,
                     to_be_scenario_id=scenario.id,
                 )
-                as_is_artifact = KnowledgeArtifact(
-                    id=uuid.uuid4(),
+                as_is_artifact = await _upsert_artifact(
+                    db,
                     collection_id=scenario.collection_id,
                     kind=KnowledgeArtifactKind.MERMAID_C4_ASIS,
                     name=f"{scenario.name}.asis.mmd",
                     content=as_is_content,
                     meta={"scenario_id": str(scenario.base_scenario_id)},
                 )
-                to_be_artifact = KnowledgeArtifact(
-                    id=uuid.uuid4(),
+                to_be_artifact = await _upsert_artifact(
+                    db,
                     collection_id=scenario.collection_id,
                     kind=KnowledgeArtifactKind.MERMAID_C4_TOBE,
                     name=f"{scenario.name}.tobe.mmd",
                     content=to_be_content,
                     meta={"scenario_id": str(scenario.id)},
                 )
-                db.add(as_is_artifact)
-                db.add(to_be_artifact)
                 await db.commit()
                 return {
                     "exports": [
@@ -970,8 +1003,8 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             )
             name = f"{scenario.name}.mmd"
 
-        artifact = KnowledgeArtifact(
-            id=uuid.uuid4(),
+        artifact = await _upsert_artifact(
+            db,
             collection_id=scenario.collection_id,
             kind=kind,
             name=name,
@@ -983,7 +1016,6 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                 "entity_level": body.entity_level,
             },
         )
-        db.add(artifact)
         await db.commit()
 
         return {

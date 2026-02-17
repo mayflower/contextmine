@@ -1,9 +1,12 @@
 """Tests for extracted twin view routes."""
 
+import uuid
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.routes.twin import _upsert_artifact
+from contextmine_core.models import KnowledgeArtifactKind
 from httpx import AsyncClient
 
 
@@ -124,3 +127,52 @@ class TestTwinViewRoutes:
         response = await client.get(f"/api/twin/scenarios/{scenario_id}/exports/not-a-uuid/raw")
         assert response.status_code == 400
         assert "Invalid export_id" in response.json()["detail"]
+
+    async def test_upsert_artifact_updates_existing(self) -> None:
+        existing = MagicMock()
+        existing.content = "old"
+        existing.meta = {"old": "meta"}
+
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = existing
+
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+        db.add = MagicMock()
+
+        updated = await _upsert_artifact(
+            db,
+            collection_id=uuid.uuid4(),
+            kind=KnowledgeArtifactKind.CC_JSON,
+            name="AS-IS.cc.json",
+            content='{"ok":true}',
+            meta={"scenario_id": "s1"},
+        )
+
+        assert updated is existing
+        assert existing.content == '{"ok":true}'
+        assert existing.meta == {"scenario_id": "s1"}
+        db.add.assert_not_called()
+
+    async def test_upsert_artifact_inserts_new(self) -> None:
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+        db.add = MagicMock()
+
+        created = await _upsert_artifact(
+            db,
+            collection_id=uuid.uuid4(),
+            kind=KnowledgeArtifactKind.CC_JSON,
+            name="AS-IS.cc.json",
+            content='{"ok":true}',
+            meta={"scenario_id": "s1"},
+        )
+
+        assert created.kind == KnowledgeArtifactKind.CC_JSON
+        assert created.name == "AS-IS.cc.json"
+        assert created.content == '{"ok":true}'
+        assert created.meta == {"scenario_id": "s1"}
+        db.add.assert_called_once_with(created)

@@ -143,7 +143,7 @@ worker:
 # -- CodeCharta visualization service
 codecharta:
   # -- Enable CodeCharta deployment
-  enabled: false
+  enabled: true
   image:
     repository: codecharta/codecharta-visualization
     tag: latest
@@ -175,13 +175,16 @@ codecharta:
     # -- Enable dedicated ingress for /codecharta path (requires ingress.enabled=true)
     enabled: true
     # -- Path served by CodeCharta under the main domain
-    path: /codecharta(/|$)(.*)
+    path: /codecharta
     # -- Ingress path type
-    pathType: ImplementationSpecific
+    pathType: Prefix
     # -- Extra ingress annotations
-    annotations:
-      nginx.ingress.kubernetes.io/use-regex: "true"
-      nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+    annotations: {}
+    # -- Traefik strip-prefix middleware settings (used when ingress.className=traefik)
+    stripPrefix:
+      enabled: true
+      prefixes:
+        - /codecharta
 
 # -- Ingress configuration
 ingress:

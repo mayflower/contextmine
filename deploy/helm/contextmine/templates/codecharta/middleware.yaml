@@ -1,0 +1,14 @@
+{{- if and .Values.codecharta.enabled .Values.codecharta.ingress.enabled (eq .Values.ingress.className "traefik") .Values.codecharta.ingress.stripPrefix.enabled -}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "contextmine.fullname" . }}-codecharta-strip
+  labels:
+    {{- include "contextmine.labels" . | nindent 4 }}
+spec:
+  stripPrefix:
+    prefixes:
+      {{- range .Values.codecharta.ingress.stripPrefix.prefixes }}
+      - {{ . | quote }}
+      {{- end }}
+{{- end }}

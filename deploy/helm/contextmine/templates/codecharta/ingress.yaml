@@ -12,6 +12,9 @@ metadata:
     {{- with .Values.codecharta.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- if and (eq .Values.ingress.className "traefik") .Values.codecharta.ingress.stripPrefix.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "contextmine.fullname" . }}-codecharta-strip@kubernetescrd
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
