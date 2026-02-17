@@ -53,6 +53,7 @@ export default function CockpitPage({
 
   const [topologyDensity, setTopologyDensity] = useState(1200)
   const [deepDiveDensity, setDeepDiveDensity] = useState(5000)
+  const [deepDiveMode, setDeepDiveMode] = useState<'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'>('file_dependency')
   const [toast, setToast] = useState<CockpitToast | null>(null)
 
   const topologyLimit = topologyDensity
@@ -84,6 +85,8 @@ export default function CockpitPage({
     errors,
     exportFormat,
     setExportFormat,
+    exportProjection,
+    setExportProjection,
     exportContent,
     generateExport,
     refreshActiveView,
@@ -91,6 +94,7 @@ export default function CockpitPage({
     selection,
     topologyLimit,
     deepDiveLimit,
+    deepDiveMode,
     onScenarioAutoSelect: setScenarioId,
     onViewError,
   })
@@ -343,6 +347,8 @@ export default function CockpitPage({
           error={activeError}
           layer={selection.layer}
           density={deepDiveDensity}
+          mode={deepDiveMode}
+          onModeChange={setDeepDiveMode}
           onDensityChange={setDeepDiveDensity}
           onSwitchToCodeLayer={() => setLayer('code_controlflow')}
           onRetry={refreshActiveView}
@@ -361,10 +367,12 @@ export default function CockpitPage({
       {selection.view === 'exports' ? (
         <ExportsView
           exportFormat={exportFormat}
+          exportProjection={exportProjection}
           exportState={activeState}
           exportError={errors.exports}
           exportContent={exportContent}
           onFormatChange={setExportFormat}
+          onProjectionChange={setExportProjection}
           onGenerate={handleGenerateExport}
           onCopy={handleCopyExport}
           onDownload={handleDownloadExport}

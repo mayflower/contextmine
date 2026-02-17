@@ -1,11 +1,13 @@
-import { EXPORT_FORMATS, type CockpitLoadState, type ExportFormat } from '../types'
+import { EXPORT_FORMATS, type CockpitLoadState, type CockpitProjection, type ExportFormat } from '../types'
 
 interface ExportsViewProps {
   exportFormat: ExportFormat
+  exportProjection: CockpitProjection
   exportState: CockpitLoadState
   exportError: string
   exportContent: string
   onFormatChange: (format: ExportFormat) => void
+  onProjectionChange: (projection: CockpitProjection) => void
   onGenerate: () => void
   onCopy: () => void
   onDownload: () => void
@@ -13,10 +15,12 @@ interface ExportsViewProps {
 
 export default function ExportsView({
   exportFormat,
+  exportProjection,
   exportState,
   exportError,
   exportContent,
   onFormatChange,
+  onProjectionChange,
   onGenerate,
   onCopy,
   onDownload,
@@ -40,6 +44,17 @@ export default function ExportsView({
                 {format.label}
               </option>
             ))}
+          </select>
+        </label>
+        <label>
+          <span>Projection</span>
+          <select
+            value={exportProjection}
+            onChange={(event) => onProjectionChange(event.target.value as CockpitProjection)}
+          >
+            <option value="architecture">Architecture</option>
+            <option value="code_file">Code file</option>
+            <option value="code_symbol">Code symbol</option>
           </select>
         </label>
 

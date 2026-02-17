@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
   CityPayload,
+  CockpitLayer,
   CockpitLoadState,
+  CockpitProjection,
   CockpitSelection,
   CockpitView,
+  DeepDiveMode,
   ExportFormat,
   MermaidPayload,
   ScenarioLite,
@@ -43,14 +46,22 @@ interface UseCockpitDataArgs {
   selection: CockpitSelection
   topologyLimit: number
   deepDiveLimit: number
+  deepDiveMode: DeepDiveMode
   onScenarioAutoSelect: (scenarioId: string) => void
   onViewError?: (view: CockpitView, message: string) => void
+}
+
+function topologyEntityLevel(layer: CockpitLayer): 'domain' | 'container' | 'component' {
+  if (layer === 'portfolio_system') return 'domain'
+  if (layer === 'component_interface') return 'component'
+  return 'container'
 }
 
 export function useCockpitData({
   selection,
   topologyLimit,
   deepDiveLimit,
+  deepDiveMode,
   onScenarioAutoSelect,
   onViewError,
 }: UseCockpitDataArgs) {
@@ -64,6 +75,7 @@ export function useCockpitData({
   const [updatedAt, setUpdatedAt] = useState<DataUpdated>({})
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('cc_json')
+  const [exportProjection, setExportProjection] = useState<CockpitProjection>('architecture')
   const [exportContent, setExportContent] = useState('')
 
   const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
@@ -182,8 +194,32 @@ export function useCockpitData({
         if (view === 'topology' || view === 'deep_dive') {
           const endpoint = view === 'topology' ? 'topology' : 'deep-dive'
           const limit = view === 'topology' ? topologyLimit : deepDiveLimit
+          const query = new URLSearchParams({
+            scenario_id: scenarioId,
+            layer,
+            limit: String(limit),
+          })
+
+          if (view === 'topology') {
+            query.set('projection', 'architecture')
+            query.set('entity_level', topologyEntityLevel(layer))
+          } else {
+            if (deepDiveMode === 'file_dependency') {
+              query.set('projection', 'code_file')
+              query.set('entity_level', 'file')
+            } else if (deepDiveMode === 'symbol_callgraph') {
+              query.set('projection', 'code_symbol')
+              query.set('entity_level', 'symbol')
+              query.set('mode', 'symbol_callgraph')
+            } else {
+              query.set('projection', 'code_symbol')
+              query.set('entity_level', 'symbol')
+              query.set('mode', 'contains_hierarchy')
+            }
+          }
+
           const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/${endpoint}?scenario_id=${scenarioId}&layer=${layer}&limit=${limit}`,
+            `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
             {
               credentials: 'include',
               signal: controller.signal,
@@ -193,7 +229,13 @@ export function useCockpitData({
             throw new Error(`Could not load ${endpoint} (${response.status})`)
           }
           const payload = await response.json()
-          setGraph(payload.graph || DEFAULT_GRAPH)
+          setGraph({
+            ...(payload.graph || DEFAULT_GRAPH),
+            projection: payload.projection ?? payload.graph?.projection,
+            entity_level: payload.entity_level ?? payload.graph?.entity_level,
+            grouping_strategy: payload.grouping_strategy ?? payload.graph?.grouping_strategy,
+            excluded_kinds: payload.excluded_kinds ?? payload.graph?.excluded_kinds,
+          })
           setViewState(view, 'ready')
           markUpdated(view)
           return
@@ -234,6 +276,7 @@ export function useCockpitData({
     selection,
     topologyLimit,
     deepDiveLimit,
+    deepDiveMode,
     refreshNonce,
     markUpdated,
     setViewError,
@@ -256,7 +299,16 @@ export function useCockpitData({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ format: exportFormat }),
+        body: JSON.stringify({
+          format: exportFormat,
+          projection: exportProjection,
+          entity_level:
+            exportProjection === 'architecture'
+              ? topologyEntityLevel(selection.layer)
+              : exportProjection === 'code_file'
+                ? 'file'
+                : 'symbol',
+        }),
       })
 
       if (!exportResponse.ok) {
@@ -292,7 +344,15 @@ export function useCockpitData({
       setViewState('exports', 'error')
       return null
     }
-  }, [exportFormat, markUpdated, selection.scenarioId, setViewError, setViewState])
+  }, [
+    exportFormat,
+    exportProjection,
+    markUpdated,
+    selection.layer,
+    selection.scenarioId,
+    setViewError,
+    setViewState,
+  ])
 
   const activeState = useMemo(() => states[selection.view], [states, selection.view])
   const activeError = useMemo(() => errors[selection.view], [errors, selection.view])
@@ -314,6 +374,8 @@ export function useCockpitData({
     activeUpdatedAt,
     exportFormat,
     setExportFormat,
+    exportProjection,
+    setExportProjection,
     exportContent,
     setExportContent,
     generateExport,

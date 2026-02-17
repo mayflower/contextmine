@@ -9,6 +9,9 @@ export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'e
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
 export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4'
+export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol'
+export type TopologyEntityLevel = 'domain' | 'container' | 'component'
+export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'
 
 export interface CockpitSelection {
   collectionId: string
@@ -60,12 +63,20 @@ export interface TwinGraphResponse {
   page: number
   limit: number
   total_nodes: number
+  projection?: CockpitProjection
+  entity_level?: string
+  grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
+  excluded_kinds?: string[]
 }
 
 export interface GraphViewPayload {
   collection_id: string
   scenario: ViewScenario
   layer: CockpitLayer | null
+  projection?: CockpitProjection
+  entity_level?: string
+  grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
+  excluded_kinds?: string[]
   graph: TwinGraphResponse
 }
 

@@ -12,8 +12,11 @@ from contextmine_core.architecture_intents import ArchitectureIntentV1
 from contextmine_core.exports import (
     export_codecharta_json,
     export_cx2,
+    export_cx2_from_graph,
     export_jgf,
+    export_jgf_from_graph,
     export_lpg_jsonl,
+    export_lpg_jsonl_from_graph,
     export_mermaid_asis_tobe,
     export_mermaid_c4,
 )
@@ -30,8 +33,10 @@ from contextmine_core.models import (
     TwinScenario,
 )
 from contextmine_core.twin import (
+    GraphProjection,
     approve_and_execute_intent,
     create_to_be_scenario,
+    get_full_scenario_graph,
     get_or_create_as_is_scenario,
     get_scenario_graph,
     list_scenario_patches,
@@ -58,6 +63,8 @@ class CypherRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     format: Literal["lpg_jsonl", "cc_json", "cx2", "jgf", "mermaid_c4"]
+    projection: Literal["architecture", "code_file", "code_symbol"] | None = None
+    entity_level: Literal["domain", "container", "component", "file", "symbol"] | None = None
 
 
 def _user_id_or_401(request: Request) -> uuid.UUID:
@@ -192,6 +199,32 @@ def _parse_layer(layer: str | None) -> TwinLayer | None:
         return TwinLayer(layer)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid layer") from e
+
+
+def _parse_projection(projection: str | None) -> GraphProjection:
+    if not projection:
+        return GraphProjection.CODE_SYMBOL
+    try:
+        return GraphProjection(projection)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid projection") from e
+
+
+def _parse_kind_filter(raw_value: str | None) -> set[str] | None:
+    if not raw_value:
+        return None
+    values = {value.strip().lower() for value in raw_value.split(",") if value.strip()}
+    return values or None
+
+
+def _topology_entity_level(layer: TwinLayer | None, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    if layer == TwinLayer.PORTFOLIO_SYSTEM:
+        return "domain"
+    if layer == TwinLayer.COMPONENT_INTERFACE:
+        return "component"
+    return "container"
 
 
 @router.post("/scenarios")
@@ -369,16 +402,31 @@ async def graph_view(
     request: Request,
     scenario_id: str,
     layer: str | None = Query(default=None),
+    projection: str | None = Query(default=GraphProjection.CODE_SYMBOL.value),
+    entity_level: str | None = Query(default=None),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
     page: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=5000),
 ) -> dict:
     user_id = _user_id_or_401(request)
     layer_enum = _parse_layer(layer)
+    projection_enum = _parse_projection(projection)
 
     async with get_db_session() as db:
         scenario = await _load_scenario(db, scenario_id)
         await _ensure_member(db, scenario.collection_id, user_id)
-        return await get_scenario_graph(db, scenario.id, layer_enum, page, limit)
+        return await get_scenario_graph(
+            db,
+            scenario.id,
+            layer_enum,
+            page,
+            limit,
+            projection=projection_enum,
+            entity_level=entity_level,
+            include_kinds=_parse_kind_filter(include_kinds),
+            exclude_kinds=_parse_kind_filter(exclude_kinds),
+        )
 
 
 @router.get("/collections/{collection_id}/views/topology")
@@ -387,21 +435,41 @@ async def topology_view(
     collection_id: str,
     scenario_id: str | None = Query(default=None),
     layer: str | None = Query(default=TwinLayer.DOMAIN_CONTAINER.value),
+    projection: str | None = Query(default=GraphProjection.ARCHITECTURE.value),
+    entity_level: str | None = Query(default=None),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
     page: int = Query(default=0, ge=0),
     limit: int = Query(default=1000, ge=1, le=5000),
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
     layer_enum = _parse_layer(layer)
+    projection_enum = _parse_projection(projection)
+    resolved_entity_level = _topology_entity_level(layer_enum, entity_level)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
-        graph = await get_scenario_graph(db, scenario.id, layer_enum, page, limit)
+        graph = await get_scenario_graph(
+            db,
+            scenario.id,
+            None if projection_enum == GraphProjection.ARCHITECTURE else layer_enum,
+            page,
+            limit,
+            projection=projection_enum,
+            entity_level=resolved_entity_level,
+            include_kinds=_parse_kind_filter(include_kinds),
+            exclude_kinds=_parse_kind_filter(exclude_kinds),
+        )
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
             "layer": layer_enum.value if layer_enum else None,
+            "projection": graph["projection"],
+            "entity_level": graph["entity_level"],
+            "grouping_strategy": graph["grouping_strategy"],
+            "excluded_kinds": graph["excluded_kinds"],
             "graph": graph,
         }
 
@@ -412,21 +480,55 @@ async def deep_dive_view(
     collection_id: str,
     scenario_id: str | None = Query(default=None),
     layer: str | None = Query(default=TwinLayer.CODE_CONTROLFLOW.value),
+    projection: str | None = Query(default=GraphProjection.CODE_FILE.value),
+    entity_level: str | None = Query(default=None),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
+    mode: str | None = Query(default="file_dependency"),
     page: int = Query(default=0, ge=0),
     limit: int = Query(default=3000, ge=1, le=10000),
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
     layer_enum = _parse_layer(layer)
+    projection_enum = _parse_projection(projection)
+
+    edge_kinds: set[str] | None = None
+    if mode == "symbol_callgraph":
+        projection_enum = GraphProjection.CODE_SYMBOL
+        edge_kinds = {"symbol_calls_symbol"}
+    elif mode == "contains_hierarchy":
+        projection_enum = GraphProjection.CODE_SYMBOL
+        edge_kinds = {"symbol_contains_symbol"}
+    elif mode in (None, "file_dependency"):
+        projection_enum = GraphProjection.CODE_FILE
+    else:
+        raise HTTPException(status_code=400, detail="Invalid deep dive mode")
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
-        graph = await get_scenario_graph(db, scenario.id, layer_enum, page, limit)
+        graph = await get_scenario_graph(
+            db,
+            scenario.id,
+            layer_enum,
+            page,
+            limit,
+            projection=projection_enum,
+            entity_level=entity_level
+            or ("file" if projection_enum == GraphProjection.CODE_FILE else "symbol"),
+            include_kinds=_parse_kind_filter(include_kinds),
+            exclude_kinds=_parse_kind_filter(exclude_kinds),
+            include_edge_kinds=edge_kinds,
+        )
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
             "layer": layer_enum.value if layer_enum else None,
+            "projection": graph["projection"],
+            "entity_level": graph["entity_level"],
+            "grouping_strategy": graph["grouping_strategy"],
+            "excluded_kinds": graph["excluded_kinds"],
             "graph": graph,
         }
 
@@ -611,7 +713,7 @@ async def mermaid_view(
                 "to_be": to_be,
             }
 
-        content = await export_mermaid_c4(db, scenario.id)
+        content = await export_mermaid_c4(db, scenario.id, entity_level="container")
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -641,9 +743,22 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
     async with get_db_session() as db:
         scenario = await _load_scenario(db, scenario_id)
         await _ensure_member(db, scenario.collection_id, user_id)
+        projection = (
+            GraphProjection(body.projection) if body.projection else GraphProjection.ARCHITECTURE
+        )
 
         if body.format == "lpg_jsonl":
-            content = await export_lpg_jsonl(db, scenario.id)
+            if projection == GraphProjection.CODE_SYMBOL:
+                content = await export_lpg_jsonl(db, scenario.id)
+            else:
+                graph = await get_full_scenario_graph(
+                    session=db,
+                    scenario_id=scenario.id,
+                    layer=None,
+                    projection=projection,
+                    entity_level=body.entity_level,
+                )
+                content = export_lpg_jsonl_from_graph(scenario.id, graph)
             kind = KnowledgeArtifactKind.LPG_JSONL
             name = f"{scenario.name}.lpg.jsonl"
         elif body.format == "cc_json":
@@ -651,11 +766,31 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             kind = KnowledgeArtifactKind.CC_JSON
             name = f"{scenario.name}.cc.json"
         elif body.format == "cx2":
-            content = await export_cx2(db, scenario.id)
+            if projection == GraphProjection.CODE_SYMBOL:
+                content = await export_cx2(db, scenario.id)
+            else:
+                graph = await get_full_scenario_graph(
+                    session=db,
+                    scenario_id=scenario.id,
+                    layer=None,
+                    projection=projection,
+                    entity_level=body.entity_level,
+                )
+                content = export_cx2_from_graph(scenario.id, graph)
             kind = KnowledgeArtifactKind.CX2
             name = f"{scenario.name}.cx2.json"
         elif body.format == "jgf":
-            content = await export_jgf(db, scenario.id)
+            if projection == GraphProjection.CODE_SYMBOL:
+                content = await export_jgf(db, scenario.id)
+            else:
+                graph = await get_full_scenario_graph(
+                    session=db,
+                    scenario_id=scenario.id,
+                    layer=None,
+                    projection=projection,
+                    entity_level=body.entity_level,
+                )
+                content = export_jgf_from_graph(scenario.id, graph)
             kind = KnowledgeArtifactKind.JGF
             name = f"{scenario.name}.jgf.json"
         else:
@@ -691,7 +826,11 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                     ]
                 }
 
-            content = await export_mermaid_c4(db, scenario.id)
+            content = await export_mermaid_c4(
+                db,
+                scenario.id,
+                entity_level=body.entity_level or "container",
+            )
             kind = (
                 KnowledgeArtifactKind.MERMAID_C4_ASIS
                 if scenario.is_as_is
@@ -705,7 +844,12 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             kind=kind,
             name=name,
             content=content,
-            meta={"scenario_id": str(scenario.id), "format": body.format},
+            meta={
+                "scenario_id": str(scenario.id),
+                "format": body.format,
+                "projection": projection.value,
+                "entity_level": body.entity_level,
+            },
         )
         db.add(artifact)
         await db.commit()

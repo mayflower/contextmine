@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import cytoscape, { type Core } from 'cytoscape'
 
-import type { CockpitLayer, CockpitLoadState, TwinGraphResponse } from '../types'
+import type { CockpitLayer, CockpitLoadState, DeepDiveMode, TwinGraphResponse } from '../types'
 
 interface DeepDiveViewProps {
   graph: TwinGraphResponse
   state: CockpitLoadState
   error: string
   layer: CockpitLayer
+  mode: DeepDiveMode
   density: number
+  onModeChange: (mode: DeepDiveMode) => void
   onDensityChange: (density: number) => void
   onSwitchToCodeLayer: () => void
   onRetry: () => void
@@ -30,7 +32,9 @@ export default function DeepDiveView({
   state,
   error,
   layer,
+  mode,
   density,
+  onModeChange,
   onDensityChange,
   onSwitchToCodeLayer,
   onRetry,
@@ -136,7 +140,11 @@ export default function DeepDiveView({
 
       <div className="cockpit2-panel-header-row">
         <h3>Deep dive graph</h3>
-        <p className="muted">Nodes: {graph.nodes.length} / Total: {graph.total_nodes} • Edges: {graph.edges.length}</p>
+        <p className="muted">
+          Nodes: {graph.nodes.length} / Total: {graph.total_nodes} • Edges: {graph.edges.length}
+          {graph.projection ? ` • Projection: ${graph.projection}` : ''}
+          {mode ? ` • Mode: ${mode}` : ''}
+        </p>
       </div>
 
       <div className="cockpit2-graph-toolbar">
@@ -153,6 +161,15 @@ export default function DeepDiveView({
         <button type="button" className="secondary" onClick={() => setShowLabels((prev) => !prev)}>
           {showLabels ? 'Hide labels' : 'Show labels'}
         </button>
+
+        <label>
+          Mode
+          <select value={mode} onChange={(event) => onModeChange(event.target.value as DeepDiveMode)}>
+            <option value="file_dependency">File dependency</option>
+            <option value="symbol_callgraph">Symbol callgraph</option>
+            <option value="contains_hierarchy">Contains hierarchy</option>
+          </select>
+        </label>
 
         <label>
           Density

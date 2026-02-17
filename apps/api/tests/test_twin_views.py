@@ -43,3 +43,35 @@ class TestTwinViewRoutes:
         )
         assert response.status_code == 400
         assert "Invalid layer" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_topology_invalid_projection_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/topology?projection=invalid-projection"
+        )
+        assert response.status_code == 400
+        assert "Invalid projection" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_deep_dive_invalid_mode_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/deep-dive?mode=not-a-mode"
+        )
+        assert response.status_code == 400
+        assert "Invalid deep dive mode" in response.json()["detail"]

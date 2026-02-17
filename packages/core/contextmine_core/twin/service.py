@@ -37,7 +37,13 @@ from contextmine_core.models import (
     TwinScenario,
 )
 from contextmine_core.semantic_snapshot.models import RelationKind, Snapshot, SymbolKind
-from sqlalchemy import delete, func, select
+from contextmine_core.twin.projections import (
+    GraphProjection,
+    build_architecture_projection,
+    build_code_file_projection,
+    build_code_symbol_projection,
+)
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,32 +54,10 @@ def infer_node_layers(kind: str, meta: dict[str, Any] | None = None) -> set[Twin
     """Infer layers for a node kind."""
     del meta
     norm = kind.lower()
-    if norm in {
-        "file",
-        "module",
-        "symbol",
-        "function",
-        "method",
-        "class",
-        "struct",
-        "trait",
-        "type_alias",
-        "enum",
-        "property",
-        "parameter",
-        "constant",
-        "variable",
-        "validator",
-    }:
-        # Raw code entities should remain visible in architecture-oriented views
-        # until explicit domain/container extraction is available.
-        return {
-            TwinLayer.CODE_CONTROLFLOW,
-            TwinLayer.COMPONENT_INTERFACE,
-            TwinLayer.DOMAIN_CONTAINER,
-        }
+    if norm in {"file", "module", "symbol", "function", "method", "class", "validator"}:
+        return {TwinLayer.CODE_CONTROLFLOW}
     if norm in {"api_endpoint", "interface", "rpc", "service", "component"}:
-        return {TwinLayer.COMPONENT_INTERFACE, TwinLayer.DOMAIN_CONTAINER}
+        return {TwinLayer.COMPONENT_INTERFACE}
     if norm in {"bounded_context", "container", "db_table", "db_column"}:
         return {TwinLayer.DOMAIN_CONTAINER}
     return {TwinLayer.PORTFOLIO_SYSTEM}
@@ -83,19 +67,11 @@ def infer_edge_layers(kind: str) -> set[TwinLayer]:
     """Infer layers for edge kinds."""
     k = kind.lower()
     if k == "file_defines_symbol" or k.startswith("symbol_"):
-        return {
-            TwinLayer.CODE_CONTROLFLOW,
-            TwinLayer.COMPONENT_INTERFACE,
-            TwinLayer.DOMAIN_CONTAINER,
-        }
+        return {TwinLayer.CODE_CONTROLFLOW}
     if "calls" in k or "references" in k or "contains" in k:
-        return {
-            TwinLayer.CODE_CONTROLFLOW,
-            TwinLayer.COMPONENT_INTERFACE,
-            TwinLayer.DOMAIN_CONTAINER,
-        }
+        return {TwinLayer.CODE_CONTROLFLOW}
     if "interface" in k or "endpoint" in k or "rpc" in k:
-        return {TwinLayer.COMPONENT_INTERFACE, TwinLayer.DOMAIN_CONTAINER}
+        return {TwinLayer.COMPONENT_INTERFACE}
     if "context" in k or "domain" in k:
         return {TwinLayer.DOMAIN_CONTAINER}
     return {TwinLayer.PORTFOLIO_SYSTEM}
@@ -746,58 +722,151 @@ async def get_scenario_graph(
     layer: TwinLayer | None,
     page: int,
     limit: int,
+    projection: GraphProjection = GraphProjection.CODE_SYMBOL,
+    entity_level: str | None = None,
+    include_kinds: set[str] | None = None,
+    exclude_kinds: set[str] | None = None,
+    include_edge_kinds: set[str] | None = None,
 ) -> dict[str, Any]:
     """Get paginated graph view for one scenario."""
+    graph = await get_full_scenario_graph(
+        session=session,
+        scenario_id=scenario_id,
+        layer=layer,
+        projection=projection,
+        entity_level=entity_level,
+        include_kinds=include_kinds,
+        exclude_kinds=exclude_kinds,
+        include_edge_kinds=include_edge_kinds,
+    )
+    all_nodes = sorted(graph["nodes"], key=lambda n: str(n.get("natural_key") or n.get("id")))
+    page_nodes = all_nodes[page * limit : (page + 1) * limit]
+    page_ids = {str(n["id"]) for n in page_nodes}
+    page_edges = [
+        edge
+        for edge in graph["edges"]
+        if str(edge.get("source_node_id")) in page_ids
+        and str(edge.get("target_node_id")) in page_ids
+    ]
+
+    return {
+        "nodes": page_nodes,
+        "edges": page_edges,
+        "page": page,
+        "limit": limit,
+        "total_nodes": int(graph["total_nodes"]),
+        "projection": graph["projection"],
+        "entity_level": graph["entity_level"],
+        "grouping_strategy": graph["grouping_strategy"],
+        "excluded_kinds": graph["excluded_kinds"],
+    }
+
+
+async def get_full_scenario_graph(
+    session: AsyncSession,
+    scenario_id: UUID,
+    layer: TwinLayer | None,
+    projection: GraphProjection = GraphProjection.CODE_SYMBOL,
+    entity_level: str | None = None,
+    include_kinds: set[str] | None = None,
+    exclude_kinds: set[str] | None = None,
+    include_edge_kinds: set[str] | None = None,
+) -> dict[str, Any]:
+    """Get full (unpaged) graph view with optional projection."""
     node_stmt = select(TwinNode).where(TwinNode.scenario_id == scenario_id)
     if layer is not None:
         node_stmt = node_stmt.join(TwinNodeLayer, TwinNodeLayer.node_id == TwinNode.id).where(
             TwinNodeLayer.layer == layer
         )
-    node_stmt = node_stmt.order_by(TwinNode.natural_key).offset(page * limit).limit(limit)
 
-    nodes = (await session.execute(node_stmt)).scalars().all()
-    node_ids = {n.id for n in nodes}
-
+    raw_nodes = (await session.execute(node_stmt)).scalars().all()
+    raw_node_ids = {n.id for n in raw_nodes}
     edge_stmt = select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)
-    if node_ids:
+    if raw_node_ids:
         edge_stmt = edge_stmt.where(
-            TwinEdge.source_node_id.in_(node_ids),
-            TwinEdge.target_node_id.in_(node_ids),
+            TwinEdge.source_node_id.in_(raw_node_ids),
+            TwinEdge.target_node_id.in_(raw_node_ids),
         )
     else:
         edge_stmt = edge_stmt.limit(0)
-    edges = (await session.execute(edge_stmt)).scalars().all()
+    raw_edges = (await session.execute(edge_stmt)).scalars().all()
 
-    node_count = (
-        await session.execute(
-            select(func.count(TwinNode.id)).where(TwinNode.scenario_id == scenario_id)
+    nodes = [
+        {
+            "id": str(n.id),
+            "natural_key": n.natural_key,
+            "kind": n.kind,
+            "name": n.name,
+            "meta": n.meta or {},
+        }
+        for n in raw_nodes
+    ]
+    edges = [
+        {
+            "id": str(e.id),
+            "source_node_id": str(e.source_node_id),
+            "target_node_id": str(e.target_node_id),
+            "kind": e.kind,
+            "meta": e.meta or {},
+        }
+        for e in raw_edges
+    ]
+
+    include_kinds_norm = {kind.lower() for kind in include_kinds} if include_kinds else None
+    exclude_kinds_norm = {kind.lower() for kind in exclude_kinds} if exclude_kinds else None
+    include_edge_kinds_norm = (
+        {kind.lower() for kind in include_edge_kinds} if include_edge_kinds else None
+    )
+
+    grouping_strategy = "heuristic"
+    effective_entity_level = entity_level
+    effective_excluded_kinds = sorted(exclude_kinds_norm or set())
+
+    if projection == GraphProjection.ARCHITECTURE:
+        effective_entity_level = (entity_level or "container").lower()
+        default_hidden = {
+            "class",
+            "method",
+            "function",
+            "property",
+            "parameter",
+            "variable",
+            "constant",
+        }
+        effective_excluded = set(exclude_kinds_norm or set()) | default_hidden
+        projected_nodes, projected_edges, grouping_strategy = build_architecture_projection(
+            nodes=nodes,
+            edges=edges,
+            entity_level=effective_entity_level,
+            include_kinds=include_kinds_norm,
+            exclude_kinds=effective_excluded,
         )
-    ).scalar_one()
+        effective_excluded_kinds = sorted(effective_excluded)
+    elif projection == GraphProjection.CODE_FILE:
+        effective_entity_level = (entity_level or "file").lower()
+        projected_nodes, projected_edges = build_code_file_projection(
+            nodes=nodes,
+            edges=edges,
+            include_edge_kinds=include_edge_kinds_norm,
+        )
+    else:
+        effective_entity_level = (entity_level or "symbol").lower()
+        projected_nodes, projected_edges = build_code_symbol_projection(
+            nodes=nodes,
+            edges=edges,
+            include_kinds=include_kinds_norm,
+            exclude_kinds=exclude_kinds_norm,
+            include_edge_kinds=include_edge_kinds_norm,
+        )
 
     return {
-        "nodes": [
-            {
-                "id": str(n.id),
-                "natural_key": n.natural_key,
-                "kind": n.kind,
-                "name": n.name,
-                "meta": n.meta,
-            }
-            for n in nodes
-        ],
-        "edges": [
-            {
-                "id": str(e.id),
-                "source_node_id": str(e.source_node_id),
-                "target_node_id": str(e.target_node_id),
-                "kind": e.kind,
-                "meta": e.meta,
-            }
-            for e in edges
-        ],
-        "page": page,
-        "limit": limit,
-        "total_nodes": int(node_count or 0),
+        "nodes": projected_nodes,
+        "edges": projected_edges,
+        "total_nodes": len(projected_nodes),
+        "projection": projection.value,
+        "entity_level": effective_entity_level,
+        "grouping_strategy": grouping_strategy,
+        "excluded_kinds": effective_excluded_kinds,
     }
 
 

@@ -140,6 +140,8 @@ async function mockApi(page: Page, options: MockOptions = {}) {
     }
 
     if (path.includes('/views/topology') || path.includes('/views/deep-dive')) {
+      const projection = (url.searchParams.get('projection') as 'architecture' | 'code_file' | 'code_symbol' | null) || (path.includes('/views/topology') ? 'architecture' : 'code_file')
+      const entityLevel = url.searchParams.get('entity_level') || (projection === 'architecture' ? 'container' : 'file')
       return json(route, {
         collection_id: 'col-1',
         scenario: {
@@ -151,6 +153,10 @@ async function mockApi(page: Page, options: MockOptions = {}) {
           base_scenario_id: null,
         },
         layer: url.searchParams.get('layer'),
+        projection,
+        entity_level: entityLevel,
+        grouping_strategy: 'heuristic',
+        excluded_kinds: projection === 'architecture' ? ['class', 'method', 'function'] : [],
         graph: {
           nodes: [
             {
@@ -182,6 +188,10 @@ async function mockApi(page: Page, options: MockOptions = {}) {
           page: 0,
           limit: Number(url.searchParams.get('limit') || 0),
           total_nodes: 3,
+          projection,
+          entity_level: entityLevel,
+          grouping_strategy: 'heuristic',
+          excluded_kinds: projection === 'architecture' ? ['class', 'method', 'function'] : [],
         },
       })
     }
@@ -275,6 +285,10 @@ test('topology/deep dive show layer selector; overview hides it; graph metadata 
   await page.getByRole('tab', { name: 'Deep Dive' }).click()
   await expect(page.locator('.cockpit2-command-grid label:has-text("Layer") select')).toBeVisible()
   await expect(page.getByText('Nodes: 3 / Total: 3 • Edges: 2')).toBeVisible()
+  const modeSelect = page.locator('.cockpit2-graph-toolbar label:has-text("Mode") select')
+  await expect(modeSelect).toBeVisible()
+  await modeSelect.selectOption('symbol_callgraph')
+  await expect(page.getByText('Mode: symbol_callgraph')).toBeVisible()
 })
 
 test('c4 diff shows AS-IS and TO-BE compare panes', async ({ page }) => {
