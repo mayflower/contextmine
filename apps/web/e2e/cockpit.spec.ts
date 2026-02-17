@@ -147,6 +147,87 @@ async function mockApi(page: Page, options: MockOptions = {}) {
       })
     }
 
+    if (path.includes('/views/graphrag/evidence')) {
+      const nodeId = url.searchParams.get('node_id') || 'kg-1'
+      return json(route, {
+        collection_id: 'col-1',
+        node_id: nodeId,
+        node_name: nodeId === 'kg-2' ? 'InvoiceService' : 'Billing Context',
+        node_kind: nodeId === 'kg-2' ? 'symbol' : 'bounded_context',
+        total: 2,
+        items: [
+          {
+            evidence_id: 'ev-1',
+            file_path: 'src/billing/invoice.ts',
+            start_line: 18,
+            end_line: 34,
+            text: 'export class InvoiceService {\\n  calculateTotal() {\\n    return 42\\n  }\\n}',
+            text_source: 'document_lines',
+          },
+          {
+            evidence_id: 'ev-2',
+            file_path: 'src/billing/rules.ts',
+            start_line: 5,
+            end_line: 8,
+            text: 'Rule: only paid invoices can be finalized',
+            text_source: 'snippet',
+          },
+        ],
+      })
+    }
+
+    if (path.includes('/views/graphrag')) {
+      const pageIndex = Number(url.searchParams.get('page') || 0)
+      const limit = Number(url.searchParams.get('limit') || 1200)
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        projection: 'graphrag',
+        entity_level: 'knowledge_node',
+        status: {
+          status: 'ready',
+          reason: 'ok',
+        },
+        graph: {
+          nodes: [
+            {
+              id: 'kg-1',
+              natural_key: 'context:billing',
+              kind: 'bounded_context',
+              name: 'Billing Context',
+              meta: {},
+            },
+            {
+              id: 'kg-2',
+              natural_key: 'symbol:InvoiceService',
+              kind: 'symbol',
+              name: 'InvoiceService',
+              meta: {},
+            },
+          ],
+          edges: [
+            {
+              id: 'kg-e1',
+              source_node_id: 'kg-1',
+              target_node_id: 'kg-2',
+              kind: 'belongs_to_context',
+              meta: {},
+            },
+          ],
+          page: pageIndex,
+          limit,
+          total_nodes: 2,
+        },
+      })
+    }
+
     if (path.includes('/views/topology') || path.includes('/views/deep-dive')) {
       const projection = (url.searchParams.get('projection') as 'architecture' | 'code_file' | 'code_symbol' | null) || (path.includes('/views/topology') ? 'architecture' : 'code_file')
       const entityLevel = url.searchParams.get('entity_level') || (projection === 'architecture' ? 'container' : 'file')
@@ -338,6 +419,7 @@ test('discoverability: sidebar and dashboard CTA open Architecture Cockpit', asy
   await expect(page.getByRole('heading', { name: 'Architecture Cockpit' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'City' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'GraphRAG' })).toBeVisible()
 })
 
 test('url state preselects collection, scenario, view, and layer', async ({ page }) => {
@@ -421,6 +503,75 @@ test('city view generates cc_json export and builds CodeCharta iframe url', asyn
   expect(src).toContain('height=coupling')
   expect(src).toContain('color=complexity')
   expect(src).toContain('mode=Single')
+})
+
+test('graphrag view loads graph and shows indexed text for selected node', async ({ page }) => {
+  await mockApi(page)
+  let evidenceRequestNodeId = ''
+
+  await page.route(/\/api\/twin\/collections\/[^/]+\/views\/graphrag\/evidence/, async (route) => {
+    const url = new URL(route.request().url())
+    evidenceRequestNodeId = url.searchParams.get('node_id') || ''
+    return json(route, {
+      collection_id: 'col-1',
+      node_id: evidenceRequestNodeId || 'kg-1',
+      node_name: 'Billing Context',
+      node_kind: 'bounded_context',
+      total: 1,
+      items: [
+        {
+          evidence_id: 'ev-1',
+          file_path: 'src/billing/invoice.ts',
+          start_line: 18,
+          end_line: 34,
+          text: 'class InvoiceService {}',
+          text_source: 'document_lines',
+        },
+      ],
+    })
+  })
+
+  await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=graphrag&node=kg-1')
+  await expect(page.getByRole('tab', { name: 'GraphRAG' })).toHaveAttribute('aria-selected', 'true')
+
+  await expect.poll(() => evidenceRequestNodeId).not.toEqual('')
+  await expect(page.getByText('Indexed text')).toBeVisible()
+  await expect(page.getByText('src/billing/invoice.ts')).toBeVisible()
+  await expect(page.getByText('document_lines')).toBeVisible()
+})
+
+test('graphrag empty state is guided when no knowledge graph exists', async ({ page }) => {
+  await mockApi(page)
+  await page.route(/\/api\/twin\/collections\/[^/]+\/views\/graphrag(\?.*)?$/, async (route) => {
+    return json(route, {
+      collection_id: 'col-1',
+      scenario: {
+        id: 'scn-asis',
+        collection_id: 'col-1',
+        name: 'AS-IS Baseline',
+        version: 1,
+        is_as_is: true,
+        base_scenario_id: null,
+      },
+      projection: 'graphrag',
+      entity_level: 'knowledge_node',
+      status: {
+        status: 'unavailable',
+        reason: 'no_knowledge_graph',
+      },
+      graph: {
+        nodes: [],
+        edges: [],
+        page: 0,
+        limit: 1200,
+        total_nodes: 0,
+      },
+    })
+  })
+
+  await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=graphrag')
+  await expect(page.getByText('No knowledge graph available yet')).toBeVisible()
+  await expect(page.getByText('Run sync/build pipeline')).toBeVisible()
 })
 
 test('c4 diff shows AS-IS and TO-BE compare panes', async ({ page }) => {

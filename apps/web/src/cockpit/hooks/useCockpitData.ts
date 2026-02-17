@@ -12,6 +12,9 @@ import type {
   DeepDiveMode,
   ExportFormat,
   GraphFilters,
+  GraphRagEvidenceItem,
+  GraphRagEvidencePayload,
+  GraphRagPayload,
   GraphNeighborhoodResponse,
   GraphPagingState,
   MermaidPayload,
@@ -37,6 +40,7 @@ const DEFAULT_STATES: DataStates = {
   deep_dive: 'idle',
   c4_diff: 'idle',
   city: 'idle',
+  graphrag: 'idle',
   exports: 'idle',
 }
 
@@ -46,6 +50,7 @@ const DEFAULT_ERRORS: DataErrors = {
   deep_dive: '',
   c4_diff: '',
   city: '',
+  graphrag: '',
   exports: '',
 }
 
@@ -96,6 +101,13 @@ export function useCockpitData({
   const [neighborhood, setNeighborhood] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
   const [neighborhoodState, setNeighborhoodState] = useState<CockpitLoadState>('idle')
   const [neighborhoodError, setNeighborhoodError] = useState('')
+  const [graphRagStatus, setGraphRagStatus] = useState<'ready' | 'unavailable'>('ready')
+  const [graphRagReason, setGraphRagReason] = useState<'ok' | 'no_knowledge_graph'>('ok')
+  const [graphRagEvidenceItems, setGraphRagEvidenceItems] = useState<GraphRagEvidenceItem[]>([])
+  const [graphRagEvidenceTotal, setGraphRagEvidenceTotal] = useState(0)
+  const [graphRagEvidenceNodeName, setGraphRagEvidenceNodeName] = useState('')
+  const [graphRagEvidenceState, setGraphRagEvidenceState] = useState<CockpitLoadState>('idle')
+  const [graphRagEvidenceError, setGraphRagEvidenceError] = useState('')
 
   const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
     setStates((prev) => ({ ...prev, [view]: nextState }))
@@ -272,6 +284,45 @@ export function useCockpitData({
           return
         }
 
+        if (view === 'graphrag') {
+          const query = new URLSearchParams({
+            scenario_id: scenarioId,
+            limit: String(graphPaging.limit > 0 ? graphPaging.limit : topologyLimit),
+            page: String(graphPaging.page),
+          })
+          if (graphFilters.includeKinds.length > 0) {
+            query.set('include_kinds', graphFilters.includeKinds.join(','))
+          }
+          if (graphFilters.excludeKinds.length > 0) {
+            query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+          }
+          if (graphFilters.edgeKinds.length > 0) {
+            query.set('edge_kinds', graphFilters.edgeKinds.join(','))
+          }
+
+          const response = await fetch(
+            `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
+            {
+              credentials: 'include',
+              signal: controller.signal,
+            },
+          )
+          if (!response.ok) {
+            throw new Error(`Could not load graphrag view (${response.status})`)
+          }
+          const payload: GraphRagPayload = await response.json()
+          setGraph({
+            ...(payload.graph || DEFAULT_GRAPH),
+            projection: payload.projection,
+            entity_level: payload.entity_level,
+          })
+          setGraphRagStatus(payload.status?.status || 'ready')
+          setGraphRagReason(payload.status?.reason || 'ok')
+          setViewState('graphrag', 'ready')
+          markUpdated('graphrag')
+          return
+        }
+
         if (view === 'c4_diff') {
           const response = await fetch(
             `/api/twin/collections/${collectionId}/views/mermaid?scenario_id=${scenarioId}&compare_with_base=true`,
@@ -352,6 +403,7 @@ export function useCockpitData({
     deepDiveLimit,
     deepDiveMode,
     graphFilters.excludeKinds,
+    graphFilters.edgeKinds,
     graphFilters.includeKinds,
     graphPaging.limit,
     graphPaging.page,
@@ -362,6 +414,67 @@ export function useCockpitData({
     setViewError,
     setViewState,
   ])
+
+  useEffect(() => {
+    const { collectionId, scenarioId, view } = selection
+    if (!collectionId || !scenarioId || view !== 'graphrag') {
+      setGraphRagEvidenceItems([])
+      setGraphRagEvidenceTotal(0)
+      setGraphRagEvidenceNodeName('')
+      setGraphRagEvidenceState('idle')
+      setGraphRagEvidenceError('')
+      return
+    }
+    if (!selectedNodeId) {
+      setGraphRagEvidenceItems([])
+      setGraphRagEvidenceTotal(0)
+      setGraphRagEvidenceNodeName('')
+      setGraphRagEvidenceState('empty')
+      setGraphRagEvidenceError('')
+      return
+    }
+
+    const controller = new AbortController()
+    const run = async () => {
+      setGraphRagEvidenceState('loading')
+      setGraphRagEvidenceError('')
+      try {
+        const query = new URLSearchParams({
+          scenario_id: scenarioId,
+          node_id: selectedNodeId,
+          limit: '50',
+        })
+        const response = await fetch(
+          `/api/twin/collections/${collectionId}/views/graphrag/evidence?${query.toString()}`,
+          {
+            credentials: 'include',
+            signal: controller.signal,
+          },
+        )
+        if (!response.ok) {
+          throw new Error(`Could not load node evidence (${response.status})`)
+        }
+        const payload: GraphRagEvidencePayload = await response.json()
+        setGraphRagEvidenceItems(payload.items || [])
+        setGraphRagEvidenceTotal(payload.total || 0)
+        setGraphRagEvidenceNodeName(payload.node_name || '')
+        setGraphRagEvidenceState((payload.items || []).length > 0 ? 'ready' : 'empty')
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return
+        }
+        setGraphRagEvidenceState('error')
+        setGraphRagEvidenceError(
+          error instanceof Error ? error.message : 'Could not load node evidence',
+        )
+      }
+    }
+
+    run()
+    return () => {
+      controller.abort()
+    }
+  }, [selection, selectedNodeId, refreshNonce])
 
   useEffect(() => {
     const { scenarioId, view } = selection
@@ -516,6 +629,13 @@ export function useCockpitData({
     neighborhood,
     neighborhoodState,
     neighborhoodError,
+    graphRagStatus,
+    graphRagReason,
+    graphRagEvidenceItems,
+    graphRagEvidenceTotal,
+    graphRagEvidenceNodeName,
+    graphRagEvidenceState,
+    graphRagEvidenceError,
     generateExport,
     refreshActiveView,
   }

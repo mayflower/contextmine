@@ -4,12 +4,12 @@ export type CockpitLayer =
   | 'component_interface'
   | 'code_controlflow'
 
-export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'city' | 'exports'
+export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'city' | 'graphrag' | 'exports'
 
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
 export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4'
-export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol'
+export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol' | 'graphrag'
 export type CityProjection = 'architecture' | 'code_file'
 export type CityEntityLevel = 'domain' | 'container' | 'component'
 export type TopologyEntityLevel = 'domain' | 'container' | 'component'
@@ -109,6 +109,38 @@ export interface GraphViewPayload {
   graph: TwinGraphResponse
 }
 
+export interface GraphRagStatus {
+  status: 'ready' | 'unavailable'
+  reason: 'ok' | 'no_knowledge_graph'
+}
+
+export interface GraphRagPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'graphrag'
+  entity_level: 'knowledge_node'
+  status: GraphRagStatus
+  graph: TwinGraphResponse
+}
+
+export interface GraphRagEvidenceItem {
+  evidence_id: string
+  file_path: string
+  start_line: number
+  end_line: number
+  text: string
+  text_source: 'snippet' | 'document_lines' | 'unavailable'
+}
+
+export interface GraphRagEvidencePayload {
+  collection_id: string
+  node_id: string
+  node_name: string
+  node_kind: string
+  items: GraphRagEvidenceItem[]
+  total: number
+}
+
 export interface CityHotspot {
   node_natural_key: string
   loc: number
@@ -182,6 +214,7 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'deep_dive', label: 'Deep Dive' },
   { key: 'c4_diff', label: 'C4 Diff' },
   { key: 'city', label: 'City' },
+  { key: 'graphrag', label: 'GraphRAG' },
   { key: 'exports', label: 'Exports' },
 ]
 

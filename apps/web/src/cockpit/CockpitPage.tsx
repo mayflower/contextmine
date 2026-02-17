@@ -15,6 +15,7 @@ import C4DiffView from './views/C4DiffView'
 import CityView from './views/CityView'
 import DeepDiveView from './views/DeepDiveView'
 import ExportsView from './views/ExportsView'
+import GraphRagView from './views/GraphRagView'
 import OverviewView from './views/OverviewView'
 import TopologyView from './views/TopologyView'
 import {
@@ -203,6 +204,13 @@ export default function CockpitPage({
     neighborhood,
     neighborhoodState,
     neighborhoodError,
+    graphRagStatus,
+    graphRagReason,
+    graphRagEvidenceItems,
+    graphRagEvidenceTotal,
+    graphRagEvidenceNodeName,
+    graphRagEvidenceState,
+    graphRagEvidenceError,
     generateExport,
     refreshActiveView,
   } = useCockpitData({
@@ -669,6 +677,24 @@ export default function CockpitPage({
           onProjectionChange={setCityProjection}
           onEntityLevelChange={setCityEntityLevel}
           onReload={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'graphrag' ? (
+        <GraphRagView
+          graph={filteredGraph}
+          state={activeState}
+          error={activeError}
+          status={graphRagStatus}
+          reason={graphRagReason}
+          selectedNodeId={resolvedNodeId}
+          evidenceItems={graphRagEvidenceItems}
+          evidenceTotal={graphRagEvidenceTotal}
+          evidenceNodeName={graphRagEvidenceNodeName}
+          evidenceState={graphRagEvidenceState}
+          evidenceError={graphRagEvidenceError}
+          onSelectNodeId={handleSelectNodeId}
+          onRetry={refreshActiveView}
         />
       ) : null}
 

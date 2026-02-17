@@ -23,8 +23,15 @@ from contextmine_core.exports import (
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.models import (
     CoverageIngestJob,
+    Document,
     KnowledgeArtifact,
     KnowledgeArtifactKind,
+    KnowledgeEdge,
+    KnowledgeEdgeKind,
+    KnowledgeEvidence,
+    KnowledgeNode,
+    KnowledgeNodeEvidence,
+    KnowledgeNodeKind,
     MetricSnapshot,
     Source,
     SourceType,
@@ -46,7 +53,7 @@ from contextmine_core.twin import (
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.middleware import get_session
 
@@ -251,6 +258,70 @@ def _parse_kind_filter(raw_value: str | None) -> set[str] | None:
         return None
     values = {value.strip().lower() for value in raw_value.split(",") if value.strip()}
     return values or None
+
+
+def _parse_knowledge_node_kinds(raw_value: str | None) -> set[KnowledgeNodeKind] | None:
+    raw_kinds = _parse_kind_filter(raw_value)
+    if not raw_kinds:
+        return None
+    parsed: set[KnowledgeNodeKind] = set()
+    for raw_kind in raw_kinds:
+        try:
+            parsed.add(KnowledgeNodeKind(raw_kind))
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid knowledge node kind: {raw_kind}",
+            ) from e
+    return parsed
+
+
+def _parse_knowledge_edge_kinds(raw_value: str | None) -> set[KnowledgeEdgeKind] | None:
+    raw_kinds = _parse_kind_filter(raw_value)
+    if not raw_kinds:
+        return None
+    parsed: set[KnowledgeEdgeKind] = set()
+    for raw_kind in raw_kinds:
+        try:
+            parsed.add(KnowledgeEdgeKind(raw_kind))
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid knowledge edge kind: {raw_kind}",
+            ) from e
+    return parsed
+
+
+def _escape_like_pattern(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _truncate_text(value: str, max_chars: int = 2000) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars].rstrip() + "..."
+
+
+def _extract_document_lines(
+    content: str | None,
+    start_line: int,
+    end_line: int,
+    *,
+    max_chars: int = 2000,
+) -> str:
+    if not content:
+        return ""
+    lines = content.splitlines()
+    if not lines:
+        return ""
+    start = max(1, start_line)
+    end = max(start, end_line)
+    if start > len(lines):
+        return ""
+    excerpt = "\n".join(lines[start - 1 : min(end, len(lines))]).strip()
+    if not excerpt:
+        return ""
+    return _truncate_text(excerpt, max_chars=max_chars)
 
 
 def _topology_entity_level(layer: TwinLayer | None, explicit: str | None) -> str:
@@ -683,6 +754,248 @@ async def deep_dive_view(
             "grouping_strategy": graph["grouping_strategy"],
             "excluded_kinds": graph["excluded_kinds"],
             "graph": graph,
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag")
+async def graphrag_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
+    edge_kinds: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=800, ge=1, le=5000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    include_node_kinds = _parse_knowledge_node_kinds(include_kinds)
+    exclude_node_kinds = _parse_knowledge_node_kinds(exclude_kinds)
+    include_edge_kinds = _parse_knowledge_edge_kinds(edge_kinds)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        node_query = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_uuid)
+        if include_node_kinds:
+            node_query = node_query.where(KnowledgeNode.kind.in_(include_node_kinds))
+        if exclude_node_kinds:
+            node_query = node_query.where(~KnowledgeNode.kind.in_(exclude_node_kinds))
+
+        total_nodes = (
+            await db.execute(select(func.count()).select_from(node_query.subquery()))
+        ).scalar_one()
+
+        paged_nodes = (
+            (
+                await db.execute(
+                    node_query.order_by(
+                        KnowledgeNode.kind,
+                        KnowledgeNode.name,
+                        KnowledgeNode.natural_key,
+                    )
+                    .offset(page * limit)
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        page_node_ids = {node.id for node in paged_nodes}
+
+        edges: list[KnowledgeEdge] = []
+        if page_node_ids:
+            edge_query = select(KnowledgeEdge).where(
+                KnowledgeEdge.collection_id == collection_uuid,
+                KnowledgeEdge.source_node_id.in_(page_node_ids),
+                KnowledgeEdge.target_node_id.in_(page_node_ids),
+            )
+            if include_edge_kinds:
+                edge_query = edge_query.where(KnowledgeEdge.kind.in_(include_edge_kinds))
+            edges = (await db.execute(edge_query.order_by(KnowledgeEdge.kind))).scalars().all()
+
+        status = {"status": "ready", "reason": "ok"}
+        if total_nodes == 0:
+            status = {"status": "unavailable", "reason": "no_knowledge_graph"}
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "graphrag",
+            "entity_level": "knowledge_node",
+            "status": status,
+            "graph": {
+                "nodes": [
+                    {
+                        "id": str(node.id),
+                        "natural_key": node.natural_key,
+                        "kind": node.kind.value,
+                        "name": node.name,
+                        "meta": node.meta or {},
+                    }
+                    for node in paged_nodes
+                ],
+                "edges": [
+                    {
+                        "id": str(edge.id),
+                        "source_node_id": str(edge.source_node_id),
+                        "target_node_id": str(edge.target_node_id),
+                        "kind": edge.kind.value,
+                        "meta": edge.meta or {},
+                    }
+                    for edge in edges
+                ],
+                "page": page,
+                "limit": limit,
+                "total_nodes": total_nodes,
+            },
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag/evidence")
+async def graphrag_evidence_view(
+    request: Request,
+    collection_id: str,
+    node_id: str = Query(min_length=1),
+    scenario_id: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        node: KnowledgeNode | None = None
+        try:
+            node_uuid = uuid.UUID(node_id)
+        except ValueError:
+            node_uuid = None
+
+        if node_uuid:
+            node = (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.id == node_uuid,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        if not node:
+            node = (
+                (
+                    await db.execute(
+                        select(KnowledgeNode)
+                        .where(
+                            KnowledgeNode.collection_id == collection_uuid,
+                            KnowledgeNode.natural_key == node_id,
+                        )
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+        if not node:
+            raise HTTPException(status_code=404, detail="Knowledge node not found")
+
+        total = (
+            await db.execute(
+                select(func.count())
+                .select_from(KnowledgeNodeEvidence)
+                .where(KnowledgeNodeEvidence.node_id == node.id)
+            )
+        ).scalar_one()
+
+        evidences = (
+            (
+                await db.execute(
+                    select(KnowledgeEvidence)
+                    .join(
+                        KnowledgeNodeEvidence,
+                        KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id,
+                    )
+                    .where(KnowledgeNodeEvidence.node_id == node.id)
+                    .order_by(KnowledgeEvidence.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        document_ids = {evidence.document_id for evidence in evidences if evidence.document_id}
+        document_by_id: dict[uuid.UUID, Document] = {}
+        if document_ids:
+            docs = (
+                (await db.execute(select(Document).where(Document.id.in_(document_ids))))
+                .scalars()
+                .all()
+            )
+            document_by_id = {doc.id: doc for doc in docs}
+
+        document_by_path: dict[str, Document | None] = {}
+        items: list[dict] = []
+        for evidence in evidences:
+            text = ""
+            text_source = "unavailable"
+
+            if evidence.snippet and evidence.snippet.strip():
+                text = _truncate_text(evidence.snippet.strip())
+                text_source = "snippet"
+            else:
+                document = (
+                    document_by_id.get(evidence.document_id) if evidence.document_id else None
+                )
+                if not document and evidence.file_path:
+                    cache_key = evidence.file_path.strip().lower()
+                    if cache_key in document_by_path:
+                        document = document_by_path[cache_key]
+                    else:
+                        escaped_path = _escape_like_pattern(evidence.file_path)
+                        document = (
+                            await db.execute(
+                                select(Document)
+                                .where(Document.uri.ilike(f"%{escaped_path}%", escape="\\"))
+                                .order_by(Document.updated_at.desc())
+                                .limit(1)
+                            )
+                        ).scalar_one_or_none()
+                        document_by_path[cache_key] = document
+
+                if document:
+                    extracted = _extract_document_lines(
+                        document.content_markdown,
+                        evidence.start_line,
+                        evidence.end_line,
+                    )
+                    if extracted:
+                        text = extracted
+                        text_source = "document_lines"
+
+            items.append(
+                {
+                    "evidence_id": str(evidence.id),
+                    "file_path": evidence.file_path,
+                    "start_line": evidence.start_line,
+                    "end_line": evidence.end_line,
+                    "text": text,
+                    "text_source": text_source,
+                }
+            )
+
+        return {
+            "collection_id": str(collection_uuid),
+            "node_id": str(node.id),
+            "node_name": node.name,
+            "node_kind": node.kind.value,
+            "items": items,
+            "total": total,
         }
 
 

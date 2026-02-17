@@ -200,7 +200,7 @@
 
 .cockpit2-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
 }
 
@@ -419,6 +419,54 @@
   min-height: 72vh;
   border: none;
   display: block;
+}
+
+.cockpit2-graphrag-panel {
+  gap: 14px;
+}
+
+.cockpit2-graphrag-graph {
+  min-height: 52vh;
+}
+
+.cockpit2-graphrag-evidence {
+  border: 1px solid #dbe2f0;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cockpit2-graphrag-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.cockpit2-graphrag-evidence-item {
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #f8faff;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cockpit2-graphrag-evidence-item header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.cockpit2-graphrag-evidence-item header span {
+  font-size: 0.78rem;
+  color: #64748b;
 }
 
 .cockpit2-graph-toolbar label,

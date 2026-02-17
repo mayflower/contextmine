@@ -73,7 +73,8 @@ export default function CockpitCommandBar({
 }: CockpitCommandBarProps) {
   const showLayer = activeView === 'topology' || activeView === 'deep_dive'
   const showFilter = activeView === 'overview'
-  const showGraphControls = activeView === 'topology' || activeView === 'deep_dive'
+  const showGraphControls =
+    activeView === 'topology' || activeView === 'deep_dive' || activeView === 'graphrag'
 
   return (
     <section className="cockpit2-commandbar" aria-label="Cockpit controls">

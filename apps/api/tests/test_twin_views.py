@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.routes.twin import _upsert_artifact
+from app.routes.twin import _extract_document_lines, _upsert_artifact
 from contextmine_core.models import KnowledgeArtifactKind
 from httpx import AsyncClient
 
@@ -22,6 +22,16 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/scenarios/some-scenario/exports/some-export/raw")
         assert response.status_code == 401
 
+    async def test_graphrag_view_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/graphrag")
+        assert response.status_code == 401
+
+    async def test_graphrag_evidence_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/graphrag/evidence?node_id=abc"
+        )
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,
@@ -32,6 +42,17 @@ class TestTwinViewRoutes:
 
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
         response = await client.get("/api/twin/collections/not-a-uuid/views/city")
+        assert response.status_code == 400
+        assert "Invalid collection_id" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_invalid_collection_id_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        response = await client.get("/api/twin/collections/not-a-uuid/views/graphrag")
         assert response.status_code == 400
         assert "Invalid collection_id" in response.json()["detail"]
 
@@ -127,6 +148,140 @@ class TestTwinViewRoutes:
         response = await client.get(f"/api/twin/scenarios/{scenario_id}/exports/not-a-uuid/raw")
         assert response.status_code == 400
         assert "Invalid export_id" in response.json()["detail"]
+
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_evidence_prefers_snippet(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_resolve_view_scenario.return_value = MagicMock()
+
+        collection_id = uuid.uuid4()
+        node_id = uuid.uuid4()
+        evidence_id = uuid.uuid4()
+
+        node = MagicMock()
+        node.id = node_id
+        node.name = "Billing Context"
+        node.kind.value = "bounded_context"
+
+        evidence = MagicMock()
+        evidence.id = evidence_id
+        evidence.file_path = "src/billing/rules.ts"
+        evidence.start_line = 4
+        evidence.end_line = 10
+        evidence.snippet = "Rule: paid invoices can be finalized"
+        evidence.document_id = None
+
+        node_result = MagicMock()
+        node_result.scalar_one_or_none.return_value = node
+        node_result.scalars.return_value.first.return_value = node
+        total_result = MagicMock()
+        total_result.scalar_one.return_value = 1
+        evidence_result = MagicMock()
+        evidence_result.scalars.return_value.all.return_value = [evidence]
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(side_effect=[node_result, total_result, evidence_result])
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag/evidence?scenario_id={uuid.uuid4()}&node_id=node-key"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["items"][0]["text_source"] == "snippet"
+        assert payload["items"][0]["text"] == "Rule: paid invoices can be finalized"
+
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_evidence_uses_document_line_fallback(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_resolve_view_scenario.return_value = MagicMock()
+
+        collection_id = uuid.uuid4()
+        node_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+
+        node = MagicMock()
+        node.id = node_id
+        node.name = "InvoiceService"
+        node.kind.value = "symbol"
+
+        evidence = MagicMock()
+        evidence.id = uuid.uuid4()
+        evidence.file_path = "src/billing/invoice.ts"
+        evidence.start_line = 2
+        evidence.end_line = 3
+        evidence.snippet = None
+        evidence.document_id = document_id
+
+        document = MagicMock()
+        document.id = document_id
+        document.content_markdown = "line1\nline2\nline3\nline4"
+
+        node_result = MagicMock()
+        node_result.scalar_one_or_none.return_value = node
+        node_result.scalars.return_value.first.return_value = node
+        total_result = MagicMock()
+        total_result.scalar_one.return_value = 1
+        evidence_result = MagicMock()
+        evidence_result.scalars.return_value.all.return_value = [evidence]
+        docs_result = MagicMock()
+        docs_result.scalars.return_value.all.return_value = [document]
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(
+            side_effect=[node_result, total_result, evidence_result, docs_result]
+        )
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag/evidence?scenario_id={uuid.uuid4()}&node_id=node-key"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["items"][0]["text_source"] == "document_lines"
+        assert payload["items"][0]["text"] == "line2\nline3"
+
+    def test_extract_document_lines_caps_size(self) -> None:
+        content = "\\n".join([f"line {idx}" for idx in range(1, 20)])
+        excerpt = _extract_document_lines(content, 1, 19, max_chars=30)
+        assert excerpt.endswith("...")
+        assert len(excerpt) <= 33
 
     async def test_upsert_artifact_updates_existing(self) -> None:
         existing = MagicMock()
