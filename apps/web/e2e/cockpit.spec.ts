@@ -133,8 +133,16 @@ async function mockApi(page: Page, options: MockOptions = {}) {
           },
         ],
         cc_json: {
-          project: 'alpha',
-          generated: true,
+          projectName: 'alpha',
+          apiVersion: '1.5',
+          nodes: [
+            {
+              name: 'root',
+              type: 'Folder',
+              attributes: {},
+              children: [],
+            },
+          ],
         },
       })
     }
@@ -293,6 +301,20 @@ async function mockApi(page: Page, options: MockOptions = {}) {
       return json(route, { id: 'exp-1', status: 'ready' })
     }
 
+    if (/\/api\/twin\/scenarios\/[^/]+\/exports\/[^/]+\/raw$/.test(path)) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          projectName: 'city-map',
+          apiVersion: '1.5',
+          nodes: [{ name: 'root', type: 'Folder', attributes: {}, children: [] }],
+          edges: [],
+          attributeTypes: { nodes: {}, edges: {} },
+        }),
+      })
+    }
+
     if (/\/api\/twin\/scenarios\/[^/]+\/exports\/[^/]+$/.test(path)) {
       return json(route, {
         id: 'exp-1',
@@ -315,6 +337,7 @@ test('discoverability: sidebar and dashboard CTA open Architecture Cockpit', asy
   await expect(page).toHaveURL(/page=cockpit/)
   await expect(page.getByRole('heading', { name: 'Architecture Cockpit' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'City' })).toBeVisible()
 })
 
 test('url state preselects collection, scenario, view, and layer', async ({ page }) => {
@@ -364,6 +387,40 @@ test('topology/deep dive show layer selector; overview hides it; graph metadata 
   await expect(modeSelect).toBeVisible()
   await modeSelect.selectOption('symbol_callgraph')
   await expect(page.getByText('Mode: symbol_callgraph')).toBeVisible()
+})
+
+test('city view generates cc_json export and builds CodeCharta iframe url', async ({ page }) => {
+  await mockApi(page)
+  let cityExportRequestBody: Record<string, unknown> | null = null
+
+  await page.route(/\/api\/twin\/scenarios\/[^/]+\/exports$/, async (route) => {
+    const request = route.request()
+    if (request.method() === 'POST') {
+      cityExportRequestBody = request.postDataJSON() as Record<string, unknown>
+      return json(route, { id: 'city-exp-1', status: 'ready' })
+    }
+    return json(route, { id: 'city-exp-1', status: 'ready' })
+  })
+
+  await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=city')
+  await expect(page.getByRole('tab', { name: 'City' })).toHaveAttribute('aria-selected', 'true')
+
+  await expect.poll(() => cityExportRequestBody).not.toBeNull()
+  expect(cityExportRequestBody).toMatchObject({
+    format: 'cc_json',
+    projection: 'architecture',
+    entity_level: 'container',
+  })
+
+  const iframe = page.locator('iframe[title="CodeCharta city view"]')
+  await expect(iframe).toBeVisible()
+  const src = await iframe.getAttribute('src')
+  expect(src).toContain('/codecharta/index.html?')
+  expect(src).toContain('file=%2Fapi%2Ftwin%2Fscenarios%2Fscn-asis%2Fexports%2Fcity-exp-1%2Fraw')
+  expect(src).toContain('area=loc')
+  expect(src).toContain('height=coupling')
+  expect(src).toContain('color=complexity')
+  expect(src).toContain('mode=Single')
 })
 
 test('c4 diff shows AS-IS and TO-BE compare panes', async ({ page }) => {

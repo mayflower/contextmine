@@ -1722,6 +1722,7 @@ async def mcp_export_twin_view(
             export_mermaid_c4,
         )
         from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
+        from contextmine_core.twin import GraphProjection
 
         scenario_uuid = uuid.UUID(scenario_id)
 
@@ -1737,7 +1738,12 @@ async def mcp_export_twin_view(
                 kind = KnowledgeArtifactKind.LPG_JSONL
                 name = f"{scenario.name}.lpg.jsonl"
             elif format == "cc_json":
-                content = await export_codecharta_json(db, scenario.id)
+                content = await export_codecharta_json(
+                    db,
+                    scenario.id,
+                    projection=GraphProjection.ARCHITECTURE,
+                    entity_level="container",
+                )
                 kind = KnowledgeArtifactKind.CC_JSON
                 name = f"{scenario.name}.cc.json"
             elif format == "cx2":

@@ -15,6 +15,10 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/collections/some-id/views/city")
         assert response.status_code == 401
 
+    async def test_export_raw_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/scenarios/some-scenario/exports/some-export/raw")
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,
@@ -106,3 +110,17 @@ class TestTwinViewRoutes:
             f"/api/twin/scenarios/{scenario_id}/graph/neighborhood?node_id=abc&hops=0"
         )
         assert response.status_code == 422
+
+    @patch("app.routes.twin.get_session")
+    async def test_export_raw_invalid_export_id_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        scenario_id = str(uuid.uuid4())
+        response = await client.get(f"/api/twin/scenarios/{scenario_id}/exports/not-a-uuid/raw")
+        assert response.status_code == 400
+        assert "Invalid export_id" in response.json()["detail"]

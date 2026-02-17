@@ -44,6 +44,7 @@ from contextmine_core.twin import (
     submit_intent,
 )
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -774,7 +775,14 @@ async def city_view(
             else None
         )
 
-        cc_json_payload = json.loads(await export_codecharta_json(db, scenario.id))
+        cc_json_payload = json.loads(
+            await export_codecharta_json(
+                db,
+                scenario.id,
+                projection=GraphProjection.ARCHITECTURE,
+                entity_level="container",
+            )
+        )
 
         return {
             "collection_id": str(collection_uuid),
@@ -879,7 +887,14 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             kind = KnowledgeArtifactKind.LPG_JSONL
             name = f"{scenario.name}.lpg.jsonl"
         elif body.format == "cc_json":
-            content = await export_codecharta_json(db, scenario.id)
+            if projection == GraphProjection.CODE_SYMBOL:
+                projection = GraphProjection.CODE_FILE
+            content = await export_codecharta_json(
+                db,
+                scenario.id,
+                projection=projection,
+                entity_level=body.entity_level,
+            )
             kind = KnowledgeArtifactKind.CC_JSON
             name = f"{scenario.name}.cc.json"
         elif body.format == "cx2":
@@ -1011,3 +1026,30 @@ async def get_export(request: Request, scenario_id: str, export_id: str) -> dict
             "meta": artifact.meta,
             "updated_at": artifact.updated_at,
         }
+
+
+@router.get("/scenarios/{scenario_id}/exports/{export_id}/raw")
+async def get_export_raw(request: Request, scenario_id: str, export_id: str) -> Response:
+    user_id = _user_id_or_401(request)
+
+    try:
+        export_uuid = uuid.UUID(export_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid export_id") from e
+
+    async with get_db_session() as db:
+        scenario = await _load_scenario(db, scenario_id)
+        await _ensure_member(db, scenario.collection_id, user_id)
+
+        artifact = (
+            await db.execute(
+                select(KnowledgeArtifact).where(
+                    KnowledgeArtifact.id == export_uuid,
+                    KnowledgeArtifact.collection_id == scenario.collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        return Response(content=artifact.content, media_type="application/json")

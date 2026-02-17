@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
+  CityEntityLevel,
+  CityProjection,
   CityPayload,
   CockpitLayer,
   CockpitLoadState,
@@ -34,6 +36,7 @@ const DEFAULT_STATES: DataStates = {
   topology: 'idle',
   deep_dive: 'idle',
   c4_diff: 'idle',
+  city: 'idle',
   exports: 'idle',
 }
 
@@ -42,6 +45,7 @@ const DEFAULT_ERRORS: DataErrors = {
   topology: '',
   deep_dive: '',
   c4_diff: '',
+  city: '',
   exports: '',
 }
 
@@ -83,6 +87,9 @@ export function useCockpitData({
   const [errors, setErrors] = useState<DataErrors>(DEFAULT_ERRORS)
   const [updatedAt, setUpdatedAt] = useState<DataUpdated>({})
   const [refreshNonce, setRefreshNonce] = useState(0)
+  const [cityProjection, setCityProjection] = useState<CityProjection>('architecture')
+  const [cityEntityLevel, setCityEntityLevel] = useState<CityEntityLevel>('container')
+  const [cityEmbedUrl, setCityEmbedUrl] = useState('')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('cc_json')
   const [exportProjection, setExportProjection] = useState<CockpitProjection>('architecture')
   const [exportContent, setExportContent] = useState('')
@@ -183,6 +190,9 @@ export function useCockpitData({
     const run = async () => {
       setViewState(view, 'loading')
       setViewError(view, '')
+      if (view === 'city') {
+        setCityEmbedUrl('')
+      }
 
       try {
         if (view === 'overview') {
@@ -277,6 +287,49 @@ export function useCockpitData({
           setMermaid(payload)
           setViewState('c4_diff', 'ready')
           markUpdated('c4_diff')
+          return
+        }
+
+        if (view === 'city') {
+          const cityProjectionValue: CityProjection = cityProjection
+          const entityLevel =
+            cityProjectionValue === 'architecture'
+              ? cityEntityLevel
+              : 'file'
+
+          const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            signal: controller.signal,
+            body: JSON.stringify({
+              format: 'cc_json',
+              projection: cityProjectionValue,
+              entity_level: entityLevel,
+            }),
+          })
+
+          if (!exportResponse.ok) {
+            throw new Error(`Could not generate city map (${exportResponse.status})`)
+          }
+
+          const exportData = await exportResponse.json()
+          const exportId = exportData.id || exportData.exports?.[0]?.id
+          if (!exportId) {
+            throw new Error('Missing export id from city export response')
+          }
+
+          const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
+          const params = new URLSearchParams({
+            file: rawPath,
+            area: 'loc',
+            height: 'coupling',
+            color: 'complexity',
+            mode: 'Single',
+          })
+          setCityEmbedUrl(`/codecharta/index.html?${params.toString()}`)
+          setViewState('city', 'ready')
+          markUpdated('city')
         }
       } catch (error) {
         if (controller.signal.aborted) {
@@ -302,6 +355,8 @@ export function useCockpitData({
     graphFilters.includeKinds,
     graphPaging.limit,
     graphPaging.page,
+    cityProjection,
+    cityEntityLevel,
     refreshNonce,
     markUpdated,
     setViewError,
@@ -446,6 +501,12 @@ export function useCockpitData({
     activeState,
     activeError,
     activeUpdatedAt,
+    cityProjection,
+    setCityProjection,
+    cityEntityLevel,
+    setCityEntityLevel,
+    cityEmbedUrl,
+    setCityEmbedUrl,
     exportFormat,
     setExportFormat,
     exportProjection,

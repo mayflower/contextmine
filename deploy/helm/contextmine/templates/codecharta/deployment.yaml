@@ -1,0 +1,48 @@
+{{- if .Values.codecharta.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "contextmine.fullname" . }}-codecharta
+  labels:
+    {{- include "contextmine.codecharta.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.codecharta.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "contextmine.codecharta.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.codecharta.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "contextmine.codecharta.selectorLabels" . | nindent 8 }}
+        {{- with .Values.codecharta.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: codecharta
+          image: "{{ .Values.codecharta.image.repository }}:{{ .Values.codecharta.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.codecharta.resources | nindent 12 }}
+      {{- with .Values.codecharta.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.codecharta.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.codecharta.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

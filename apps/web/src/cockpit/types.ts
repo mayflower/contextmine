@@ -4,12 +4,14 @@ export type CockpitLayer =
   | 'component_interface'
   | 'code_controlflow'
 
-export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'exports'
+export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'city' | 'exports'
 
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
 export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4'
 export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol'
+export type CityProjection = 'architecture' | 'code_file'
+export type CityEntityLevel = 'domain' | 'container' | 'component'
 export type TopologyEntityLevel = 'domain' | 'container' | 'component'
 export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'
 export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
@@ -179,6 +181,7 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'topology', label: 'Topology' },
   { key: 'deep_dive', label: 'Deep Dive' },
   { key: 'c4_diff', label: 'C4 Diff' },
+  { key: 'city', label: 'City' },
   { key: 'exports', label: 'Exports' },
 ]
 

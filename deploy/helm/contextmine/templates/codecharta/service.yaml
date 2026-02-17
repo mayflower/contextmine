@@ -1,0 +1,17 @@
+{{- if .Values.codecharta.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "contextmine.fullname" . }}-codecharta
+  labels:
+    {{- include "contextmine.codecharta.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.codecharta.service.type }}
+  ports:
+    - port: {{ .Values.codecharta.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "contextmine.codecharta.selectorLabels" . | nindent 4 }}
+{{- end }}

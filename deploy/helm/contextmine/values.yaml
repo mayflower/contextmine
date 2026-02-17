@@ -140,6 +140,49 @@ worker:
   # -- Affinity rules
   affinity: {}
 
+# -- CodeCharta visualization service
+codecharta:
+  # -- Enable CodeCharta deployment
+  enabled: false
+  image:
+    repository: codecharta/codecharta-visualization
+    tag: latest
+  # -- Number of replicas
+  replicaCount: 1
+  # -- Service configuration
+  service:
+    type: ClusterIP
+    port: 80
+  # -- Resource limits
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  # -- Pod annotations
+  podAnnotations: {}
+  # -- Pod labels
+  podLabels: {}
+  # -- Node selector
+  nodeSelector: {}
+  # -- Tolerations
+  tolerations: []
+  # -- Affinity rules
+  affinity: {}
+  ingress:
+    # -- Enable dedicated ingress for /codecharta path (requires ingress.enabled=true)
+    enabled: true
+    # -- Path served by CodeCharta under the main domain
+    path: /codecharta(/|$)(.*)
+    # -- Ingress path type
+    pathType: ImplementationSpecific
+    # -- Extra ingress annotations
+    annotations:
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+
 # -- Ingress configuration
 ingress:
   # -- Enable ingress

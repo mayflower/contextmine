@@ -16,7 +16,7 @@ const VALID_LAYERS: CockpitLayer[] = [
   'code_controlflow',
 ]
 
-const VALID_VIEWS: CockpitView[] = ['overview', 'topology', 'deep_dive', 'c4_diff', 'exports']
+const VALID_VIEWS: CockpitView[] = ['overview', 'topology', 'deep_dive', 'c4_diff', 'city', 'exports']
 const VALID_OVERLAYS: OverlayMode[] = ['none', 'runtime', 'risk']
 const DEFAULT_PAGE = 0
 const DEFAULT_LIMIT = 1200

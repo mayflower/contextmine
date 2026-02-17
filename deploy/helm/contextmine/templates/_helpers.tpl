@@ -171,6 +171,22 @@ app.kubernetes.io/component: worker
 {{- end }}
 
 {{/*
+CodeCharta component labels
+*/}}
+{{- define "contextmine.codecharta.labels" -}}
+{{ include "contextmine.labels" . }}
+app.kubernetes.io/component: codecharta
+{{- end }}
+
+{{/*
+CodeCharta selector labels
+*/}}
+{{- define "contextmine.codecharta.selectorLabels" -}}
+{{ include "contextmine.selectorLabels" . }}
+app.kubernetes.io/component: codecharta
+{{- end }}
+
+{{/*
 Secret name - returns existing secret name or generated one
 */}}
 {{- define "contextmine.secretName" -}}

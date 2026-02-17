@@ -403,6 +403,24 @@
   gap: 10px;
 }
 
+.cockpit2-city-panel {
+  min-height: 72vh;
+}
+
+.cockpit2-city-frame-wrap {
+  border: 1px solid #d8dff0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.cockpit2-city-frame {
+  width: 100%;
+  min-height: 72vh;
+  border: none;
+  display: block;
+}
+
 .cockpit2-graph-toolbar label,
 .cockpit2-export-toolbar label {
   display: flex;

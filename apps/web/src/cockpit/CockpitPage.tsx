@@ -12,6 +12,7 @@ import { filterGraph, graphKinds, resolveNodeId } from './graphUtils'
 import { useCockpitData } from './hooks/useCockpitData'
 import { useCockpitState } from './hooks/useCockpitState'
 import C4DiffView from './views/C4DiffView'
+import CityView from './views/CityView'
 import DeepDiveView from './views/DeepDiveView'
 import ExportsView from './views/ExportsView'
 import OverviewView from './views/OverviewView'
@@ -189,6 +190,11 @@ export default function CockpitPage({
     activeError,
     activeUpdatedAt,
     errors,
+    cityProjection,
+    setCityProjection,
+    cityEntityLevel,
+    setCityEntityLevel,
+    cityEmbedUrl,
     exportFormat,
     setExportFormat,
     exportProjection,
@@ -650,6 +656,19 @@ export default function CockpitPage({
           state={activeState}
           error={activeError}
           onRetry={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'city' ? (
+        <CityView
+          state={activeState}
+          error={activeError}
+          embedUrl={cityEmbedUrl}
+          projection={cityProjection}
+          entityLevel={cityEntityLevel}
+          onProjectionChange={setCityProjection}
+          onEntityLevelChange={setCityEntityLevel}
+          onReload={refreshActiveView}
         />
       ) : null}
 
