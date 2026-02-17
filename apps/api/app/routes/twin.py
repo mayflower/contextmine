@@ -227,6 +227,53 @@ def _topology_entity_level(layer: TwinLayer | None, explicit: str | None) -> str
     return "container"
 
 
+def _extract_neighborhood(
+    nodes: list[dict],
+    edges: list[dict],
+    root_node_id: str,
+    hops: int,
+    limit: int,
+) -> tuple[list[dict], list[dict]]:
+    node_by_id = {str(node.get("id")): node for node in nodes}
+    if root_node_id not in node_by_id:
+        return [], []
+
+    seen = {root_node_id}
+    frontier = {root_node_id}
+    adjacency: dict[str, set[str]] = {}
+    for edge in edges:
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        adjacency.setdefault(src, set()).add(dst)
+        adjacency.setdefault(dst, set()).add(src)
+
+    for _ in range(max(hops, 0)):
+        if not frontier:
+            break
+        next_frontier: set[str] = set()
+        for node_id in frontier:
+            for neighbor in adjacency.get(node_id, set()):
+                if neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                next_frontier.add(neighbor)
+                if len(seen) >= limit:
+                    break
+            if len(seen) >= limit:
+                break
+        frontier = next_frontier
+
+    neighborhood_nodes = [node for node_id, node in node_by_id.items() if node_id in seen]
+    neighborhood_ids = {str(node.get("id")) for node in neighborhood_nodes}
+    neighborhood_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in neighborhood_ids
+        and str(edge.get("target_node_id")) in neighborhood_ids
+    ]
+    return neighborhood_nodes, neighborhood_edges
+
+
 @router.post("/scenarios")
 async def create_scenario(request: Request, body: CreateScenarioRequest) -> dict:
     user_id = _user_id_or_401(request)
@@ -427,6 +474,76 @@ async def graph_view(
             include_kinds=_parse_kind_filter(include_kinds),
             exclude_kinds=_parse_kind_filter(exclude_kinds),
         )
+
+
+@router.get("/scenarios/{scenario_id}/graph/neighborhood")
+async def graph_neighborhood_view(
+    request: Request,
+    scenario_id: str,
+    node_id: str = Query(min_length=1),
+    projection: str | None = Query(default=GraphProjection.CODE_SYMBOL.value),
+    entity_level: str | None = Query(default=None),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
+    hops: int = Query(default=1, ge=1, le=4),
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    projection_enum = _parse_projection(projection)
+
+    async with get_db_session() as db:
+        scenario = await _load_scenario(db, scenario_id)
+        await _ensure_member(db, scenario.collection_id, user_id)
+        graph = await get_full_scenario_graph(
+            db,
+            scenario.id,
+            layer=None,
+            projection=projection_enum,
+            entity_level=entity_level,
+            include_kinds=_parse_kind_filter(include_kinds),
+            exclude_kinds=_parse_kind_filter(exclude_kinds),
+        )
+
+        all_nodes = graph["nodes"]
+        resolved_node_id = node_id
+        if not any(str(node.get("id")) == node_id for node in all_nodes):
+            by_key = next(
+                (
+                    str(node.get("id"))
+                    for node in all_nodes
+                    if str(node.get("natural_key")) == node_id
+                ),
+                None,
+            )
+            if by_key:
+                resolved_node_id = by_key
+            else:
+                raise HTTPException(status_code=404, detail="Node not found in projected graph")
+
+        nodes, edges = _extract_neighborhood(
+            nodes=all_nodes,
+            edges=graph["edges"],
+            root_node_id=resolved_node_id,
+            hops=hops,
+            limit=limit,
+        )
+        return {
+            "scenario_id": str(scenario.id),
+            "node_id": resolved_node_id,
+            "hops": hops,
+            "projection": graph["projection"],
+            "graph": {
+                "nodes": nodes,
+                "edges": edges,
+                "page": 0,
+                "limit": limit,
+                "total_nodes": len(nodes),
+                "projection": graph["projection"],
+                "entity_level": graph["entity_level"],
+                "grouping_strategy": graph["grouping_strategy"],
+                "excluded_kinds": graph["excluded_kinds"],
+            },
+        }
 
 
 @router.get("/collections/{collection_id}/views/topology")

@@ -75,3 +75,34 @@ class TestTwinViewRoutes:
         )
         assert response.status_code == 400
         assert "Invalid deep dive mode" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_graph_neighborhood_invalid_projection_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        scenario_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/scenarios/{scenario_id}/graph/neighborhood?node_id=abc&projection=invalid"
+        )
+        assert response.status_code == 400
+        assert "Invalid projection" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_graph_neighborhood_invalid_hops_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        import uuid
+
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        scenario_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/scenarios/{scenario_id}/graph/neighborhood?node_id=abc&hops=0"
+        )
+        assert response.status_code == 422

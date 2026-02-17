@@ -16,13 +16,15 @@
     "@grafana/faro-web-sdk": "^1.12.1",
     "@grafana/faro-web-tracing": "^1.12.1",
     "cytoscape": "^3.30.0",
+    "elkjs": "^0.11.0",
+    "mermaid": "^11.12.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "reactflow": "^11.11.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.56.1",
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.56.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

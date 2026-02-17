@@ -154,6 +154,15 @@ function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions):
     params.delete('scenario')
     params.delete('view')
     params.delete('layer')
+    params.delete('query')
+    params.delete('node')
+    params.delete('pageIndex')
+    params.delete('limit')
+    params.delete('includeKinds')
+    params.delete('excludeKinds')
+    params.delete('overlay')
+    params.delete('hideIsolated')
+    params.delete('edgeKinds')
   }
 
   const nextQuery = params.toString()

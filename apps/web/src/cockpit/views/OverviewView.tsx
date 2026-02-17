@@ -12,6 +12,7 @@ interface OverviewViewProps {
   filter: string
   onRetry: () => void
   onOpenTopology: () => void
+  onSelectHotspot: (nodeNaturalKey: string) => void
   onCopyJson: () => void
   onDownloadJson: () => void
 }
@@ -74,6 +75,7 @@ export default function OverviewView({
   filter,
   onRetry,
   onOpenTopology,
+  onSelectHotspot,
   onCopyJson,
   onDownloadJson,
 }: OverviewViewProps) {
@@ -191,7 +193,15 @@ export default function OverviewView({
               <tbody>
                 {hotspots.slice(0, 20).map((spot) => (
                   <tr key={spot.node_natural_key} className={`risk-${levelFromComplexity(spot.complexity)}`}>
-                    <td>{spot.node_natural_key}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="cockpit2-linkish"
+                        onClick={() => onSelectHotspot(spot.node_natural_key)}
+                      >
+                        {spot.node_natural_key}
+                      </button>
+                    </td>
                     <td>{(spot.complexity || 0).toFixed(2)}</td>
                     <td>{(spot.coupling || 0).toFixed(2)}</td>
                     <td>{(spot.coverage || 0).toFixed(2)}</td>

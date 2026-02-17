@@ -14,6 +14,7 @@ This page documents the current backend contracts used by the read-only Architec
 1. `GET /api/twin/scenarios?collection_id=<uuid>`
 2. `POST /api/twin/scenarios/{scenario_id}/exports`
 3. `GET /api/twin/scenarios/{scenario_id}/exports/{export_id}`
+4. `GET /api/twin/scenarios/{scenario_id}/graph/neighborhood?node_id=<id>&projection=<architecture|code_file|code_symbol>&hops=1&limit=200`
 
 ## City View Response (important)
 
@@ -79,6 +80,17 @@ For GitHub sources, metrics extraction enforces real file metrics on relevant pr
 4. `coverage` (report-ingested)
 
 Gate failures surface as sync errors with `METRICS_GATE_FAILED:*` codes.
+
+## Graph View Query Controls
+
+`GET /api/twin/collections/{collection_id}/views/topology`
+`GET /api/twin/collections/{collection_id}/views/deep-dive`
+
+Supported filtering/paging query params:
+1. `page`
+2. `limit`
+3. `include_kinds` (comma-separated)
+4. `exclude_kinds` (comma-separated)
 
 ## Relevant File Filter (production scope)
 

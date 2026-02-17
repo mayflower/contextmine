@@ -126,6 +126,33 @@
   font-size: 0.92rem;
 }
 
+.cockpit2-command-grid select[multiple] {
+  min-height: 100px;
+}
+
+.cockpit2-upload-label input[type="file"] {
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  padding: 8px;
+}
+
+.cockpit2-checkbox {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.cockpit2-checkbox input {
+  width: 18px;
+  height: 18px;
+}
+
+.cockpit2-checkbox span {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .cockpit2-command-placeholder {
   border: 1px dashed #dce2ef;
   border-radius: 10px;
@@ -249,6 +276,19 @@
 .cockpit2-panel .actions {
   display: flex;
   gap: 8px;
+}
+
+.cockpit2-linkish {
+  border: none;
+  background: transparent;
+  color: #1d4ed8;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cockpit2-linkish:hover {
+  text-decoration: underline;
 }
 
 .cockpit2-kpis {
@@ -402,6 +442,20 @@
   align-items: center;
 }
 
+.cockpit2-mermaid-pane {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid #d8dff0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+
+.cockpit2-mermaid-pane svg {
+  transform: scale(var(--cockpit-diagram-zoom, 1));
+  transform-origin: top left;
+}
+
 .cockpit2-compare-grid .badge {
   border-radius: 999px;
   font-size: 0.72rem;
@@ -505,6 +559,78 @@
 
 .cockpit2-toast.info {
   background: #1d4ed8;
+}
+
+.cockpit2-inspector details summary {
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cockpit2-inspector-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cockpit2-inspector-summary code {
+  font-size: 0.75rem;
+  word-break: break-all;
+  color: #334155;
+}
+
+.cockpit2-inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cockpit2-inspector-grid > div {
+  border: 1px solid #dbe2f0;
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.cockpit2-inspector-grid > div span {
+  display: block;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.cockpit2-inspector-grid > div strong {
+  color: #0f172a;
+}
+
+.cockpit2-risk-badge {
+  margin: 0;
+  width: fit-content;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.cockpit2-risk-badge.level-low {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.cockpit2-risk-badge.level-medium {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.cockpit2-risk-badge.level-high {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.cockpit2-overlay-legend {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.84rem;
+  color: #475569;
 }
 
 @media (max-width: 1100px) {

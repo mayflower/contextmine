@@ -5,7 +5,10 @@ import { getFaro } from '../faro'
 import './cockpit.css'
 import CockpitCommandBar from './components/CockpitCommandBar'
 import CockpitHeader from './components/CockpitHeader'
+import NodeInspector from './components/NodeInspector'
 import CockpitTabs from './components/CockpitTabs'
+import { cockpitFlags } from './flags'
+import { filterGraph, graphKinds, resolveNodeId } from './graphUtils'
 import { useCockpitData } from './hooks/useCockpitData'
 import { useCockpitState } from './hooks/useCockpitState'
 import C4DiffView from './views/C4DiffView'
@@ -17,6 +20,8 @@ import {
   type CockpitToast,
   type CollectionLite,
   type CockpitView,
+  type LayoutEngine,
+  type OverlayState,
   EXPORT_FORMATS,
 } from './types'
 
@@ -36,6 +41,60 @@ function downloadTextFile(filename: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
+function parseCsv(content: string): Array<Record<string, string>> {
+  const lines = content.split('\n').map((line) => line.trim()).filter(Boolean)
+  if (lines.length < 2) return []
+  const headers = lines[0].split(',').map((entry) => entry.trim())
+  return lines.slice(1).map((line) => {
+    const cols = line.split(',').map((entry) => entry.trim())
+    const row: Record<string, string> = {}
+    headers.forEach((header, index) => {
+      row[header] = cols[index] || ''
+    })
+    return row
+  })
+}
+
+async function parseOverlayFile(file: File): Promise<Pick<OverlayState, 'runtimeByNodeKey' | 'riskByNodeKey'>> {
+  const content = await file.text()
+  const ext = file.name.toLowerCase()
+  const runtimeByNodeKey: OverlayState['runtimeByNodeKey'] = {}
+  const riskByNodeKey: OverlayState['riskByNodeKey'] = {}
+
+  let rows: Array<Record<string, unknown>> = []
+  if (ext.endsWith('.json')) {
+    const parsed = JSON.parse(content)
+    if (Array.isArray(parsed)) {
+      rows = parsed
+    } else if (Array.isArray(parsed.rows)) {
+      rows = parsed.rows
+    }
+  } else {
+    rows = parseCsv(content)
+  }
+
+  for (const row of rows) {
+    const service = String((row.service as string) || '')
+    const node = String((row.node as string) || '')
+    if (service) {
+      runtimeByNodeKey[service] = {
+        service,
+        latency_p95: Number(row.latency_p95 || 0),
+        error_rate: Number(row.error_rate || 0),
+      }
+    }
+    if (node) {
+      riskByNodeKey[node] = {
+        node,
+        vuln_count: Number(row.vuln_count || 0),
+        severity_score: Number(row.severity_score || 0),
+      }
+    }
+  }
+
+  return { runtimeByNodeKey, riskByNodeKey }
+}
+
 export default function CockpitPage({
   collections,
   onOpenCollections,
@@ -44,7 +103,25 @@ export default function CockpitPage({
   const {
     selection,
     hotspotFilter,
+    graphQuery,
+    selectedNodeId,
+    graphPage,
+    graphLimit,
+    includeKinds,
+    excludeKinds,
+    edgeKinds,
+    hideIsolated,
+    overlayMode,
     setHotspotFilter,
+    setGraphQuery,
+    setSelectedNodeId,
+    setGraphPage,
+    setGraphLimit,
+    setIncludeKinds,
+    setExcludeKinds,
+    setEdgeKinds,
+    setHideIsolated,
+    setOverlayMode,
     setCollectionId,
     setScenarioId,
     setLayer,
@@ -52,16 +129,45 @@ export default function CockpitPage({
   } = useCockpitState()
 
   const [topologyDensity, setTopologyDensity] = useState(1200)
+  const [topologyLayoutEngine, setTopologyLayoutEngine] = useState<LayoutEngine>(
+    cockpitFlags.elkLayout ? 'elk_layered' : 'grid',
+  )
   const [deepDiveDensity, setDeepDiveDensity] = useState(5000)
   const [deepDiveMode, setDeepDiveMode] = useState<'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'>('file_dependency')
   const [toast, setToast] = useState<CockpitToast | null>(null)
-
-  const topologyLimit = topologyDensity
-  const deepDiveLimit = deepDiveDensity
+  const [overlayData, setOverlayData] = useState<OverlayState>({
+    mode: overlayMode,
+    runtimeByNodeKey: {},
+    riskByNodeKey: {},
+    loadedAt: null,
+  })
 
   const pushToast = useCallback((kind: CockpitToast['kind'], message: string) => {
     setToast({ id: Date.now(), kind, message })
   }, [])
+
+  useEffect(() => {
+    setOverlayData((prev) => ({ ...prev, mode: overlayMode }))
+  }, [overlayMode])
+
+  const graphFilters = useMemo(
+    () => ({
+      query: graphQuery,
+      hideIsolated,
+      edgeKinds,
+      includeKinds,
+      excludeKinds,
+    }),
+    [graphQuery, hideIsolated, edgeKinds, includeKinds, excludeKinds],
+  )
+
+  const graphPaging = useMemo(
+    () => ({
+      page: graphPage,
+      limit: graphLimit,
+    }),
+    [graphPage, graphLimit],
+  )
 
   const onViewError = useCallback(
     (view: CockpitView, message: string) => {
@@ -88,13 +194,19 @@ export default function CockpitPage({
     exportProjection,
     setExportProjection,
     exportContent,
+    neighborhood,
+    neighborhoodState,
+    neighborhoodError,
     generateExport,
     refreshActiveView,
   } = useCockpitData({
     selection,
-    topologyLimit,
-    deepDiveLimit,
+    topologyLimit: topologyDensity,
+    deepDiveLimit: deepDiveDensity,
     deepDiveMode,
+    graphFilters,
+    graphPaging,
+    selectedNodeId,
     onScenarioAutoSelect: setScenarioId,
     onViewError,
   })
@@ -103,6 +215,15 @@ export default function CockpitPage({
     () => scenarios.find((scenario) => scenario.id === selection.scenarioId) ?? null,
     [scenarios, selection.scenarioId],
   )
+  const filteredGraph = useMemo(() => filterGraph(graph, graphFilters), [graph, graphFilters])
+  const { nodeKinds, edgeKinds: availableEdgeKinds } = useMemo(() => graphKinds(graph), [graph])
+  const resolvedNodeId = useMemo(() => resolveNodeId(graph, selectedNodeId), [graph, selectedNodeId])
+
+  useEffect(() => {
+    if (selectedNodeId && resolvedNodeId && selectedNodeId !== resolvedNodeId) {
+      setSelectedNodeId(resolvedNodeId)
+    }
+  }, [selectedNodeId, resolvedNodeId, setSelectedNodeId])
 
   useEffect(() => {
     if (collections.length > 0 && !selection.collectionId) {
@@ -172,6 +293,13 @@ export default function CockpitPage({
     setView('topology')
   }
 
+  const handleSelectHotspot = (nodeNaturalKey: string) => {
+    setLayer('code_controlflow')
+    setView('topology')
+    setSelectedNodeId(nodeNaturalKey)
+    setGraphQuery(nodeNaturalKey)
+  }
+
   const handleGenerateExport = async () => {
     const result = await generateExport()
     if (!result) {
@@ -222,6 +350,42 @@ export default function CockpitPage({
     window.location.href = '/?page=runs'
   }
 
+  const trackFilterChange = () => {
+    getFaro()?.api.pushEvent('cockpit_filter_changed', {
+      query: graphQuery,
+      include: includeKinds.join(','),
+      exclude: excludeKinds.join(','),
+      edge_kinds: edgeKinds.join(','),
+    })
+  }
+
+  const handleLoadOverlayFile = async (file: File) => {
+    try {
+      const parsed = await parseOverlayFile(file)
+      setOverlayData((prev) => ({
+        ...prev,
+        ...parsed,
+        mode: overlayMode,
+        loadedAt: new Date().toISOString(),
+      }))
+      pushToast('success', `Loaded overlay file: ${file.name}`)
+      getFaro()?.api.pushEvent('cockpit_overlay_enabled', {
+        mode: overlayMode,
+        file: file.name,
+      })
+    } catch (error) {
+      pushToast('error', error instanceof Error ? error.message : 'Could not parse overlay file.')
+    }
+  }
+
+  const handleSelectNodeId = (nodeId: string) => {
+    setSelectedNodeId(nodeId)
+    getFaro()?.api.pushEvent('cockpit_node_selected', {
+      node_id: nodeId,
+      view: selection.view,
+    })
+  }
+
   if (collections.length === 0) {
     return (
       <section className="card cockpit2-shell">
@@ -263,10 +427,44 @@ export default function CockpitPage({
           layer={selection.layer}
           activeView={selection.view}
           hotspotFilter={hotspotFilter}
+          graphQuery={graphQuery}
+          hideIsolated={hideIsolated}
+          graphPage={graphPage}
+          graphLimit={graphLimit}
+          includeKinds={includeKinds}
+          excludeKinds={excludeKinds}
+          edgeKinds={edgeKinds}
+          overlayMode={overlayMode}
+          availableNodeKinds={[]}
+          availableEdgeKinds={[]}
           onCollectionChange={setCollectionId}
           onScenarioChange={setScenarioId}
           onLayerChange={setLayer}
           onFilterChange={setHotspotFilter}
+          onGraphQueryChange={(value) => {
+            setGraphQuery(value)
+            trackFilterChange()
+          }}
+          onHideIsolatedChange={(next) => {
+            setHideIsolated(next)
+            trackFilterChange()
+          }}
+          onGraphPageChange={setGraphPage}
+          onGraphLimitChange={setGraphLimit}
+          onIncludeKindsChange={(value) => {
+            setIncludeKinds(value)
+            trackFilterChange()
+          }}
+          onExcludeKindsChange={(value) => {
+            setExcludeKinds(value)
+            trackFilterChange()
+          }}
+          onEdgeKindsChange={(value) => {
+            setEdgeKinds(value)
+            trackFilterChange()
+          }}
+          onOverlayModeChange={setOverlayMode}
+          onLoadOverlayFile={handleLoadOverlayFile}
           onRefresh={refreshActiveView}
           onOpenCollections={openCollections}
           onOpenRuns={openRuns}
@@ -303,10 +501,50 @@ export default function CockpitPage({
         layer={selection.layer}
         activeView={selection.view}
         hotspotFilter={hotspotFilter}
+        graphQuery={graphQuery}
+        hideIsolated={hideIsolated}
+        graphPage={graphPage}
+        graphLimit={graphLimit}
+        includeKinds={includeKinds}
+        excludeKinds={excludeKinds}
+        edgeKinds={edgeKinds}
+        overlayMode={overlayMode}
+        availableNodeKinds={nodeKinds}
+        availableEdgeKinds={availableEdgeKinds}
         onCollectionChange={setCollectionId}
         onScenarioChange={setScenarioId}
         onLayerChange={setLayer}
         onFilterChange={setHotspotFilter}
+        onGraphQueryChange={(value) => {
+          setGraphQuery(value)
+          trackFilterChange()
+        }}
+        onHideIsolatedChange={(next) => {
+          setHideIsolated(next)
+          trackFilterChange()
+        }}
+        onGraphPageChange={(value) => setGraphPage(Math.max(0, value))}
+        onGraphLimitChange={(value) => {
+          const next = Math.min(10000, Math.max(1, value))
+          setGraphLimit(next)
+          if (next > 5000 && selection.view === 'deep_dive') {
+            pushToast('info', 'Deep Dive limit > 5000 may reduce interactivity.')
+          }
+        }}
+        onIncludeKindsChange={(value) => {
+          setIncludeKinds(value)
+          trackFilterChange()
+        }}
+        onExcludeKindsChange={(value) => {
+          setExcludeKinds(value)
+          trackFilterChange()
+        }}
+        onEdgeKindsChange={(value) => {
+          setEdgeKinds(value)
+          trackFilterChange()
+        }}
+        onOverlayModeChange={setOverlayMode}
+        onLoadOverlayFile={handleLoadOverlayFile}
         onRefresh={refreshActiveView}
         onOpenCollections={openCollections}
         onOpenRuns={openRuns}
@@ -322,37 +560,88 @@ export default function CockpitPage({
           filter={hotspotFilter}
           onRetry={refreshActiveView}
           onOpenTopology={handleOpenTopologyFromOverview}
+          onSelectHotspot={handleSelectHotspot}
           onCopyJson={handleCopyJson}
           onDownloadJson={handleDownloadJson}
         />
       ) : null}
 
       {selection.view === 'topology' ? (
-        <TopologyView
-          graph={graph}
-          state={activeState}
-          error={activeError}
-          layer={selection.layer}
-          density={topologyDensity}
-          onDensityChange={setTopologyDensity}
-          onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-          onRetry={refreshActiveView}
-        />
+        <section className="cockpit2-workspace">
+          <div className="cockpit2-main">
+            <TopologyView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={topologyDensity}
+              layoutEngine={topologyLayoutEngine}
+              elkEnabled={cockpitFlags.elkLayout}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onDensityChange={setTopologyDensity}
+              onLayoutEngineChange={setTopologyLayoutEngine}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onSelectNodeId={handleSelectNodeId}
+              onLayoutCompleted={(engine, durationMs, nodeCount) => {
+                getFaro()?.api.pushEvent('cockpit_layout_completed', {
+                  engine,
+                  duration_ms: String(Math.round(durationMs)),
+                  node_count: String(nodeCount),
+                })
+              }}
+              onRetry={refreshActiveView}
+            />
+          </div>
+          {cockpitFlags.inspector ? (
+            <div className="cockpit2-rail">
+              <NodeInspector
+                selectedNodeId={resolvedNodeId}
+                graph={graph}
+                neighborhood={neighborhood}
+                neighborhoodState={neighborhoodState}
+                neighborhoodError={neighborhoodError}
+                overlay={overlayData}
+                onClearSelection={() => setSelectedNodeId('')}
+              />
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       {selection.view === 'deep_dive' ? (
-        <DeepDiveView
-          graph={graph}
-          state={activeState}
-          error={activeError}
-          layer={selection.layer}
-          density={deepDiveDensity}
-          mode={deepDiveMode}
-          onModeChange={setDeepDiveMode}
-          onDensityChange={setDeepDiveDensity}
-          onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-          onRetry={refreshActiveView}
-        />
+        <section className="cockpit2-workspace">
+          <div className="cockpit2-main">
+            <DeepDiveView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={deepDiveDensity}
+              mode={deepDiveMode}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onModeChange={setDeepDiveMode}
+              onDensityChange={setDeepDiveDensity}
+              onSelectNodeId={handleSelectNodeId}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onRetry={refreshActiveView}
+            />
+          </div>
+          {cockpitFlags.inspector ? (
+            <div className="cockpit2-rail">
+              <NodeInspector
+                selectedNodeId={resolvedNodeId}
+                graph={graph}
+                neighborhood={neighborhood}
+                neighborhoodState={neighborhoodState}
+                neighborhoodError={neighborhoodError}
+                overlay={overlayData}
+                onClearSelection={() => setSelectedNodeId('')}
+              />
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       {selection.view === 'c4_diff' ? (

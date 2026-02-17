@@ -12,12 +12,31 @@ export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4
 export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol'
 export type TopologyEntityLevel = 'domain' | 'container' | 'component'
 export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'
+export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
+export type OverlayMode = 'none' | 'runtime' | 'risk'
 
 export interface CockpitSelection {
   collectionId: string
   scenarioId: string
   layer: CockpitLayer
   view: CockpitView
+}
+
+export interface GraphFilters {
+  query: string
+  hideIsolated: boolean
+  edgeKinds: string[]
+  includeKinds: string[]
+  excludeKinds: string[]
+}
+
+export interface GraphPagingState {
+  page: number
+  limit: number
+}
+
+export interface NodeInspectorState {
+  nodeId: string
 }
 
 export interface CollectionLite {
@@ -69,6 +88,14 @@ export interface TwinGraphResponse {
   excluded_kinds?: string[]
 }
 
+export interface GraphNeighborhoodResponse {
+  scenario_id: string
+  node_id: string
+  hops: number
+  projection: CockpitProjection
+  graph: TwinGraphResponse
+}
+
 export interface GraphViewPayload {
   collection_id: string
   scenario: ViewScenario
@@ -117,6 +144,25 @@ export interface MermaidPayload {
   as_is?: string
   to_be?: string
   as_is_scenario_id?: string
+}
+
+export interface RuntimeOverlayMetric {
+  service: string
+  latency_p95?: number
+  error_rate?: number
+}
+
+export interface RiskOverlayMetric {
+  node: string
+  vuln_count?: number
+  severity_score?: number
+}
+
+export interface OverlayState {
+  mode: OverlayMode
+  runtimeByNodeKey: Record<string, RuntimeOverlayMetric>
+  riskByNodeKey: Record<string, RiskOverlayMetric>
+  loadedAt: string | null
 }
 
 export interface CockpitToast {

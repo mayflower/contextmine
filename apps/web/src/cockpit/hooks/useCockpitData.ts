@@ -9,6 +9,9 @@ import type {
   CockpitView,
   DeepDiveMode,
   ExportFormat,
+  GraphFilters,
+  GraphNeighborhoodResponse,
+  GraphPagingState,
   MermaidPayload,
   ScenarioLite,
   TwinGraphResponse,
@@ -47,6 +50,9 @@ interface UseCockpitDataArgs {
   topologyLimit: number
   deepDiveLimit: number
   deepDiveMode: DeepDiveMode
+  graphFilters: GraphFilters
+  graphPaging: GraphPagingState
+  selectedNodeId: string
   onScenarioAutoSelect: (scenarioId: string) => void
   onViewError?: (view: CockpitView, message: string) => void
 }
@@ -62,6 +68,9 @@ export function useCockpitData({
   topologyLimit,
   deepDiveLimit,
   deepDiveMode,
+  graphFilters,
+  graphPaging,
+  selectedNodeId,
   onScenarioAutoSelect,
   onViewError,
 }: UseCockpitDataArgs) {
@@ -77,6 +86,9 @@ export function useCockpitData({
   const [exportFormat, setExportFormat] = useState<ExportFormat>('cc_json')
   const [exportProjection, setExportProjection] = useState<CockpitProjection>('architecture')
   const [exportContent, setExportContent] = useState('')
+  const [neighborhood, setNeighborhood] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
+  const [neighborhoodState, setNeighborhoodState] = useState<CockpitLoadState>('idle')
+  const [neighborhoodError, setNeighborhoodError] = useState('')
 
   const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
     setStates((prev) => ({ ...prev, [view]: nextState }))
@@ -193,12 +205,21 @@ export function useCockpitData({
 
         if (view === 'topology' || view === 'deep_dive') {
           const endpoint = view === 'topology' ? 'topology' : 'deep-dive'
-          const limit = view === 'topology' ? topologyLimit : deepDiveLimit
+          const fallbackLimit = view === 'topology' ? topologyLimit : deepDiveLimit
+          const limit = graphPaging.limit > 0 ? graphPaging.limit : fallbackLimit
           const query = new URLSearchParams({
             scenario_id: scenarioId,
             layer,
             limit: String(limit),
+            page: String(graphPaging.page),
           })
+
+          if (graphFilters.includeKinds.length > 0) {
+            query.set('include_kinds', graphFilters.includeKinds.join(','))
+          }
+          if (graphFilters.excludeKinds.length > 0) {
+            query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+          }
 
           if (view === 'topology') {
             query.set('projection', 'architecture')
@@ -277,11 +298,64 @@ export function useCockpitData({
     topologyLimit,
     deepDiveLimit,
     deepDiveMode,
+    graphFilters.excludeKinds,
+    graphFilters.includeKinds,
+    graphPaging.limit,
+    graphPaging.page,
     refreshNonce,
     markUpdated,
     setViewError,
     setViewState,
   ])
+
+  useEffect(() => {
+    const { scenarioId, view } = selection
+    if (!scenarioId || !selectedNodeId || (view !== 'topology' && view !== 'deep_dive')) {
+      setNeighborhood(DEFAULT_GRAPH)
+      setNeighborhoodState('idle')
+      setNeighborhoodError('')
+      return
+    }
+
+    const controller = new AbortController()
+    const run = async () => {
+      setNeighborhoodState('loading')
+      setNeighborhoodError('')
+      try {
+        const projection =
+          view === 'topology'
+            ? 'architecture'
+            : deepDiveMode === 'file_dependency'
+              ? 'code_file'
+              : 'code_symbol'
+        const response = await fetch(
+          `/api/twin/scenarios/${scenarioId}/graph/neighborhood?node_id=${encodeURIComponent(selectedNodeId)}&projection=${projection}&hops=1&limit=200`,
+          {
+            credentials: 'include',
+            signal: controller.signal,
+          },
+        )
+        if (!response.ok) {
+          throw new Error(`Could not load neighborhood (${response.status})`)
+        }
+        const payload: GraphNeighborhoodResponse = await response.json()
+        setNeighborhood(payload.graph || DEFAULT_GRAPH)
+        setNeighborhoodState('ready')
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return
+        }
+        const message = error instanceof Error ? error.message : 'Could not load neighborhood'
+        setNeighborhoodState('error')
+        setNeighborhoodError(message)
+      }
+    }
+
+    run()
+    return () => {
+      controller.abort()
+    }
+  }, [selection, selectedNodeId, deepDiveMode])
 
   const generateExport = useCallback(async () => {
     const scenarioId = selection.scenarioId
@@ -378,6 +452,9 @@ export function useCockpitData({
     setExportProjection,
     exportContent,
     setExportContent,
+    neighborhood,
+    neighborhoodState,
+    neighborhoodError,
     generateExport,
     refreshActiveView,
   }
