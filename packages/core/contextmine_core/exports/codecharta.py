@@ -85,6 +85,76 @@ def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
     )
 
 
+def _coerce_int(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _coerce_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0.0
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _metric_from_meta(meta: dict[str, Any] | None) -> _MetricValues:
+    data = meta or {}
+    return _MetricValues(
+        loc=_coerce_int(data.get("loc")),
+        symbol_count=_coerce_int(data.get("symbol_count")),
+        coupling=_coerce_float(data.get("coupling")),
+        coverage=_coerce_float(data.get("coverage")),
+        complexity=_coerce_float(data.get("complexity")),
+        change_frequency=_coerce_float(data.get("change_frequency")),
+    )
+
+
+def _metric_for_graph_node(
+    node: dict[str, Any],
+    metric_by_natural_key: dict[str, MetricSnapshot],
+) -> _MetricValues:
+    snapshot = metric_by_natural_key.get(str(node.get("natural_key") or ""))
+    if snapshot is not None:
+        return _metric_from_snapshot(snapshot)
+    return _metric_from_meta(cast(dict[str, Any], node.get("meta") or {}))
+
+
+def _metric_for_twin_node(
+    node: TwinNode,
+    metric_by_natural_key: dict[str, MetricSnapshot],
+) -> _MetricValues:
+    snapshot = metric_by_natural_key.get(node.natural_key)
+    if snapshot is not None:
+        return _metric_from_snapshot(snapshot)
+    return _metric_from_meta(cast(dict[str, Any], node.meta or {}))
+
+
 def _attributes_from_metrics(values: _MetricValues) -> dict[str, float | int]:
     return {
         "loc": int(values.loc),
@@ -297,9 +367,7 @@ async def export_codecharta_json(
     if projection == GraphProjection.CODE_FILE:
         for node in graph["nodes"]:
             node_id = str(node["id"])
-            values = _metric_from_snapshot(
-                metric_by_natural_key.get(str(node.get("natural_key") or ""))
-            )
+            values = _metric_for_graph_node(cast(dict[str, Any], node), metric_by_natural_key)
             leaf_items.append(
                 (
                     node_id,
@@ -327,7 +395,7 @@ async def export_codecharta_json(
                 continue
             key = _arch_group_key(effective_entity_level, group)
             bucket = aggregated.setdefault(key, _MetricAccumulator())
-            bucket.add(_metric_from_snapshot(metric_by_natural_key.get(file_node.natural_key)))
+            bucket.add(_metric_for_twin_node(file_node, metric_by_natural_key))
 
         for node in graph["nodes"]:
             node_id = str(node["id"])

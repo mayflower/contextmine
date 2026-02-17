@@ -277,3 +277,47 @@ async def test_codecharta_architecture_projection_weighted_aggregation(
     assert edge_payload["fromNodeName"] == "/root/billing/api"
     assert edge_payload["toNodeName"] == "/root/billing/worker"
     assert edge_payload["attributes"]["dependency_weight"] == pytest.approx(1.0)
+
+
+@pytest.mark.anyio
+async def test_codecharta_uses_node_meta_metrics_when_snapshots_missing(
+    test_session: AsyncSession,
+) -> None:
+    scenario = await _seed_scenario(test_session, scenario_name="Meta Fallback")
+
+    node = TwinNode(
+        id=uuid.uuid4(),
+        scenario_id=scenario.id,
+        natural_key="file:apps/api/routes.py",
+        kind="file",
+        name="routes.py",
+        meta={
+            "file_path": "apps/api/routes.py",
+            "loc": "123",
+            "symbol_count": 7,
+            "coupling": "2.5",
+            "coverage": 88.1,
+            "complexity": "6.0",
+            "change_frequency": "1.2",
+        },
+    )
+    test_session.add(node)
+    await test_session.commit()
+
+    payload = json.loads(
+        await export_codecharta_json(
+            test_session,
+            scenario.id,
+            projection=GraphProjection.CODE_FILE,
+            entity_level="file",
+        )
+    )
+
+    leaves = _collect_leaf_attributes(payload["nodes"][0])
+    metrics = leaves["/root/apps/api/routes.py"]
+    assert metrics["loc"] == 123
+    assert metrics["symbol_count"] == 0
+    assert metrics["coupling"] == pytest.approx(2.5)
+    assert metrics["coverage"] == pytest.approx(88.1)
+    assert metrics["complexity"] == pytest.approx(6.0)
+    assert metrics["change_frequency"] == pytest.approx(1.2)
