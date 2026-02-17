@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from contextmine_core.metrics.discovery import to_repo_relative_path
+from defusedxml import ElementTree as safe_et
 
 PROTOCOL_LCOV = "lcov"
 PROTOCOL_COBERTURA = "cobertura_xml"
@@ -50,7 +50,7 @@ def _tag_local_name(tag: str) -> str:
     return tag
 
 
-def _iter_nodes(root: ET.Element, local_name: str) -> Iterable[ET.Element]:
+def _iter_nodes(root: Any, local_name: str) -> Iterable[Any]:
     for node in root.iter():
         if _tag_local_name(node.tag) == local_name:
             yield node
@@ -119,7 +119,7 @@ def parse_lcov_report(
 
 
 def parse_cobertura_xml(
-    root: ET.Element,
+    root: Any,
     report_path: Path,
     repo_root: Path,
     project_root: Path,
@@ -172,7 +172,7 @@ def parse_cobertura_xml(
 
 
 def parse_jacoco_xml(
-    root: ET.Element,
+    root: Any,
     report_path: Path,
     repo_root: Path,
     project_root: Path,
@@ -219,7 +219,7 @@ def parse_jacoco_xml(
 
 
 def parse_clover_xml(
-    root: ET.Element,
+    root: Any,
     report_path: Path,
     repo_root: Path,
     project_root: Path,
@@ -284,7 +284,7 @@ def parse_clover_xml(
 
 
 def parse_opencover_xml(
-    root: ET.Element,
+    root: Any,
     report_path: Path,
     repo_root: Path,
     project_root: Path,
@@ -388,8 +388,8 @@ def detect_coverage_protocol(report_path: Path) -> str | None:
             return PROTOCOL_GENERIC_JSON
 
     try:
-        root = ET.parse(report_path).getroot()
-    except ET.ParseError:
+        root = safe_et.parse(report_path).getroot()
+    except safe_et.ParseError:
         return None
 
     root_tag = _tag_local_name(root.tag).lower()
@@ -436,8 +436,8 @@ def parse_coverage_report(
         return None, {}
 
     try:
-        root = ET.parse(report_path).getroot()
-    except ET.ParseError:
+        root = safe_et.parse(report_path).getroot()
+    except safe_et.ParseError:
         return protocol, {}
 
     if protocol == PROTOCOL_JACOCO:

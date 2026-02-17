@@ -14,4 +14,3 @@ def test_infer_edge_layers_for_symbol_edges_exposes_architecture_layers() -> Non
     assert TwinLayer.CODE_CONTROLFLOW in layers
     assert TwinLayer.COMPONENT_INTERFACE in layers
     assert TwinLayer.DOMAIN_CONTAINER in layers
-

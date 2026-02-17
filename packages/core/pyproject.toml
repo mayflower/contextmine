@@ -33,6 +33,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy>=0.46b0",
     "opentelemetry-instrumentation-httpx>=0.46b0",
     "opentelemetry-instrumentation-logging>=0.46b0",
+    "defusedxml>=0.7.1",
 ]
 
 [build-system]

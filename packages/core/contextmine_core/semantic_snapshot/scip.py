@@ -10,8 +10,8 @@ See: https://sourcegraph.com/docs/code-navigation/code-intelligence-protocol
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from contextmine_core.semantic_snapshot.models import (
@@ -144,8 +144,10 @@ class SCIPProvider:
                     kind = inferred_kind
 
                 # Get display name
-                name = sym_info.display_name or inferred_name or self._extract_name_from_symbol(
-                    symbol_str
+                name = (
+                    sym_info.display_name
+                    or inferred_name
+                    or self._extract_name_from_symbol(symbol_str)
                 )
 
                 # Keep only relevant symbols with a resolvable kind and name.
@@ -234,7 +236,9 @@ class SCIPProvider:
             inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
             if kind == SymbolKind.UNKNOWN:
                 kind = inferred_kind
-            name = ext_sym.display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
+            name = (
+                ext_sym.display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
+            )
 
             if kind == SymbolKind.UNKNOWN or not name:
                 continue
