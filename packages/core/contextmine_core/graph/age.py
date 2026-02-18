@@ -129,4 +129,4 @@ async def run_read_only_cypher(
 
 
 def _esc(value: str) -> str:
-    return value.replace("'", "''")
+    return value.replace("\\", "\\\\").replace("'", "\\'")

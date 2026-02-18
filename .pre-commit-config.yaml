@@ -31,7 +31,7 @@ repos:
 
       - id: vulture
         name: vulture (dead code)
-        entry: uvx vulture apps packages vulture_whitelist.py --min-confidence 80
+        entry: uvx vulture apps packages vulture_whitelist.py --min-confidence 80 --exclude "node_modules,*.json"
         language: system
         types: [python]
         pass_filenames: false
