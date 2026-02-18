@@ -7,9 +7,9 @@ from pathlib import Path
 
 from contextmine_core import close_engine
 from contextmine_core.telemetry import init_telemetry, shutdown_telemetry
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
@@ -103,6 +103,28 @@ def create_app() -> FastAPI:
 
     # Mount MCP server at /mcp
     app.mount("/mcp", mcp_app)
+
+    # Forward .well-known OAuth discovery requests to the MCP sub-app.
+    # MCP clients (per RFC 8414) look for OAuth metadata at root-level
+    # .well-known paths, but FastMCP serves them within its mount point
+    # at /mcp/.well-known/... Without these forwarding routes, the SPA
+    # catch-all intercepts .well-known requests and returns index.html.
+    @app.get("/.well-known/{well_known_type}")
+    @app.get("/.well-known/{well_known_type}/{path:path}")
+    async def forward_well_known(request: Request, well_known_type: str, path: str = "") -> JSONResponse:
+        """Forward .well-known requests to MCP sub-app for OAuth discovery."""
+        import httpx
+
+        # Build the internal URL to the MCP sub-app's .well-known endpoint
+        mcp_url = f"http://localhost:{os.getenv('API_PORT', '8000')}/mcp/.well-known/{well_known_type}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(mcp_url, timeout=5.0)
+                if resp.status_code == 200:
+                    return JSONResponse(content=resp.json())
+                return JSONResponse(content={"error": "not_found"}, status_code=resp.status_code)
+        except Exception:
+            return JSONResponse(content={"error": "mcp_unavailable"}, status_code=503)
 
     # Prometheus metrics instrumentation
     # Exposes /metrics endpoint with request latency, count, and Python process metrics
