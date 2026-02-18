@@ -111,12 +111,16 @@ def create_app() -> FastAPI:
     # catch-all intercepts .well-known requests and returns index.html.
     @app.get("/.well-known/{well_known_type}")
     @app.get("/.well-known/{well_known_type}/{path:path}")
-    async def forward_well_known(request: Request, well_known_type: str, path: str = "") -> JSONResponse:
+    async def forward_well_known(
+        request: Request, well_known_type: str, path: str = ""
+    ) -> JSONResponse:
         """Forward .well-known requests to MCP sub-app for OAuth discovery."""
         import httpx
 
         # Build the internal URL to the MCP sub-app's .well-known endpoint
-        mcp_url = f"http://localhost:{os.getenv('API_PORT', '8000')}/mcp/.well-known/{well_known_type}"
+        mcp_url = (
+            f"http://localhost:{os.getenv('API_PORT', '8000')}/mcp/.well-known/{well_known_type}"
+        )
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(mcp_url, timeout=5.0)
