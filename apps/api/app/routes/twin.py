@@ -1401,21 +1401,23 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             )
             name = f"{scenario.name}.mmd"
 
+        meta: dict = {
+            "scenario_id": str(scenario.id),
+            "format": body.format,
+            "projection": projection.value,
+            "entity_level": body.entity_level,
+        }
+        if body.format == "mermaid":
+            meta["c4_view"] = selected_c4_view
+            meta["c4_scope"] = selected_c4_scope
+            meta["max_nodes"] = selected_max_nodes
         artifact = await _upsert_artifact(
             db,
             collection_id=scenario.collection_id,
             kind=kind,
             name=name,
             content=content,
-            meta={
-                "scenario_id": str(scenario.id),
-                "format": body.format,
-                "projection": projection.value,
-                "entity_level": body.entity_level,
-                "c4_view": selected_c4_view,
-                "c4_scope": selected_c4_scope,
-                "max_nodes": selected_max_nodes,
-            },
+            meta=meta,
         )
         await db.commit()
 
