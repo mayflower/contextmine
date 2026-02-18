@@ -142,9 +142,10 @@ class ContextMineGitHubProvider(GitHubProvider):
         super().__init__(
             client_id=settings.github_client_id,
             client_secret=settings.github_client_secret,
-            # Use /api path so OAuth callbacks go to the unified /api/auth/callback
-            # The callback handler forwards MCP flows to /mcp/auth/callback
-            base_url=AnyHttpUrl(f"{settings.mcp_oauth_base_url}/api"),
+            # Use /mcp path to match the MCP sub-app mount point in main.py.
+            # This ensures OAuth metadata endpoints (authorize, token, register)
+            # resolve to /mcp/... where FastMCP actually serves them.
+            base_url=AnyHttpUrl(f"{settings.mcp_oauth_base_url}/mcp"),
             # Enable consent screen for security (protects against confused deputy)
             require_authorization_consent=True,
             # Request scopes needed for user info
