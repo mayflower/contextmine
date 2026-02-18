@@ -44,7 +44,8 @@ RUN apt-get update && apt-get install -y \
 # Install Node.js (for scip-python, scip-typescript)
 RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
     apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    corepack enable
 
 # Install npm-based SCIP indexers globally
 RUN npm install -g \
