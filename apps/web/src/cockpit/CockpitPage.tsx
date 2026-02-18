@@ -19,6 +19,7 @@ import GraphRagView from './views/GraphRagView'
 import OverviewView from './views/OverviewView'
 import TopologyView from './views/TopologyView'
 import {
+  type C4ViewMode,
   type CockpitToast,
   type CollectionLite,
   type CockpitView,
@@ -136,6 +137,9 @@ export default function CockpitPage({
   )
   const [deepDiveDensity, setDeepDiveDensity] = useState(5000)
   const [deepDiveMode, setDeepDiveMode] = useState<'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'>('file_dependency')
+  const [c4View, setC4View] = useState<C4ViewMode>('container')
+  const [c4Scope, setC4Scope] = useState('')
+  const [c4MaxNodes, setC4MaxNodes] = useState(120)
   const [toast, setToast] = useState<CockpitToast | null>(null)
   const [overlayData, setOverlayData] = useState<OverlayState>({
     mode: overlayMode,
@@ -218,6 +222,9 @@ export default function CockpitPage({
     topologyLimit: topologyDensity,
     deepDiveLimit: deepDiveDensity,
     deepDiveMode,
+    c4View,
+    c4Scope,
+    c4MaxNodes,
     graphFilters,
     graphPaging,
     selectedNodeId,
@@ -285,22 +292,6 @@ export default function CockpitPage({
     const timeoutId = window.setTimeout(() => setToast(null), 2200)
     return () => window.clearTimeout(timeoutId)
   }, [toast])
-
-  const handleCopyJson = async () => {
-    const payload = JSON.stringify(city?.cc_json || {}, null, 2)
-    try {
-      await navigator.clipboard.writeText(payload)
-      pushToast('success', 'Copied cc.json preview to clipboard.')
-    } catch {
-      pushToast('error', 'Could not copy to clipboard.')
-    }
-  }
-
-  const handleDownloadJson = () => {
-    const payload = JSON.stringify(city?.cc_json || {}, null, 2)
-    downloadTextFile('cockpit-cc-preview.json', payload)
-    pushToast('info', 'Downloaded cc.json preview.')
-  }
 
   const handleOpenTopologyFromOverview = () => {
     setLayer('code_controlflow')
@@ -449,6 +440,9 @@ export default function CockpitPage({
           excludeKinds={excludeKinds}
           edgeKinds={edgeKinds}
           overlayMode={overlayMode}
+          c4View={c4View}
+          c4Scope={c4Scope}
+          c4MaxNodes={c4MaxNodes}
           availableNodeKinds={[]}
           availableEdgeKinds={[]}
           onCollectionChange={setCollectionId}
@@ -478,6 +472,9 @@ export default function CockpitPage({
             trackFilterChange()
           }}
           onOverlayModeChange={setOverlayMode}
+          onC4ViewChange={setC4View}
+          onC4ScopeChange={setC4Scope}
+          onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
           onLoadOverlayFile={handleLoadOverlayFile}
           onRefresh={refreshActiveView}
           onOpenCollections={openCollections}
@@ -523,6 +520,9 @@ export default function CockpitPage({
         excludeKinds={excludeKinds}
         edgeKinds={edgeKinds}
         overlayMode={overlayMode}
+        c4View={c4View}
+        c4Scope={c4Scope}
+        c4MaxNodes={c4MaxNodes}
         availableNodeKinds={nodeKinds}
         availableEdgeKinds={availableEdgeKinds}
         onCollectionChange={setCollectionId}
@@ -558,6 +558,9 @@ export default function CockpitPage({
           trackFilterChange()
         }}
         onOverlayModeChange={setOverlayMode}
+        onC4ViewChange={setC4View}
+        onC4ScopeChange={setC4Scope}
+        onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
         onLoadOverlayFile={handleLoadOverlayFile}
         onRefresh={refreshActiveView}
         onOpenCollections={openCollections}
@@ -575,8 +578,6 @@ export default function CockpitPage({
           onRetry={refreshActiveView}
           onOpenTopology={handleOpenTopologyFromOverview}
           onSelectHotspot={handleSelectHotspot}
-          onCopyJson={handleCopyJson}
-          onDownloadJson={handleDownloadJson}
         />
       ) : null}
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routes.twin import _extract_document_lines, _upsert_artifact
+from contextmine_core import SourceType
 from contextmine_core.models import KnowledgeArtifactKind
 from httpx import AsyncClient
 
@@ -136,6 +137,34 @@ class TestTwinViewRoutes:
         assert response.status_code == 422
 
     @patch("app.routes.twin.get_session")
+    async def test_mermaid_invalid_c4_view_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/mermaid?c4_view=not-a-view"
+        )
+        assert response.status_code == 400
+        assert "Invalid c4_view" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_mermaid_invalid_c4_scope_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/mermaid?c4_scope=bad%0Avalue"
+        )
+        assert response.status_code == 400
+        assert "Invalid c4_scope" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
     async def test_export_raw_invalid_export_id_rejected(
         self,
         mock_get_session: Any,
@@ -148,6 +177,153 @@ class TestTwinViewRoutes:
         response = await client.get(f"/api/twin/scenarios/{scenario_id}/exports/not-a-uuid/raw")
         assert response.status_code == 400
         assert "Invalid export_id" in response.json()["detail"]
+
+    @patch("app.routes.twin.export_codecharta_json", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_city_view_includes_change_frequency_and_churn(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_export_cc_json: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+        mock_export_cc_json.return_value = (
+            '{"projectName":"x","apiVersion":"1.5","nodes":[],"edges":[]}'
+        )
+
+        metric_a = MagicMock()
+        metric_a.node_natural_key = "file:src/a.py"
+        metric_a.loc = 10
+        metric_a.symbol_count = 2
+        metric_a.coverage = 80.0
+        metric_a.complexity = 4.0
+        metric_a.coupling = 3.0
+        metric_a.change_frequency = 2.0
+        metric_a.meta = {"churn": 5.0}
+
+        metric_b = MagicMock()
+        metric_b.node_natural_key = "file:src/b.py"
+        metric_b.loc = 20
+        metric_b.symbol_count = 4
+        metric_b.coverage = 60.0
+        metric_b.complexity = 6.0
+        metric_b.coupling = 5.0
+        metric_b.change_frequency = 4.0
+        metric_b.meta = {"churn": 15.0}
+
+        metrics_result = MagicMock()
+        metrics_result.scalars.return_value.all.return_value = [metric_a, metric_b]
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(return_value=metrics_result)
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(f"/api/twin/collections/{collection_id}/views/city")
+        assert response.status_code == 200
+
+        payload = response.json()
+        assert payload["summary"]["change_frequency_avg"] == pytest.approx(3.0)
+        assert payload["summary"]["churn_avg"] == pytest.approx(10.0)
+        assert payload["hotspots"][0]["change_frequency"] == pytest.approx(4.0)
+        assert payload["hotspots"][0]["churn"] == pytest.approx(15.0)
+        assert payload["hotspots"][1]["change_frequency"] == pytest.approx(2.0)
+        assert payload["hotspots"][1]["churn"] == pytest.approx(5.0)
+
+    @patch("app.routes.twin.export_codecharta_json", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_settings")
+    @patch("app.routes.twin.refresh_metric_snapshots", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_city_view_unavailable_has_null_change_frequency_and_churn_avgs(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        _mock_refresh_snapshots: Any,
+        mock_get_settings: Any,
+        mock_export_cc_json: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_get_settings.return_value = MagicMock(metrics_strict_mode=True)
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+        mock_export_cc_json.return_value = (
+            '{"projectName":"x","apiVersion":"1.5","nodes":[],"edges":[]}'
+        )
+
+        metrics_empty_result = MagicMock()
+        metrics_empty_result.scalars.return_value.all.return_value = []
+        sources_result = MagicMock()
+        sources_result.scalars.return_value.all.return_value = [MagicMock(type=SourceType.GITHUB)]
+        jobs_result = MagicMock()
+        jobs_result.scalars.return_value.all.return_value = []
+        file_nodes_result = MagicMock()
+        file_nodes_result.scalars.return_value.all.return_value = []
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(
+            side_effect=[
+                metrics_empty_result,
+                metrics_empty_result,
+                sources_result,
+                jobs_result,
+                file_nodes_result,
+            ]
+        )
+        fake_db.flush = AsyncMock()
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(f"/api/twin/collections/{collection_id}/views/city")
+        assert response.status_code == 200
+
+        payload = response.json()
+        assert payload["summary"]["change_frequency_avg"] is None
+        assert payload["summary"]["churn_avg"] is None
+        assert payload["hotspots"] == []
 
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
@@ -331,3 +507,60 @@ class TestTwinViewRoutes:
         assert created.content == '{"ok":true}'
         assert created.meta == {"scenario_id": "s1"}
         db.add.assert_called_once_with(created)
+
+    @patch("app.routes.twin.export_mermaid_asis_tobe_result", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_mermaid_compare_includes_c4_metadata_and_warnings(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_export_compare: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "TO-BE"
+        scenario.version = 2
+        scenario.is_as_is = False
+        scenario.base_scenario_id = uuid.uuid4()
+        mock_resolve_view_scenario.return_value = scenario
+
+        mock_export_compare.return_value = (
+            MagicMock(content='C4Component\nComponent(a, "A")', warnings=["AS-IS warn"]),
+            MagicMock(content='C4Component\nComponent(b, "B")', warnings=["TO-BE warn"]),
+        )
+
+        fake_db = MagicMock()
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/mermaid"
+            "?scenario_id="
+            f"{scenario.id}&compare_with_base=true&c4_view=component&c4_scope=billing&max_nodes=77"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["mode"] == "compare"
+        assert payload["c4_view"] == "component"
+        assert payload["c4_scope"] == "billing"
+        assert payload["max_nodes"] == 77
+        assert payload["as_is_warnings"] == ["AS-IS warn"]
+        assert payload["to_be_warnings"] == ["TO-BE warn"]
+        assert sorted(payload["warnings"]) == ["AS-IS warn", "TO-BE warn"]

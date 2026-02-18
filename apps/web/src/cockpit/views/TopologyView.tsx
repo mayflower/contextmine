@@ -71,7 +71,9 @@ export default function TopologyView({
   onLayoutCompleted,
   onRetry,
 }: TopologyViewProps) {
-  const [showLabels, setShowLabels] = useState(true)
+  const [showLabels, setShowLabels] = useState(false)
+  const [showMiniMap, setShowMiniMap] = useState(false)
+  const [showDisplayOptions, setShowDisplayOptions] = useState(false)
   const [instance, setInstance] = useState<ReactFlowInstance | null>(null)
   const [layoutStatus, setLayoutStatus] = useState<'idle' | 'coarse' | 'refined'>('idle')
   const [layoutPositions, setLayoutPositions] = useState<Record<string, { x: number; y: number }>>({})
@@ -157,12 +159,12 @@ export default function TopologyView({
       return {
         id: node.id,
         data: {
-          label: showLabels ? `${node.name} (${node.kind})` : node.kind,
+          label: showLabels ? node.name : '',
         },
         position,
         style: {
-          width: 230,
-          fontSize: 12,
+          width: 210,
+          fontSize: 11,
           borderRadius: 10,
           border: isSelected ? '2px solid #f59e0b' : `1px solid ${overlayColorForNode(overlay, node.natural_key, node.name)}`,
           background: '#ffffff',
@@ -187,7 +189,6 @@ export default function TopologyView({
         id: edge.id,
         source: edge.source_node_id,
         target: edge.target_node_id,
-        label: showLabels ? `${edge.kind}${edge.meta?.weight ? ` (${edge.meta.weight})` : ''}` : undefined,
         type: 'smoothstep',
         style: { strokeWidth: width },
       }
@@ -225,8 +226,6 @@ export default function TopologyView({
         <h3>Topology graph</h3>
         <p className="muted">
           Nodes: {graph.nodes.length} / Total: {graph.total_nodes} • Edges: {graph.edges.length}
-          {graph.projection ? ` • Projection: ${graph.projection}` : ''}
-          {graph.entity_level ? ` • Level: ${graph.entity_level}` : ''}
           {layoutStatus === 'coarse' ? ' • Refining layout…' : ''}
         </p>
       </div>
@@ -238,27 +237,43 @@ export default function TopologyView({
         <button type="button" className="secondary" onClick={() => setShowLabels((prev) => !prev)}>
           {showLabels ? 'Hide labels' : 'Show labels'}
         </button>
+        <button type="button" className="secondary" onClick={() => setShowDisplayOptions((prev) => !prev)}>
+          {showDisplayOptions ? 'Hide display options' : 'Display options'}
+        </button>
+      </div>
 
-        <label>
-          Density
-          <select value={density} onChange={(event) => onDensityChange(Number(event.target.value))}>
-            <option value={800}>Focused</option>
-            <option value={1200}>Balanced</option>
-            <option value={2500}>Dense</option>
-          </select>
-        </label>
-
-        {elkEnabled ? (
+      {showDisplayOptions ? (
+        <div className="cockpit2-graph-toolbar">
           <label>
-            Layout
-            <select value={layoutEngine} onChange={(event) => onLayoutEngineChange(event.target.value as LayoutEngine)}>
-              <option value="grid">Grid</option>
-              <option value="elk_layered">ELK layered</option>
-              <option value="elk_force_like">ELK force-like</option>
+            Density
+            <select value={density} onChange={(event) => onDensityChange(Number(event.target.value))}>
+              <option value={800}>Focused</option>
+              <option value={1200}>Balanced</option>
+              <option value={2500}>Dense</option>
             </select>
           </label>
-        ) : null}
-      </div>
+
+          {elkEnabled ? (
+            <label>
+              Layout
+              <select value={layoutEngine} onChange={(event) => onLayoutEngineChange(event.target.value as LayoutEngine)}>
+                <option value="grid">Grid</option>
+                <option value="elk_layered">ELK layered</option>
+                <option value="elk_force_like">ELK force-like</option>
+              </select>
+            </label>
+          ) : null}
+
+          <label>
+            <input
+              type="checkbox"
+              checked={showMiniMap}
+              onChange={(event) => setShowMiniMap(event.target.checked)}
+            />
+            Show mini map
+          </label>
+        </div>
+      ) : null}
 
       {overlay.mode !== 'none' ? (
         <div className="cockpit2-overlay-legend">
@@ -281,7 +296,7 @@ export default function TopologyView({
             aria-label="Topology graph"
           >
             <Controls />
-            <MiniMap pannable zoomable />
+            {showMiniMap ? <MiniMap pannable zoomable /> : null}
             <Background gap={20} size={1} />
           </ReactFlow>
         ) : (

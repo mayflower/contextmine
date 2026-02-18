@@ -41,6 +41,7 @@ from contextmine_worker.github_sync import (
     build_uri,
     clone_or_pull_repo,
     compute_content_hash,
+    compute_git_change_metrics,
     ensure_repos_dir,
     get_changed_files,
     get_file_title,
@@ -1179,6 +1180,52 @@ async def sync_github_source(
         )
         file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles)]
         scip_stats["structural_metric_files"] = len(file_metric_dicts)
+        if file_metric_dicts:
+            target_files = {
+                str(metric.get("file_path", "")).strip()
+                for metric in file_metric_dicts
+                if str(metric.get("file_path", "")).strip()
+            }
+            git_metrics_by_file = compute_git_change_metrics(git_repo, target_files)
+            files_with_history = 0
+            total_change_frequency = 0.0
+            total_churn = 0.0
+
+            for metric in file_metric_dicts:
+                file_path = str(metric.get("file_path", "")).strip()
+                git_values = git_metrics_by_file.get(
+                    file_path,
+                    {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0},
+                )
+                change_frequency = float(git_values.get("change_frequency", 0) or 0.0)
+                churn = float(git_values.get("churn", 0) or 0.0)
+                if change_frequency > 0:
+                    files_with_history += 1
+                total_change_frequency += change_frequency
+                total_churn += churn
+
+                sources = dict(metric.get("sources") or {})
+                sources["change_frequency"] = {
+                    "provider": "git",
+                    "window": "all_history",
+                    "no_merges": True,
+                    "renames_followed": False,
+                    "unit": "commits",
+                }
+                sources["churn"] = {
+                    "provider": "git",
+                    "window": "all_history",
+                    "unit": "lines_changed",
+                    "formula": "insertions+deletions",
+                }
+                metric["sources"] = sources
+                metric["change_frequency"] = change_frequency
+                metric["churn"] = churn
+
+            scip_stats["git_metric_files_targeted"] = len(target_files)
+            scip_stats["git_metric_files_with_history"] = files_with_history
+            scip_stats["git_metric_total_change_frequency"] = total_change_frequency
+            scip_stats["git_metric_total_churn"] = total_churn
 
     await update_progress_artifact(
         progress_id, progress=15, description="Detecting changed files..."
@@ -1415,6 +1462,12 @@ async def sync_github_source(
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
             "structural_metric_files": scip_stats.get("structural_metric_files", 0),
+            "git_metric_files_targeted": scip_stats.get("git_metric_files_targeted", 0),
+            "git_metric_files_with_history": scip_stats.get("git_metric_files_with_history", 0),
+            "git_metric_total_change_frequency": scip_stats.get(
+                "git_metric_total_change_frequency", 0.0
+            ),
+            "git_metric_total_churn": scip_stats.get("git_metric_total_churn", 0.0),
         }
 
         await session.commit()

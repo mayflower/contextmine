@@ -94,7 +94,7 @@ export default function GraphRagView({
             width: 20,
             height: 20,
             'text-wrap': 'ellipsis',
-            'text-max-width': 140,
+            'text-max-width': '140px',
             'border-width': 1,
             'border-color': '#0f172a',
           },

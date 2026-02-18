@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 
 import type { CityPayload, CockpitLoadState } from '../types'
 
-type SortKey = 'node' | 'complexity' | 'coupling' | 'coverage' | 'loc'
+type SortKey = 'node' | 'complexity' | 'coupling' | 'coverage' | 'loc' | 'change_frequency' | 'churn'
 type SortDirection = 'asc' | 'desc'
 
 interface OverviewViewProps {
@@ -13,8 +13,6 @@ interface OverviewViewProps {
   onRetry: () => void
   onOpenTopology: () => void
   onSelectHotspot: (nodeNaturalKey: string) => void
-  onCopyJson: () => void
-  onDownloadJson: () => void
 }
 
 function levelFromComplexity(complexity: number): 'high' | 'medium' | 'low' {
@@ -76,8 +74,6 @@ export default function OverviewView({
   onRetry,
   onOpenTopology,
   onSelectHotspot,
-  onCopyJson,
-  onDownloadJson,
 }: OverviewViewProps) {
   const [sortKey, setSortKey] = useState<SortKey>('complexity')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -127,8 +123,6 @@ export default function OverviewView({
     )
   }
 
-  const preview = JSON.stringify(city?.cc_json || {}, null, 2)
-  const previewLines = preview.split('\n').slice(0, 32).join('\n')
   const metricsUnavailable = city?.metrics_status?.status === 'unavailable'
   const unavailableReason = city?.metrics_status?.reason
 
@@ -173,6 +167,14 @@ export default function OverviewView({
               <strong>{formatMetricValue(city?.summary.coupling_avg)}</strong>
               <span>Average coupling</span>
             </div>
+            <div>
+              <strong>{formatMetricValue(city?.summary.change_frequency_avg)}</strong>
+              <span>Average change frequency</span>
+            </div>
+            <div>
+              <strong>{formatMetricValue(city?.summary.churn_avg)}</strong>
+              <span>Average churn</span>
+            </div>
           </div>
         </article>
 
@@ -188,6 +190,8 @@ export default function OverviewView({
                   <th><button type="button" onClick={() => handleSort('coupling')}>Coupling</button></th>
                   <th><button type="button" onClick={() => handleSort('coverage')}>Coverage</button></th>
                   <th><button type="button" onClick={() => handleSort('loc')}>LOC</button></th>
+                  <th><button type="button" onClick={() => handleSort('change_frequency')}>Change frequency</button></th>
+                  <th><button type="button" onClick={() => handleSort('churn')}>Churn</button></th>
                 </tr>
               </thead>
               <tbody>
@@ -206,11 +210,13 @@ export default function OverviewView({
                     <td>{(spot.coupling || 0).toFixed(2)}</td>
                     <td>{(spot.coverage || 0).toFixed(2)}</td>
                     <td>{spot.loc}</td>
+                    <td>{(spot.change_frequency || 0).toFixed(2)}</td>
+                    <td>{(spot.churn || 0).toFixed(2)}</td>
                   </tr>
                 ))}
                 {hotspots.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="empty-row">
+                    <td colSpan={7} className="empty-row">
                       {metricsUnavailable
                         ? metricsUnavailableMessage(unavailableReason)
                         : 'No hotspots match the current filter.'}
@@ -222,20 +228,6 @@ export default function OverviewView({
           </div>
         </article>
       </div>
-
-      <aside className="cockpit2-rail">
-        <article className="cockpit2-panel">
-          <div className="cockpit2-panel-header-row">
-            <h3>cc.json preview</h3>
-            <div className="actions">
-              <button type="button" className="ghost" onClick={onCopyJson}>Copy</button>
-              <button type="button" className="ghost" onClick={onDownloadJson}>Download</button>
-            </div>
-          </div>
-          <pre>{previewLines}</pre>
-          <p className="muted">Showing first 32 lines of the generated payload.</p>
-        </article>
-      </aside>
     </section>
   )
 }

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from contextmine_worker.github_sync import (
     compute_content_hash,
+    compute_git_change_metrics,
     get_changed_files,
     is_eligible_file,
 )
@@ -83,6 +84,87 @@ class TestContentHash:
         """Test that hash is SHA-256 (64 hex chars)."""
         hash_value = compute_content_hash("test")
         assert len(hash_value) == 64
+
+
+class TestGitChangeMetrics:
+    """Tests for git-derived change frequency and churn metrics."""
+
+    def test_compute_git_change_metrics_counts_commits_and_churn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+
+            file_path = Path(tmpdir) / "service.py"
+            file_path.write_text("print('a')\n", encoding="utf-8")
+            repo.index.add(["service.py"])
+            repo.index.commit("initial")
+
+            file_path.write_text("print('a')\nprint('b')\n", encoding="utf-8")
+            repo.index.add(["service.py"])
+            repo.index.commit("second")
+
+            file_path.write_text("print('b')\n", encoding="utf-8")
+            repo.index.add(["service.py"])
+            repo.index.commit("third")
+
+            metrics = compute_git_change_metrics(repo, {"service.py"})
+            service = metrics["service.py"]
+
+            assert service["change_frequency"] == 3
+            assert service["insertions"] == 2
+            assert service["deletions"] == 1
+            assert service["churn"] == 3
+
+    def test_compute_git_change_metrics_respects_target_file_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+
+            (Path(tmpdir) / "a.py").write_text("print('a')\n", encoding="utf-8")
+            (Path(tmpdir) / "b.py").write_text("print('b')\n", encoding="utf-8")
+            repo.index.add(["a.py", "b.py"])
+            repo.index.commit("initial")
+
+            metrics = compute_git_change_metrics(repo, {"a.py", "c.py"})
+
+            assert set(metrics.keys()) == {"a.py", "c.py"}
+            assert metrics["a.py"]["change_frequency"] == 1
+            assert metrics["c.py"]["change_frequency"] == 0
+            assert metrics["c.py"]["churn"] == 0
+
+    def test_compute_git_change_metrics_uses_no_merges(self) -> None:
+        class FakeCommitStats:
+            files = {"a.py": {"insertions": 1, "deletions": 0}}
+
+        class FakeCommit:
+            stats = FakeCommitStats()
+
+        class FakeRepo:
+            def iter_commits(self, rev: str, no_merges: bool = False):  # noqa: FBT002
+                assert rev == "HEAD"
+                assert no_merges is True
+                return [FakeCommit()]
+
+        metrics = compute_git_change_metrics(FakeRepo(), {"a.py"})  # type: ignore[arg-type]
+        assert metrics["a.py"]["change_frequency"] == 1
+        assert metrics["a.py"]["churn"] == 1
+
+    def test_compute_git_change_metrics_returns_zeroed_metrics_on_error(self) -> None:
+        class BrokenRepo:
+            def iter_commits(self, *_args, **_kwargs):
+                raise RuntimeError("boom")
+
+        metrics = compute_git_change_metrics(BrokenRepo(), {"a.py", "b.py"})  # type: ignore[arg-type]
+        assert metrics["a.py"] == {
+            "change_frequency": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "churn": 0,
+        }
+        assert metrics["b.py"] == {
+            "change_frequency": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "churn": 0,
+        }
 
 
 class TestIncrementalSync:

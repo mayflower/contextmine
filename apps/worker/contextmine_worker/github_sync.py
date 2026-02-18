@@ -1,6 +1,7 @@
 """GitHub repository sync service."""
 
 import hashlib
+import logging
 import os
 import shutil
 import tempfile
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from git import Repo
 from git.exc import GitCommandError
+
+logger = logging.getLogger(__name__)
 
 # File extensions to index (code + docs)
 ALLOWED_EXTENSIONS = {
@@ -280,6 +283,49 @@ def get_changed_files(
                 deleted.append(diff_item.a_path)
 
     return changed, deleted
+
+
+def compute_git_change_metrics(repo: Repo, target_files: set[str]) -> dict[str, dict[str, int]]:
+    """Compute git-derived change frequency and churn for target files.
+
+    Returns:
+        Mapping of file path -> metrics:
+            - change_frequency: non-merge commit touch count
+            - insertions: total insertions across matching commits
+            - deletions: total deletions across matching commits
+            - churn: total insertions + deletions
+    """
+    if not target_files:
+        return {}
+
+    metrics: dict[str, dict[str, int]] = {
+        path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
+        for path in target_files
+    }
+
+    try:
+        for commit in repo.iter_commits("HEAD", no_merges=True):
+            files = commit.stats.files or {}
+            for file_path, file_stats in files.items():
+                if file_path not in metrics:
+                    continue
+
+                insertions = int(file_stats.get("insertions", 0) or 0)
+                deletions = int(file_stats.get("deletions", 0) or 0)
+
+                entry = metrics[file_path]
+                entry["change_frequency"] += 1
+                entry["insertions"] += insertions
+                entry["deletions"] += deletions
+                entry["churn"] += insertions + deletions
+    except Exception:
+        logger.warning("Failed to compute git change metrics; defaulting to zeros", exc_info=True)
+        return {
+            path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
+            for path in target_files
+        }
+
+    return metrics
 
 
 def read_file_content(repo_path: Path, file_path: str) -> str | None:

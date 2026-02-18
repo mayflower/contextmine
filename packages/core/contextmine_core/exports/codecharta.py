@@ -23,6 +23,7 @@ class _MetricValues:
     coverage: float
     complexity: float
     change_frequency: float
+    churn: float
 
 
 @dataclass
@@ -33,6 +34,7 @@ class _MetricAccumulator:
     coverage_weighted: float = 0.0
     complexity_weighted: float = 0.0
     change_frequency_weighted: float = 0.0
+    churn_weighted: float = 0.0
     total_weight: float = 0.0
 
     def add(self, values: _MetricValues) -> None:
@@ -44,6 +46,7 @@ class _MetricAccumulator:
         self.coverage_weighted += values.coverage * weight
         self.complexity_weighted += values.complexity * weight
         self.change_frequency_weighted += values.change_frequency * weight
+        self.churn_weighted += values.churn * weight
 
     def as_values(self) -> _MetricValues:
         if self.total_weight <= 0:
@@ -54,6 +57,7 @@ class _MetricAccumulator:
                 coverage=0.0,
                 complexity=0.0,
                 change_frequency=0.0,
+                churn=0.0,
             )
         return _MetricValues(
             loc=self.loc,
@@ -62,6 +66,7 @@ class _MetricAccumulator:
             coverage=self.coverage_weighted / self.total_weight,
             complexity=self.complexity_weighted / self.total_weight,
             change_frequency=self.change_frequency_weighted / self.total_weight,
+            churn=self.churn_weighted / self.total_weight,
         )
 
 
@@ -74,6 +79,7 @@ def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
             coverage=0.0,
             complexity=0.0,
             change_frequency=0.0,
+            churn=0.0,
         )
     return _MetricValues(
         loc=int(snapshot.loc or 0),
@@ -82,6 +88,7 @@ def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
         coverage=float(snapshot.coverage or 0.0),
         complexity=float(snapshot.complexity or 0.0),
         change_frequency=float(snapshot.change_frequency or 0.0),
+        churn=float(((snapshot.meta or {}).get("churn", 0.0)) or 0.0),
     )
 
 
@@ -132,6 +139,7 @@ def _metric_from_meta(meta: dict[str, Any] | None) -> _MetricValues:
         coverage=_coerce_float(data.get("coverage")),
         complexity=_coerce_float(data.get("complexity")),
         change_frequency=_coerce_float(data.get("change_frequency")),
+        churn=_coerce_float(data.get("churn")),
     )
 
 
@@ -163,6 +171,7 @@ def _attributes_from_metrics(values: _MetricValues) -> dict[str, float | int]:
         "coverage": float(values.coverage),
         "complexity": float(values.complexity),
         "change_frequency": float(values.change_frequency),
+        "churn": float(values.churn),
     }
 
 
@@ -441,6 +450,7 @@ async def export_codecharta_json(
                 "coverage": "relative",
                 "complexity": "absolute",
                 "change_frequency": "absolute",
+                "churn": "absolute",
             },
             "edges": {
                 "dependency_weight": "absolute",

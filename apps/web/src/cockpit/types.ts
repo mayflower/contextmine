@@ -16,6 +16,7 @@ export type TopologyEntityLevel = 'domain' | 'container' | 'component'
 export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'
 export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
 export type OverlayMode = 'none' | 'runtime' | 'risk'
+export type C4ViewMode = 'context' | 'container' | 'component' | 'code' | 'deployment'
 
 export interface CockpitSelection {
   collectionId: string
@@ -148,6 +149,8 @@ export interface CityHotspot {
   coverage: number
   complexity: number
   coupling: number
+  change_frequency: number
+  churn: number
 }
 
 export interface MetricsStatus {
@@ -164,6 +167,8 @@ export interface CityPayload {
     coverage_avg: number | null
     complexity_avg: number | null
     coupling_avg: number | null
+    change_frequency_avg: number | null
+    churn_avg: number | null
   }
   metrics_status: MetricsStatus
   hotspots: CityHotspot[]
@@ -174,6 +179,12 @@ export interface MermaidPayload {
   collection_id: string
   scenario: ViewScenario
   mode: 'single' | 'compare'
+  c4_view?: C4ViewMode
+  c4_scope?: string | null
+  max_nodes?: number
+  warnings?: string[]
+  as_is_warnings?: string[]
+  to_be_warnings?: string[]
   content?: string
   as_is?: string
   to_be?: string

@@ -18,7 +18,9 @@ from contextmine_core.exports import (
     export_lpg_jsonl,
     export_lpg_jsonl_from_graph,
     export_mermaid_asis_tobe,
+    export_mermaid_asis_tobe_result,
     export_mermaid_c4,
+    export_mermaid_c4_result,
 )
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.models import (
@@ -73,6 +75,9 @@ class ExportRequest(BaseModel):
     format: Literal["lpg_jsonl", "cc_json", "cx2", "jgf", "mermaid_c4"]
     projection: Literal["architecture", "code_file", "code_symbol"] | None = None
     entity_level: Literal["domain", "container", "component", "file", "symbol"] | None = None
+    c4_view: Literal["context", "container", "component", "code", "deployment"] | None = None
+    c4_scope: str | None = None
+    max_nodes: int | None = Field(default=None, ge=10, le=5000)
 
 
 def _user_id_or_401(request: Request) -> uuid.UUID:
@@ -251,6 +256,28 @@ def _parse_projection(projection: str | None) -> GraphProjection:
         return GraphProjection(projection)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid projection") from e
+
+
+def _parse_c4_view(c4_view: str | None) -> str:
+    if not c4_view:
+        return "container"
+    normalized = c4_view.strip().lower()
+    if normalized not in {"context", "container", "component", "code", "deployment"}:
+        raise HTTPException(status_code=400, detail="Invalid c4_view")
+    return normalized
+
+
+def _parse_c4_scope(c4_scope: str | None) -> str | None:
+    if c4_scope is None:
+        return None
+    normalized = c4_scope.strip()
+    if not normalized:
+        return None
+    if any(ord(char) < 32 for char in normalized):
+        raise HTTPException(status_code=400, detail="Invalid c4_scope")
+    if len(normalized) > 255:
+        raise HTTPException(status_code=400, detail="Invalid c4_scope")
+    return normalized
 
 
 def _parse_kind_filter(raw_value: str | None) -> set[str] | None:
@@ -1122,6 +1149,16 @@ async def city_view(
             if metrics_ready and total
             else None
         )
+        change_frequency_avg = (
+            sum(float(metric.change_frequency or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        churn_avg = (
+            sum(float((metric.meta or {}).get("churn", 0.0) or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
 
         cc_json_payload = json.loads(
             await export_codecharta_json(
@@ -1140,6 +1177,8 @@ async def city_view(
                 "coverage_avg": coverage_avg,
                 "complexity_avg": complexity_avg,
                 "coupling_avg": coupling_avg,
+                "change_frequency_avg": change_frequency_avg,
+                "churn_avg": churn_avg,
             },
             "metrics_status": metrics_status,
             "hotspots": [
@@ -1150,6 +1189,8 @@ async def city_view(
                     "coverage": metric.coverage,
                     "complexity": metric.complexity,
                     "coupling": metric.coupling,
+                    "change_frequency": metric.change_frequency,
+                    "churn": float((metric.meta or {}).get("churn", 0.0) or 0.0),
                 }
                 for metric in hotspots
             ],
@@ -1163,35 +1204,60 @@ async def mermaid_view(
     collection_id: str,
     scenario_id: str | None = Query(default=None),
     compare_with_base: bool = Query(default=True),
+    c4_view: str | None = Query(default="container"),
+    c4_scope: str | None = Query(default=None),
+    max_nodes: int = Query(default=120, ge=10, le=5000),
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
+    selected_c4_view = _parse_c4_view(c4_view)
+    selected_c4_scope = _parse_c4_scope(c4_scope)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
 
         if compare_with_base and scenario.base_scenario_id:
-            as_is, to_be = await export_mermaid_asis_tobe(
+            as_is, to_be = await export_mermaid_asis_tobe_result(
                 db,
                 as_is_scenario_id=scenario.base_scenario_id,
                 to_be_scenario_id=scenario.id,
+                c4_view=selected_c4_view,
+                c4_scope=selected_c4_scope,
+                max_nodes=max_nodes,
             )
             return {
                 "collection_id": str(collection_uuid),
                 "scenario": _serialize_scenario(scenario),
                 "mode": "compare",
+                "c4_view": selected_c4_view,
+                "c4_scope": selected_c4_scope,
+                "max_nodes": max_nodes,
                 "as_is_scenario_id": str(scenario.base_scenario_id),
-                "as_is": as_is,
-                "to_be": to_be,
+                "as_is": as_is.content,
+                "to_be": to_be.content,
+                "as_is_warnings": as_is.warnings,
+                "to_be_warnings": to_be.warnings,
+                "warnings": sorted(set([*as_is.warnings, *to_be.warnings])),
             }
 
-        content = await export_mermaid_c4(db, scenario.id, entity_level="container")
+        result = await export_mermaid_c4_result(
+            db,
+            scenario.id,
+            entity_level="container",
+            c4_view=selected_c4_view,
+            c4_scope=selected_c4_scope,
+            max_nodes=max_nodes,
+        )
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
             "mode": "single",
-            "content": content,
+            "c4_view": selected_c4_view,
+            "c4_scope": selected_c4_scope,
+            "max_nodes": max_nodes,
+            "warnings": result.warnings,
+            "content": result.content,
         }
 
 
@@ -1274,11 +1340,17 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             kind = KnowledgeArtifactKind.JGF
             name = f"{scenario.name}.jgf.json"
         else:
+            selected_c4_view = _parse_c4_view(body.c4_view)
+            selected_c4_scope = _parse_c4_scope(body.c4_scope)
+            selected_max_nodes = body.max_nodes or 120
             if scenario.base_scenario_id:
                 as_is_content, to_be_content = await export_mermaid_asis_tobe(
                     db,
                     as_is_scenario_id=scenario.base_scenario_id,
                     to_be_scenario_id=scenario.id,
+                    c4_view=selected_c4_view,
+                    c4_scope=selected_c4_scope,
+                    max_nodes=selected_max_nodes,
                 )
                 as_is_artifact = await _upsert_artifact(
                     db,
@@ -1286,7 +1358,12 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                     kind=KnowledgeArtifactKind.MERMAID_C4_ASIS,
                     name=f"{scenario.name}.asis.mmd",
                     content=as_is_content,
-                    meta={"scenario_id": str(scenario.base_scenario_id)},
+                    meta={
+                        "scenario_id": str(scenario.base_scenario_id),
+                        "c4_view": selected_c4_view,
+                        "c4_scope": selected_c4_scope,
+                        "max_nodes": selected_max_nodes,
+                    },
                 )
                 to_be_artifact = await _upsert_artifact(
                     db,
@@ -1294,7 +1371,12 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                     kind=KnowledgeArtifactKind.MERMAID_C4_TOBE,
                     name=f"{scenario.name}.tobe.mmd",
                     content=to_be_content,
-                    meta={"scenario_id": str(scenario.id)},
+                    meta={
+                        "scenario_id": str(scenario.id),
+                        "c4_view": selected_c4_view,
+                        "c4_scope": selected_c4_scope,
+                        "max_nodes": selected_max_nodes,
+                    },
                 )
                 await db.commit()
                 return {
@@ -1308,6 +1390,9 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                 db,
                 scenario.id,
                 entity_level=body.entity_level or "container",
+                c4_view=selected_c4_view,
+                c4_scope=selected_c4_scope,
+                max_nodes=selected_max_nodes,
             )
             kind = (
                 KnowledgeArtifactKind.MERMAID_C4_ASIS
@@ -1327,6 +1412,9 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                 "format": body.format,
                 "projection": projection.value,
                 "entity_level": body.entity_level,
+                "c4_view": selected_c4_view,
+                "c4_scope": selected_c4_scope,
+                "max_nodes": selected_max_nodes,
             },
         )
         await db.commit()

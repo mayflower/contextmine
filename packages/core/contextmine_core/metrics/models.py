@@ -17,6 +17,8 @@ class FileMetricRecord:
     coupling_in: int
     coupling_out: int
     coupling: float
+    change_frequency: float = 0.0
+    churn: float = 0.0
     coverage: float | None = None
     sources: dict[str, Any] = field(default_factory=dict)
 
@@ -29,6 +31,8 @@ class FileMetricRecord:
             "coupling_in": self.coupling_in,
             "coupling_out": self.coupling_out,
             "coupling": self.coupling,
+            "change_frequency": self.change_frequency,
+            "churn": self.churn,
             "coverage": self.coverage,
             "sources": self.sources,
         }
@@ -43,6 +47,8 @@ class FileMetricRecord:
             coupling_in=int(payload["coupling_in"]),
             coupling_out=int(payload["coupling_out"]),
             coupling=float(payload["coupling"]),
+            change_frequency=float(payload.get("change_frequency", 0.0) or 0.0),
+            churn=float(payload.get("churn", 0.0) or 0.0),
             coverage=(float(payload["coverage"]) if payload.get("coverage") is not None else None),
             sources=dict(payload.get("sources", {})),
         )

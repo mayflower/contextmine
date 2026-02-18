@@ -14,7 +14,7 @@ interface C4DiffViewProps {
 
 function extractElementIds(source: string): Set<string> {
   const ids = new Set<string>()
-  const regex = /\b(?:Person|System|System_Ext|SystemDb|Container|ContainerDb|Component|Boundary|System_Boundary|Container_Boundary|Component_Boundary)\s*\(\s*([a-zA-Z0-9_:-]+)/g
+  const regex = /\b(?:Person|System|System_Ext|SystemDb|Container|ContainerDb|Container_Instance|Component|Boundary|System_Boundary|Container_Boundary|Component_Boundary|Deployment_Node|Node|SystemQueue|SystemQueue_Ext)\s*\(\s*([a-zA-Z0-9_:-]+)/g
   let match: RegExpExecArray | null = regex.exec(source)
   while (match) {
     ids.add(match[1])
@@ -67,6 +67,9 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
       toBe: withSemanticClasses(toBe, added, 'added'),
     }
   }, [mermaid])
+  const warnings = mermaid?.warnings || []
+  const asIsWarnings = mermaid?.as_is_warnings || []
+  const toBeWarnings = mermaid?.to_be_warnings || []
 
   const syncScroll = (source: HTMLDivElement | null, target: HTMLDivElement | null) => {
     if (!source || !target || syncLock.current) {
@@ -141,6 +144,12 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
         </div>
       ) : null}
 
+      {warnings.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          <p>{warnings.join(' ')}</p>
+        </div>
+      ) : null}
+
       <div className="cockpit2-panel-header-row">
         <h3>Mermaid C4 diff</h3>
         <p className="muted">
@@ -179,6 +188,9 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
               <h4>AS-IS</h4>
               <span className="badge asis">Baseline</span>
             </header>
+            {asIsWarnings.length > 0 ? (
+              <p className="muted">{asIsWarnings.join(' ')}</p>
+            ) : null}
             {showSource || !cockpitFlags.c4RenderedDiff ? (
               <pre>{transformed.asIs}</pre>
             ) : (
@@ -196,6 +208,9 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
               <h4>TO-BE</h4>
               <span className="badge tobe">Target</span>
             </header>
+            {toBeWarnings.length > 0 ? (
+              <p className="muted">{toBeWarnings.join(' ')}</p>
+            ) : null}
             {showSource || !cockpitFlags.c4RenderedDiff ? (
               <pre>{transformed.toBe}</pre>
             ) : (

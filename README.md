@@ -151,11 +151,20 @@ The web app includes an **Architecture Cockpit** for project/collection-level Tw
 
 ### Views
 
-1. `Overview` - City KPIs, hotspots, and `cc.json` preview.
+1. `Overview` - City KPIs and hotspot analysis.
 2. `Topology` - Layered architecture graph view.
 3. `Deep Dive` - Large graph slices for dependency/controlflow inspection.
-4. `C4 Diff` - AS-IS / TO-BE Mermaid compare.
+4. `C4 Diff` - AS-IS / TO-BE Mermaid compare with selectable C4 view level.
 5. `Exports` - Generate `cc_json`, `cx2`, `jgf`, `lpg_jsonl`, `mermaid_c4`.
+
+### C4 View Controls
+
+`GET /api/twin/collections/{collection_id}/views/mermaid` supports:
+1. `c4_view=context|container|component|code|deployment`
+2. `c4_scope` (optional focus selector for component/code/deployment)
+3. `max_nodes` (diagram cap for large code/deployment views)
+
+The response includes `warnings` (and in compare mode `as_is_warnings` / `to_be_warnings`) when views are generated in best-effort mode due sparse source signals.
 
 ### Real Metrics Semantics
 
@@ -163,11 +172,31 @@ Overview uses `GET /api/twin/collections/{collection_id}/views/city` and reads:
 
 ```json
 {
+  "summary": {
+    "metric_nodes": 120,
+    "coverage_avg": 71.4,
+    "complexity_avg": 9.8,
+    "coupling_avg": 3.2,
+    "change_frequency_avg": 4.6,
+    "churn_avg": 21.3
+  },
   "metrics_status": {
     "status": "ready|unavailable",
     "reason": "ok|no_real_metrics|awaiting_ci_coverage|coverage_ingest_failed",
     "strict_mode": true
-  }
+  },
+  "hotspots": [
+    {
+      "node_natural_key": "file:src/main.py",
+      "loc": 210,
+      "symbol_count": 12,
+      "coverage": 73.2,
+      "complexity": 16.1,
+      "coupling": 5,
+      "change_frequency": 8,
+      "churn": 46
+    }
+  ]
 }
 ```
 

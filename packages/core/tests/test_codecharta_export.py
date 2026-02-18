@@ -123,7 +123,7 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
                 coverage=70.0,
                 complexity=4.0,
                 change_frequency=1.0,
-                meta={},
+                meta={"churn": 10.0},
             ),
             MetricSnapshot(
                 id=uuid.uuid4(),
@@ -135,7 +135,7 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
                 coverage=80.0,
                 complexity=9.0,
                 change_frequency=3.0,
-                meta={},
+                meta={"churn": 30.0},
             ),
         ]
     )
@@ -159,6 +159,8 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
     assert leaves["/root/apps/api/main.py"]["loc"] == 20
     assert leaves["/root/apps/web/App.tsx"]["symbol_count"] == 6
     assert leaves["/root/apps/web/App.tsx"]["complexity"] == pytest.approx(9.0)
+    assert leaves["/root/apps/web/App.tsx"]["churn"] == pytest.approx(30.0)
+    assert payload["attributeTypes"]["nodes"]["churn"] == "absolute"
 
     assert len(payload["edges"]) == 1
     edge_payload = payload["edges"][0]
@@ -221,7 +223,7 @@ async def test_codecharta_architecture_projection_weighted_aggregation(
                 coverage=50.0,
                 complexity=2.0,
                 change_frequency=1.0,
-                meta={},
+                meta={"churn": 5.0},
             ),
             MetricSnapshot(
                 id=uuid.uuid4(),
@@ -233,7 +235,7 @@ async def test_codecharta_architecture_projection_weighted_aggregation(
                 coverage=90.0,
                 complexity=6.0,
                 change_frequency=3.0,
-                meta={},
+                meta={"churn": 25.0},
             ),
             MetricSnapshot(
                 id=uuid.uuid4(),
@@ -245,7 +247,7 @@ async def test_codecharta_architecture_projection_weighted_aggregation(
                 coverage=60.0,
                 complexity=7.0,
                 change_frequency=4.0,
-                meta={},
+                meta={"churn": 15.0},
             ),
         ]
     )
@@ -270,6 +272,7 @@ async def test_codecharta_architecture_projection_weighted_aggregation(
     assert api_container["coupling"] == pytest.approx(4.0)
     assert api_container["complexity"] == pytest.approx(5.0)
     assert api_container["change_frequency"] == pytest.approx(2.5)
+    assert api_container["churn"] == pytest.approx(20.0)
     assert worker_container["loc"] == 20
 
     assert len(payload["edges"]) == 1
@@ -299,6 +302,7 @@ async def test_codecharta_uses_node_meta_metrics_when_snapshots_missing(
             "coverage": 88.1,
             "complexity": "6.0",
             "change_frequency": "1.2",
+            "churn": "12.5",
         },
     )
     test_session.add(node)
@@ -321,3 +325,4 @@ async def test_codecharta_uses_node_meta_metrics_when_snapshots_missing(
     assert metrics["coverage"] == pytest.approx(88.1)
     assert metrics["complexity"] == pytest.approx(6.0)
     assert metrics["change_frequency"] == pytest.approx(1.2)
+    assert metrics["churn"] == pytest.approx(12.5)

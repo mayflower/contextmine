@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
+  C4ViewMode,
   CityEntityLevel,
   CityProjection,
   CityPayload,
@@ -59,6 +60,9 @@ interface UseCockpitDataArgs {
   topologyLimit: number
   deepDiveLimit: number
   deepDiveMode: DeepDiveMode
+  c4View: C4ViewMode
+  c4Scope: string
+  c4MaxNodes: number
   graphFilters: GraphFilters
   graphPaging: GraphPagingState
   selectedNodeId: string
@@ -77,6 +81,9 @@ export function useCockpitData({
   topologyLimit,
   deepDiveLimit,
   deepDiveMode,
+  c4View,
+  c4Scope,
+  c4MaxNodes,
   graphFilters,
   graphPaging,
   selectedNodeId,
@@ -324,8 +331,18 @@ export function useCockpitData({
         }
 
         if (view === 'c4_diff') {
+          const query = new URLSearchParams({
+            scenario_id: scenarioId,
+            compare_with_base: 'true',
+            c4_view: c4View,
+            max_nodes: String(Math.max(10, c4MaxNodes || 120)),
+          })
+          const normalizedScope = c4Scope.trim()
+          if (normalizedScope) {
+            query.set('c4_scope', normalizedScope)
+          }
           const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/mermaid?scenario_id=${scenarioId}&compare_with_base=true`,
+            `/api/twin/collections/${collectionId}/views/mermaid?${query.toString()}`,
             {
               credentials: 'include',
               signal: controller.signal,
@@ -402,6 +419,9 @@ export function useCockpitData({
     topologyLimit,
     deepDiveLimit,
     deepDiveMode,
+    c4View,
+    c4Scope,
+    c4MaxNodes,
     graphFilters.excludeKinds,
     graphFilters.edgeKinds,
     graphFilters.includeKinds,

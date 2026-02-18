@@ -8,7 +8,12 @@ from contextmine_core.exports.graph_formats import (
     export_jgf_from_graph,
 )
 from contextmine_core.exports.lpg_jsonl import export_lpg_jsonl, export_lpg_jsonl_from_graph
-from contextmine_core.exports.mermaid_c4 import export_mermaid_asis_tobe, export_mermaid_c4
+from contextmine_core.exports.mermaid_c4 import (
+    export_mermaid_asis_tobe,
+    export_mermaid_asis_tobe_result,
+    export_mermaid_c4,
+    export_mermaid_c4_result,
+)
 
 __all__ = [
     "export_codecharta_json",
@@ -19,5 +24,7 @@ __all__ = [
     "export_lpg_jsonl",
     "export_lpg_jsonl_from_graph",
     "export_mermaid_asis_tobe",
+    "export_mermaid_asis_tobe_result",
     "export_mermaid_c4",
+    "export_mermaid_c4_result",
 ]

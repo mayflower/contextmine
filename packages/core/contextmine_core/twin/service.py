@@ -964,6 +964,8 @@ async def apply_file_metrics_to_scenario(
                 "coupling_in": int(metric["coupling_in"]),
                 "coupling_out": int(metric["coupling_out"]),
                 "coupling": float(metric["coupling"]),
+                "change_frequency": float(metric.get("change_frequency", 0.0) or 0.0),
+                "churn": float(metric.get("churn", 0.0) or 0.0),
                 "coverage": None,
                 "metrics_sources": metric.get("sources", {}),
                 "metrics_language": metric.get("language"),

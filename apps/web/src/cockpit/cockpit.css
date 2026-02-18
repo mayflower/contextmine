@@ -165,6 +165,40 @@
   gap: 10px;
 }
 
+.cockpit2-advanced {
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #f8faff;
+  padding: 8px 10px;
+}
+
+.cockpit2-advanced summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 0.84rem;
+  font-weight: 700;
+  list-style: none;
+}
+
+.cockpit2-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.cockpit2-advanced summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 8px;
+  color: #475569;
+}
+
+.cockpit2-advanced[open] summary::before {
+  content: '▾';
+}
+
+.cockpit2-advanced .cockpit2-command-grid {
+  margin-top: 10px;
+}
+
 .cockpit2-command-actions button,
 .cockpit2-graph-toolbar button,
 .cockpit2-export-toolbar button,
@@ -484,6 +518,11 @@
   border-radius: 10px;
   padding: 8px 10px;
   background: #fff;
+}
+
+.cockpit2-graph-toolbar input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
 }
 
 .cockpit2-compare-grid {

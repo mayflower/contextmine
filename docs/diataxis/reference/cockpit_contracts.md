@@ -35,14 +35,27 @@ This page documents the current backend contracts used by the read-only Architec
     "metric_nodes": 120,
     "coverage_avg": 71.4,
     "complexity_avg": 9.8,
-    "coupling_avg": 3.2
+    "coupling_avg": 3.2,
+    "change_frequency_avg": 4.6,
+    "churn_avg": 21.3
   },
   "metrics_status": {
     "status": "ready",
     "reason": "ok",
     "strict_mode": true
   },
-  "hotspots": [],
+  "hotspots": [
+    {
+      "node_natural_key": "file:src/main.py",
+      "loc": 210,
+      "symbol_count": 12,
+      "coverage": 73.2,
+      "complexity": 16.1,
+      "coupling": 5.0,
+      "change_frequency": 8.0,
+      "churn": 46.0
+    }
+  ],
   "cc_json": {}
 }
 ```
@@ -50,7 +63,49 @@ This page documents the current backend contracts used by the read-only Architec
 If metrics are unavailable:
 1. `metrics_status.status = "unavailable"`
 2. `metrics_status.reason = "no_real_metrics"`
-3. `summary.coverage_avg|complexity_avg|coupling_avg = null`
+3. `summary.coverage_avg|complexity_avg|coupling_avg|change_frequency_avg|churn_avg = null`
+
+## Mermaid C4 View Response
+
+`GET /api/twin/collections/{collection_id}/views/mermaid`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `compare_with_base` (`true|false`, default `true`)
+3. `c4_view` (`context|container|component|code|deployment`, default `container`)
+4. `c4_scope` (optional focus selector)
+5. `max_nodes` (optional, default `120`, min `10`, max `5000`)
+
+Single-mode response shape:
+```json
+{
+  "mode": "single",
+  "c4_view": "component",
+  "c4_scope": "billing",
+  "max_nodes": 120,
+  "warnings": [],
+  "content": "C4Component\\n..."
+}
+```
+
+Compare-mode response shape:
+```json
+{
+  "mode": "compare",
+  "c4_view": "code",
+  "c4_scope": "billing",
+  "max_nodes": 120,
+  "as_is": "C4Component\\n...",
+  "to_be": "C4Component\\n...",
+  "warnings": ["..."],
+  "as_is_warnings": ["..."],
+  "to_be_warnings": ["..."]
+}
+```
+
+Best-effort views:
+1. `context` and `deployment` may include warnings when source signals are sparse.
+2. `code` may include fallback warnings when call edges are unavailable.
 
 ## Source Config Contract for Coverage Reports
 

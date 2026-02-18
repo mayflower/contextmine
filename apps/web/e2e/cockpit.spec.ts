@@ -113,6 +113,8 @@ async function mockApi(page: Page, options: MockOptions = {}) {
           coverage_avg: 78.3,
           complexity_avg: 12.5,
           coupling_avg: 3.4,
+          change_frequency_avg: 4.5,
+          churn_avg: 22.0,
         },
         hotspots: [
           {
@@ -122,6 +124,8 @@ async function mockApi(page: Page, options: MockOptions = {}) {
             coverage: 61.5,
             complexity: 24.2,
             coupling: 6.7,
+            change_frequency: 6.0,
+            churn: 30.0,
           },
           {
             node_natural_key: 'billing.api.InvoiceController',
@@ -130,6 +134,8 @@ async function mockApi(page: Page, options: MockOptions = {}) {
             coverage: 75.9,
             complexity: 9.4,
             coupling: 3.1,
+            change_frequency: 3.0,
+            churn: 14.0,
           },
         ],
         cc_json: {
@@ -361,6 +367,9 @@ async function mockApi(page: Page, options: MockOptions = {}) {
     }
 
     if (path.includes('/views/mermaid')) {
+      const c4View = url.searchParams.get('c4_view') || 'container'
+      const c4Scope = url.searchParams.get('c4_scope')
+      const header = c4View === 'deployment' ? 'C4Deployment' : c4View === 'component' ? 'C4Component' : c4View === 'context' ? 'C4Context' : c4View === 'code' ? 'C4Component' : 'C4Container'
       return json(route, {
         collection_id: 'col-1',
         scenario: {
@@ -372,8 +381,14 @@ async function mockApi(page: Page, options: MockOptions = {}) {
           base_scenario_id: 'scn-asis',
         },
         mode: 'compare',
-        as_is: 'C4Context\nPerson(user, "User")',
-        to_be: 'C4Context\nSystem_Boundary(ctx, "Billing")',
+        c4_view: c4View,
+        c4_scope: c4Scope,
+        max_nodes: Number(url.searchParams.get('max_nodes') || '120'),
+        warnings: c4Scope ? [] : ['Scope not provided'],
+        as_is_warnings: [],
+        to_be_warnings: [],
+        as_is: `${header}\nPerson(user, "User")`,
+        to_be: `${header}\nSystem_Boundary(ctx, "Billing")`,
         as_is_scenario_id: 'scn-asis',
       })
     }
@@ -448,8 +463,15 @@ test('overview renders skeleton first and then KPI/table content', async ({ page
 
   await expect(page.locator('.cockpit2-skeleton-card').first()).toBeVisible()
   await expect(page.getByText('System health summary')).toBeVisible()
+  await expect(page.getByText('Average change frequency')).toBeVisible()
+  await expect(page.getByText('Average churn')).toBeVisible()
+  await expect(page.getByText('4.50')).toBeVisible()
+  await expect(page.getByText('22.00')).toBeVisible()
   await expect(page.getByText('Top hotspots')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Change frequency' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Churn' })).toBeVisible()
   await expect(page.getByText('billing.service.InvoiceService')).toBeVisible()
+  await expect(page.getByText('30.00')).toBeVisible()
 })
 
 test('topology/deep dive show layer selector; overview hides it; graph metadata is visible', async ({ page }) => {
@@ -587,6 +609,18 @@ test('c4 diff shows AS-IS and TO-BE compare panes', async ({ page }) => {
   await expect(page.getByText('System_Boundary(ctx, "Billing")')).toBeVisible()
 })
 
+test('c4 controls change requested view and scope', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/?page=cockpit&collection=col-1&scenario=scn-tobe&view=c4_diff')
+
+  await page.locator('.cockpit2-command-grid label:has-text("C4 view") select').selectOption('deployment')
+  await page.locator('.cockpit2-command-grid label:has-text("C4 scope") input').fill('billing')
+  await page.locator('.cockpit2-command-grid label:has-text("Max nodes") input').fill('90')
+
+  await page.getByRole('button', { name: 'Show source' }).click()
+  await expect(page.getByText('C4Deployment')).toBeVisible()
+})
+
 test('exports view can generate output and supports copy/download actions', async ({ page }) => {
   await mockApi(page)
   await page.goto('/?page=cockpit&collection=col-1&scenario=scn-tobe&view=exports')
@@ -638,6 +672,7 @@ test('topology pagination controls change graph slice', async ({ page }) => {
   await mockApi(page)
   await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=topology')
 
+  await page.getByText('Advanced graph controls').click()
   await page.locator('.cockpit2-command-grid label:has-text("Limit") input').fill('2')
   await page.locator('.cockpit2-command-grid label:has-text("Page") input').fill('1')
   await expect(page.getByText('Nodes: 2 / Total: 6')).toBeVisible()
@@ -649,6 +684,6 @@ test('mobile smoke: controls and inspector render at narrow viewport', async ({ 
   await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=topology')
 
   await expect(page.locator('.cockpit2-command-grid label:has-text("Graph search") input')).toBeVisible()
-  await page.locator('.react-flow__node').first().click()
+  await page.locator('.react-flow__node').first().click({ force: true })
   await expect(page.getByText('Node inspector')).toBeVisible()
 })
