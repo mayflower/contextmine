@@ -83,6 +83,8 @@ def _group_snapshots_by_project(
     for snapshot_dict in snapshot_dicts:
         meta = dict(snapshot_dict.get("meta") or {})
         repo_relative_root = str(meta.get("repo_relative_root") or "")
+        if repo_relative_root == ".":
+            repo_relative_root = ""
         project_root = str(meta.get("project_root") or "")
         key = (repo_relative_root, project_root)
         grouped.setdefault(key, []).append(snapshot_dict)
