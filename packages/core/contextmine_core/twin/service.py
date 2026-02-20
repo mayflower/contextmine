@@ -883,7 +883,7 @@ async def refresh_metric_snapshots(
         .all()
     )
 
-    required_fields = ("loc", "complexity", "coupling", "coverage")
+    required_fields = ("loc", "complexity", "coupling")
     created = 0
     for node in nodes:
         if node.kind != "file":
@@ -891,8 +891,6 @@ async def refresh_metric_snapshots(
 
         meta = node.meta or {}
         if not bool(meta.get("metrics_structural_ready")):
-            continue
-        if not bool(meta.get("coverage_ready")):
             continue
 
         if any(meta.get(field) is None for field in required_fields):
@@ -905,7 +903,7 @@ async def refresh_metric_snapshots(
             loc=int(meta["loc"]),
             symbol_count=int(meta.get("symbol_count", 0) or 0),
             coupling=float(meta["coupling"]),
-            coverage=float(meta["coverage"]),
+            coverage=float(meta.get("coverage", 0.0) or 0.0),
             complexity=float(meta["complexity"]),
             change_frequency=float(meta.get("change_frequency", 0.0) or 0.0),
             meta=meta,
