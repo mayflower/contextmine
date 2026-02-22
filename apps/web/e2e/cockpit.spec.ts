@@ -182,6 +182,162 @@ async function mockApi(page: Page, options: MockOptions = {}) {
       })
     }
 
+    if (path.includes('/views/graphrag/communities')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        items: [
+          {
+            id: 'comm_1',
+            label: 'Billing (2)',
+            size: 2,
+            cohesion: 1,
+            top_kinds: [{ kind: 'symbol', count: 2 }],
+            sample_nodes: [
+              {
+                id: 'kg-2',
+                name: 'InvoiceService',
+                kind: 'symbol',
+                natural_key: 'symbol:InvoiceService',
+              },
+            ],
+          },
+        ],
+        page: 0,
+        limit: 500,
+        total: 1,
+      })
+    }
+
+    if (path.includes('/views/graphrag/path')) {
+      const fromNode = url.searchParams.get('from_node_id') || 'kg-1'
+      const toNode = url.searchParams.get('to_node_id') || 'kg-2'
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        status: 'found',
+        from_node_id: fromNode,
+        to_node_id: toNode,
+        max_hops: Number(url.searchParams.get('max_hops') || '6'),
+        path: {
+          nodes: [
+            {
+              id: fromNode,
+              natural_key: 'context:billing',
+              kind: 'bounded_context',
+              name: 'Billing Context',
+              meta: {},
+            },
+            {
+              id: toNode,
+              natural_key: 'symbol:InvoiceService',
+              kind: 'symbol',
+              name: 'InvoiceService',
+              meta: {},
+            },
+          ],
+          edges: [
+            {
+              id: 'path-edge-1',
+              source_node_id: fromNode,
+              target_node_id: toNode,
+              kind: 'belongs_to_context',
+              meta: {},
+            },
+          ],
+          hops: 1,
+        },
+      })
+    }
+
+    if (path.includes('/views/graphrag/processes/') && !path.endsWith('/views/graphrag/processes')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        process: {
+          id: 'proc_1',
+          label: 'InvoiceService -> Billing Context',
+          process_type: 'intra_community',
+          step_count: 2,
+          community_ids: ['comm_1'],
+          entry_node_id: 'kg-2',
+          terminal_node_id: 'kg-1',
+        },
+        steps: [
+          {
+            step: 1,
+            node_id: 'kg-2',
+            node_name: 'InvoiceService',
+            node_kind: 'symbol',
+            node_natural_key: 'symbol:InvoiceService',
+          },
+          {
+            step: 2,
+            node_id: 'kg-1',
+            node_name: 'Billing Context',
+            node_kind: 'bounded_context',
+            node_natural_key: 'context:billing',
+          },
+        ],
+        edges: [
+          {
+            id: 'proc_1-e1',
+            source_node_id: 'kg-2',
+            target_node_id: 'kg-1',
+            kind: 'belongs_to_context',
+            meta: {},
+          },
+        ],
+      })
+    }
+
+    if (path.includes('/views/graphrag/processes')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        items: [
+          {
+            id: 'proc_1',
+            label: 'InvoiceService -> Billing Context',
+            process_type: 'intra_community',
+            step_count: 2,
+            community_ids: ['comm_1'],
+            entry_node_id: 'kg-2',
+            terminal_node_id: 'kg-1',
+          },
+        ],
+        total: 1,
+      })
+    }
+
     if (path.includes('/views/graphrag')) {
       const pageIndex = Number(url.searchParams.get('page') || 0)
       const limit = Number(url.searchParams.get('limit') || 1200)
@@ -208,14 +364,24 @@ async function mockApi(page: Page, options: MockOptions = {}) {
               natural_key: 'context:billing',
               kind: 'bounded_context',
               name: 'Billing Context',
-              meta: {},
+              meta: {
+                community_id: null,
+                community_label: null,
+                community_size: null,
+                community_cohesion: null,
+              },
             },
             {
               id: 'kg-2',
               natural_key: 'symbol:InvoiceService',
               kind: 'symbol',
               name: 'InvoiceService',
-              meta: {},
+              meta: {
+                community_id: 'comm_1',
+                community_label: 'Billing (2)',
+                community_size: 2,
+                community_cohesion: 1,
+              },
             },
           ],
           edges: [
@@ -618,7 +784,7 @@ test('c4 controls change requested view and scope', async ({ page }) => {
   await page.locator('.cockpit2-command-grid label:has-text("Max nodes") input').fill('90')
 
   await page.getByRole('button', { name: 'Show source' }).click()
-  await expect(page.getByText('C4Deployment')).toBeVisible()
+  await expect(page.getByText('C4Deployment').first()).toBeVisible()
 })
 
 test('exports view can generate output and supports copy/download actions', async ({ page }) => {

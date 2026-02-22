@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from app.routes.twin import _extract_document_lines, _upsert_artifact
 from contextmine_core import SourceType
+from contextmine_core.graphrag import EdgeContext, EntityContext, PathContext
 from contextmine_core.models import KnowledgeArtifactKind
 from httpx import AsyncClient
 
@@ -33,6 +34,24 @@ class TestTwinViewRoutes:
         )
         assert response.status_code == 401
 
+    async def test_graphrag_communities_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/graphrag/communities")
+        assert response.status_code == 401
+
+    async def test_graphrag_path_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/graphrag/path?from_node_id=a&to_node_id=b"
+        )
+        assert response.status_code == 401
+
+    async def test_graphrag_processes_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/graphrag/processes")
+        assert response.status_code == 401
+
+    async def test_graphrag_process_detail_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/graphrag/processes/proc_1")
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,
@@ -56,6 +75,224 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/collections/not-a-uuid/views/graphrag")
         assert response.status_code == 400
         assert "Invalid collection_id" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_invalid_community_mode_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag?community_mode=bad"
+        )
+        assert response.status_code == 400
+        assert "Invalid community_mode" in response.json()["detail"]
+
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_view_includes_community_meta_keys(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+
+        node = MagicMock()
+        node.id = uuid.uuid4()
+        node.natural_key = "symbol:test"
+        node.kind.value = "symbol"
+        node.name = "TestSymbol"
+        node.meta = {"foo": "bar"}
+
+        total_result = MagicMock()
+        total_result.scalar_one.return_value = 1
+        nodes_result = MagicMock()
+        nodes_result.scalars.return_value.all.return_value = [node]
+        edges_result = MagicMock()
+        edges_result.scalars.return_value.all.return_value = []
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(side_effect=[total_result, nodes_result, edges_result])
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag?community_mode=none"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        meta = payload["graph"]["nodes"][0]["meta"]
+        assert meta["community_id"] is None
+        assert meta["community_label"] is None
+        assert meta["community_size"] is None
+        assert meta["community_cohesion"] is None
+        assert meta["community_focus"] is False
+
+    @patch("app.routes.twin.graphrag_trace_path", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_knowledge_node", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_path_view_returns_found_path(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_resolve_node: Any,
+        mock_trace_path: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_resolve_view_scenario.return_value = MagicMock()
+
+        from_node = MagicMock()
+        from_node.id = uuid.uuid4()
+        from_node.natural_key = "symbol:from"
+        from_node.kind.value = "symbol"
+        from_node.name = "From"
+        to_node = MagicMock()
+        to_node.id = uuid.uuid4()
+        to_node.natural_key = "symbol:to"
+        to_node.kind.value = "symbol"
+        to_node.name = "To"
+        mock_resolve_node.side_effect = [from_node, to_node]
+
+        context = MagicMock()
+        context.entities = [
+            EntityContext(
+                node_id=from_node.id,
+                kind="symbol",
+                natural_key="symbol:from",
+                name="From",
+            ),
+            EntityContext(
+                node_id=to_node.id,
+                kind="symbol",
+                natural_key="symbol:to",
+                name="To",
+            ),
+        ]
+        context.edges = [
+            EdgeContext(
+                source_id=str(from_node.id),
+                target_id=str(to_node.id),
+                kind="symbol_calls_symbol",
+            )
+        ]
+        context.paths = [
+            PathContext(
+                nodes=["symbol:from", "symbol:to"],
+                edges=["symbol_calls_symbol"],
+                description="From -> To",
+            )
+        ]
+        mock_trace_path.return_value = context
+
+        fake_db = MagicMock()
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag/path"
+            f"?from_node_id={from_node.id}&to_node_id={to_node.id}&max_hops=6"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "found"
+        assert payload["path"]["hops"] == 1
+        assert payload["path"]["edges"][0]["kind"] == "symbol_calls_symbol"
+
+    @patch("app.routes.twin._detect_processes")
+    @patch("app.routes.twin._compute_symbol_communities")
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_graphrag_processes_view_returns_items(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_compute_communities: Any,
+        mock_detect_processes: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_resolve_view_scenario.return_value = MagicMock()
+        mock_compute_communities.return_value = ({}, {})
+        mock_detect_processes.return_value = [
+            {
+                "id": "proc_1",
+                "label": "A -> B",
+                "process_type": "intra_community",
+                "step_count": 2,
+                "community_ids": ["comm_1"],
+                "entry_node_id": str(uuid.uuid4()),
+                "terminal_node_id": str(uuid.uuid4()),
+                "steps": [],
+            }
+        ]
+
+        symbols_result = MagicMock()
+        symbols_result.scalars.return_value.all.return_value = []
+        edges_result = MagicMock()
+        edges_result.scalars.return_value.all.return_value = []
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(side_effect=[symbols_result, edges_result])
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/graphrag/processes"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["id"] == "proc_1"
 
     @patch("app.routes.twin.get_session")
     async def test_topology_invalid_layer_rejected(

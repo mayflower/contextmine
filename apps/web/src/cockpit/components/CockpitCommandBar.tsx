@@ -4,8 +4,10 @@ import {
   COCKPIT_LAYERS,
   type C4ViewMode,
   type CockpitLayer,
+  type GraphRagCommunityMode,
   type CockpitView,
   type CollectionLite,
+  type GraphRagCommunity,
   type ScenarioLite,
 } from '../types'
 
@@ -25,6 +27,9 @@ interface CockpitCommandBarProps {
   excludeKinds: string[]
   edgeKinds: string[]
   overlayMode: 'none' | 'runtime' | 'risk'
+  graphRagCommunityMode: GraphRagCommunityMode
+  graphRagCommunityId: string
+  graphRagCommunities: GraphRagCommunity[]
   c4View: C4ViewMode
   c4Scope: string
   c4MaxNodes: number
@@ -42,6 +47,8 @@ interface CockpitCommandBarProps {
   onExcludeKindsChange: (value: string[]) => void
   onEdgeKindsChange: (value: string[]) => void
   onOverlayModeChange: (mode: 'none' | 'runtime' | 'risk') => void
+  onGraphRagCommunityModeChange: (mode: GraphRagCommunityMode) => void
+  onGraphRagCommunityIdChange: (communityId: string) => void
   onC4ViewChange: (value: C4ViewMode) => void
   onC4ScopeChange: (value: string) => void
   onC4MaxNodesChange: (value: number) => void
@@ -67,6 +74,9 @@ export default function CockpitCommandBar({
   excludeKinds,
   edgeKinds,
   overlayMode,
+  graphRagCommunityMode,
+  graphRagCommunityId,
+  graphRagCommunities,
   c4View,
   c4Scope,
   c4MaxNodes,
@@ -84,6 +94,8 @@ export default function CockpitCommandBar({
   onExcludeKindsChange,
   onEdgeKindsChange,
   onOverlayModeChange,
+  onGraphRagCommunityModeChange,
+  onGraphRagCommunityIdChange,
   onC4ViewChange,
   onC4ScopeChange,
   onC4MaxNodesChange,
@@ -96,6 +108,7 @@ export default function CockpitCommandBar({
   const showLayer = activeView === 'topology' || activeView === 'deep_dive'
   const showFilter = activeView === 'overview'
   const showC4Controls = activeView === 'c4_diff'
+  const showGraphRagControls = activeView === 'graphrag'
   const showGraphControls =
     activeView === 'topology' || activeView === 'deep_dive' || activeView === 'graphrag'
   const advancedFilterCount = useMemo(() => {
@@ -157,6 +170,18 @@ export default function CockpitCommandBar({
               <option value="deployment">Deployment</option>
             </select>
           </label>
+        ) : showGraphRagControls ? (
+          <label>
+            <span>Community mode</span>
+            <select
+              value={graphRagCommunityMode}
+              onChange={(event) => onGraphRagCommunityModeChange(event.target.value as GraphRagCommunityMode)}
+            >
+              <option value="none">None</option>
+              <option value="color">Color</option>
+              <option value="focus">Focus</option>
+            </select>
+          </label>
         ) : (
           <div className="cockpit2-command-placeholder" />
         )}
@@ -190,6 +215,21 @@ export default function CockpitCommandBar({
               value={c4Scope}
               onChange={(event) => onC4ScopeChange(event.target.value)}
             />
+          </label>
+        ) : showGraphRagControls ? (
+          <label>
+            <span>Community filter</span>
+            <select
+              value={graphRagCommunityId}
+              onChange={(event) => onGraphRagCommunityIdChange(event.target.value)}
+            >
+              <option value="">All communities</option>
+              {graphRagCommunities.map((community) => (
+                <option key={community.id} value={community.id}>
+                  {community.label}
+                </option>
+              ))}
+            </select>
           </label>
         ) : (
           <div className="cockpit2-command-placeholder" />

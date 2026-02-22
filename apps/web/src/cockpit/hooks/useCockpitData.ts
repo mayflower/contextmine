@@ -5,6 +5,12 @@ import type {
   CityEntityLevel,
   CityProjection,
   CityPayload,
+  GraphRagCommunity,
+  GraphRagCommunityMode,
+  GraphRagCommunitiesPayload,
+  GraphRagPathPayload,
+  GraphRagProcessDetailPayload,
+  GraphRagProcessSummary,
   CockpitLayer,
   CockpitLoadState,
   CockpitProjection,
@@ -65,6 +71,8 @@ interface UseCockpitDataArgs {
   c4MaxNodes: number
   graphFilters: GraphFilters
   graphPaging: GraphPagingState
+  graphRagCommunityMode: GraphRagCommunityMode
+  graphRagCommunityId: string
   selectedNodeId: string
   onScenarioAutoSelect: (scenarioId: string) => void
   onViewError?: (view: CockpitView, message: string) => void
@@ -86,6 +94,8 @@ export function useCockpitData({
   c4MaxNodes,
   graphFilters,
   graphPaging,
+  graphRagCommunityMode,
+  graphRagCommunityId,
   selectedNodeId,
   onScenarioAutoSelect,
   onViewError,
@@ -115,6 +125,18 @@ export function useCockpitData({
   const [graphRagEvidenceNodeName, setGraphRagEvidenceNodeName] = useState('')
   const [graphRagEvidenceState, setGraphRagEvidenceState] = useState<CockpitLoadState>('idle')
   const [graphRagEvidenceError, setGraphRagEvidenceError] = useState('')
+  const [graphRagCommunities, setGraphRagCommunities] = useState<GraphRagCommunity[]>([])
+  const [graphRagCommunitiesState, setGraphRagCommunitiesState] = useState<CockpitLoadState>('idle')
+  const [graphRagCommunitiesError, setGraphRagCommunitiesError] = useState('')
+  const [graphRagPath, setGraphRagPath] = useState<GraphRagPathPayload | null>(null)
+  const [graphRagPathState, setGraphRagPathState] = useState<CockpitLoadState>('idle')
+  const [graphRagPathError, setGraphRagPathError] = useState('')
+  const [graphRagProcesses, setGraphRagProcesses] = useState<GraphRagProcessSummary[]>([])
+  const [graphRagProcessesState, setGraphRagProcessesState] = useState<CockpitLoadState>('idle')
+  const [graphRagProcessesError, setGraphRagProcessesError] = useState('')
+  const [graphRagProcessDetail, setGraphRagProcessDetail] = useState<GraphRagProcessDetailPayload | null>(null)
+  const [graphRagProcessDetailState, setGraphRagProcessDetailState] = useState<CockpitLoadState>('idle')
+  const [graphRagProcessDetailError, setGraphRagProcessDetailError] = useState('')
 
   const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
     setStates((prev) => ({ ...prev, [view]: nextState }))
@@ -296,7 +318,12 @@ export function useCockpitData({
             scenario_id: scenarioId,
             limit: String(graphPaging.limit > 0 ? graphPaging.limit : topologyLimit),
             page: String(graphPaging.page),
+            community_mode: graphRagCommunityMode,
           })
+          const normalizedCommunityId = graphRagCommunityId.trim()
+          if (normalizedCommunityId) {
+            query.set('community_id', normalizedCommunityId)
+          }
           if (graphFilters.includeKinds.length > 0) {
             query.set('include_kinds', graphFilters.includeKinds.join(','))
           }
@@ -325,6 +352,56 @@ export function useCockpitData({
           })
           setGraphRagStatus(payload.status?.status || 'ready')
           setGraphRagReason(payload.status?.reason || 'ok')
+
+          setGraphRagCommunitiesState('loading')
+          setGraphRagCommunitiesError('')
+          try {
+            const communitiesResponse = await fetch(
+              `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
+              {
+                credentials: 'include',
+                signal: controller.signal,
+              },
+            )
+            if (!communitiesResponse.ok) {
+              throw new Error(`Could not load communities (${communitiesResponse.status})`)
+            }
+            const communitiesPayload: GraphRagCommunitiesPayload = await communitiesResponse.json()
+            setGraphRagCommunities(communitiesPayload.items || [])
+            setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              setGraphRagCommunitiesState('error')
+              setGraphRagCommunitiesError(
+                error instanceof Error ? error.message : 'Could not load communities',
+              )
+            }
+          }
+
+          setGraphRagProcessesState('loading')
+          setGraphRagProcessesError('')
+          try {
+            const processesResponse = await fetch(
+              `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
+              {
+                credentials: 'include',
+                signal: controller.signal,
+              },
+            )
+            if (!processesResponse.ok) {
+              throw new Error(`Could not load processes (${processesResponse.status})`)
+            }
+            const processesPayload = await processesResponse.json()
+            setGraphRagProcesses(processesPayload.items || [])
+            setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              setGraphRagProcessesState('error')
+              setGraphRagProcessesError(
+                error instanceof Error ? error.message : 'Could not load processes',
+              )
+            }
+          }
           setViewState('graphrag', 'ready')
           markUpdated('graphrag')
           return
@@ -427,6 +504,8 @@ export function useCockpitData({
     graphFilters.includeKinds,
     graphPaging.limit,
     graphPaging.page,
+    graphRagCommunityMode,
+    graphRagCommunityId,
     cityProjection,
     cityEntityLevel,
     refreshNonce,
@@ -495,6 +574,24 @@ export function useCockpitData({
       controller.abort()
     }
   }, [selection, selectedNodeId, refreshNonce])
+
+  useEffect(() => {
+    if (selection.view === 'graphrag') {
+      return
+    }
+    setGraphRagCommunities([])
+    setGraphRagCommunitiesState('idle')
+    setGraphRagCommunitiesError('')
+    setGraphRagPath(null)
+    setGraphRagPathState('idle')
+    setGraphRagPathError('')
+    setGraphRagProcesses([])
+    setGraphRagProcessesState('idle')
+    setGraphRagProcessesError('')
+    setGraphRagProcessDetail(null)
+    setGraphRagProcessDetailState('idle')
+    setGraphRagProcessDetailError('')
+  }, [selection.view])
 
   useEffect(() => {
     const { scenarioId, view } = selection
@@ -616,6 +713,90 @@ export function useCockpitData({
     setViewState,
   ])
 
+  const traceGraphRagPath = useCallback(
+    async (fromNodeId: string, toNodeId: string, maxHops: number) => {
+      const { collectionId, scenarioId } = selection
+      if (!collectionId || !scenarioId) {
+        setGraphRagPathState('error')
+        setGraphRagPathError('Select a project and scenario before tracing a path.')
+        return null
+      }
+
+      const normalizedFrom = fromNodeId.trim()
+      const normalizedTo = toNodeId.trim()
+      if (!normalizedFrom || !normalizedTo) {
+        setGraphRagPathState('error')
+        setGraphRagPathError('Both from/to node IDs are required.')
+        return null
+      }
+
+      setGraphRagPathState('loading')
+      setGraphRagPathError('')
+
+      try {
+        const query = new URLSearchParams({
+          scenario_id: scenarioId,
+          from_node_id: normalizedFrom,
+          to_node_id: normalizedTo,
+          max_hops: String(Math.max(1, Math.min(20, maxHops))),
+        })
+        const response = await fetch(
+          `/api/twin/collections/${collectionId}/views/graphrag/path?${query.toString()}`,
+          {
+            credentials: 'include',
+          },
+        )
+        if (!response.ok) {
+          throw new Error(`Could not trace path (${response.status})`)
+        }
+        const payload: GraphRagPathPayload = await response.json()
+        setGraphRagPath(payload)
+        setGraphRagPathState(payload.status === 'found' ? 'ready' : 'empty')
+        return payload
+      } catch (error) {
+        setGraphRagPathState('error')
+        setGraphRagPathError(error instanceof Error ? error.message : 'Could not trace path')
+        return null
+      }
+    },
+    [selection],
+  )
+
+  const loadGraphRagProcessDetail = useCallback(
+    async (processId: string) => {
+      const { collectionId, scenarioId } = selection
+      if (!collectionId || !scenarioId || !processId) {
+        setGraphRagProcessDetailState('error')
+        setGraphRagProcessDetailError('Missing process context.')
+        return null
+      }
+      setGraphRagProcessDetailState('loading')
+      setGraphRagProcessDetailError('')
+      try {
+        const response = await fetch(
+          `/api/twin/collections/${collectionId}/views/graphrag/processes/${encodeURIComponent(processId)}?scenario_id=${encodeURIComponent(scenarioId)}`,
+          {
+            credentials: 'include',
+          },
+        )
+        if (!response.ok) {
+          throw new Error(`Could not load process detail (${response.status})`)
+        }
+        const payload: GraphRagProcessDetailPayload = await response.json()
+        setGraphRagProcessDetail(payload)
+        setGraphRagProcessDetailState('ready')
+        return payload
+      } catch (error) {
+        setGraphRagProcessDetailState('error')
+        setGraphRagProcessDetailError(
+          error instanceof Error ? error.message : 'Could not load process detail',
+        )
+        return null
+      }
+    },
+    [selection],
+  )
+
   const activeState = useMemo(() => states[selection.view], [states, selection.view])
   const activeError = useMemo(() => errors[selection.view], [errors, selection.view])
   const activeUpdatedAt = useMemo(
@@ -656,6 +837,20 @@ export function useCockpitData({
     graphRagEvidenceNodeName,
     graphRagEvidenceState,
     graphRagEvidenceError,
+    graphRagCommunities,
+    graphRagCommunitiesState,
+    graphRagCommunitiesError,
+    graphRagPath,
+    graphRagPathState,
+    graphRagPathError,
+    graphRagProcesses,
+    graphRagProcessesState,
+    graphRagProcessesError,
+    graphRagProcessDetail,
+    graphRagProcessDetailState,
+    graphRagProcessDetailError,
+    traceGraphRagPath,
+    loadGraphRagProcessDetail,
     generateExport,
     refreshActiveView,
   }

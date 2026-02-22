@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Literal
+from collections import defaultdict, deque
+from typing import Any, Literal
 
 from contextmine_core import Collection, CollectionMember, get_settings
 from contextmine_core import get_session as get_db_session
@@ -23,6 +24,7 @@ from contextmine_core.exports import (
     export_mermaid_c4_result,
 )
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
+from contextmine_core.graphrag import trace_path as graphrag_trace_path
 from contextmine_core.models import (
     CoverageIngestJob,
     Document,
@@ -319,6 +321,15 @@ def _parse_knowledge_edge_kinds(raw_value: str | None) -> set[KnowledgeEdgeKind]
     return parsed
 
 
+def _parse_graphrag_community_mode(raw_value: str | None) -> str:
+    if not raw_value:
+        return "color"
+    normalized = raw_value.strip().lower()
+    if normalized not in {"none", "color", "focus"}:
+        raise HTTPException(status_code=400, detail="Invalid community_mode")
+    return normalized
+
+
 def _escape_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -406,6 +417,349 @@ def _extract_neighborhood(
         and str(edge.get("target_node_id")) in neighborhood_ids
     ]
     return neighborhood_nodes, neighborhood_edges
+
+
+def _safe_meta(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _symbol_sort_key(node: KnowledgeNode) -> tuple[str, str, str]:
+    return (node.natural_key or "", node.name or "", str(node.id))
+
+
+def _community_label(node_ids: list[uuid.UUID], node_by_id: dict[uuid.UUID, KnowledgeNode]) -> str:
+    token_counts: dict[str, int] = defaultdict(int)
+    for node_id in node_ids:
+        node = node_by_id[node_id]
+        meta = _safe_meta(node.meta)
+        file_path = str(meta.get("file_path") or "").strip("/")
+        token = ""
+        if file_path:
+            parts = [part for part in file_path.split("/") if part]
+            if len(parts) >= 2:
+                token = parts[-2]
+            elif parts:
+                token = parts[0]
+        if not token:
+            suffix = (node.natural_key or "").split(":")[-1]
+            token = suffix.split(".")[0].split("/")[0]
+        token = token.strip().replace("_", " ").replace("-", " ")
+        if len(token) >= 3:
+            token_counts[token.lower()] += 1
+
+    if token_counts:
+        best = sorted(token_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        return best[:1].upper() + best[1:]
+    return "Community"
+
+
+def _compute_symbol_communities(
+    symbol_nodes: list[KnowledgeNode],
+    symbol_edges: list[KnowledgeEdge],
+) -> tuple[dict[uuid.UUID, str], dict[str, dict[str, Any]]]:
+    if not symbol_nodes:
+        return {}, {}
+
+    node_by_id = {node.id: node for node in symbol_nodes}
+    adjacency: dict[uuid.UUID, set[uuid.UUID]] = {node.id: set() for node in symbol_nodes}
+    for edge in symbol_edges:
+        src = edge.source_node_id
+        dst = edge.target_node_id
+        if src == dst:
+            continue
+        if src in adjacency and dst in adjacency:
+            adjacency[src].add(dst)
+            adjacency[dst].add(src)
+
+    visited: set[uuid.UUID] = set()
+    components: list[dict[str, Any]] = []
+
+    for node in sorted(symbol_nodes, key=_symbol_sort_key):
+        if node.id in visited:
+            continue
+        queue: deque[uuid.UUID] = deque([node.id])
+        visited.add(node.id)
+        members: list[uuid.UUID] = []
+        while queue:
+            current = queue.popleft()
+            members.append(current)
+            for neighbor in sorted(
+                adjacency.get(current, set()),
+                key=lambda node_id: _symbol_sort_key(node_by_id[node_id]),
+            ):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                queue.append(neighbor)
+
+        members = sorted(members, key=lambda node_id: _symbol_sort_key(node_by_id[node_id]))
+        member_set = set(members)
+        internal_edges = 0
+        for src in members:
+            for dst in adjacency.get(src, set()):
+                if dst in member_set and str(src) < str(dst):
+                    internal_edges += 1
+        possible_edges = (len(members) * (len(members) - 1)) // 2
+        cohesion = 1.0 if possible_edges == 0 else round(internal_edges / possible_edges, 4)
+        label = _community_label(members, node_by_id)
+        components.append(
+            {
+                "member_ids": members,
+                "label": label,
+                "cohesion": cohesion,
+                "first_key": node_by_id[members[0]].natural_key or "",
+            }
+        )
+
+    components.sort(
+        key=lambda comp: (-len(comp["member_ids"]), comp["label"].lower(), comp["first_key"])
+    )
+
+    node_to_community: dict[uuid.UUID, str] = {}
+    communities: dict[str, dict[str, Any]] = {}
+    for index, component in enumerate(components, start=1):
+        community_id = f"comm_{index}"
+        member_nodes = [node_by_id[node_id] for node_id in component["member_ids"]]
+        for member in member_nodes:
+            node_to_community[member.id] = community_id
+        kind_counts: dict[str, int] = defaultdict(int)
+        for member in member_nodes:
+            kind_counts[member.kind.value] += 1
+        top_kind_rows = [
+            {
+                "kind": kind,
+                "count": count,
+            }
+            for kind, count in sorted(
+                kind_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        communities[community_id] = {
+            "id": community_id,
+            "label": f"{component['label']} ({len(member_nodes)})",
+            "size": len(member_nodes),
+            "cohesion": component["cohesion"],
+            "top_kinds": top_kind_rows,
+            "sample_nodes": [
+                {
+                    "id": str(member.id),
+                    "name": member.name,
+                    "kind": member.kind.value,
+                    "natural_key": member.natural_key,
+                }
+                for member in member_nodes[:6]
+            ],
+            "member_node_ids": [member.id for member in member_nodes],
+        }
+
+    return node_to_community, communities
+
+
+def _dedupe_traces(traces: list[list[uuid.UUID]]) -> list[list[uuid.UUID]]:
+    ordered = sorted(
+        traces,
+        key=lambda trace: (-len(trace), "->".join(str(node_id) for node_id in trace)),
+    )
+    kept: list[list[uuid.UUID]] = []
+    kept_keys: list[str] = []
+    for trace in ordered:
+        trace_key = "->".join(str(node_id) for node_id in trace)
+        if any(trace_key in existing_key for existing_key in kept_keys):
+            continue
+        kept.append(trace)
+        kept_keys.append(trace_key)
+    return kept
+
+
+def _trace_process_paths(
+    *,
+    entry_id: uuid.UUID,
+    outgoing: dict[uuid.UUID, list[uuid.UUID]],
+    max_depth: int,
+    max_branching: int,
+    min_steps: int,
+) -> list[list[uuid.UUID]]:
+    traces: list[list[uuid.UUID]] = []
+    queue: deque[tuple[uuid.UUID, list[uuid.UUID]]] = deque([(entry_id, [entry_id])])
+
+    while queue and len(traces) < max_branching * 3:
+        current, path = queue.popleft()
+        next_nodes = outgoing.get(current, [])
+        if not next_nodes or len(path) >= max_depth:
+            if len(path) >= min_steps:
+                traces.append(path)
+            continue
+
+        added = False
+        for next_node in next_nodes[:max_branching]:
+            if next_node in path:
+                continue
+            queue.append((next_node, [*path, next_node]))
+            added = True
+        if not added and len(path) >= min_steps:
+            traces.append(path)
+
+    return traces
+
+
+def _detect_processes(
+    symbol_nodes: list[KnowledgeNode],
+    symbol_edges: list[KnowledgeEdge],
+    community_by_node_id: dict[uuid.UUID, str],
+) -> list[dict[str, Any]]:
+    if not symbol_nodes:
+        return []
+
+    node_by_id = {node.id: node for node in symbol_nodes}
+    outgoing_raw: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    incoming_degree: dict[uuid.UUID, int] = defaultdict(int)
+
+    for edge in symbol_edges:
+        src = edge.source_node_id
+        dst = edge.target_node_id
+        if src == dst or src not in node_by_id or dst not in node_by_id:
+            continue
+        if dst not in outgoing_raw[src]:
+            outgoing_raw[src].add(dst)
+            incoming_degree[dst] += 1
+
+    outgoing: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for node_id, targets in outgoing_raw.items():
+        outgoing[node_id] = sorted(
+            targets, key=lambda target_id: _symbol_sort_key(node_by_id[target_id])
+        )
+
+    candidates = [node.id for node in symbol_nodes if outgoing.get(node.id)]
+    candidates.sort(
+        key=lambda node_id: (
+            incoming_degree.get(node_id, 0),
+            -len(outgoing.get(node_id, [])),
+            _symbol_sort_key(node_by_id[node_id]),
+        )
+    )
+
+    entry_points = [node_id for node_id in candidates if incoming_degree.get(node_id, 0) == 0][:200]
+    if not entry_points:
+        entry_points = candidates[:200]
+
+    all_traces: list[list[uuid.UUID]] = []
+    for entry_id in entry_points:
+        all_traces.extend(
+            _trace_process_paths(
+                entry_id=entry_id,
+                outgoing=outgoing,
+                max_depth=10,
+                max_branching=4,
+                min_steps=2,
+            )
+        )
+        if len(all_traces) >= 200:
+            break
+
+    traces = _dedupe_traces(all_traces)
+    traces = sorted(
+        traces, key=lambda trace: (-len(trace), "->".join(str(node_id) for node_id in trace))
+    )[:75]
+
+    processes: list[dict[str, Any]] = []
+    for index, trace in enumerate(traces, start=1):
+        entry = node_by_id[trace[0]]
+        terminal = node_by_id[trace[-1]]
+        community_ids = sorted(
+            {community_by_node_id[node_id] for node_id in trace if node_id in community_by_node_id}
+        )
+        process_type = "cross_community" if len(community_ids) > 1 else "intra_community"
+        process_id = f"proc_{index}"
+        processes.append(
+            {
+                "id": process_id,
+                "label": f"{entry.name} -> {terminal.name}",
+                "process_type": process_type,
+                "step_count": len(trace),
+                "community_ids": community_ids,
+                "entry_node_id": str(entry.id),
+                "terminal_node_id": str(terminal.id),
+                "steps": [
+                    {
+                        "step": step_index + 1,
+                        "node_id": str(node_by_id[node_id].id),
+                        "node_name": node_by_id[node_id].name,
+                        "node_kind": node_by_id[node_id].kind.value,
+                        "node_natural_key": node_by_id[node_id].natural_key,
+                    }
+                    for step_index, node_id in enumerate(trace)
+                ],
+            }
+        )
+
+    return processes
+
+
+def _serialize_graphrag_node(
+    node: KnowledgeNode,
+    *,
+    community_mode: str,
+    focused_community_id: str | None,
+    community_by_node_id: dict[uuid.UUID, str],
+    communities: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    meta = _safe_meta(node.meta)
+    community_id = community_by_node_id.get(node.id) if community_mode != "none" else None
+    community_summary = communities.get(community_id) if community_id else None
+    meta["community_id"] = community_id
+    meta["community_label"] = community_summary["label"] if community_summary else None
+    meta["community_size"] = community_summary["size"] if community_summary else None
+    meta["community_cohesion"] = community_summary["cohesion"] if community_summary else None
+    meta["community_focus"] = bool(focused_community_id and community_id == focused_community_id)
+    return {
+        "id": str(node.id),
+        "natural_key": node.natural_key,
+        "kind": node.kind.value,
+        "name": node.name,
+        "meta": meta,
+    }
+
+
+async def _resolve_knowledge_node(
+    db: Any,
+    collection_id: uuid.UUID,
+    node_ref: str,
+) -> KnowledgeNode | None:
+    node: KnowledgeNode | None = None
+    try:
+        node_uuid = uuid.UUID(node_ref)
+    except ValueError:
+        node_uuid = None
+
+    if node_uuid:
+        node = (
+            await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.id == node_uuid,
+                )
+            )
+        ).scalar_one_or_none()
+    if node:
+        return node
+
+    return (
+        (
+            await db.execute(
+                select(KnowledgeNode)
+                .where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.natural_key == node_ref,
+                )
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
 
 
 @router.post("/scenarios")
@@ -792,6 +1146,8 @@ async def graphrag_view(
     include_kinds: str | None = Query(default=None),
     exclude_kinds: str | None = Query(default=None),
     edge_kinds: str | None = Query(default=None),
+    community_mode: str | None = Query(default="color"),
+    community_id: str | None = Query(default=None),
     page: int = Query(default=0, ge=0),
     limit: int = Query(default=800, ge=1, le=5000),
 ) -> dict:
@@ -800,16 +1156,78 @@ async def graphrag_view(
     include_node_kinds = _parse_knowledge_node_kinds(include_kinds)
     exclude_node_kinds = _parse_knowledge_node_kinds(exclude_kinds)
     include_edge_kinds = _parse_knowledge_edge_kinds(edge_kinds)
+    resolved_community_mode = _parse_graphrag_community_mode(community_mode)
+    resolved_community_id = community_id.strip() if community_id and community_id.strip() else None
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        community_by_node_id: dict[uuid.UUID, str] = {}
+        communities: dict[str, dict[str, Any]] = {}
+        if resolved_community_mode != "none" or resolved_community_id:
+            symbol_nodes = (
+                (
+                    await db.execute(
+                        select(KnowledgeNode).where(
+                            KnowledgeNode.collection_id == collection_uuid,
+                            KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            symbol_node_ids = {node.id for node in symbol_nodes}
+            symbol_edges: list[KnowledgeEdge] = []
+            if symbol_node_ids:
+                symbol_edges = (
+                    (
+                        await db.execute(
+                            select(KnowledgeEdge).where(
+                                KnowledgeEdge.collection_id == collection_uuid,
+                                KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                                KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                                KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            community_by_node_id, communities = _compute_symbol_communities(
+                symbol_nodes, symbol_edges
+            )
+
+        if resolved_community_id and resolved_community_id not in communities:
+            raise HTTPException(status_code=404, detail="Community not found")
 
         node_query = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_uuid)
         if include_node_kinds:
             node_query = node_query.where(KnowledgeNode.kind.in_(include_node_kinds))
         if exclude_node_kinds:
             node_query = node_query.where(~KnowledgeNode.kind.in_(exclude_node_kinds))
+        if resolved_community_id:
+            member_ids = communities[resolved_community_id]["member_node_ids"]
+            if not member_ids:
+                status = {"status": "unavailable", "reason": "no_knowledge_graph"}
+                return {
+                    "collection_id": str(collection_uuid),
+                    "scenario": _serialize_scenario(scenario),
+                    "projection": "graphrag",
+                    "entity_level": "knowledge_node",
+                    "community_mode": resolved_community_mode,
+                    "community_id": resolved_community_id,
+                    "status": status,
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "page": page,
+                        "limit": limit,
+                        "total_nodes": 0,
+                    },
+                }
+            node_query = node_query.where(KnowledgeNode.id.in_(member_ids))
 
         total_nodes = (
             await db.execute(select(func.count()).select_from(node_query.subquery()))
@@ -852,16 +1270,20 @@ async def graphrag_view(
             "scenario": _serialize_scenario(scenario),
             "projection": "graphrag",
             "entity_level": "knowledge_node",
+            "community_mode": resolved_community_mode,
+            "community_id": resolved_community_id,
             "status": status,
             "graph": {
                 "nodes": [
-                    {
-                        "id": str(node.id),
-                        "natural_key": node.natural_key,
-                        "kind": node.kind.value,
-                        "name": node.name,
-                        "meta": node.meta or {},
-                    }
+                    _serialize_graphrag_node(
+                        node,
+                        community_mode=resolved_community_mode,
+                        focused_community_id=resolved_community_id
+                        if resolved_community_mode == "focus"
+                        else None,
+                        community_by_node_id=community_by_node_id,
+                        communities=communities,
+                    )
                     for node in paged_nodes
                 ],
                 "edges": [
@@ -878,6 +1300,326 @@ async def graphrag_view(
                 "limit": limit,
                 "total_nodes": total_nodes,
             },
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag/communities")
+async def graphrag_communities_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        symbol_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        symbol_node_ids = {node.id for node in symbol_nodes}
+        symbol_edges: list[KnowledgeEdge] = []
+        if symbol_node_ids:
+            symbol_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_uuid,
+                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        _, communities = _compute_symbol_communities(symbol_nodes, symbol_edges)
+        ordered = sorted(
+            communities.values(), key=lambda item: (-int(item["size"]), str(item["label"]))
+        )
+        start = page * limit
+        end = start + limit
+        paged_items = ordered[start:end]
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "items": [
+                {
+                    "id": item["id"],
+                    "label": item["label"],
+                    "size": item["size"],
+                    "cohesion": item["cohesion"],
+                    "top_kinds": item["top_kinds"],
+                    "sample_nodes": item["sample_nodes"],
+                }
+                for item in paged_items
+            ],
+            "page": page,
+            "limit": limit,
+            "total": len(ordered),
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag/path")
+async def graphrag_path_view(
+    request: Request,
+    collection_id: str,
+    from_node_id: str = Query(min_length=1),
+    to_node_id: str = Query(min_length=1),
+    scenario_id: str | None = Query(default=None),
+    max_hops: int = Query(default=6, ge=1, le=20),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        from_node = await _resolve_knowledge_node(db, collection_uuid, from_node_id)
+        if not from_node:
+            raise HTTPException(status_code=404, detail="from_node_id not found")
+        to_node = await _resolve_knowledge_node(db, collection_uuid, to_node_id)
+        if not to_node:
+            raise HTTPException(status_code=404, detail="to_node_id not found")
+
+        context = await graphrag_trace_path(
+            session=db,
+            from_node_id=from_node.id,
+            to_node_id=to_node.id,
+            collection_id=collection_uuid,
+            max_hops=max_hops,
+        )
+
+        status = "found" if context.entities else "not_found"
+        if status == "not_found" and max_hops < 20:
+            expanded = await graphrag_trace_path(
+                session=db,
+                from_node_id=from_node.id,
+                to_node_id=to_node.id,
+                collection_id=collection_uuid,
+                max_hops=min(max_hops + 4, 20),
+            )
+            if expanded.entities:
+                status = "truncated"
+        path_nodes = [
+            {
+                "id": str(entity.node_id),
+                "natural_key": entity.natural_key,
+                "kind": entity.kind,
+                "name": entity.name,
+                "meta": {},
+            }
+            for entity in context.entities
+        ]
+        path_edges = [
+            {
+                "id": f"path-edge-{index + 1}",
+                "source_node_id": edge.source_id,
+                "target_node_id": edge.target_id,
+                "kind": edge.kind,
+                "meta": {
+                    "path_order": index + 1,
+                },
+            }
+            for index, edge in enumerate(context.edges)
+        ]
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "status": status,
+            "from_node_id": str(from_node.id),
+            "to_node_id": str(to_node.id),
+            "max_hops": max_hops,
+            "path": {
+                "nodes": path_nodes,
+                "edges": path_edges,
+                "hops": max(len(path_nodes) - 1, 0),
+            },
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag/processes")
+async def graphrag_processes_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        symbol_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        symbol_node_ids = {node.id for node in symbol_nodes}
+        symbol_edges: list[KnowledgeEdge] = []
+        if symbol_node_ids:
+            symbol_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_uuid,
+                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        community_by_node_id, _ = _compute_symbol_communities(symbol_nodes, symbol_edges)
+        processes = _detect_processes(symbol_nodes, symbol_edges, community_by_node_id)
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "items": [
+                {
+                    "id": process["id"],
+                    "label": process["label"],
+                    "process_type": process["process_type"],
+                    "step_count": process["step_count"],
+                    "community_ids": process["community_ids"],
+                    "entry_node_id": process["entry_node_id"],
+                    "terminal_node_id": process["terminal_node_id"],
+                }
+                for process in processes
+            ],
+            "total": len(processes),
+        }
+
+
+@router.get("/collections/{collection_id}/views/graphrag/processes/{process_id}")
+async def graphrag_process_detail_view(
+    request: Request,
+    collection_id: str,
+    process_id: str,
+    scenario_id: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        symbol_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        symbol_node_ids = {node.id for node in symbol_nodes}
+        symbol_edges: list[KnowledgeEdge] = []
+        if symbol_node_ids:
+            symbol_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_uuid,
+                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        community_by_node_id, _ = _compute_symbol_communities(symbol_nodes, symbol_edges)
+        processes = _detect_processes(symbol_nodes, symbol_edges, community_by_node_id)
+        process = next((item for item in processes if item["id"] == process_id), None)
+        if not process:
+            raise HTTPException(status_code=404, detail="Process not found")
+
+        step_node_ids = [uuid.UUID(step["node_id"]) for step in process["steps"]]
+        step_node_set = set(step_node_ids)
+        process_edges = [
+            {
+                "id": f"{process['id']}-edge-{index + 1}",
+                "source_node_id": process["steps"][index]["node_id"],
+                "target_node_id": process["steps"][index + 1]["node_id"],
+                "kind": KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL.value,
+                "meta": {
+                    "path_order": index + 1,
+                },
+            }
+            for index in range(max(len(process["steps"]) - 1, 0))
+        ]
+        observed_edges = [
+            edge
+            for edge in symbol_edges
+            if edge.source_node_id in step_node_set and edge.target_node_id in step_node_set
+        ]
+        observed_edge_ids = {
+            (item["source_node_id"], item["target_node_id"]) for item in process_edges
+        }
+        for edge in observed_edges:
+            pair = (str(edge.source_node_id), str(edge.target_node_id))
+            if pair in observed_edge_ids:
+                continue
+            process_edges.append(
+                {
+                    "id": str(edge.id),
+                    "source_node_id": str(edge.source_node_id),
+                    "target_node_id": str(edge.target_node_id),
+                    "kind": edge.kind.value,
+                    "meta": edge.meta or {},
+                }
+            )
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "process": {
+                "id": process["id"],
+                "label": process["label"],
+                "process_type": process["process_type"],
+                "step_count": process["step_count"],
+                "community_ids": process["community_ids"],
+                "entry_node_id": process["entry_node_id"],
+                "terminal_node_id": process["terminal_node_id"],
+            },
+            "steps": process["steps"],
+            "edges": process_edges,
         }
 
 

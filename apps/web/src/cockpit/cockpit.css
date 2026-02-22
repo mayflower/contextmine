@@ -473,6 +473,92 @@
   gap: 10px;
 }
 
+.cockpit2-graphrag-community-bar,
+.cockpit2-graphrag-path,
+.cockpit2-graphrag-processes {
+  border: 1px solid #dbe2f0;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cockpit2-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cockpit2-community-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cockpit2-community-chip.active {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.15);
+}
+
+.cockpit2-community-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.cockpit2-process-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cockpit2-process-list article {
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cockpit2-process-step-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cockpit2-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 1200;
+  padding: 18px;
+}
+
+.cockpit2-modal {
+  width: min(980px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid #dbe2f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cockpit2-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .cockpit2-graphrag-evidence-list {
   display: flex;
   flex-direction: column;
@@ -513,7 +599,9 @@
 }
 
 .cockpit2-graph-toolbar select,
-.cockpit2-export-toolbar select {
+.cockpit2-export-toolbar select,
+.cockpit2-graph-toolbar input,
+.cockpit2-export-toolbar input {
   border: 1px solid #d0d8ea;
   border-radius: 10px;
   padding: 8px 10px;

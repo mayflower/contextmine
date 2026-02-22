@@ -23,6 +23,7 @@ import {
   type CockpitToast,
   type CollectionLite,
   type CockpitView,
+  type GraphRagCommunityMode,
   type LayoutEngine,
   type OverlayState,
   EXPORT_FORMATS,
@@ -140,6 +141,8 @@ export default function CockpitPage({
   const [c4View, setC4View] = useState<C4ViewMode>('container')
   const [c4Scope, setC4Scope] = useState('')
   const [c4MaxNodes, setC4MaxNodes] = useState(120)
+  const [graphRagCommunityMode, setGraphRagCommunityMode] = useState<GraphRagCommunityMode>('color')
+  const [graphRagCommunityId, setGraphRagCommunityId] = useState('')
   const [toast, setToast] = useState<CockpitToast | null>(null)
   const [overlayData, setOverlayData] = useState<OverlayState>({
     mode: overlayMode,
@@ -215,6 +218,20 @@ export default function CockpitPage({
     graphRagEvidenceNodeName,
     graphRagEvidenceState,
     graphRagEvidenceError,
+    graphRagCommunities,
+    graphRagCommunitiesState,
+    graphRagCommunitiesError,
+    graphRagPath,
+    graphRagPathState,
+    graphRagPathError,
+    graphRagProcesses,
+    graphRagProcessesState,
+    graphRagProcessesError,
+    graphRagProcessDetail,
+    graphRagProcessDetailState,
+    graphRagProcessDetailError,
+    traceGraphRagPath,
+    loadGraphRagProcessDetail,
     generateExport,
     refreshActiveView,
   } = useCockpitData({
@@ -227,6 +244,8 @@ export default function CockpitPage({
     c4MaxNodes,
     graphFilters,
     graphPaging,
+    graphRagCommunityMode,
+    graphRagCommunityId,
     selectedNodeId,
     onScenarioAutoSelect: setScenarioId,
     onViewError,
@@ -440,6 +459,9 @@ export default function CockpitPage({
           excludeKinds={excludeKinds}
           edgeKinds={edgeKinds}
           overlayMode={overlayMode}
+          graphRagCommunityMode={graphRagCommunityMode}
+          graphRagCommunityId={graphRagCommunityId}
+          graphRagCommunities={graphRagCommunities}
           c4View={c4View}
           c4Scope={c4Scope}
           c4MaxNodes={c4MaxNodes}
@@ -472,6 +494,8 @@ export default function CockpitPage({
             trackFilterChange()
           }}
           onOverlayModeChange={setOverlayMode}
+          onGraphRagCommunityModeChange={setGraphRagCommunityMode}
+          onGraphRagCommunityIdChange={setGraphRagCommunityId}
           onC4ViewChange={setC4View}
           onC4ScopeChange={setC4Scope}
           onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
@@ -520,6 +544,9 @@ export default function CockpitPage({
         excludeKinds={excludeKinds}
         edgeKinds={edgeKinds}
         overlayMode={overlayMode}
+        graphRagCommunityMode={graphRagCommunityMode}
+        graphRagCommunityId={graphRagCommunityId}
+        graphRagCommunities={graphRagCommunities}
         c4View={c4View}
         c4Scope={c4Scope}
         c4MaxNodes={c4MaxNodes}
@@ -558,6 +585,8 @@ export default function CockpitPage({
           trackFilterChange()
         }}
         onOverlayModeChange={setOverlayMode}
+        onGraphRagCommunityModeChange={setGraphRagCommunityMode}
+        onGraphRagCommunityIdChange={setGraphRagCommunityId}
         onC4ViewChange={setC4View}
         onC4ScopeChange={setC4Scope}
         onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
@@ -689,12 +718,28 @@ export default function CockpitPage({
           status={graphRagStatus}
           reason={graphRagReason}
           selectedNodeId={resolvedNodeId}
+          communityMode={graphRagCommunityMode}
+          communityId={graphRagCommunityId}
+          communities={graphRagCommunities}
+          communitiesState={graphRagCommunitiesState}
+          communitiesError={graphRagCommunitiesError}
+          path={graphRagPath}
+          pathState={graphRagPathState}
+          pathError={graphRagPathError}
+          processes={graphRagProcesses}
+          processesState={graphRagProcessesState}
+          processesError={graphRagProcessesError}
+          processDetail={graphRagProcessDetail}
+          processDetailState={graphRagProcessDetailState}
+          processDetailError={graphRagProcessDetailError}
           evidenceItems={graphRagEvidenceItems}
           evidenceTotal={graphRagEvidenceTotal}
           evidenceNodeName={graphRagEvidenceNodeName}
           evidenceState={graphRagEvidenceState}
           evidenceError={graphRagEvidenceError}
           onSelectNodeId={handleSelectNodeId}
+          onTracePath={traceGraphRagPath}
+          onLoadProcessDetail={loadGraphRagProcessDetail}
           onRetry={refreshActiveView}
         />
       ) : null}

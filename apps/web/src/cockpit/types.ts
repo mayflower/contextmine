@@ -17,6 +17,7 @@ export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hi
 export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
 export type OverlayMode = 'none' | 'runtime' | 'risk'
 export type C4ViewMode = 'context' | 'container' | 'component' | 'code' | 'deployment'
+export type GraphRagCommunityMode = 'none' | 'color' | 'focus'
 
 export interface CockpitSelection {
   collectionId: string
@@ -120,8 +121,111 @@ export interface GraphRagPayload {
   scenario: ViewScenario
   projection: 'graphrag'
   entity_level: 'knowledge_node'
+  community_mode?: GraphRagCommunityMode
+  community_id?: string | null
   status: GraphRagStatus
   graph: TwinGraphResponse
+}
+
+export interface GraphRagCommunityKindCount {
+  kind: string
+  count: number
+}
+
+export interface GraphRagCommunityNodePreview {
+  id: string
+  name: string
+  kind: string
+  natural_key: string
+}
+
+export interface GraphRagCommunity {
+  id: string
+  label: string
+  size: number
+  cohesion: number
+  top_kinds: GraphRagCommunityKindCount[]
+  sample_nodes: GraphRagCommunityNodePreview[]
+}
+
+export interface GraphRagCommunitiesPayload {
+  collection_id: string
+  scenario: ViewScenario
+  items: GraphRagCommunity[]
+  page: number
+  limit: number
+  total: number
+}
+
+export interface GraphRagPathNode {
+  id: string
+  natural_key: string
+  kind: string
+  name: string
+  meta: Record<string, unknown>
+}
+
+export interface GraphRagPathEdge {
+  id: string
+  source_node_id: string
+  target_node_id: string
+  kind: string
+  meta: Record<string, unknown>
+}
+
+export interface GraphRagPathPayload {
+  collection_id: string
+  scenario: ViewScenario
+  status: 'found' | 'not_found' | 'truncated'
+  from_node_id: string
+  to_node_id: string
+  max_hops: number
+  path: {
+    nodes: GraphRagPathNode[]
+    edges: GraphRagPathEdge[]
+    hops: number
+  }
+}
+
+export interface GraphRagProcessSummary {
+  id: string
+  label: string
+  process_type: 'intra_community' | 'cross_community'
+  step_count: number
+  community_ids: string[]
+  entry_node_id: string
+  terminal_node_id: string
+}
+
+export interface GraphRagProcessesPayload {
+  collection_id: string
+  scenario: ViewScenario
+  items: GraphRagProcessSummary[]
+  total: number
+}
+
+export interface GraphRagProcessStep {
+  step: number
+  node_id: string
+  node_name: string
+  node_kind: string
+  node_natural_key: string
+}
+
+export interface GraphRagProcessEdge {
+  id: string
+  source_node_id: string
+  target_node_id: string
+  kind: string
+  meta: Record<string, unknown>
+}
+
+export interface GraphRagProcessDetailPayload {
+  collection_id: string
+  scenario: ViewScenario
+  process: GraphRagProcessSummary
+  steps: GraphRagProcessStep[]
+  edges: GraphRagProcessEdge[]
 }
 
 export interface GraphRagEvidenceItem {
