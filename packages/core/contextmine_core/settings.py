@@ -217,6 +217,18 @@ class Settings(BaseSettings):
         default=90,
         description="Retention target for twin materialization lifecycle events",
     )
+    arch_docs_enabled: bool = Field(
+        default=True,
+        description="Enable architecture facts, arc42 generation, and ports/adapters outputs",
+    )
+    arch_docs_llm_enrich: bool = Field(
+        default=True,
+        description="Allow optional LLM enrichment for unresolved architecture mappings",
+    )
+    arch_docs_drift_enabled: bool = Field(
+        default=True,
+        description="Enable advisory architecture drift report generation",
+    )
     joern_server_url: str = Field(
         default="http://localhost:8080",
         description="Base URL for Joern HTTP server used by twin analysis endpoints",

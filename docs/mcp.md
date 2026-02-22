@@ -266,6 +266,46 @@ trace_path(
 )
 ```
 
+### Twin Architecture Tools
+
+#### `get_arc42`
+
+Generate or read arc42 documentation from the architecture facts layer.
+
+```
+get_arc42(
+    collection_id?: str,           # Optional collection UUID (auto-picks accessible default if omitted)
+    scenario_id?: str,             # Optional scenario UUID (defaults to AS-IS)
+    section?: str,                 # Optional section filter (e.g. '5', 'quality', 'deployment')
+    regenerate?: bool = false      # Force regeneration instead of cached artifact
+)
+```
+
+#### `arc42_drift_report`
+
+Compute advisory architecture drift between current and baseline scenario.
+
+```
+arc42_drift_report(
+    collection_id?: str,           # Optional collection UUID
+    scenario_id?: str,             # Optional scenario UUID
+    baseline_scenario_id?: str     # Optional explicit baseline UUID
+)
+```
+
+#### `list_ports_adapters`
+
+List inferred ports/adapters mappings with confidence and evidence references.
+
+```
+list_ports_adapters(
+    collection_id?: str,           # Optional collection UUID
+    scenario_id?: str,             # Optional scenario UUID
+    direction?: str,               # inbound|outbound
+    container?: str                # Optional container filter
+)
+```
+
 ## MCP Resources
 
 Research run artifacts are exposed as MCP resources for inspection:

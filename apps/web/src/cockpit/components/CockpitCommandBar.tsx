@@ -33,6 +33,11 @@ interface CockpitCommandBarProps {
   c4View: C4ViewMode
   c4Scope: string
   c4MaxNodes: number
+  architectureSection: string
+  portsDirection: 'all' | 'inbound' | 'outbound'
+  portsContainer: string
+  driftBaselineScenarioId: string
+  driftScenarioOptions: ScenarioLite[]
   availableNodeKinds: string[]
   availableEdgeKinds: string[]
   onCollectionChange: (collectionId: string) => void
@@ -52,6 +57,10 @@ interface CockpitCommandBarProps {
   onC4ViewChange: (value: C4ViewMode) => void
   onC4ScopeChange: (value: string) => void
   onC4MaxNodesChange: (value: number) => void
+  onArchitectureSectionChange: (value: string) => void
+  onPortsDirectionChange: (value: 'all' | 'inbound' | 'outbound') => void
+  onPortsContainerChange: (value: string) => void
+  onDriftBaselineScenarioIdChange: (scenarioId: string) => void
   onRefresh: () => void
   onLoadOverlayFile: (file: File) => void
   onOpenCollections: () => void
@@ -80,6 +89,11 @@ export default function CockpitCommandBar({
   c4View,
   c4Scope,
   c4MaxNodes,
+  architectureSection,
+  portsDirection,
+  portsContainer,
+  driftBaselineScenarioId,
+  driftScenarioOptions,
   availableNodeKinds,
   availableEdgeKinds,
   onCollectionChange,
@@ -99,6 +113,10 @@ export default function CockpitCommandBar({
   onC4ViewChange,
   onC4ScopeChange,
   onC4MaxNodesChange,
+  onArchitectureSectionChange,
+  onPortsDirectionChange,
+  onPortsContainerChange,
+  onDriftBaselineScenarioIdChange,
   onRefresh,
   onLoadOverlayFile,
   onOpenCollections,
@@ -108,6 +126,7 @@ export default function CockpitCommandBar({
   const showLayer = activeView === 'topology' || activeView === 'deep_dive'
   const showFilter = activeView === 'overview'
   const showC4Controls = activeView === 'c4_diff'
+  const showArchitectureControls = activeView === 'architecture'
   const showGraphRagControls = activeView === 'graphrag'
   const showGraphControls =
     activeView === 'topology' || activeView === 'deep_dive' || activeView === 'graphrag'
@@ -159,6 +178,22 @@ export default function CockpitCommandBar({
               ))}
             </select>
           </label>
+        ) : showArchitectureControls ? (
+          <label>
+            <span>arc42 section</span>
+            <select
+              value={architectureSection}
+              onChange={(event) => onArchitectureSectionChange(event.target.value)}
+            >
+              <option value="">All sections</option>
+              <option value="3">3 System context</option>
+              <option value="5">5 Building blocks</option>
+              <option value="6">6 Runtime</option>
+              <option value="7">7 Deployment</option>
+              <option value="10">10 Quality requirements</option>
+              <option value="11">11 Risks and debt</option>
+            </select>
+          </label>
         ) : showC4Controls ? (
           <label>
             <span>C4 view</span>
@@ -195,6 +230,18 @@ export default function CockpitCommandBar({
               value={hotspotFilter}
               onChange={(event) => onFilterChange(event.target.value)}
             />
+          </label>
+        ) : showArchitectureControls ? (
+          <label>
+            <span>Ports direction</span>
+            <select
+              value={portsDirection}
+              onChange={(event) => onPortsDirectionChange(event.target.value as 'all' | 'inbound' | 'outbound')}
+            >
+              <option value="all">All</option>
+              <option value="inbound">Inbound</option>
+              <option value="outbound">Outbound</option>
+            </select>
           </label>
         ) : showGraphControls ? (
           <label>
@@ -235,6 +282,34 @@ export default function CockpitCommandBar({
           <div className="cockpit2-command-placeholder" />
         )}
       </div>
+
+      {showArchitectureControls ? (
+        <div className="cockpit2-command-grid">
+          <label>
+            <span>Ports container</span>
+            <input
+              type="search"
+              placeholder="orders, billing, gateway..."
+              value={portsContainer}
+              onChange={(event) => onPortsContainerChange(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Drift baseline</span>
+            <select
+              value={driftBaselineScenarioId}
+              onChange={(event) => onDriftBaselineScenarioIdChange(event.target.value)}
+            >
+              <option value="">Auto baseline</option>
+              {driftScenarioOptions.map((scenario) => (
+                <option key={scenario.id} value={scenario.id}>
+                  {scenario.name} (v{scenario.version}) {scenario.is_as_is ? '• AS-IS' : '• TO-BE'}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
 
       {showC4Controls ? (
         <div className="cockpit2-command-grid">

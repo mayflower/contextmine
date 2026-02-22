@@ -1536,7 +1536,7 @@ function App() {
               <section className="card cockpit-cta-card">
                 <div className="cockpit-cta-copy">
                   <h2>Architecture Cockpit</h2>
-                  <p>Inspect extracted views across Overview, Topology, Deep Dive, C4 Diff, and Exports.</p>
+                  <p>Inspect extracted views across Overview, Topology, C4 Diff, arc42/Ports/Drift, and Exports.</p>
                 </div>
                 <button
                   type="button"

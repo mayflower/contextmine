@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
+  Arc42DriftPayload,
+  Arc42ViewPayload,
   C4ViewMode,
   CityEntityLevel,
   CityProjection,
@@ -24,6 +26,8 @@ import type {
   GraphRagPayload,
   GraphNeighborhoodResponse,
   GraphPagingState,
+  ErmViewPayload,
+  PortsAdaptersPayload,
   MermaidPayload,
   ScenarioLite,
   TwinGraphResponse,
@@ -46,6 +50,7 @@ const DEFAULT_STATES: DataStates = {
   topology: 'idle',
   deep_dive: 'idle',
   c4_diff: 'idle',
+  architecture: 'idle',
   city: 'idle',
   graphrag: 'idle',
   exports: 'idle',
@@ -56,6 +61,7 @@ const DEFAULT_ERRORS: DataErrors = {
   topology: '',
   deep_dive: '',
   c4_diff: '',
+  architecture: '',
   city: '',
   graphrag: '',
   exports: '',
@@ -69,6 +75,10 @@ interface UseCockpitDataArgs {
   c4View: C4ViewMode
   c4Scope: string
   c4MaxNodes: number
+  architectureSection: string
+  portsDirection: 'all' | 'inbound' | 'outbound'
+  portsContainer: string
+  driftBaselineScenarioId: string
   graphFilters: GraphFilters
   graphPaging: GraphPagingState
   graphRagCommunityMode: GraphRagCommunityMode
@@ -92,6 +102,10 @@ export function useCockpitData({
   c4View,
   c4Scope,
   c4MaxNodes,
+  architectureSection,
+  portsDirection,
+  portsContainer,
+  driftBaselineScenarioId,
   graphFilters,
   graphPaging,
   graphRagCommunityMode,
@@ -105,6 +119,21 @@ export function useCockpitData({
   const [city, setCity] = useState<CityPayload | null>(null)
   const [graph, setGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
   const [mermaid, setMermaid] = useState<MermaidPayload | null>(null)
+  const [arc42, setArc42] = useState<Arc42ViewPayload | null>(null)
+  const [portsAdapters, setPortsAdapters] = useState<PortsAdaptersPayload | null>(null)
+  const [arc42Drift, setArc42Drift] = useState<Arc42DriftPayload | null>(null)
+  const [erm, setErm] = useState<ErmViewPayload | null>(null)
+  const [architecturePanelErrors, setArchitecturePanelErrors] = useState<{
+    arc42: string
+    ports: string
+    drift: string
+    erm: string
+  }>({
+    arc42: '',
+    ports: '',
+    drift: '',
+    erm: '',
+  })
   const [states, setStates] = useState<DataStates>(DEFAULT_STATES)
   const [errors, setErrors] = useState<DataErrors>(DEFAULT_ERRORS)
   const [updatedAt, setUpdatedAt] = useState<DataUpdated>({})
@@ -313,6 +342,114 @@ export function useCockpitData({
           return
         }
 
+        if (view === 'architecture') {
+          const section = architectureSection.trim()
+          const normalizedContainer = portsContainer.trim()
+          const baselineScenarioId = driftBaselineScenarioId.trim()
+
+          const arc42Query = new URLSearchParams({ scenario_id: scenarioId })
+          if (section) arc42Query.set('section', section)
+
+          const portsQuery = new URLSearchParams({ scenario_id: scenarioId })
+          if (portsDirection !== 'all') {
+            portsQuery.set('direction', portsDirection)
+          }
+          if (normalizedContainer) {
+            portsQuery.set('container', normalizedContainer)
+          }
+
+          const driftQuery = new URLSearchParams({ scenario_id: scenarioId })
+          if (baselineScenarioId) {
+            driftQuery.set('baseline_scenario_id', baselineScenarioId)
+          }
+
+          const loadPayload = async <T>(url: string, label: string): Promise<T> => {
+            const response = await fetch(url, {
+              credentials: 'include',
+              signal: controller.signal,
+            })
+            if (!response.ok) {
+              throw new Error(`Could not load ${label} (${response.status})`)
+            }
+            return (await response.json()) as T
+          }
+
+          const [arc42Result, portsResult, driftResult, ermResult] = await Promise.allSettled([
+            loadPayload<Arc42ViewPayload>(
+              `/api/twin/collections/${collectionId}/views/arc42?${arc42Query.toString()}`,
+              'arc42 view',
+            ),
+            loadPayload<PortsAdaptersPayload>(
+              `/api/twin/collections/${collectionId}/views/ports-adapters?${portsQuery.toString()}`,
+              'ports/adapters view',
+            ),
+            loadPayload<Arc42DriftPayload>(
+              `/api/twin/collections/${collectionId}/views/arc42/drift?${driftQuery.toString()}`,
+              'arc42 drift view',
+            ),
+            loadPayload<ErmViewPayload>(
+              `/api/twin/collections/${collectionId}/views/erm?scenario_id=${encodeURIComponent(scenarioId)}`,
+              'erm view',
+            ),
+          ])
+
+          let successCount = 0
+          const nextErrors = { arc42: '', ports: '', drift: '', erm: '' }
+          if (arc42Result.status === 'fulfilled') {
+            setArc42(arc42Result.value)
+            successCount += 1
+          } else {
+            nextErrors.arc42 =
+              arc42Result.reason instanceof Error ? arc42Result.reason.message : 'Could not load arc42 view'
+          }
+
+          if (portsResult.status === 'fulfilled') {
+            setPortsAdapters(portsResult.value)
+            successCount += 1
+          } else {
+            nextErrors.ports =
+              portsResult.reason instanceof Error
+                ? portsResult.reason.message
+                : 'Could not load ports/adapters view'
+          }
+
+          if (driftResult.status === 'fulfilled') {
+            setArc42Drift(driftResult.value)
+            successCount += 1
+          } else {
+            nextErrors.drift =
+              driftResult.reason instanceof Error
+                ? driftResult.reason.message
+                : 'Could not load drift view'
+          }
+
+          if (ermResult.status === 'fulfilled') {
+            setErm(ermResult.value)
+            successCount += 1
+          } else {
+            nextErrors.erm =
+              ermResult.reason instanceof Error
+                ? ermResult.reason.message
+                : 'Could not load erm view'
+          }
+
+          setArchitecturePanelErrors(nextErrors)
+          const allErrors = [nextErrors.arc42, nextErrors.ports, nextErrors.drift, nextErrors.erm].filter(Boolean)
+          if (allErrors.length > 0) {
+            setViewError('architecture', allErrors.join(' • '))
+          } else {
+            setViewError('architecture', '')
+          }
+
+          if (successCount > 0) {
+            setViewState('architecture', 'ready')
+            markUpdated('architecture')
+          } else {
+            setViewState('architecture', 'error')
+          }
+          return
+        }
+
         if (view === 'graphrag') {
           const query = new URLSearchParams({
             scenario_id: scenarioId,
@@ -499,6 +636,10 @@ export function useCockpitData({
     c4View,
     c4Scope,
     c4MaxNodes,
+    architectureSection,
+    portsDirection,
+    portsContainer,
+    driftBaselineScenarioId,
     graphFilters.excludeKinds,
     graphFilters.edgeKinds,
     graphFilters.includeKinds,
@@ -810,6 +951,11 @@ export function useCockpitData({
     city,
     graph,
     mermaid,
+    arc42,
+    portsAdapters,
+    arc42Drift,
+    erm,
+    architecturePanelErrors,
     states,
     errors,
     activeState,

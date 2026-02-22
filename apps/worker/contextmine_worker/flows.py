@@ -769,6 +769,11 @@ async def build_twin_graph(
     import uuid as uuid_module
 
     from contextmine_core.graph.age import sync_scenario_to_age
+    from contextmine_core.models import (
+        KnowledgeArtifact,
+        KnowledgeArtifactKind,
+        TwinScenario,
+    )
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
         apply_file_metrics_to_scenario,
@@ -787,6 +792,9 @@ async def build_twin_graph(
         "twin_metric_nodes_enriched": 0,
         "twin_metrics_snapshots": 0,
         "twin_validation_snapshots": 0,
+        "arch_facts_count": 0,
+        "arch_ports_adapters_count": 0,
+        "arch_drift_deltas": 0,
     }
 
     async with get_session() as session:
@@ -828,6 +836,114 @@ async def build_twin_graph(
         stats["twin_validation_snapshots"] = await refresh_validation_snapshots(
             session, collection_uuid
         )
+
+        settings = get_settings()
+        if settings.arch_docs_enabled:
+            try:
+                from dataclasses import asdict
+
+                from contextmine_core.architecture import (
+                    build_architecture_facts,
+                    compute_arc42_drift,
+                    generate_arc42_from_facts,
+                )
+
+                llm_provider = None
+                if settings.arch_docs_llm_enrich and settings.default_llm_provider:
+                    try:
+                        from contextmine_core.research.llm import get_llm_provider
+
+                        llm_provider = get_llm_provider(settings.default_llm_provider)
+                    except Exception:
+                        llm_provider = None
+
+                facts_bundle = await build_architecture_facts(
+                    session,
+                    collection_id=collection_uuid,
+                    scenario_id=as_is.id,
+                    enable_llm_enrich=settings.arch_docs_llm_enrich,
+                    llm_provider=llm_provider,
+                )
+                arc42_doc = generate_arc42_from_facts(facts_bundle, as_is, options={})
+                artifact_name = f"{as_is.id}.arc42.md"
+
+                artifact = (
+                    await session.execute(
+                        select(KnowledgeArtifact).where(
+                            KnowledgeArtifact.collection_id == collection_uuid,
+                            KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                            KnowledgeArtifact.name == artifact_name,
+                        )
+                    )
+                ).scalar_one_or_none()
+
+                drift_meta: dict[str, object] | None = None
+                if settings.arch_docs_drift_enabled:
+                    baseline = (
+                        await session.execute(
+                            select(TwinScenario)
+                            .where(
+                                TwinScenario.collection_id == collection_uuid,
+                                TwinScenario.id != as_is.id,
+                            )
+                            .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if baseline:
+                        baseline_bundle = await build_architecture_facts(
+                            session,
+                            collection_id=collection_uuid,
+                            scenario_id=baseline.id,
+                            enable_llm_enrich=settings.arch_docs_llm_enrich,
+                            llm_provider=llm_provider,
+                        )
+                        drift_report = compute_arc42_drift(
+                            facts_bundle,
+                            baseline_bundle,
+                            baseline_scenario_id=baseline.id,
+                        )
+                        drift_meta = {
+                            "generated_at": drift_report.generated_at.isoformat(),
+                            "baseline_scenario_id": str(baseline.id),
+                            "current_hash": drift_report.current_hash,
+                            "baseline_hash": drift_report.baseline_hash,
+                            "deltas": [asdict(delta) for delta in drift_report.deltas],
+                            "warnings": drift_report.warnings,
+                        }
+                        stats["arch_drift_deltas"] = len(drift_report.deltas)
+
+                artifact_meta = {
+                    "scenario_id": str(as_is.id),
+                    "generated_at": arc42_doc.generated_at.isoformat(),
+                    "facts_hash": facts_bundle.facts_hash(),
+                    "confidence_summary": arc42_doc.confidence_summary,
+                    "section_coverage": arc42_doc.section_coverage,
+                    "warnings": arc42_doc.warnings,
+                    "sections": arc42_doc.sections,
+                }
+                if drift_meta is not None:
+                    artifact_meta["drift"] = drift_meta
+
+                if artifact:
+                    artifact.content = arc42_doc.markdown
+                    artifact.meta = artifact_meta
+                else:
+                    session.add(
+                        KnowledgeArtifact(
+                            collection_id=collection_uuid,
+                            kind=KnowledgeArtifactKind.ARC42,
+                            name=artifact_name,
+                            content=arc42_doc.markdown,
+                            meta=artifact_meta,
+                        )
+                    )
+
+                stats["arch_facts_count"] = len(facts_bundle.facts)
+                stats["arch_ports_adapters_count"] = len(facts_bundle.ports_adapters)
+            except Exception as exc:
+                logger.warning("Architecture docs generation failed (advisory): %s", exc)
+                stats["arch_docs_error"] = str(exc)
 
         # Keep AGE in sync as a mandatory M1 requirement.
         await sync_scenario_to_age(session, as_is.id)

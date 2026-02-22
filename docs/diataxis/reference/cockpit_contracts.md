@@ -8,6 +8,10 @@ This page documents the current backend contracts used by the read-only Architec
 2. `GET /api/twin/collections/{collection_id}/views/topology`
 3. `GET /api/twin/collections/{collection_id}/views/deep-dive`
 4. `GET /api/twin/collections/{collection_id}/views/mermaid`
+5. `GET /api/twin/collections/{collection_id}/views/arc42`
+6. `GET /api/twin/collections/{collection_id}/views/arc42/drift`
+7. `GET /api/twin/collections/{collection_id}/views/ports-adapters`
+8. `GET /api/twin/collections/{collection_id}/views/erm`
 
 ## Scenario and Export Endpoints
 
@@ -106,6 +110,78 @@ Compare-mode response shape:
 Best-effort views:
 1. `context` and `deployment` may include warnings when source signals are sparse.
 2. `code` may include fallback warnings when call edges are unavailable.
+
+## arc42 View Response
+
+`GET /api/twin/collections/{collection_id}/views/arc42`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `section` (optional, e.g. `5`, `quality`, `deployment`)
+3. `regenerate` (optional, default `false`)
+
+Response shape:
+
+```json
+{
+  "collection_id": "uuid",
+  "scenario": { "id": "uuid", "name": "AS-IS", "version": 5 },
+  "artifact": { "id": "uuid", "name": "scenario-id.arc42.md", "kind": "arc42", "cached": false },
+  "section": "10_quality_requirements",
+  "arc42": {
+    "title": "arc42 - AS-IS",
+    "generated_at": "2026-02-22T19:00:00Z",
+    "sections": { "10_quality_requirements": "..." },
+    "markdown": "# arc42 - AS-IS\\n...",
+    "warnings": [],
+    "confidence_summary": { "total": 42, "avg": 0.84 },
+    "section_coverage": { "10_quality_requirements": true }
+  },
+  "facts_hash": "sha256...",
+  "warnings": []
+}
+```
+
+## arc42 Drift Response
+
+`GET /api/twin/collections/{collection_id}/views/arc42/drift`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `baseline_scenario_id` (optional)
+
+Response highlights:
+1. `summary.total`
+2. `summary.by_type` (`added|removed|changed_confidence|moved_component|new_port|removed_adapter`)
+3. `summary.severity` (`low|medium`)
+4. `deltas[]` with `before`/`after`
+
+## Ports/Adapters Response
+
+`GET /api/twin/collections/{collection_id}/views/ports-adapters`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `direction` (`inbound|outbound`, optional)
+3. `container` (optional exact match)
+
+Response highlights:
+1. `summary.total|inbound|outbound`
+2. `items[]` with `direction`, `port_name`, `adapter_name`, `container`, `component`, `protocol`, `confidence`, `evidence`
+
+## ERM View Response
+
+`GET /api/twin/collections/{collection_id}/views/erm`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `include_mermaid` (`true|false`, default `true`)
+
+Response highlights:
+1. `summary.tables|columns|foreign_keys|has_mermaid`
+2. `tables[]` with `name`, `column_count`, `primary_keys`, and `columns[]`
+3. `foreign_keys[]` with source/target table+column pairs
+4. `mermaid.content` with ERD Mermaid source when `MERMAID_ERD` artifact exists
 
 ## Source Config Contract for Coverage Reports
 

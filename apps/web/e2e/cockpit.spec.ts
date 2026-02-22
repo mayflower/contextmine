@@ -88,6 +88,246 @@ async function mockApi(page: Page, options: MockOptions = {}) {
       })
     }
 
+    if (path.includes('/views/arc42/drift')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        baseline_scenario: {
+          id: 'scn-tobe',
+          collection_id: 'col-1',
+          name: 'TO-BE Split',
+          version: 2,
+          is_as_is: false,
+          base_scenario_id: 'scn-asis',
+        },
+        generated_at: '2026-02-22T19:30:00Z',
+        current_hash: 'abc1234567890def',
+        baseline_hash: 'ff00cc11223344aa',
+        summary: {
+          total: 3,
+          by_type: {
+            added: 1,
+            new_port: 1,
+            changed_confidence: 1,
+          },
+          severity: 'low',
+        },
+        deltas: [
+          {
+            delta_type: 'added',
+            subject: 'component:InvoiceOrchestrator',
+            detail: 'Added component InvoiceOrchestrator',
+            confidence: 0.9,
+          },
+          {
+            delta_type: 'new_port',
+            subject: 'inbound:invoice:create',
+            detail: 'New inbound port: CreateInvoice',
+            confidence: 0.9,
+          },
+          {
+            delta_type: 'changed_confidence',
+            subject: 'container:billing',
+            detail: 'Confidence changed',
+            confidence: 0.75,
+          },
+        ],
+        warnings: [],
+      })
+    }
+
+    if (path.includes('/views/arc42')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        artifact: {
+          id: 'art-arc42',
+          name: 'scn-asis.arc42.md',
+          kind: 'arc42',
+          cached: true,
+        },
+        section: null,
+        facts_hash: 'abc1234567890def',
+        facts_count: 12,
+        ports_adapters_count: 5,
+        warnings: [],
+        arc42: {
+          title: 'arc42 - AS-IS Baseline',
+          generated_at: '2026-02-22T19:30:00Z',
+          markdown: '# arc42',
+          warnings: [],
+          confidence_summary: {
+            total: 17,
+            avg: 0.86,
+            by_source: {
+              deterministic: { count: 14, avg: 0.9 },
+              hybrid: { count: 3, avg: 0.7 },
+            },
+          },
+          section_coverage: {
+            '3_system_scope_and_context': true,
+            '5_building_block_view': true,
+            '10_quality_requirements': true,
+          },
+          sections: {
+            '3_system_scope_and_context': 'Inbound integration points: 2.\\nOutbound integration points: 3.',
+            '5_building_block_view': 'Containers: 3.\\nComponents: 8.\\nData entities: 4.',
+            '10_quality_requirements': 'Average test coverage: 78.3.\\nAverage complexity: 12.5.',
+          },
+        },
+      })
+    }
+
+    if (path.includes('/views/ports-adapters')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        summary: {
+          total: 5,
+          inbound: 2,
+          outbound: 3,
+        },
+        filters: {
+          direction: url.searchParams.get('direction'),
+          container: url.searchParams.get('container'),
+        },
+        warnings: [],
+        items: [
+          {
+            fact_id: 'inbound:create_invoice',
+            direction: 'inbound',
+            port_name: 'CreateInvoice',
+            adapter_name: 'invoice_controller',
+            container: 'billing',
+            component: 'api',
+            protocol: 'http',
+            source: 'deterministic',
+            confidence: 0.9,
+            attributes: {},
+            evidence: [],
+          },
+          {
+            fact_id: 'outbound:invoice_repo',
+            direction: 'outbound',
+            port_name: 'invoice_db',
+            adapter_name: 'invoice_repository',
+            container: 'billing',
+            component: 'repository',
+            protocol: 'sql',
+            source: 'deterministic',
+            confidence: 0.9,
+            attributes: {},
+            evidence: [],
+          },
+        ],
+      })
+    }
+
+    if (path.includes('/views/erm')) {
+      return json(route, {
+        collection_id: 'col-1',
+        scenario: {
+          id: 'scn-asis',
+          collection_id: 'col-1',
+          name: 'AS-IS Baseline',
+          version: 1,
+          is_as_is: true,
+          base_scenario_id: null,
+        },
+        summary: {
+          tables: 2,
+          columns: 5,
+          foreign_keys: 1,
+          has_mermaid: true,
+        },
+        tables: [
+          {
+            id: 'tbl-users',
+            natural_key: 'db:users',
+            name: 'users',
+            description: null,
+            column_count: 3,
+            primary_keys: ['id'],
+            columns: [
+              {
+                id: 'col-users-id',
+                natural_key: 'db:users.id',
+                name: 'id',
+                table: 'users',
+                type: 'UUID',
+                nullable: false,
+                primary_key: true,
+                foreign_key: null,
+              },
+              {
+                id: 'col-users-account-id',
+                natural_key: 'db:users.account_id',
+                name: 'account_id',
+                table: 'users',
+                type: 'UUID',
+                nullable: false,
+                primary_key: false,
+                foreign_key: 'accounts.id',
+              },
+            ],
+          },
+        ],
+        foreign_keys: [
+          {
+            id: 'fk-1',
+            fk_name: 'fk_users_account',
+            source_table: 'users',
+            source_column: 'account_id',
+            target_table: 'accounts',
+            target_column: 'id',
+            source_column_node_id: 'col-users-account-id',
+            target_column_node_id: 'col-accounts-id',
+          },
+        ],
+        mermaid: {
+          artifact_id: 'art-erd',
+          name: 'Database ERD',
+          content: [
+            'erDiagram',
+            '    users {',
+            '        uuid id PK',
+            '        uuid account_id FK',
+            '    }',
+            '    accounts {',
+            '        uuid id PK',
+            '    }',
+            '    accounts ||--o{ users : has',
+          ].join('\n'),
+          meta: {
+            table_count: 2,
+            fk_count: 1,
+          },
+        },
+        warnings: [],
+      })
+    }
+
     if (path.includes('/views/city')) {
       if (options.cityDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, options.cityDelayMs))
@@ -599,6 +839,7 @@ test('discoverability: sidebar and dashboard CTA open Architecture Cockpit', asy
   await expect(page).toHaveURL(/page=cockpit/)
   await expect(page.getByRole('heading', { name: 'Architecture Cockpit' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Architecture' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'City' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'GraphRAG' })).toBeVisible()
 })
@@ -785,6 +1026,22 @@ test('c4 controls change requested view and scope', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Show source' }).click()
   await expect(page.getByText('C4Deployment').first()).toBeVisible()
+})
+
+test('architecture view renders arc42, ports/adapters, erm/erd, and drift sections', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=architecture')
+
+  await expect(page.getByRole('tab', { name: 'Architecture' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText('Architecture intelligence')).toBeVisible()
+  await expect(page.getByText('arc42 sections')).toBeVisible()
+  await expect(page.getByText('Ports & adapters map')).toBeVisible()
+  await expect(page.getByText('ERM data model')).toBeVisible()
+  await expect(page.getByText('Advisory drift report')).toBeVisible()
+  await expect(page.getByText('CreateInvoice', { exact: true })).toBeVisible()
+  await expect(page.locator('.cockpit2-erd-pane')).toBeVisible()
+  await expect(page.getByText('users')).toBeVisible()
+  await expect(page.getByText('new_port')).toBeVisible()
 })
 
 test('exports view can generate output and supports copy/download actions', async ({ page }) => {

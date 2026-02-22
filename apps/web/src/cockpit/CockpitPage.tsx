@@ -12,6 +12,7 @@ import { filterGraph, graphKinds, resolveNodeId } from './graphUtils'
 import { useCockpitData } from './hooks/useCockpitData'
 import { useCockpitState } from './hooks/useCockpitState'
 import C4DiffView from './views/C4DiffView'
+import ArchitectureView from './views/ArchitectureView'
 import CityView from './views/CityView'
 import DeepDiveView from './views/DeepDiveView'
 import ExportsView from './views/ExportsView'
@@ -141,6 +142,10 @@ export default function CockpitPage({
   const [c4View, setC4View] = useState<C4ViewMode>('container')
   const [c4Scope, setC4Scope] = useState('')
   const [c4MaxNodes, setC4MaxNodes] = useState(120)
+  const [architectureSection, setArchitectureSection] = useState('')
+  const [portsDirection, setPortsDirection] = useState<'all' | 'inbound' | 'outbound'>('all')
+  const [portsContainer, setPortsContainer] = useState('')
+  const [driftBaselineScenarioId, setDriftBaselineScenarioId] = useState('')
   const [graphRagCommunityMode, setGraphRagCommunityMode] = useState<GraphRagCommunityMode>('color')
   const [graphRagCommunityId, setGraphRagCommunityId] = useState('')
   const [toast, setToast] = useState<CockpitToast | null>(null)
@@ -194,6 +199,11 @@ export default function CockpitPage({
     city,
     graph,
     mermaid,
+    arc42,
+    portsAdapters,
+    arc42Drift,
+    erm,
+    architecturePanelErrors,
     activeState,
     activeError,
     activeUpdatedAt,
@@ -242,6 +252,10 @@ export default function CockpitPage({
     c4View,
     c4Scope,
     c4MaxNodes,
+    architectureSection,
+    portsDirection,
+    portsContainer,
+    driftBaselineScenarioId,
     graphFilters,
     graphPaging,
     graphRagCommunityMode,
@@ -465,6 +479,11 @@ export default function CockpitPage({
           c4View={c4View}
           c4Scope={c4Scope}
           c4MaxNodes={c4MaxNodes}
+          architectureSection={architectureSection}
+          portsDirection={portsDirection}
+          portsContainer={portsContainer}
+          driftBaselineScenarioId={driftBaselineScenarioId}
+          driftScenarioOptions={scenarios}
           availableNodeKinds={[]}
           availableEdgeKinds={[]}
           onCollectionChange={setCollectionId}
@@ -499,6 +518,10 @@ export default function CockpitPage({
           onC4ViewChange={setC4View}
           onC4ScopeChange={setC4Scope}
           onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
+          onArchitectureSectionChange={setArchitectureSection}
+          onPortsDirectionChange={setPortsDirection}
+          onPortsContainerChange={setPortsContainer}
+          onDriftBaselineScenarioIdChange={setDriftBaselineScenarioId}
           onLoadOverlayFile={handleLoadOverlayFile}
           onRefresh={refreshActiveView}
           onOpenCollections={openCollections}
@@ -550,6 +573,11 @@ export default function CockpitPage({
         c4View={c4View}
         c4Scope={c4Scope}
         c4MaxNodes={c4MaxNodes}
+        architectureSection={architectureSection}
+        portsDirection={portsDirection}
+        portsContainer={portsContainer}
+        driftBaselineScenarioId={driftBaselineScenarioId}
+        driftScenarioOptions={scenarios}
         availableNodeKinds={nodeKinds}
         availableEdgeKinds={availableEdgeKinds}
         onCollectionChange={setCollectionId}
@@ -590,6 +618,10 @@ export default function CockpitPage({
         onC4ViewChange={setC4View}
         onC4ScopeChange={setC4Scope}
         onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
+        onArchitectureSectionChange={setArchitectureSection}
+        onPortsDirectionChange={setPortsDirection}
+        onPortsContainerChange={setPortsContainer}
+        onDriftBaselineScenarioIdChange={setDriftBaselineScenarioId}
         onLoadOverlayFile={handleLoadOverlayFile}
         onRefresh={refreshActiveView}
         onOpenCollections={openCollections}
@@ -693,6 +725,19 @@ export default function CockpitPage({
           mermaid={mermaid}
           state={activeState}
           error={activeError}
+          onRetry={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'architecture' ? (
+        <ArchitectureView
+          state={activeState}
+          error={activeError}
+          arc42={arc42}
+          portsAdapters={portsAdapters}
+          drift={arc42Drift}
+          erm={erm}
+          panelErrors={architecturePanelErrors}
           onRetry={refreshActiveView}
         />
       ) : null}

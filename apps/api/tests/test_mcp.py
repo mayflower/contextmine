@@ -15,6 +15,9 @@ def test_mcp_tools_exist() -> None:
     assert "context.get_twin_graph" in tool_names
     assert "context.query_twin_cypher" in tool_names
     assert "context.create_architecture_intent" in tool_names
+    assert "context.get_arc42" in tool_names
+    assert "context.arc42_drift_report" in tool_names
+    assert "context.list_ports_adapters" in tool_names
 
     # Find get_markdown tool and verify its schema
     get_markdown = next(t for t in tools if t["name"] == "context.get_markdown")

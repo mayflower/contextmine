@@ -459,6 +459,341 @@
   gap: 14px;
 }
 
+.cockpit2-architecture-panel {
+  gap: 14px;
+}
+
+.cockpit2-arch-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.cockpit2-arch-kpis > div {
+  border: 1px solid #d9e0ef;
+  border-radius: 11px;
+  background: #fff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cockpit2-arch-kpis strong {
+  font-size: 1.32rem;
+  color: #0f172a;
+}
+
+.cockpit2-arch-kpis span {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.cockpit2-architecture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cockpit2-architecture-card {
+  border: 1px solid #d8dff0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cockpit2-arc42-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.cockpit2-arc42-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cockpit2-arc42-nav-item {
+  border: 1px solid #d8dff0;
+  border-radius: 10px;
+  background: #f7f9ff;
+  color: #334155;
+  cursor: pointer;
+  padding: 8px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cockpit2-arc42-nav-item.active {
+  border-color: #1d4ed8;
+  background: #eef2ff;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.14);
+}
+
+.cockpit2-arc42-nav-item small {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.cockpit2-arc42-content-wrap {
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #f8faff;
+  padding: 10px;
+}
+
+.cockpit2-arc42-content {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  color: #0f172a;
+  font-size: 0.88rem;
+}
+
+.cockpit2-ports-lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cockpit2-ports-lane {
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #f8faff;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cockpit2-ports-lane > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cockpit2-ports-lane h5 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #1f2a44;
+}
+
+.cockpit2-ports-lane > header span {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.cockpit2-port-cluster h6 {
+  margin: 0 0 6px;
+  color: #475569;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cockpit2-port-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cockpit2-port-card {
+  border: 1px solid #d8dff0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cockpit2-port-card.inbound {
+  border-left: 4px solid #0f766e;
+}
+
+.cockpit2-port-card.outbound {
+  border-left: 4px solid #1d4ed8;
+}
+
+.cockpit2-port-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.cockpit2-port-row span {
+  font-size: 0.76rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cockpit2-port-card p {
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.cockpit2-confidence-bar {
+  position: relative;
+  border: 1px solid #dbe2f0;
+  border-radius: 999px;
+  background: #eff3fb;
+  height: 18px;
+  overflow: hidden;
+}
+
+.cockpit2-confidence-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+}
+
+.cockpit2-confidence-bar small {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.7rem;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.cockpit2-drift-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cockpit2-drift-item {
+  border: 1px solid #d8dff0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cockpit2-drift-item header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.cockpit2-drift-type {
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.cockpit2-drift-confidence {
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.cockpit2-drift-item p {
+  font-size: 0.84rem;
+}
+
+.cockpit2-drift-item code {
+  font-size: 0.75rem;
+  color: #334155;
+  word-break: break-all;
+}
+
+.cockpit2-drift-item.tone-positive {
+  border-left: 4px solid #16a34a;
+}
+
+.cockpit2-drift-item.tone-negative {
+  border-left: 4px solid #dc2626;
+}
+
+.cockpit2-drift-item.tone-warning {
+  border-left: 4px solid #f59e0b;
+}
+
+.cockpit2-warning-chip {
+  font-size: 0.78rem;
+  border: 1px solid #f5d0fe;
+  border-radius: 999px;
+  background: #fdf4ff;
+  color: #7e22ce;
+  padding: 5px 10px;
+}
+
+.cockpit2-erd-pane {
+  max-height: 460px;
+}
+
+.cockpit2-erm-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cockpit2-erm-table-card {
+  border: 1px solid #d8dff0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cockpit2-erm-table-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cockpit2-erm-table-card > header h5 {
+  margin: 0;
+  color: #1f2a44;
+}
+
+.cockpit2-erm-table-card > header span {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.cockpit2-erm-table-card ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cockpit2-erm-table-card li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px dashed #e2e8f0;
+  padding-bottom: 2px;
+}
+
+.cockpit2-erm-table-card li small {
+  color: #64748b;
+  text-transform: lowercase;
+}
+
 .cockpit2-graphrag-graph {
   min-height: 52vh;
 }
@@ -860,6 +1195,18 @@
 
   .cockpit2-kpis {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .cockpit2-arch-kpis,
+  .cockpit2-architecture-grid,
+  .cockpit2-ports-lanes,
+  .cockpit2-drift-list,
+  .cockpit2-erm-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cockpit2-arc42-layout {
+    grid-template-columns: 1fr;
   }
 
   .cockpit2-command-actions,

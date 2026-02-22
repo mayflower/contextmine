@@ -5,10 +5,18 @@ from __future__ import annotations
 import json
 import uuid
 from collections import defaultdict, deque
+from dataclasses import asdict
 from typing import Any, Literal
 
 from contextmine_core import Collection, CollectionMember, get_settings
 from contextmine_core import get_session as get_db_session
+from contextmine_core.architecture import (
+    SECTION_TITLES,
+    build_architecture_facts,
+    compute_arc42_drift,
+    generate_arc42_from_facts,
+    normalize_arc42_section_key,
+)
 from contextmine_core.architecture_intents import ArchitectureIntentV1
 from contextmine_core.exports import (
     export_codecharta_json,
@@ -339,6 +347,141 @@ def _parse_kind_filter(raw_value: str | None) -> set[str] | None:
         return None
     values = {value.strip().lower() for value in raw_value.split(",") if value.strip()}
     return values or None
+
+
+def _arc42_artifact_name(scenario_id: uuid.UUID) -> str:
+    return f"{scenario_id}.arc42.md"
+
+
+def _serialize_arc42_document(document) -> dict[str, Any]:
+    return {
+        "title": document.title,
+        "generated_at": document.generated_at.isoformat(),
+        "sections": document.sections,
+        "markdown": document.markdown,
+        "warnings": document.warnings,
+        "confidence_summary": document.confidence_summary,
+        "section_coverage": document.section_coverage,
+    }
+
+
+def _serialize_port_adapter_fact(fact) -> dict[str, Any]:
+    return asdict(fact)
+
+
+def _parse_db_table_from_natural_key(natural_key: str | None) -> str | None:
+    if not natural_key:
+        return None
+    if not natural_key.startswith("db:"):
+        return None
+    body = natural_key[3:]
+    if not body:
+        return None
+    if "." in body:
+        return body.split(".", 1)[0] or None
+    return body
+
+
+def _serialize_erm_column(node: KnowledgeNode) -> dict[str, Any]:
+    meta = node.meta if isinstance(node.meta, dict) else {}
+    return {
+        "id": str(node.id),
+        "natural_key": node.natural_key,
+        "name": node.name,
+        "table": meta.get("table"),
+        "type": meta.get("type"),
+        "nullable": bool(meta.get("nullable", True)),
+        "primary_key": bool(meta.get("primary_key", False)),
+        "foreign_key": meta.get("foreign_key"),
+    }
+
+
+def _serialize_erm_table(node: KnowledgeNode, columns: list[dict[str, Any]]) -> dict[str, Any]:
+    meta = node.meta if isinstance(node.meta, dict) else {}
+    description = getattr(node, "description", None)
+    return {
+        "id": str(node.id),
+        "natural_key": node.natural_key,
+        "name": node.name,
+        "description": description,
+        "column_count": int(meta.get("column_count", len(columns) or 0)),
+        "primary_keys": meta.get("primary_keys", []),
+        "columns": columns,
+    }
+
+
+async def _resolve_baseline_scenario(
+    db,
+    *,
+    collection_id: uuid.UUID,
+    scenario: TwinScenario,
+    baseline_scenario_id: str | None,
+) -> TwinScenario | None:
+    if baseline_scenario_id:
+        try:
+            baseline_uuid = uuid.UUID(baseline_scenario_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="Invalid baseline_scenario_id") from e
+        baseline = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == baseline_uuid,
+                    TwinScenario.collection_id == collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not baseline:
+            raise HTTPException(status_code=404, detail="Baseline scenario not found in collection")
+        return baseline
+
+    if scenario.base_scenario_id:
+        baseline = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == scenario.base_scenario_id,
+                    TwinScenario.collection_id == collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if baseline:
+            return baseline
+
+    return (
+        await db.execute(
+            select(TwinScenario)
+            .where(
+                TwinScenario.collection_id == collection_id,
+                TwinScenario.id != scenario.id,
+            )
+            .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _resolve_arch_llm_provider(settings) -> Any | None:
+    if not settings.arch_docs_llm_enrich:
+        return None
+    if not settings.default_llm_provider:
+        return None
+    try:
+        from contextmine_core.research.llm import get_llm_provider
+
+        return get_llm_provider(settings.default_llm_provider)
+    except Exception:
+        return None
+
+
+async def _build_arch_bundle(db, *, collection_id: uuid.UUID, scenario: TwinScenario):
+    settings = get_settings()
+    llm_provider = _resolve_arch_llm_provider(settings)
+    return await build_architecture_facts(
+        db,
+        collection_id=collection_id,
+        scenario_id=scenario.id,
+        enable_llm_enrich=settings.arch_docs_llm_enrich,
+        llm_provider=llm_provider,
+    )
 
 
 def _parse_knowledge_node_kinds(raw_value: str | None) -> set[KnowledgeNodeKind] | None:
@@ -1502,6 +1645,450 @@ async def twin_export_findings_sarif(
             status=status,
             min_severity=min_severity,
         )
+
+
+@router.get("/collections/{collection_id}/views/arc42")
+async def arc42_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    section: str | None = Query(default=None),
+    regenerate: bool = Query(default=False),
+) -> dict[str, Any]:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    section_key = normalize_arc42_section_key(section)
+    if section and not section_key:
+        raise HTTPException(status_code=400, detail="Invalid arc42 section")
+
+    settings = get_settings()
+    if not settings.arch_docs_enabled:
+        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        artifact_name = _arc42_artifact_name(scenario.id)
+
+        existing = (
+            await db.execute(
+                select(KnowledgeArtifact).where(
+                    KnowledgeArtifact.collection_id == collection_uuid,
+                    KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                    KnowledgeArtifact.name == artifact_name,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing and not regenerate:
+            stored_meta = existing.meta or {}
+            stored_sections = stored_meta.get("sections")
+            if isinstance(stored_sections, dict):
+                if section_key:
+                    filtered_sections = (
+                        {section_key: stored_sections.get(section_key, "")}
+                        if section_key in SECTION_TITLES
+                        else {}
+                    )
+                    markdown = ""
+                    if section_key in filtered_sections:
+                        markdown = (
+                            f"# arc42 - {scenario.name}\n\n"
+                            f"## {SECTION_TITLES[section_key]}\n"
+                            f"{filtered_sections[section_key]}\n"
+                        )
+                    return {
+                        "collection_id": str(collection_uuid),
+                        "scenario": _serialize_scenario(scenario),
+                        "artifact": {
+                            "id": str(existing.id),
+                            "name": existing.name,
+                            "kind": existing.kind.value,
+                            "cached": True,
+                        },
+                        "section": section_key,
+                        "arc42": {
+                            "title": f"arc42 - {scenario.name}",
+                            "generated_at": stored_meta.get("generated_at"),
+                            "sections": filtered_sections,
+                            "markdown": markdown,
+                            "warnings": stored_meta.get("warnings", []),
+                            "confidence_summary": stored_meta.get("confidence_summary", {}),
+                            "section_coverage": {
+                                section_key: bool(filtered_sections.get(section_key))
+                            },
+                        },
+                        "facts_hash": stored_meta.get("facts_hash"),
+                        "warnings": stored_meta.get("warnings", []),
+                    }
+
+                return {
+                    "collection_id": str(collection_uuid),
+                    "scenario": _serialize_scenario(scenario),
+                    "artifact": {
+                        "id": str(existing.id),
+                        "name": existing.name,
+                        "kind": existing.kind.value,
+                        "cached": True,
+                    },
+                    "section": section_key,
+                    "arc42": {
+                        "title": f"arc42 - {scenario.name}",
+                        "generated_at": stored_meta.get("generated_at"),
+                        "sections": stored_sections,
+                        "markdown": existing.content,
+                        "warnings": stored_meta.get("warnings", []),
+                        "confidence_summary": stored_meta.get("confidence_summary", {}),
+                        "section_coverage": stored_meta.get("section_coverage", {}),
+                    },
+                    "facts_hash": stored_meta.get("facts_hash"),
+                    "warnings": stored_meta.get("warnings", []),
+                }
+
+        bundle = await _build_arch_bundle(db, collection_id=collection_uuid, scenario=scenario)
+        full_document = generate_arc42_from_facts(bundle, scenario, options={})
+        selected_document = (
+            generate_arc42_from_facts(bundle, scenario, options={"section": section_key})
+            if section_key
+            else full_document
+        )
+
+        artifact = await _upsert_artifact(
+            db,
+            collection_id=collection_uuid,
+            kind=KnowledgeArtifactKind.ARC42,
+            name=artifact_name,
+            content=full_document.markdown,
+            meta={
+                "scenario_id": str(scenario.id),
+                "generated_at": full_document.generated_at.isoformat(),
+                "facts_hash": bundle.facts_hash(),
+                "confidence_summary": full_document.confidence_summary,
+                "section_coverage": full_document.section_coverage,
+                "warnings": full_document.warnings,
+                "sections": full_document.sections,
+            },
+        )
+        await db.commit()
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "artifact": {
+                "id": str(artifact.id),
+                "name": artifact.name,
+                "kind": artifact.kind.value,
+                "cached": False,
+            },
+            "section": section_key,
+            "arc42": _serialize_arc42_document(selected_document),
+            "facts_hash": bundle.facts_hash(),
+            "facts_count": len(bundle.facts),
+            "ports_adapters_count": len(bundle.ports_adapters),
+            "warnings": sorted(set([*bundle.warnings, *full_document.warnings])),
+        }
+
+
+@router.get("/collections/{collection_id}/views/arc42/drift")
+async def arc42_drift_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    baseline_scenario_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    settings = get_settings()
+    if not settings.arch_docs_enabled:
+        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        baseline = await _resolve_baseline_scenario(
+            db,
+            collection_id=collection_uuid,
+            scenario=scenario,
+            baseline_scenario_id=baseline_scenario_id,
+        )
+
+        current_bundle = await _build_arch_bundle(
+            db, collection_id=collection_uuid, scenario=scenario
+        )
+        baseline_bundle = None
+        if baseline:
+            baseline_bundle = await _build_arch_bundle(
+                db,
+                collection_id=collection_uuid,
+                scenario=baseline,
+            )
+
+        report = compute_arc42_drift(
+            current_bundle,
+            baseline_bundle,
+            baseline_scenario_id=baseline.id if baseline else None,
+        )
+        deltas = [asdict(delta) for delta in report.deltas]
+
+        by_type: dict[str, int] = {}
+        for delta in deltas:
+            delta_type = str(delta.get("delta_type"))
+            by_type[delta_type] = by_type.get(delta_type, 0) + 1
+
+        severity = "low" if len(deltas) < 10 else "medium"
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "baseline_scenario": _serialize_scenario(baseline) if baseline else None,
+            "generated_at": report.generated_at.isoformat(),
+            "current_hash": report.current_hash,
+            "baseline_hash": report.baseline_hash,
+            "summary": {
+                "total": len(deltas),
+                "by_type": by_type,
+                "severity": severity,
+            },
+            "deltas": deltas,
+            "warnings": report.warnings,
+        }
+
+
+@router.get("/collections/{collection_id}/views/ports-adapters")
+async def ports_adapters_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    direction: str | None = Query(default=None),
+    container: str | None = Query(default=None),
+) -> dict[str, Any]:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    direction_normalized = direction.strip().lower() if direction else None
+    if direction_normalized and direction_normalized not in {"inbound", "outbound"}:
+        raise HTTPException(status_code=400, detail="Invalid direction")
+
+    settings = get_settings()
+    if not settings.arch_docs_enabled:
+        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        bundle = await _build_arch_bundle(db, collection_id=collection_uuid, scenario=scenario)
+
+        facts = bundle.ports_adapters
+        if direction_normalized:
+            facts = [fact for fact in facts if fact.direction == direction_normalized]
+        if container:
+            normalized_container = container.strip().lower()
+            facts = [
+                fact
+                for fact in facts
+                if (fact.container or "").strip().lower() == normalized_container
+            ]
+
+        inbound_count = sum(1 for fact in facts if fact.direction == "inbound")
+        outbound_count = sum(1 for fact in facts if fact.direction == "outbound")
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "summary": {
+                "total": len(facts),
+                "inbound": inbound_count,
+                "outbound": outbound_count,
+            },
+            "filters": {
+                "direction": direction_normalized,
+                "container": container,
+            },
+            "items": [_serialize_port_adapter_fact(fact) for fact in facts],
+            "warnings": bundle.warnings,
+        }
+
+
+@router.get("/collections/{collection_id}/views/erm")
+async def erm_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    include_mermaid: bool = Query(default=True),
+) -> dict[str, Any]:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    settings = get_settings()
+    if not settings.arch_docs_enabled:
+        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        table_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        column_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_uuid,
+                        KnowledgeNode.kind == KnowledgeNodeKind.DB_COLUMN,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        table_by_id = {node.id: node for node in table_nodes}
+        table_by_name = {str(node.name).strip(): node for node in table_nodes}
+        column_by_id = {node.id: node for node in column_nodes}
+
+        edges = (
+            (
+                await db.execute(
+                    select(KnowledgeEdge).where(
+                        KnowledgeEdge.collection_id == collection_uuid,
+                        KnowledgeEdge.kind.in_(
+                            [
+                                KnowledgeEdgeKind.TABLE_HAS_COLUMN,
+                                KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN,
+                            ]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        columns_by_table: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
+        fk_rows: list[dict[str, Any]] = []
+
+        for edge in edges:
+            if edge.kind == KnowledgeEdgeKind.TABLE_HAS_COLUMN:
+                source = table_by_id.get(edge.source_node_id)
+                target = column_by_id.get(edge.target_node_id)
+                if not source or not target:
+                    continue
+                columns_by_table[source.id].append(target)
+                continue
+
+            source_col = column_by_id.get(edge.source_node_id)
+            target_col = column_by_id.get(edge.target_node_id)
+            if not source_col or not target_col:
+                continue
+            source_meta = source_col.meta if isinstance(source_col.meta, dict) else {}
+            target_meta = target_col.meta if isinstance(target_col.meta, dict) else {}
+            source_table = (
+                source_meta.get("table")
+                or _parse_db_table_from_natural_key(source_col.natural_key)
+                or "unknown"
+            )
+            target_table = (
+                target_meta.get("table")
+                or _parse_db_table_from_natural_key(target_col.natural_key)
+                or "unknown"
+            )
+            fk_rows.append(
+                {
+                    "id": str(edge.id),
+                    "fk_name": (edge.meta or {}).get("fk_name"),
+                    "source_table": source_table,
+                    "source_column": source_col.name,
+                    "target_table": target_table,
+                    "target_column": target_col.name,
+                    "source_column_node_id": str(source_col.id),
+                    "target_column_node_id": str(target_col.id),
+                }
+            )
+
+        for column in column_nodes:
+            meta = column.meta if isinstance(column.meta, dict) else {}
+            table_name = str(meta.get("table") or "").strip()
+            if not table_name:
+                table_name = _parse_db_table_from_natural_key(column.natural_key) or ""
+            if not table_name:
+                continue
+            maybe_table = table_by_name.get(table_name)
+            if maybe_table is None:
+                continue
+            if column not in columns_by_table[maybe_table.id]:
+                columns_by_table[maybe_table.id].append(column)
+
+        serialized_tables: list[dict[str, Any]] = []
+        total_columns = 0
+        for table in sorted(table_nodes, key=lambda row: str(row.name).lower()):
+            serialized_columns = sorted(
+                [_serialize_erm_column(col) for col in columns_by_table.get(table.id, [])],
+                key=lambda row: str(row.get("name") or "").lower(),
+            )
+            total_columns += len(serialized_columns)
+            serialized_tables.append(_serialize_erm_table(table, serialized_columns))
+
+        fk_rows = sorted(
+            fk_rows,
+            key=lambda row: (
+                str(row.get("source_table") or ""),
+                str(row.get("source_column") or ""),
+                str(row.get("target_table") or ""),
+                str(row.get("target_column") or ""),
+            ),
+        )
+
+        mermaid_payload: dict[str, Any] | None = None
+        if include_mermaid:
+            erd_artifact = (
+                await db.execute(
+                    select(KnowledgeArtifact)
+                    .where(
+                        KnowledgeArtifact.collection_id == collection_uuid,
+                        KnowledgeArtifact.kind == KnowledgeArtifactKind.MERMAID_ERD,
+                    )
+                    .order_by(KnowledgeArtifact.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if erd_artifact:
+                mermaid_payload = {
+                    "artifact_id": str(erd_artifact.id),
+                    "name": erd_artifact.name,
+                    "content": erd_artifact.content,
+                    "meta": erd_artifact.meta or {},
+                }
+
+        warnings: list[str] = []
+        if not serialized_tables:
+            warnings.append("No DB_TABLE nodes found; ERM extraction may be incomplete.")
+        if include_mermaid and mermaid_payload is None:
+            warnings.append("No MERMAID_ERD artifact found; showing relational fallback only.")
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "summary": {
+                "tables": len(serialized_tables),
+                "columns": total_columns,
+                "foreign_keys": len(fk_rows),
+                "has_mermaid": mermaid_payload is not None,
+            },
+            "tables": serialized_tables,
+            "foreign_keys": fk_rows,
+            "mermaid": mermaid_payload,
+            "warnings": warnings,
+        }
 
 
 @router.get("/collections/{collection_id}/views/topology")

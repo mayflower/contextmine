@@ -71,6 +71,39 @@ def _parse_csv_list(value: str | None) -> list[str] | None:
     return items or None
 
 
+async def _resolve_collection_for_tool(
+    db,
+    *,
+    collection_id: str | None,
+    user_id: uuid.UUID | None,
+) -> tuple[Collection | None, str | None]:
+    if collection_id:
+        return await _resolve_collection_access(db, collection_id=collection_id, user_id=user_id)
+
+    query = select(Collection)
+    if user_id:
+        query = query.where(
+            or_(
+                Collection.visibility == CollectionVisibility.GLOBAL,
+                Collection.owner_user_id == user_id,
+                Collection.id.in_(
+                    select(CollectionMember.collection_id).where(
+                        CollectionMember.user_id == user_id
+                    )
+                ),
+            )
+        )
+    else:
+        query = query.where(Collection.visibility == CollectionVisibility.GLOBAL)
+
+    collection = (
+        await db.execute(query.order_by(Collection.created_at.desc()).limit(1))
+    ).scalar_one_or_none()
+    if not collection:
+        return None, "No accessible collection found."
+    return collection, None
+
+
 # Create auth provider (uses GitHub OAuth)
 settings = get_settings()
 try:
@@ -1849,6 +1882,439 @@ async def mcp_refresh_twin(
         return f"# Error\n\nFailed to refresh twin: {e}"
 
 
+@mcp.tool(name="get_arc42")
+async def mcp_get_arc42(
+    collection_id: Annotated[str | None, "Optional collection UUID"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    section: Annotated[str | None, "Optional section key or number (e.g. 5, quality)"] = None,
+    regenerate: Annotated[bool, "Regenerate arc42 artifact instead of using cache"] = False,
+) -> str:
+    """Generate/read arc42 document for a collection scenario."""
+    try:
+        from contextmine_core.architecture import (
+            SECTION_TITLES,
+            build_architecture_facts,
+            generate_arc42_from_facts,
+            normalize_arc42_section_key,
+        )
+        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
+        from contextmine_core.twin import get_or_create_as_is_scenario
+
+        settings = get_settings()
+        if not settings.arch_docs_enabled:
+            return "# Error\n\nArchitecture docs are disabled."
+
+        section_key = normalize_arc42_section_key(section)
+        if section and not section_key:
+            return "# Error\n\nInvalid section."
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_for_tool(
+                db,
+                collection_id=collection_id,
+                user_id=user_id,
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+
+            if scenario_id:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario).where(
+                            TwinScenario.id == uuid.UUID(scenario_id),
+                            TwinScenario.collection_id == collection.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if not scenario:
+                    return "# Error\n\nScenario not found in collection."
+            else:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario)
+                        .where(
+                            TwinScenario.collection_id == collection.id,
+                            TwinScenario.is_as_is.is_(True),
+                        )
+                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if scenario is None:
+                    scenario = await get_or_create_as_is_scenario(
+                        db, collection.id, user_id=user_id
+                    )
+
+            artifact_name = f"{scenario.id}.arc42.md"
+            existing = (
+                await db.execute(
+                    select(KnowledgeArtifact).where(
+                        KnowledgeArtifact.collection_id == collection.id,
+                        KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                        KnowledgeArtifact.name == artifact_name,
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing and not regenerate:
+                meta = existing.meta or {}
+                sections = meta.get("sections", {})
+                if section_key and isinstance(sections, dict):
+                    filtered = {section_key: sections.get(section_key, "")}
+                    markdown = (
+                        f"# arc42 - {scenario.name}\n\n"
+                        f"## {SECTION_TITLES.get(section_key, section_key)}\n"
+                        f"{filtered[section_key]}\n"
+                    )
+                    payload = {
+                        "collection_id": str(collection.id),
+                        "scenario_id": str(scenario.id),
+                        "section": section_key,
+                        "cached": True,
+                        "facts_hash": meta.get("facts_hash"),
+                        "warnings": meta.get("warnings", []),
+                        "sections": filtered,
+                        "markdown": markdown,
+                    }
+                    return json.dumps(payload, indent=2)
+
+                payload = {
+                    "collection_id": str(collection.id),
+                    "scenario_id": str(scenario.id),
+                    "section": section_key,
+                    "cached": True,
+                    "facts_hash": meta.get("facts_hash"),
+                    "warnings": meta.get("warnings", []),
+                    "sections": meta.get("sections", {}),
+                    "markdown": existing.content,
+                }
+                return json.dumps(payload, indent=2)
+
+            llm_provider = None
+            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
+                try:
+                    from contextmine_core.research.llm import get_llm_provider
+
+                    llm_provider = get_llm_provider(settings.default_llm_provider)
+                except Exception:
+                    llm_provider = None
+
+            facts = await build_architecture_facts(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario.id,
+                enable_llm_enrich=settings.arch_docs_llm_enrich,
+                llm_provider=llm_provider,
+            )
+            full_doc = generate_arc42_from_facts(facts, scenario, options={})
+            selected_doc = (
+                generate_arc42_from_facts(facts, scenario, options={"section": section_key})
+                if section_key
+                else full_doc
+            )
+
+            if existing:
+                existing.content = full_doc.markdown
+                existing.meta = {
+                    "scenario_id": str(scenario.id),
+                    "generated_at": full_doc.generated_at.isoformat(),
+                    "facts_hash": facts.facts_hash(),
+                    "confidence_summary": full_doc.confidence_summary,
+                    "section_coverage": full_doc.section_coverage,
+                    "warnings": full_doc.warnings,
+                    "sections": full_doc.sections,
+                }
+                artifact = existing
+            else:
+                artifact = KnowledgeArtifact(
+                    collection_id=collection.id,
+                    kind=KnowledgeArtifactKind.ARC42,
+                    name=artifact_name,
+                    content=full_doc.markdown,
+                    meta={
+                        "scenario_id": str(scenario.id),
+                        "generated_at": full_doc.generated_at.isoformat(),
+                        "facts_hash": facts.facts_hash(),
+                        "confidence_summary": full_doc.confidence_summary,
+                        "section_coverage": full_doc.section_coverage,
+                        "warnings": full_doc.warnings,
+                        "sections": full_doc.sections,
+                    },
+                )
+                db.add(artifact)
+
+            await db.commit()
+            payload = {
+                "collection_id": str(collection.id),
+                "scenario_id": str(scenario.id),
+                "artifact_id": str(artifact.id),
+                "section": section_key,
+                "cached": False,
+                "facts_hash": facts.facts_hash(),
+                "warnings": sorted(set([*facts.warnings, *full_doc.warnings])),
+                "sections": selected_doc.sections,
+                "markdown": selected_doc.markdown,
+            }
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to get arc42: {e}"
+
+
+@mcp.tool(name="arc42_drift_report")
+async def mcp_arc42_drift_report(
+    collection_id: Annotated[str | None, "Optional collection UUID"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    baseline_scenario_id: Annotated[str | None, "Optional baseline scenario UUID"] = None,
+) -> str:
+    """Compute advisory arc42 drift report between two scenarios."""
+    try:
+        from dataclasses import asdict
+
+        from contextmine_core.architecture import build_architecture_facts, compute_arc42_drift
+        from contextmine_core.models import TwinScenario
+        from contextmine_core.twin import get_or_create_as_is_scenario
+
+        settings = get_settings()
+        if not settings.arch_docs_enabled:
+            return "# Error\n\nArchitecture docs are disabled."
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_for_tool(
+                db,
+                collection_id=collection_id,
+                user_id=user_id,
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+
+            if scenario_id:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario).where(
+                            TwinScenario.id == uuid.UUID(scenario_id),
+                            TwinScenario.collection_id == collection.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if scenario is None:
+                    return "# Error\n\nScenario not found in collection."
+            else:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario)
+                        .where(
+                            TwinScenario.collection_id == collection.id,
+                            TwinScenario.is_as_is.is_(True),
+                        )
+                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if scenario is None:
+                    scenario = await get_or_create_as_is_scenario(
+                        db, collection.id, user_id=user_id
+                    )
+
+            baseline = None
+            if baseline_scenario_id:
+                baseline = (
+                    await db.execute(
+                        select(TwinScenario).where(
+                            TwinScenario.id == uuid.UUID(baseline_scenario_id),
+                            TwinScenario.collection_id == collection.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if baseline is None:
+                    return "# Error\n\nBaseline scenario not found in collection."
+            elif scenario.base_scenario_id:
+                baseline = (
+                    await db.execute(
+                        select(TwinScenario).where(
+                            TwinScenario.id == scenario.base_scenario_id,
+                            TwinScenario.collection_id == collection.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+            if baseline is None:
+                baseline = (
+                    await db.execute(
+                        select(TwinScenario)
+                        .where(
+                            TwinScenario.collection_id == collection.id,
+                            TwinScenario.id != scenario.id,
+                        )
+                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+
+            llm_provider = None
+            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
+                try:
+                    from contextmine_core.research.llm import get_llm_provider
+
+                    llm_provider = get_llm_provider(settings.default_llm_provider)
+                except Exception:
+                    llm_provider = None
+
+            current = await build_architecture_facts(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario.id,
+                enable_llm_enrich=settings.arch_docs_llm_enrich,
+                llm_provider=llm_provider,
+            )
+            baseline_bundle = None
+            if baseline:
+                baseline_bundle = await build_architecture_facts(
+                    db,
+                    collection_id=collection.id,
+                    scenario_id=baseline.id,
+                    enable_llm_enrich=settings.arch_docs_llm_enrich,
+                    llm_provider=llm_provider,
+                )
+
+            report = compute_arc42_drift(
+                current,
+                baseline_bundle,
+                baseline_scenario_id=baseline.id if baseline else None,
+            )
+            deltas = [asdict(delta) for delta in report.deltas]
+
+            by_type: dict[str, int] = {}
+            for delta in deltas:
+                key = str(delta.get("delta_type"))
+                by_type[key] = by_type.get(key, 0) + 1
+
+            payload = {
+                "collection_id": str(collection.id),
+                "scenario_id": str(scenario.id),
+                "baseline_scenario_id": str(baseline.id) if baseline else None,
+                "generated_at": report.generated_at.isoformat(),
+                "current_hash": report.current_hash,
+                "baseline_hash": report.baseline_hash,
+                "summary": {
+                    "total": len(deltas),
+                    "by_type": by_type,
+                    "severity": "low" if len(deltas) < 10 else "medium",
+                },
+                "deltas": deltas,
+                "warnings": report.warnings,
+            }
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to compute arc42 drift report: {e}"
+
+
+@mcp.tool(name="list_ports_adapters")
+async def mcp_list_ports_adapters(
+    collection_id: Annotated[str | None, "Optional collection UUID"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    direction: Annotated[str | None, "Optional direction filter: inbound|outbound"] = None,
+    container: Annotated[str | None, "Optional container name filter"] = None,
+) -> str:
+    """List inferred Ports-and-Adapters mapping with confidence and evidence references."""
+    try:
+        from dataclasses import asdict
+
+        from contextmine_core.architecture import build_architecture_facts
+        from contextmine_core.models import TwinScenario
+        from contextmine_core.twin import get_or_create_as_is_scenario
+
+        settings = get_settings()
+        if not settings.arch_docs_enabled:
+            return "# Error\n\nArchitecture docs are disabled."
+
+        direction_value = direction.strip().lower() if direction else None
+        if direction_value and direction_value not in {"inbound", "outbound"}:
+            return "# Error\n\nInvalid direction. Use inbound or outbound."
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_for_tool(
+                db,
+                collection_id=collection_id,
+                user_id=user_id,
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+
+            if scenario_id:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario).where(
+                            TwinScenario.id == uuid.UUID(scenario_id),
+                            TwinScenario.collection_id == collection.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if scenario is None:
+                    return "# Error\n\nScenario not found in collection."
+            else:
+                scenario = (
+                    await db.execute(
+                        select(TwinScenario)
+                        .where(
+                            TwinScenario.collection_id == collection.id,
+                            TwinScenario.is_as_is.is_(True),
+                        )
+                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if scenario is None:
+                    scenario = await get_or_create_as_is_scenario(
+                        db, collection.id, user_id=user_id
+                    )
+
+            llm_provider = None
+            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
+                try:
+                    from contextmine_core.research.llm import get_llm_provider
+
+                    llm_provider = get_llm_provider(settings.default_llm_provider)
+                except Exception:
+                    llm_provider = None
+
+            bundle = await build_architecture_facts(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario.id,
+                enable_llm_enrich=settings.arch_docs_llm_enrich,
+                llm_provider=llm_provider,
+            )
+
+            rows = bundle.ports_adapters
+            if direction_value:
+                rows = [row for row in rows if row.direction == direction_value]
+            if container:
+                target = container.strip().lower()
+                rows = [row for row in rows if (row.container or "").strip().lower() == target]
+
+            inbound = sum(1 for row in rows if row.direction == "inbound")
+            outbound = sum(1 for row in rows if row.direction == "outbound")
+            payload = {
+                "collection_id": str(collection.id),
+                "scenario_id": str(scenario.id),
+                "summary": {"total": len(rows), "inbound": inbound, "outbound": outbound},
+                "filters": {"direction": direction_value, "container": container},
+                "warnings": bundle.warnings,
+                "items": [asdict(row) for row in rows],
+            }
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to list ports/adapters: {e}"
+
+
 @mcp.tool(name="get_codebase_summary")
 async def mcp_get_codebase_summary(
     collection_id: Annotated[str, "Collection UUID"],
@@ -2445,6 +2911,47 @@ def get_tools() -> list[dict]:
                 "type": "object",
                 "properties": {"scenario_id": {"type": "string"}, "query": {"type": "string"}},
                 "required": ["scenario_id", "query"],
+            },
+        },
+        {
+            "name": "context.get_arc42",
+            "description": "Generate or read arc42 architecture document from twin + KG facts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "collection_id": {"type": "string"},
+                    "scenario_id": {"type": "string"},
+                    "section": {"type": "string"},
+                    "regenerate": {"type": "boolean", "default": False},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "context.arc42_drift_report",
+            "description": "Compute advisory arc42 drift report between scenario states.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "collection_id": {"type": "string"},
+                    "scenario_id": {"type": "string"},
+                    "baseline_scenario_id": {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "context.list_ports_adapters",
+            "description": "List inferred inbound/outbound ports and adapters with confidence.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "collection_id": {"type": "string"},
+                    "scenario_id": {"type": "string"},
+                    "direction": {"type": "string"},
+                    "container": {"type": "string"},
+                },
+                "required": [],
             },
         },
         {

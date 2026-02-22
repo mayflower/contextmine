@@ -144,6 +144,7 @@ class KnowledgeArtifactKind(enum.Enum):
     """Kind of knowledge artifact."""
 
     MERMAID_ERD = "mermaid_erd"
+    ARC42 = "arc42"
     RULE_CATALOG = "rule_catalog"
     SURFACE_CATALOG = "surface_catalog"
     LPG_JSONL = "lpg_jsonl"

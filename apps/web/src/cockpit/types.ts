@@ -4,7 +4,15 @@ export type CockpitLayer =
   | 'component_interface'
   | 'code_controlflow'
 
-export type CockpitView = 'overview' | 'topology' | 'deep_dive' | 'c4_diff' | 'city' | 'graphrag' | 'exports'
+export type CockpitView =
+  | 'overview'
+  | 'topology'
+  | 'deep_dive'
+  | 'c4_diff'
+  | 'architecture'
+  | 'city'
+  | 'graphrag'
+  | 'exports'
 
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
@@ -295,6 +303,151 @@ export interface MermaidPayload {
   as_is_scenario_id?: string
 }
 
+export interface Arc42Payload {
+  title: string
+  generated_at: string
+  sections: Record<string, string>
+  markdown: string
+  warnings: string[]
+  confidence_summary: {
+    total: number
+    avg: number | null
+    by_source: Record<string, { count: number; avg: number | null }>
+  }
+  section_coverage: Record<string, boolean>
+}
+
+export interface Arc42ViewPayload {
+  collection_id: string
+  scenario: ViewScenario
+  artifact: {
+    id: string
+    name: string
+    kind: string
+    cached: boolean
+  }
+  section: string | null
+  arc42: Arc42Payload
+  facts_hash: string
+  facts_count: number
+  ports_adapters_count: number
+  warnings: string[]
+}
+
+export interface PortAdapterEvidenceRef {
+  kind: 'file' | 'node' | 'edge' | 'artifact'
+  ref: string
+  start_line?: number | null
+  end_line?: number | null
+}
+
+export interface PortAdapterItem {
+  fact_id: string
+  direction: 'inbound' | 'outbound'
+  port_name: string
+  adapter_name: string | null
+  container: string | null
+  component: string | null
+  protocol: string | null
+  source: 'deterministic' | 'hybrid' | 'llm'
+  confidence: number
+  attributes: Record<string, unknown>
+  evidence: PortAdapterEvidenceRef[]
+}
+
+export interface PortsAdaptersPayload {
+  collection_id: string
+  scenario: ViewScenario
+  summary: {
+    total: number
+    inbound: number
+    outbound: number
+  }
+  filters: {
+    direction: string | null
+    container: string | null
+  }
+  items: PortAdapterItem[]
+  warnings: string[]
+}
+
+export interface Arc42DriftDelta {
+  delta_type: 'added' | 'removed' | 'changed_confidence' | 'moved_component' | 'new_port' | 'removed_adapter'
+  subject: string
+  detail: string
+  before?: Record<string, unknown> | null
+  after?: Record<string, unknown> | null
+  confidence: number
+}
+
+export interface Arc42DriftPayload {
+  collection_id: string
+  scenario: ViewScenario
+  baseline_scenario: ViewScenario | null
+  generated_at: string
+  current_hash: string
+  baseline_hash: string | null
+  summary: {
+    total: number
+    by_type: Record<string, number>
+    severity: 'low' | 'medium'
+  }
+  deltas: Arc42DriftDelta[]
+  warnings: string[]
+}
+
+export interface ErmColumnItem {
+  id: string
+  natural_key: string
+  name: string
+  table: string | null
+  type: string | null
+  nullable: boolean
+  primary_key: boolean
+  foreign_key: string | null
+}
+
+export interface ErmTableItem {
+  id: string
+  natural_key: string
+  name: string
+  description: string | null
+  column_count: number
+  primary_keys: string[]
+  columns: ErmColumnItem[]
+}
+
+export interface ErmForeignKeyItem {
+  id: string
+  fk_name: string | null
+  source_table: string
+  source_column: string
+  target_table: string
+  target_column: string
+  source_column_node_id: string
+  target_column_node_id: string
+}
+
+export interface ErmViewPayload {
+  collection_id: string
+  scenario: ViewScenario
+  summary: {
+    tables: number
+    columns: number
+    foreign_keys: number
+    has_mermaid: boolean
+  }
+  tables: ErmTableItem[]
+  foreign_keys: ErmForeignKeyItem[]
+  mermaid: {
+    artifact_id: string
+    name: string
+    content: string
+    meta: Record<string, unknown>
+  } | null
+  warnings: string[]
+}
+
 export interface RuntimeOverlayMetric {
   service: string
   latency_p95?: number
@@ -328,6 +481,7 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'topology', label: 'Topology' },
   { key: 'deep_dive', label: 'Deep Dive' },
   { key: 'c4_diff', label: 'C4 Diff' },
+  { key: 'architecture', label: 'Architecture' },
   { key: 'city', label: 'City' },
   { key: 'graphrag', label: 'GraphRAG' },
   { key: 'exports', label: 'Exports' },
