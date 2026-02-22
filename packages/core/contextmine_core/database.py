@@ -89,6 +89,10 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+# Alias for backward compatibility (research/agent.py uses this name)
+get_async_session = get_session
+
+
 async def close_engine() -> None:
     """Close the database engine."""
     global _engine, _session_factory

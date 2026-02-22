@@ -379,7 +379,7 @@ def get_llm(
         )
     elif provider == LLMProvider.ANTHROPIC:
         return AnthropicLLM(
-            model=model or "claude-3-haiku-20240307",
+            model=model or settings.default_llm_model,
             api_key=api_key,
         )
     elif provider == LLMProvider.GEMINI:

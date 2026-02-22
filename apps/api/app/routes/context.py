@@ -11,6 +11,7 @@ from contextmine_core import (
     assemble_context,
     assemble_context_stream,
 )
+from contextmine_core.settings import get_settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -30,7 +31,7 @@ class ContextRequest(BaseModel):
     collection_id: str | None = None
     max_chunks: int = 10
     max_tokens: int = 4000
-    provider: str = "openai"  # openai, anthropic, gemini
+    provider: str | None = None  # openai, anthropic, gemini (default from settings)
     model: str | None = None
 
 
@@ -86,9 +87,10 @@ async def create_context(request: Request, body: ContextRequest) -> ContextRespo
         except ValueError as e:
             raise HTTPException(status_code=400, detail="Invalid collection_id") from e
 
-    # Parse provider
+    # Parse provider (fall back to settings default)
+    provider_str = body.provider or get_settings().default_llm_provider
     try:
-        provider = LLMProvider(body.provider)
+        provider = LLMProvider(provider_str)
     except ValueError as e:
         raise HTTPException(
             status_code=400,
@@ -158,9 +160,10 @@ async def create_context_stream(request: Request, body: ContextRequest) -> Strea
         except ValueError as e:
             raise HTTPException(status_code=400, detail="Invalid collection_id") from e
 
-    # Parse provider
+    # Parse provider (fall back to settings default)
+    provider_str = body.provider or get_settings().default_llm_provider
     try:
-        provider = LLMProvider(body.provider)
+        provider = LLMProvider(provider_str)
     except ValueError as e:
         raise HTTPException(
             status_code=400,
