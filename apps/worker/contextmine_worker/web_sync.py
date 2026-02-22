@@ -2,11 +2,18 @@
 
 import hashlib
 import json
+import logging
 import subprocess
+import time
+from collections import deque
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
+import httpx
 import trafilatura
+from lxml import html as lxml_html
+
+logger = logging.getLogger(__name__)
 
 # Maximum page content size (5MB per page - high because modern SPAs have large HTML)
 MAX_PAGE_SIZE = 5 * 1024 * 1024
@@ -108,34 +115,122 @@ def extract_markdown_with_trafilatura(html: str) -> str | None:
         return None
 
 
-def run_spider_md(
+def _crawl_python(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
     user_agent: str = "ContextMine-Spider/0.1",
     delay_ms: int = DEFAULT_DELAY_MS,
     start_url: str | None = None,
 ) -> list[WebPage]:
-    """Run the spider_md binary and collect results.
+    """Pure Python crawler using httpx + lxml for link extraction.
 
-    Args:
-        base_url: URL path prefix for scoping (determines which pages to include)
-        max_pages: Maximum pages to crawl (default 100)
-        user_agent: User agent string
-        delay_ms: Delay between requests in milliseconds (default 500ms)
-        start_url: URL to start crawling from (defaults to base_url if not provided)
-
-    Returns:
-        List of WebPage objects from crawl results
+    BFS crawl starting from start_url, staying within base_url scope.
+    Each page's HTML is extracted to markdown via trafilatura.
     """
-    # Use start_url if provided, otherwise fall back to base_url
+    crawl_start = start_url or base_url
+    visited: set[str] = set()
+    queue: deque[str] = deque([crawl_start])
+    pages: list[WebPage] = []
+
+    with httpx.Client(
+        follow_redirects=True,
+        timeout=30.0,
+        headers={"User-Agent": user_agent},
+    ) as client:
+        while queue and len(pages) < max_pages:
+            url = queue.popleft()
+
+            # Normalize: strip fragment
+            parsed = urlparse(url)
+            url = parsed._replace(fragment="").geturl()
+
+            if url in visited:
+                continue
+            visited.add(url)
+
+            if not is_url_in_scope(url, base_url):
+                continue
+
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except Exception as e:
+                logger.debug("Failed to fetch %s: %s", url, e)
+                continue
+
+            content_type = response.headers.get("content-type", "")
+            if "text/html" not in content_type:
+                continue
+
+            raw_html = response.text
+            if not raw_html or len(raw_html.encode("utf-8")) > MAX_PAGE_SIZE:
+                continue
+
+            # Extract links from HTML for BFS crawl
+            try:
+                tree = lxml_html.fromstring(raw_html)
+                tree.make_links_absolute(url)
+                for element, _attr, link, _pos in tree.iterlinks():
+                    if element.tag == "a":
+                        link_parsed = urlparse(link)
+                        clean_link = link_parsed._replace(fragment="").geturl()
+                        if clean_link not in visited and is_url_in_scope(clean_link, base_url):
+                            queue.append(clean_link)
+            except Exception:
+                pass
+
+            # Extract markdown using trafilatura
+            markdown = extract_markdown_with_trafilatura(raw_html)
+            if not markdown or len(markdown.strip()) < 50:
+                continue
+
+            content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+            # Extract title
+            title = ""
+            try:
+                title_els = tree.xpath("//title/text()")
+                if title_els:
+                    title = str(title_els[0]).strip()
+            except Exception:
+                pass
+
+            pages.append(
+                WebPage(
+                    url=url,
+                    title=title,
+                    markdown=markdown,
+                    content_hash=content_hash,
+                    etag=response.headers.get("etag"),
+                    last_modified=response.headers.get("last-modified"),
+                )
+            )
+
+            logger.info("Crawled %s (%d/%d)", url, len(pages), max_pages)
+
+            # Rate limiting
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000.0)
+
+    return pages
+
+
+def _crawl_spider_md(
+    base_url: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    user_agent: str = "ContextMine-Spider/0.1",
+    delay_ms: int = DEFAULT_DELAY_MS,
+    start_url: str | None = None,
+) -> list[WebPage]:
+    """Run the spider_md Rust binary and collect results."""
     crawl_start = start_url or base_url
 
     cmd = [
         "spider_md",
         "--base-url",
-        base_url,  # Used for scoping (path prefix filter)
+        base_url,
         "--start-url",
-        crawl_start,  # Used as crawling entry point
+        crawl_start,
         "--max-pages",
         str(max_pages),
         "--user-agent",
@@ -149,21 +244,15 @@ def run_spider_md(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 minute timeout
+            timeout=600,
         )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError("Spider crawl timed out after 10 minutes") from e
-    except FileNotFoundError as e:
-        raise RuntimeError("spider_md binary not found - is it installed?") from e
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
 
     if result.returncode != 0:
-        stderr = result.stderr[:500] if result.stderr else "No error output"
-        raise RuntimeError(f"Spider crawl failed: {stderr}")
+        return []
 
-    # Parse JSON lines output
     pages = []
-    skipped_too_large = 0
-
     for line in result.stdout.strip().split("\n"):
         if not line:
             continue
@@ -171,21 +260,14 @@ def run_spider_md(
             data = json.loads(line)
             html = data["html"]
 
-            # Skip pages that are too large
             if len(html.encode("utf-8")) > MAX_PAGE_SIZE:
-                skipped_too_large += 1
                 continue
 
-            # Extract markdown using trafilatura
             markdown = extract_markdown_with_trafilatura(html)
-
-            # Skip if extraction failed or produced empty content
             if not markdown or len(markdown.strip()) < 50:
                 continue
 
-            # Compute hash of extracted markdown (not raw HTML)
             content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-
             pages.append(
                 WebPage(
                     url=data["url"],
@@ -197,7 +279,43 @@ def run_spider_md(
                 )
             )
         except (json.JSONDecodeError, KeyError):
-            # Skip malformed lines
             continue
 
     return pages
+
+
+def run_spider_md(
+    base_url: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    user_agent: str = "ContextMine-Spider/0.1",
+    delay_ms: int = DEFAULT_DELAY_MS,
+    start_url: str | None = None,
+) -> list[WebPage]:
+    """Crawl a website and return extracted pages.
+
+    Tries the spider_md Rust binary first. If it returns no pages
+    (known issue with spider-rs crate), falls back to a pure Python
+    crawler using httpx + lxml.
+    """
+    # Try Rust binary first
+    pages = _crawl_spider_md(
+        base_url=base_url,
+        max_pages=max_pages,
+        user_agent=user_agent,
+        delay_ms=delay_ms,
+        start_url=start_url,
+    )
+
+    if pages:
+        logger.info("spider_md returned %d pages", len(pages))
+        return pages
+
+    # Fallback to Python crawler
+    logger.info("spider_md returned 0 pages, falling back to Python crawler")
+    return _crawl_python(
+        base_url=base_url,
+        max_pages=max_pages,
+        user_agent=user_agent,
+        delay_ms=delay_ms,
+        start_url=start_url,
+    )

@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 use spider::configuration::Configuration;
 use spider::website::Website;
 use std::io::{self, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::Mutex;
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -177,78 +180,107 @@ async fn main() {
     let mut website = Website::new(start_url.as_str());
     website.with_config(config);
 
-    // Scrape the website (async) - scrape() collects page content, crawl() only collects links
-    website.scrape().await;
-
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-
-    // Get pages - handle Option properly
-    let pages = match website.get_pages() {
-        Some(p) => p,
-        None => return,
+    // Use subscribe + crawl pattern (recommended by spider v2 API)
+    // subscribe() creates a channel that receives pages as they are crawled
+    let mut rx = match website.subscribe(16) {
+        Some(rx) => rx,
+        None => {
+            eprintln!("[spider_md] Failed to create subscription channel");
+            std::process::exit(1);
+        }
     };
 
-    let mut page_count = 0;
+    let max_pages = args.max_pages;
+    let base_url_clone = base_url.clone();
+    let page_count = Arc::new(AtomicUsize::new(0));
+    let page_count_clone = page_count.clone();
+    let collected_outputs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let outputs_clone = collected_outputs.clone();
 
-    // Process each page (with max_pages limit)
-    for page in pages.iter() {
-        if page_count >= args.max_pages {
-            break;
+    // Spawn task to process pages as they arrive via the subscription channel
+    let processor = tokio::spawn(async move {
+        while let Ok(page) = rx.recv().await {
+            let current = page_count_clone.load(Ordering::Relaxed);
+            if current >= max_pages {
+                break;
+            }
+
+            let page_url = page.get_url();
+
+            // Filter by scope
+            if !is_url_in_scope(page_url, &base_url_clone) {
+                continue;
+            }
+
+            let html = page.get_html();
+
+            // Skip empty pages
+            if html.is_empty() {
+                continue;
+            }
+
+            // Extract title
+            let title = extract_title(&html);
+
+            // Compute hash of raw HTML
+            let content_hash = compute_hash(&html);
+
+            // Extract HTTP cache headers if available
+            let (etag, last_modified) = if let Some(ref headers) = page.headers {
+                let etag: Option<String> = headers
+                    .get("etag")
+                    .or_else(|| headers.get("ETag"))
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let last_modified: Option<String> = headers
+                    .get("last-modified")
+                    .or_else(|| headers.get("Last-Modified"))
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                (etag, last_modified)
+            } else {
+                (None, None)
+            };
+
+            // Create output with raw HTML
+            let output = PageOutput {
+                url: page_url.to_string(),
+                title,
+                html,
+                content_hash,
+                etag,
+                last_modified,
+            };
+
+            // Serialize and collect
+            if let Ok(json) = serde_json::to_string(&output) {
+                outputs_clone.lock().await.push(json);
+                page_count_clone.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        let page_url = page.get_url();
+    });
 
-        // Filter by scope
-        if !is_url_in_scope(page_url, &base_url) {
-            continue;
-        }
+    // Start the crawl (pages are sent to the subscriber as they are discovered)
+    eprintln!("[spider_md] Starting crawl of {}", start_url);
+    website.crawl().await;
+    website.unsubscribe();
+    eprintln!("[spider_md] Crawl completed");
 
-        let html = page.get_html();
+    // Wait for processor to finish
+    let _ = processor.await;
 
-        // Skip empty pages
-        if html.is_empty() {
-            continue;
-        }
-
-        // Extract title
-        let title = extract_title(&html);
-
-        // Compute hash of raw HTML
-        let content_hash = compute_hash(&html);
-
-        // Extract HTTP cache headers if available
-        let (etag, last_modified) = if let Some(ref headers) = page.headers {
-            let etag: Option<String> = headers
-                .get("etag")
-                .or_else(|| headers.get("ETag"))
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let last_modified: Option<String> = headers
-                .get("last-modified")
-                .or_else(|| headers.get("Last-Modified"))
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            (etag, last_modified)
-        } else {
-            (None, None)
-        };
-
-        // Create output with raw HTML
-        let output = PageOutput {
-            url: page_url.to_string(),
-            title,
-            html,
-            content_hash,
-            etag,
-            last_modified,
-        };
-
-        // Write JSON line
-        if let Ok(json) = serde_json::to_string(&output) {
-            let _ = writeln!(handle, "{}", json);
-            page_count += 1;
-        }
+    // Write all collected outputs to stdout
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    let outputs = collected_outputs.lock().await;
+    for json in outputs.iter() {
+        let _ = writeln!(handle, "{}", json);
     }
+
+    eprintln!(
+        "[spider_md] Done: {} pages collected",
+        page_count.load(Ordering::Relaxed)
+    );
 }
 
 #[cfg(test)]
