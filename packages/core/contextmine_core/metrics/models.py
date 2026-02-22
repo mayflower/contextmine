@@ -17,6 +17,14 @@ class FileMetricRecord:
     coupling_in: int
     coupling_out: int
     coupling: float
+    cohesion: float = 1.0
+    instability: float = 0.0
+    fan_in: int = 0
+    fan_out: int = 0
+    cycle_participation: bool = False
+    cycle_size: int = 0
+    duplication_ratio: float = 0.0
+    crap_score: float | None = None
     change_frequency: float = 0.0
     churn: float = 0.0
     coverage: float | None = None
@@ -31,6 +39,14 @@ class FileMetricRecord:
             "coupling_in": self.coupling_in,
             "coupling_out": self.coupling_out,
             "coupling": self.coupling,
+            "cohesion": self.cohesion,
+            "instability": self.instability,
+            "fan_in": self.fan_in,
+            "fan_out": self.fan_out,
+            "cycle_participation": self.cycle_participation,
+            "cycle_size": self.cycle_size,
+            "duplication_ratio": self.duplication_ratio,
+            "crap_score": self.crap_score,
             "change_frequency": self.change_frequency,
             "churn": self.churn,
             "coverage": self.coverage,
@@ -47,6 +63,16 @@ class FileMetricRecord:
             coupling_in=int(payload["coupling_in"]),
             coupling_out=int(payload["coupling_out"]),
             coupling=float(payload["coupling"]),
+            cohesion=float(payload.get("cohesion", 1.0) or 1.0),
+            instability=float(payload.get("instability", 0.0) or 0.0),
+            fan_in=int(payload.get("fan_in", 0) or 0),
+            fan_out=int(payload.get("fan_out", 0) or 0),
+            cycle_participation=bool(payload.get("cycle_participation", False)),
+            cycle_size=int(payload.get("cycle_size", 0) or 0),
+            duplication_ratio=float(payload.get("duplication_ratio", 0.0) or 0.0),
+            crap_score=(
+                float(payload["crap_score"]) if payload.get("crap_score") is not None else None
+            ),
             change_frequency=float(payload.get("change_frequency", 0.0) or 0.0),
             churn=float(payload.get("churn", 0.0) or 0.0),
             coverage=(float(payload["coverage"]) if payload.get("coverage") is not None else None),

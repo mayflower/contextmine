@@ -22,6 +22,14 @@ class _MetricValues:
     coupling: float
     coverage: float
     complexity: float
+    cohesion: float
+    instability: float
+    fan_in: float
+    fan_out: float
+    cycle_participation: float
+    cycle_size: float
+    duplication_ratio: float
+    crap_score: float
     change_frequency: float
     churn: float
 
@@ -33,6 +41,14 @@ class _MetricAccumulator:
     coupling_weighted: float = 0.0
     coverage_weighted: float = 0.0
     complexity_weighted: float = 0.0
+    cohesion_weighted: float = 0.0
+    instability_weighted: float = 0.0
+    fan_in_weighted: float = 0.0
+    fan_out_weighted: float = 0.0
+    cycle_participation_weighted: float = 0.0
+    cycle_size_weighted: float = 0.0
+    duplication_ratio_weighted: float = 0.0
+    crap_score_weighted: float = 0.0
     change_frequency_weighted: float = 0.0
     churn_weighted: float = 0.0
     total_weight: float = 0.0
@@ -45,6 +61,14 @@ class _MetricAccumulator:
         self.coupling_weighted += values.coupling * weight
         self.coverage_weighted += values.coverage * weight
         self.complexity_weighted += values.complexity * weight
+        self.cohesion_weighted += values.cohesion * weight
+        self.instability_weighted += values.instability * weight
+        self.fan_in_weighted += values.fan_in * weight
+        self.fan_out_weighted += values.fan_out * weight
+        self.cycle_participation_weighted += values.cycle_participation * weight
+        self.cycle_size_weighted += values.cycle_size * weight
+        self.duplication_ratio_weighted += values.duplication_ratio * weight
+        self.crap_score_weighted += values.crap_score * weight
         self.change_frequency_weighted += values.change_frequency * weight
         self.churn_weighted += values.churn * weight
 
@@ -56,6 +80,14 @@ class _MetricAccumulator:
                 coupling=0.0,
                 coverage=0.0,
                 complexity=0.0,
+                cohesion=0.0,
+                instability=0.0,
+                fan_in=0.0,
+                fan_out=0.0,
+                cycle_participation=0.0,
+                cycle_size=0.0,
+                duplication_ratio=0.0,
+                crap_score=0.0,
                 change_frequency=0.0,
                 churn=0.0,
             )
@@ -65,6 +97,14 @@ class _MetricAccumulator:
             coupling=self.coupling_weighted / self.total_weight,
             coverage=self.coverage_weighted / self.total_weight,
             complexity=self.complexity_weighted / self.total_weight,
+            cohesion=self.cohesion_weighted / self.total_weight,
+            instability=self.instability_weighted / self.total_weight,
+            fan_in=self.fan_in_weighted / self.total_weight,
+            fan_out=self.fan_out_weighted / self.total_weight,
+            cycle_participation=self.cycle_participation_weighted / self.total_weight,
+            cycle_size=self.cycle_size_weighted / self.total_weight,
+            duplication_ratio=self.duplication_ratio_weighted / self.total_weight,
+            crap_score=self.crap_score_weighted / self.total_weight,
             change_frequency=self.change_frequency_weighted / self.total_weight,
             churn=self.churn_weighted / self.total_weight,
         )
@@ -78,6 +118,14 @@ def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
             coupling=0.0,
             coverage=0.0,
             complexity=0.0,
+            cohesion=0.0,
+            instability=0.0,
+            fan_in=0.0,
+            fan_out=0.0,
+            cycle_participation=0.0,
+            cycle_size=0.0,
+            duplication_ratio=0.0,
+            crap_score=0.0,
             change_frequency=0.0,
             churn=0.0,
         )
@@ -87,6 +135,14 @@ def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
         coupling=float(snapshot.coupling or 0.0),
         coverage=float(snapshot.coverage or 0.0),
         complexity=float(snapshot.complexity or 0.0),
+        cohesion=float(snapshot.cohesion or 0.0),
+        instability=float(snapshot.instability or 0.0),
+        fan_in=float(snapshot.fan_in or 0),
+        fan_out=float(snapshot.fan_out or 0),
+        cycle_participation=1.0 if bool(snapshot.cycle_participation) else 0.0,
+        cycle_size=float(snapshot.cycle_size or 0),
+        duplication_ratio=float(snapshot.duplication_ratio or 0.0),
+        crap_score=float(snapshot.crap_score or 0.0),
         change_frequency=float(snapshot.change_frequency or 0.0),
         churn=float(((snapshot.meta or {}).get("churn", 0.0)) or 0.0),
     )
@@ -138,6 +194,14 @@ def _metric_from_meta(meta: dict[str, Any] | None) -> _MetricValues:
         coupling=_coerce_float(data.get("coupling")),
         coverage=_coerce_float(data.get("coverage")),
         complexity=_coerce_float(data.get("complexity")),
+        cohesion=_coerce_float(data.get("cohesion")),
+        instability=_coerce_float(data.get("instability")),
+        fan_in=_coerce_float(data.get("fan_in")),
+        fan_out=_coerce_float(data.get("fan_out")),
+        cycle_participation=_coerce_float(data.get("cycle_participation")),
+        cycle_size=_coerce_float(data.get("cycle_size")),
+        duplication_ratio=_coerce_float(data.get("duplication_ratio")),
+        crap_score=_coerce_float(data.get("crap_score")),
         change_frequency=_coerce_float(data.get("change_frequency")),
         churn=_coerce_float(data.get("churn")),
     )
@@ -170,6 +234,14 @@ def _attributes_from_metrics(values: _MetricValues) -> dict[str, float | int]:
         "coupling": float(values.coupling),
         "coverage": float(values.coverage),
         "complexity": float(values.complexity),
+        "cohesion": float(values.cohesion),
+        "instability": float(values.instability),
+        "fan_in": float(values.fan_in),
+        "fan_out": float(values.fan_out),
+        "cycle_participation": float(values.cycle_participation),
+        "cycle_size": float(values.cycle_size),
+        "duplication_ratio": float(values.duplication_ratio),
+        "crap_score": float(values.crap_score),
         "change_frequency": float(values.change_frequency),
         "churn": float(values.churn),
     }
@@ -449,6 +521,14 @@ async def export_codecharta_json(
                 "coupling": "absolute",
                 "coverage": "relative",
                 "complexity": "absolute",
+                "cohesion": "relative",
+                "instability": "relative",
+                "fan_in": "absolute",
+                "fan_out": "absolute",
+                "cycle_participation": "relative",
+                "cycle_size": "absolute",
+                "duplication_ratio": "relative",
+                "crap_score": "absolute",
                 "change_frequency": "absolute",
                 "churn": "absolute",
             },

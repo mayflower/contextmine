@@ -9,6 +9,7 @@ from typing import Any
 from contextmine_core.metrics.complexity_loc_lizard import extract_complexity_loc_metrics
 from contextmine_core.metrics.coupling_from_snapshot import compute_file_coupling_from_snapshots
 from contextmine_core.metrics.discovery import to_repo_relative_path
+from contextmine_core.metrics.duplication import compute_file_duplication_ratio
 from contextmine_core.metrics.models import FileMetricRecord, MetricsGateError, ProjectMetricBundle
 from contextmine_core.semantic_snapshot.models import Snapshot
 
@@ -120,7 +121,8 @@ def _build_file_metrics(
     language: str,
     relevant_files: set[str],
     complexity_map: dict[str, dict[str, float | int]],
-    coupling_map: dict[str, dict[str, int | float]],
+    coupling_map: dict[str, dict[str, int | float | bool]],
+    duplication_map: dict[str, float],
     coupling_provenance: dict[str, Any],
     strict_mode: bool,
 ) -> list[FileMetricRecord]:
@@ -161,10 +163,22 @@ def _build_file_metrics(
             coupling_in=int(coupling_in),
             coupling_out=int(coupling_out),
             coupling=float(coupling_value),
+            cohesion=float(coupling_entry.get("cohesion", 1.0) or 1.0),
+            instability=float(coupling_entry.get("instability", 0.0) or 0.0),
+            fan_in=int(coupling_entry.get("fan_in", 0) or 0),
+            fan_out=int(coupling_entry.get("fan_out", 0) or 0),
+            cycle_participation=bool(coupling_entry.get("cycle_participation", False)),
+            cycle_size=int(coupling_entry.get("cycle_size", 0) or 0),
+            duplication_ratio=float(duplication_map.get(file_path, 0.0) or 0.0),
+            crap_score=None,
             coverage=None,
             sources={
                 "complexity": "lizard",
                 "coupling": coupling_provenance,
+                "duplication": {
+                    "provider": "line_hash",
+                    "normalization": "strip_whitespace_and_comments",
+                },
             },
         )
         records.append(record)
@@ -219,12 +233,21 @@ def run_polyglot_metrics_pipeline(
             project_root=project_root,
             relevant_files=relevant_files,
         )
+        duplication_map, duplication_provenance = compute_file_duplication_ratio(
+            repo_root=repo_root,
+            relevant_files=relevant_files,
+        )
+        coupling_provenance = {
+            **coupling_provenance,
+            "duplication": duplication_provenance,
+        }
 
         files = _build_file_metrics(
             language=language,
             relevant_files=relevant_files,
             complexity_map=complexity_map,
             coupling_map=coupling_map,
+            duplication_map=duplication_map,
             coupling_provenance=coupling_provenance,
             strict_mode=strict_mode,
         )

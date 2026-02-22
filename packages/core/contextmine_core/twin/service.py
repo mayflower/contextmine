@@ -50,6 +50,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 
+def _compute_crap_score(
+    complexity: float | None,
+    coverage: float | None,
+) -> float | None:
+    """Compute CRAP score when both complexity and coverage are available."""
+    if complexity is None or coverage is None:
+        return None
+    bounded_coverage = min(max(float(coverage), 0.0), 100.0) / 100.0
+    cplx = float(complexity)
+    return (cplx * cplx * ((1.0 - bounded_coverage) ** 3)) + cplx
+
+
 def infer_node_layers(kind: str, meta: dict[str, Any] | None = None) -> set[TwinLayer]:
     """Infer layers for a node kind."""
     del meta
@@ -905,6 +917,14 @@ async def refresh_metric_snapshots(
             coupling=float(meta["coupling"]),
             coverage=float(meta.get("coverage", 0.0) or 0.0),
             complexity=float(meta["complexity"]),
+            cohesion=float(meta.get("cohesion", 1.0) or 1.0),
+            instability=float(meta.get("instability", 0.0) or 0.0),
+            fan_in=int(meta.get("fan_in", 0) or 0),
+            fan_out=int(meta.get("fan_out", 0) or 0),
+            cycle_participation=bool(meta.get("cycle_participation", False)),
+            cycle_size=int(meta.get("cycle_size", 0) or 0),
+            duplication_ratio=float(meta.get("duplication_ratio", 0.0) or 0.0),
+            crap_score=(float(meta["crap_score"]) if meta.get("crap_score") is not None else None),
             change_frequency=float(meta.get("change_frequency", 0.0) or 0.0),
             meta=meta,
         )
@@ -962,6 +982,16 @@ async def apply_file_metrics_to_scenario(
                 "coupling_in": int(metric["coupling_in"]),
                 "coupling_out": int(metric["coupling_out"]),
                 "coupling": float(metric["coupling"]),
+                "cohesion": float(metric.get("cohesion", 1.0) or 1.0),
+                "instability": float(metric.get("instability", 0.0) or 0.0),
+                "fan_in": int(metric.get("fan_in", 0) or 0),
+                "fan_out": int(metric.get("fan_out", 0) or 0),
+                "cycle_participation": bool(metric.get("cycle_participation", False)),
+                "cycle_size": int(metric.get("cycle_size", 0) or 0),
+                "duplication_ratio": float(metric.get("duplication_ratio", 0.0) or 0.0),
+                "crap_score": (
+                    float(metric["crap_score"]) if metric.get("crap_score") is not None else None
+                ),
                 "change_frequency": float(metric.get("change_frequency", 0.0) or 0.0),
                 "churn": float(metric.get("churn", 0.0) or 0.0),
                 "coverage": None,
@@ -1013,12 +1043,15 @@ async def apply_coverage_metrics_to_scenario(
 
         metrics_sources = dict(meta.get("metrics_sources") or {})
         metrics_sources["coverage"] = coverage_sources.get(file_path, {})
+        complexity_value = float(meta["complexity"]) if meta.get("complexity") is not None else None
+        coverage_value = float(coverage_map[file_path])
         meta.update(
             {
-                "coverage": float(coverage_map[file_path]),
+                "coverage": coverage_value,
                 "coverage_ready": True,
                 "metrics_real": bool(meta.get("metrics_structural_ready")),
                 "metrics_sources": metrics_sources,
+                "crap_score": _compute_crap_score(complexity_value, coverage_value),
             }
         )
         if commit_sha:

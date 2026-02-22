@@ -46,13 +46,31 @@ from contextmine_core.models import (
 from contextmine_core.twin import (
     GraphProjection,
     approve_and_execute_intent,
+    coerce_source_ids,
     create_to_be_scenario,
+    export_findings_sarif,
+    find_taint_flows_multi,
+    find_taint_sinks_multi,
+    find_taint_sources_multi,
+    get_cfg_multi,
+    get_codebase_summary_multi,
+    get_collection_twin_diff,
+    get_collection_twin_status,
     get_full_scenario_graph,
     get_or_create_as_is_scenario,
     get_scenario_graph,
+    get_variable_flow_multi,
+    list_calls_multi,
+    list_collection_twin_events,
+    list_findings,
+    list_methods_multi,
     list_scenario_patches,
+    parse_timestamp_value,
     refresh_metric_snapshots,
+    sanitize_regex_query,
+    store_findings,
     submit_intent,
+    trigger_collection_refresh,
 )
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -82,6 +100,24 @@ class ExportRequest(BaseModel):
     max_nodes: int | None = Field(default=None, ge=10, le=5000)
 
 
+class TwinRefreshRequest(BaseModel):
+    source_ids: list[str] | None = None
+    force: bool = False
+
+
+class StoreFindingsRequest(BaseModel):
+    scenario_id: str | None = None
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TaintFlowsRequest(BaseModel):
+    scenario_id: str | None = None
+    language: str | None = None
+    max_hops: int = Field(default=6, ge=1, le=20)
+    max_results: int = Field(default=50, ge=1, le=200)
+    engines: list[str] | None = None
+
+
 def _user_id_or_401(request: Request) -> uuid.UUID:
     session = get_session(request)
     user_id = session.get("user_id")
@@ -109,6 +145,22 @@ def _parse_collection_id(collection_id: str) -> uuid.UUID:
         return uuid.UUID(collection_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid collection_id") from e
+
+
+def _parse_optional_scenario_id(scenario_id: str | None) -> uuid.UUID | None:
+    if not scenario_id:
+        return None
+    try:
+        return uuid.UUID(scenario_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid scenario_id") from e
+
+
+def _parse_engines_query(engines: str | None) -> list[str] | None:
+    if not engines:
+        return None
+    values = [item.strip() for item in engines.split(",") if item.strip()]
+    return values or None
 
 
 def _serialize_scenario(scenario: TwinScenario) -> dict:
@@ -1034,6 +1086,424 @@ async def graph_neighborhood_view(
         }
 
 
+@router.get("/collections/{collection_id}/status")
+async def twin_status_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        return await get_collection_twin_status(
+            db,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+        )
+
+
+@router.get("/collections/{collection_id}/timeline")
+async def twin_timeline_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    source_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    from_ts: str | None = Query(default=None),
+    to_ts: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    del scenario_id
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    try:
+        source_uuid = uuid.UUID(source_id) if source_id else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source_id") from e
+    try:
+        parsed_from = parse_timestamp_value(from_ts)
+        parsed_to = parse_timestamp_value(to_ts)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid timestamp format") from e
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        return await list_collection_twin_events(
+            db,
+            collection_id=collection_uuid,
+            page=page,
+            limit=limit,
+            source_id=source_uuid,
+            event_type=event_type,
+            status=status,
+            from_ts=parsed_from,
+            to_ts=parsed_to,
+        )
+
+
+@router.post("/collections/{collection_id}/refresh")
+async def twin_refresh(
+    request: Request,
+    collection_id: str,
+    body: TwinRefreshRequest,
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    try:
+        source_ids = coerce_source_ids(body.source_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source_ids") from e
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        payload = await trigger_collection_refresh(
+            db,
+            collection_id=collection_uuid,
+            source_ids=source_ids or None,
+            force=body.force,
+        )
+        await db.commit()
+        return payload
+
+
+@router.get("/collections/{collection_id}/views/diff")
+async def twin_diff_view(
+    request: Request,
+    collection_id: str,
+    from_version: int = Query(ge=1),
+    to_version: int = Query(ge=1),
+    scenario_id: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await get_collection_twin_diff(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                from_version=from_version,
+                to_version=to_version,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/summary")
+async def twin_analysis_summary(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await get_codebase_summary_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/methods")
+async def twin_analysis_methods(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    try:
+        safe_query = sanitize_regex_query(query)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await list_methods_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                query=safe_query,
+                page=page,
+                limit=limit,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/calls")
+async def twin_analysis_calls(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await list_calls_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                page=page,
+                limit=limit,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/cfg")
+async def twin_analysis_cfg(
+    request: Request,
+    collection_id: str,
+    node_ref: str = Query(min_length=1),
+    scenario_id: str | None = Query(default=None),
+    depth: int = Query(default=2, ge=1, le=8),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await get_cfg_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                node_ref=node_ref,
+                depth=depth,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/variable-flow")
+async def twin_analysis_variable_flow(
+    request: Request,
+    collection_id: str,
+    node_ref: str = Query(min_length=1),
+    variable: str | None = Query(default=None),
+    scenario_id: str | None = Query(default=None),
+    max_hops: int = Query(default=6, ge=1, le=20),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await get_variable_flow_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                node_ref=node_ref,
+                variable=variable,
+                max_hops=max_hops,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/taint/sources")
+async def twin_analysis_taint_sources(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=300),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await find_taint_sources_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                language=language,
+                limit=limit,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/collections/{collection_id}/analysis/taint/sinks")
+async def twin_analysis_taint_sinks(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=300),
+    engines: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    selected_engines = _parse_engines_query(engines)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await find_taint_sinks_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                language=language,
+                limit=limit,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=selected_engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.post("/collections/{collection_id}/analysis/taint/flows")
+async def twin_analysis_taint_flows(
+    request: Request,
+    collection_id: str,
+    body: TaintFlowsRequest,
+) -> dict:
+    user_id = _user_id_or_401(request)
+    settings = get_settings()
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(body.scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        try:
+            return await find_taint_flows_multi(
+                db,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                language=body.language,
+                max_hops=body.max_hops,
+                max_results=body.max_results,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=body.engines,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.post("/collections/{collection_id}/analysis/findings/store")
+async def twin_store_findings(
+    request: Request,
+    collection_id: str,
+    body: StoreFindingsRequest,
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(body.scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        payload = await store_findings(
+            db,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+            findings=body.findings,
+        )
+        await db.commit()
+        return payload
+
+
+@router.get("/collections/{collection_id}/analysis/findings")
+async def twin_list_findings(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    min_severity: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        return await list_findings(
+            db,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+            status=status,
+            min_severity=min_severity,
+            page=page,
+            limit=limit,
+        )
+
+
+@router.get("/collections/{collection_id}/analysis/findings/sarif")
+async def twin_export_findings_sarif(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    min_severity: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        return await export_findings_sarif(
+            db,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+            status=status,
+            min_severity=min_severity,
+        )
+
+
 @router.get("/collections/{collection_id}/views/topology")
 async def topology_view(
     request: Request,
@@ -1891,6 +2361,46 @@ async def city_view(
             if metrics_ready and total
             else None
         )
+        cohesion_avg = (
+            sum(float(metric.cohesion or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        instability_avg = (
+            sum(float(metric.instability or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        duplication_ratio_avg = (
+            sum(float(metric.duplication_ratio or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        crap_score_avg = (
+            sum(float(metric.crap_score or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        fan_in_avg = (
+            sum(float(metric.fan_in or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        fan_out_avg = (
+            sum(float(metric.fan_out or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
+        cycle_participation_ratio = (
+            sum(1.0 for metric in metrics if bool(metric.cycle_participation)) / total
+            if metrics_ready and total
+            else None
+        )
+        cycle_size_avg = (
+            sum(float(metric.cycle_size or 0.0) for metric in metrics) / total
+            if metrics_ready and total
+            else None
+        )
         change_frequency_avg = (
             sum(float(metric.change_frequency or 0.0) for metric in metrics) / total
             if metrics_ready and total
@@ -1919,6 +2429,14 @@ async def city_view(
                 "coverage_avg": coverage_avg,
                 "complexity_avg": complexity_avg,
                 "coupling_avg": coupling_avg,
+                "cohesion_avg": cohesion_avg,
+                "instability_avg": instability_avg,
+                "duplication_ratio_avg": duplication_ratio_avg,
+                "crap_score_avg": crap_score_avg,
+                "fan_in_avg": fan_in_avg,
+                "fan_out_avg": fan_out_avg,
+                "cycle_participation_ratio": cycle_participation_ratio,
+                "cycle_size_avg": cycle_size_avg,
                 "change_frequency_avg": change_frequency_avg,
                 "churn_avg": churn_avg,
             },
@@ -1931,6 +2449,16 @@ async def city_view(
                     "coverage": metric.coverage,
                     "complexity": metric.complexity,
                     "coupling": metric.coupling,
+                    "cohesion": float(metric.cohesion or 0.0),
+                    "instability": float(metric.instability or 0.0),
+                    "fan_in": int(metric.fan_in or 0),
+                    "fan_out": int(metric.fan_out or 0),
+                    "cycle_participation": bool(metric.cycle_participation),
+                    "cycle_size": int(metric.cycle_size or 0),
+                    "duplication_ratio": float(metric.duplication_ratio or 0.0),
+                    "crap_score": (
+                        float(metric.crap_score) if metric.crap_score is not None else None
+                    ),
                     "change_frequency": metric.change_frequency,
                     "churn": float((metric.meta or {}).get("churn", 0.0) or 0.0),
                 }

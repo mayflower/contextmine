@@ -89,6 +89,14 @@ async def test_apply_file_metrics_to_scenario_sets_change_frequency_and_churn(
                 "coupling_in": 1,
                 "coupling_out": 2,
                 "coupling": 3.0,
+                "cohesion": 0.25,
+                "instability": 0.66,
+                "fan_in": 3,
+                "fan_out": 5,
+                "cycle_participation": True,
+                "cycle_size": 4,
+                "duplication_ratio": 0.12,
+                "crap_score": None,
                 "change_frequency": 5.0,
                 "churn": 18.0,
                 "sources": {},
@@ -100,6 +108,13 @@ async def test_apply_file_metrics_to_scenario_sets_change_frequency_and_churn(
     assert updated == 1
     assert file_node.meta["change_frequency"] == pytest.approx(5.0)
     assert file_node.meta["churn"] == pytest.approx(18.0)
+    assert file_node.meta["cohesion"] == pytest.approx(0.25)
+    assert file_node.meta["instability"] == pytest.approx(0.66)
+    assert file_node.meta["fan_in"] == 3
+    assert file_node.meta["fan_out"] == 5
+    assert bool(file_node.meta["cycle_participation"]) is True
+    assert file_node.meta["cycle_size"] == 4
+    assert file_node.meta["duplication_ratio"] == pytest.approx(0.12)
     assert bool(file_node.meta["metrics_structural_ready"]) is True
     assert bool(file_node.meta["coverage_ready"]) is False
 
@@ -118,6 +133,14 @@ async def test_refresh_metric_snapshots_keeps_churn_in_snapshot_meta(
         "coupling": 2.0,
         "coverage": 80.0,
         "complexity": 7.0,
+        "cohesion": 0.8,
+        "instability": 0.2,
+        "fan_in": 2,
+        "fan_out": 1,
+        "cycle_participation": False,
+        "cycle_size": 0,
+        "duplication_ratio": 0.05,
+        "crap_score": 8.4,
         "change_frequency": 4.0,
         "churn": 15.0,
     }
@@ -136,4 +159,12 @@ async def test_refresh_metric_snapshots_keeps_churn_in_snapshot_meta(
         .one()
     )
     assert snapshot.change_frequency == pytest.approx(4.0)
+    assert snapshot.cohesion == pytest.approx(0.8)
+    assert snapshot.instability == pytest.approx(0.2)
+    assert snapshot.fan_in == 2
+    assert snapshot.fan_out == 1
+    assert bool(snapshot.cycle_participation) is False
+    assert snapshot.cycle_size == 0
+    assert snapshot.duplication_ratio == pytest.approx(0.05)
+    assert snapshot.crap_score == pytest.approx(8.4)
     assert float((snapshot.meta or {}).get("churn", 0.0)) == pytest.approx(15.0)

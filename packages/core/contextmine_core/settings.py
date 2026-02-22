@@ -209,6 +209,34 @@ class Settings(BaseSettings):
         default="ingest_coverage_metrics",
         description="Prefect flow name used for asynchronous coverage ingest processing",
     )
+    twin_analysis_cache_ttl_seconds: int = Field(
+        default=300,
+        description="TTL for cached twin analysis query payloads in seconds",
+    )
+    twin_event_retention_days: int = Field(
+        default=90,
+        description="Retention target for twin materialization lifecycle events",
+    )
+    joern_server_url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for Joern HTTP server used by twin analysis endpoints",
+    )
+    joern_query_timeout_seconds: int = Field(
+        default=120,
+        description="Timeout for Joern query execution in seconds",
+    )
+    joern_parse_binary: str = Field(
+        default="joern-parse",
+        description="Binary name/path for Joern CPG generation",
+    )
+    joern_cpg_root: str = Field(
+        default="/data/joern-cpg",
+        description="Filesystem root for generated Joern CPG artifacts",
+    )
+    repos_root: str = Field(
+        default="/data/repos",
+        description="Filesystem root where GitHub sources are checked out for LSP analysis",
+    )
 
     # OpenTelemetry Settings (disabled by default - no overhead when disabled)
     otel_enabled: bool = Field(

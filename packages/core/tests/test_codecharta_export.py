@@ -122,6 +122,14 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
                 coupling=2.0,
                 coverage=70.0,
                 complexity=4.0,
+                cohesion=0.4,
+                instability=0.6,
+                fan_in=1,
+                fan_out=3,
+                cycle_participation=False,
+                cycle_size=0,
+                duplication_ratio=0.1,
+                crap_score=5.5,
                 change_frequency=1.0,
                 meta={"churn": 10.0},
             ),
@@ -134,6 +142,14 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
                 coupling=5.0,
                 coverage=80.0,
                 complexity=9.0,
+                cohesion=0.7,
+                instability=0.3,
+                fan_in=4,
+                fan_out=2,
+                cycle_participation=True,
+                cycle_size=2,
+                duplication_ratio=0.2,
+                crap_score=12.0,
                 change_frequency=3.0,
                 meta={"churn": 30.0},
             ),
@@ -159,6 +175,10 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
     assert leaves["/root/apps/api/main.py"]["loc"] == 20
     assert leaves["/root/apps/web/App.tsx"]["symbol_count"] == 6
     assert leaves["/root/apps/web/App.tsx"]["complexity"] == pytest.approx(9.0)
+    assert leaves["/root/apps/web/App.tsx"]["cohesion"] == pytest.approx(0.7)
+    assert leaves["/root/apps/web/App.tsx"]["instability"] == pytest.approx(0.3)
+    assert leaves["/root/apps/web/App.tsx"]["fan_in"] == pytest.approx(4.0)
+    assert leaves["/root/apps/web/App.tsx"]["duplication_ratio"] == pytest.approx(0.2)
     assert leaves["/root/apps/web/App.tsx"]["churn"] == pytest.approx(30.0)
     assert payload["attributeTypes"]["nodes"]["churn"] == "absolute"
 

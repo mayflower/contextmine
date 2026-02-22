@@ -29,6 +29,48 @@ def escape_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+async def _resolve_collection_access(
+    db,
+    *,
+    collection_id: str,
+    user_id: uuid.UUID | None,
+) -> tuple[Collection | None, str | None]:
+    try:
+        collection_uuid = uuid.UUID(collection_id)
+    except ValueError:
+        return None, f"Invalid collection_id: {collection_id}"
+
+    collection = (
+        await db.execute(select(Collection).where(Collection.id == collection_uuid))
+    ).scalar_one_or_none()
+    if not collection:
+        return None, "Collection not found."
+
+    has_access = collection.visibility == CollectionVisibility.GLOBAL
+    if user_id and not has_access:
+        if collection.owner_user_id == user_id:
+            has_access = True
+        else:
+            member_result = await db.execute(
+                select(CollectionMember).where(
+                    CollectionMember.collection_id == collection_uuid,
+                    CollectionMember.user_id == user_id,
+                )
+            )
+            has_access = member_result.scalar_one_or_none() is not None
+
+    if not has_access:
+        return None, "Access denied to this collection."
+    return collection, None
+
+
+def _parse_csv_list(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
+
+
 # Create auth provider (uses GitHub OAuth)
 settings = get_settings()
 try:
@@ -1705,6 +1747,458 @@ async def mcp_query_twin_cypher(
             return json.dumps({"rows": rows, "count": len(rows)}, indent=2)
     except Exception as e:
         return f"# Error\n\nCypher query failed: {e}"
+
+
+@mcp.tool(name="get_twin_status")
+async def mcp_get_twin_status(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+) -> str:
+    """Get digital twin freshness/status for a collection."""
+    try:
+        from contextmine_core.twin import get_collection_twin_status
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            scenario_uuid = uuid.UUID(scenario_id) if scenario_id else None
+            payload = await get_collection_twin_status(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario_uuid,
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch twin status: {e}"
+
+
+@mcp.tool(name="get_twin_timeline")
+async def mcp_get_twin_timeline(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    source_id: Annotated[str | None, "Optional source UUID"] = None,
+    event_type: Annotated[str | None, "Optional event type filter"] = None,
+    status: Annotated[str | None, "Optional status filter"] = None,
+    page: Annotated[int, "Page index"] = 0,
+    limit: Annotated[int, "Items per page"] = 50,
+) -> str:
+    """Read paginated twin timeline events."""
+    del scenario_id
+    try:
+        from contextmine_core.twin import list_collection_twin_events
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            source_uuid = uuid.UUID(source_id) if source_id else None
+            payload = await list_collection_twin_events(
+                db,
+                collection_id=collection.id,
+                page=max(page, 0),
+                limit=max(min(limit, 200), 1),
+                source_id=source_uuid,
+                event_type=event_type,
+                status=status,
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch twin timeline: {e}"
+
+
+@mcp.tool(name="refresh_twin")
+async def mcp_refresh_twin(
+    collection_id: Annotated[str, "Collection UUID"],
+    source_ids: Annotated[str | None, "Comma-separated source UUIDs (optional)"] = None,
+    force: Annotated[bool, "Force refresh even if revision unchanged"] = False,
+) -> str:
+    """Queue twin materialization refresh for one collection."""
+    try:
+        from contextmine_core.twin import coerce_source_ids, trigger_collection_refresh
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            parsed_source_ids = coerce_source_ids(_parse_csv_list(source_ids))
+            payload = await trigger_collection_refresh(
+                db,
+                collection_id=collection.id,
+                source_ids=parsed_source_ids or None,
+                force=force,
+            )
+            await db.commit()
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to refresh twin: {e}"
+
+
+@mcp.tool(name="get_codebase_summary")
+async def mcp_get_codebase_summary(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Get multi-engine codebase summary."""
+    try:
+        from contextmine_core.twin import get_codebase_summary_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await get_codebase_summary_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch codebase summary: {e}"
+
+
+@mcp.tool(name="list_methods")
+async def mcp_list_methods(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    query: Annotated[str | None, "Optional method name filter"] = None,
+    page: Annotated[int, "Page index"] = 0,
+    limit: Annotated[int, "Items per page"] = 50,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """List methods from selected analysis engines."""
+    try:
+        from contextmine_core.twin import list_methods_multi, sanitize_regex_query
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await list_methods_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                query=sanitize_regex_query(query),
+                page=max(page, 0),
+                limit=max(min(limit, 200), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to list methods: {e}"
+
+
+@mcp.tool(name="list_calls")
+async def mcp_list_calls(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    page: Annotated[int, "Page index"] = 0,
+    limit: Annotated[int, "Items per page"] = 50,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """List call edges from selected analysis engines."""
+    try:
+        from contextmine_core.twin import list_calls_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await list_calls_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                page=max(page, 0),
+                limit=max(min(limit, 200), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to list calls: {e}"
+
+
+@mcp.tool(name="get_cfg")
+async def mcp_get_cfg(
+    collection_id: Annotated[str, "Collection UUID"],
+    node_ref: Annotated[str, "Method/node reference"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    depth: Annotated[int, "Traversal depth"] = 2,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Get CFG approximation from selected analysis engines."""
+    try:
+        from contextmine_core.twin import get_cfg_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await get_cfg_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                node_ref=node_ref,
+                depth=max(min(depth, 8), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch CFG: {e}"
+
+
+@mcp.tool(name="get_variable_flow")
+async def mcp_get_variable_flow(
+    collection_id: Annotated[str, "Collection UUID"],
+    node_ref: Annotated[str, "Method/node reference"],
+    variable: Annotated[str | None, "Optional variable name"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    max_hops: Annotated[int, "Maximum traversal hops"] = 6,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Get variable-flow approximation from selected analysis engines."""
+    try:
+        from contextmine_core.twin import get_variable_flow_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await get_variable_flow_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                node_ref=node_ref,
+                variable=variable,
+                max_hops=max(min(max_hops, 20), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to fetch variable flow: {e}"
+
+
+@mcp.tool(name="find_taint_sources")
+async def mcp_find_taint_sources(
+    collection_id: Annotated[str, "Collection UUID"],
+    language: Annotated[str | None, "Language pattern profile"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    limit: Annotated[int, "Maximum source candidates"] = 50,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Find taint source candidates from selected engines."""
+    try:
+        from contextmine_core.twin import find_taint_sources_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await find_taint_sources_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                language=language,
+                limit=max(min(limit, 300), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to find taint sources: {e}"
+
+
+@mcp.tool(name="find_taint_sinks")
+async def mcp_find_taint_sinks(
+    collection_id: Annotated[str, "Collection UUID"],
+    language: Annotated[str | None, "Language pattern profile"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    limit: Annotated[int, "Maximum sink candidates"] = 50,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Find taint sink candidates from selected engines."""
+    try:
+        from contextmine_core.twin import find_taint_sinks_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await find_taint_sinks_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                language=language,
+                limit=max(min(limit, 300), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to find taint sinks: {e}"
+
+
+@mcp.tool(name="find_taint_flows")
+async def mcp_find_taint_flows(
+    collection_id: Annotated[str, "Collection UUID"],
+    language: Annotated[str | None, "Language pattern profile"] = None,
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    max_hops: Annotated[int, "Maximum traversal hops"] = 6,
+    max_results: Annotated[int, "Maximum flows to return"] = 50,
+    engines: Annotated[str | None, "Comma-separated engines: graphrag,lsp,joern"] = None,
+) -> str:
+    """Find taint source->sink flows from selected engines."""
+    try:
+        from contextmine_core.twin import find_taint_flows_multi
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await find_taint_flows_multi(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                language=language,
+                max_hops=max(min(max_hops, 20), 1),
+                max_results=max(min(max_results, 200), 1),
+                cache_ttl_seconds=settings.twin_analysis_cache_ttl_seconds,
+                engines=_parse_csv_list(engines),
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to find taint flows: {e}"
+
+
+@mcp.tool(name="store_findings")
+async def mcp_store_findings(
+    collection_id: Annotated[str, "Collection UUID"],
+    findings_json: Annotated[str, "JSON array of normalized findings"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+) -> str:
+    """Persist normalized findings in twin_findings."""
+    try:
+        from contextmine_core.twin import store_findings
+
+        try:
+            findings = json.loads(findings_json)
+        except json.JSONDecodeError:
+            return "# Error\n\nfindings_json must be a valid JSON array."
+        if not isinstance(findings, list):
+            return "# Error\n\nfindings_json must be a JSON array."
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await store_findings(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                findings=findings,
+            )
+            await db.commit()
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to store findings: {e}"
+
+
+@mcp.tool(name="export_sarif")
+async def mcp_export_sarif(
+    collection_id: Annotated[str, "Collection UUID"],
+    scenario_id: Annotated[str | None, "Optional scenario UUID"] = None,
+    status: Annotated[str | None, "Optional finding status filter"] = None,
+    min_severity: Annotated[str | None, "Optional severity threshold"] = None,
+) -> str:
+    """Export findings as SARIF."""
+    try:
+        from contextmine_core.twin import export_findings_sarif
+
+        user_id = get_current_user_id()
+        async with get_db_session() as db:
+            collection, error = await _resolve_collection_access(
+                db, collection_id=collection_id, user_id=user_id
+            )
+            if error:
+                return f"# Error\n\n{error}"
+            if collection is None:
+                return "# Error\n\nCollection not found."
+            payload = await export_findings_sarif(
+                db,
+                collection_id=collection.id,
+                scenario_id=uuid.UUID(scenario_id) if scenario_id else None,
+                status=status,
+                min_severity=min_severity,
+            )
+            return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"# Error\n\nFailed to export SARIF: {e}"
 
 
 @mcp.tool(name="export_twin_view")

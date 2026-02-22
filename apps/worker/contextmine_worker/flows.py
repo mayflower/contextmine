@@ -1093,6 +1093,95 @@ async def sync_github_source(
     # Get current commit SHA
     new_sha = git_repo.head.commit.hexsha
     old_sha = source.cursor
+    source_version_id = None
+
+    from contextmine_core.twin import (
+        get_or_create_source_version,
+        record_twin_event,
+        set_source_version_status,
+    )
+
+    async with get_session() as session:
+        source_version = await get_or_create_source_version(
+            session,
+            collection_id=source.collection_id,
+            source_id=source.id,
+            revision_key=new_sha,
+            extractor_version="scip-kg-v1",
+            status="materializing",
+        )
+        await set_source_version_status(
+            session,
+            source_version_id=source_version.id,
+            status="materializing",
+            stats={
+                "sync_run_id": str(sync_run.id),
+                "sync_started_at": datetime.now(UTC).isoformat(),
+            },
+            started=True,
+        )
+        await record_twin_event(
+            session,
+            collection_id=source.collection_id,
+            scenario_id=None,
+            source_id=source.id,
+            source_version_id=source_version.id,
+            event_type="sync_started",
+            status="materializing",
+            payload={"sync_run_id": str(sync_run.id), "revision_key": new_sha},
+            idempotency_key=f"sync_started:{source.id}:{new_sha}",
+        )
+        await session.commit()
+        source_version_id = source_version.id
+
+    # Joern CPG generation is mandatory for GitHub twin materialization.
+    settings = get_settings()
+    cpg_path = Path(settings.joern_cpg_root) / str(source.id) / f"{new_sha}.cpg.bin"
+    cpg_path.parent.mkdir(parents=True, exist_ok=True)
+    import subprocess
+
+    parse_command = [
+        settings.joern_parse_binary,
+        str(repo_path),
+        "--output",
+        str(cpg_path),
+    ]
+    parse_result = subprocess.run(parse_command, check=False, capture_output=True, text=True)
+    if parse_result.returncode != 0:
+        raise RuntimeError(
+            "JOERN_PARSE_FAILED: "
+            f"binary={settings.joern_parse_binary} "
+            f"code={parse_result.returncode} "
+            f"stderr={parse_result.stderr.strip()}"
+        )
+    if not cpg_path.exists():
+        raise RuntimeError(f"JOERN_PARSE_FAILED: expected CPG artifact missing at {cpg_path}")
+
+    async with get_session() as session:
+        from contextmine_core.models import TwinSourceVersion
+
+        twin_source_version = (
+            await session.execute(
+                select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_id)
+            )
+        ).scalar_one_or_none()
+        if twin_source_version:
+            twin_source_version.joern_status = "ready"
+            twin_source_version.joern_project = f"{owner}/{repo}"
+            twin_source_version.joern_cpg_path = str(cpg_path)
+            twin_source_version.joern_server_url = settings.joern_server_url
+        await record_twin_event(
+            session,
+            collection_id=source.collection_id,
+            scenario_id=None,
+            source_id=source.id,
+            source_version_id=source_version_id,
+            event_type="joern_cpg_generated",
+            status="ready",
+            payload={"cpg_path": str(cpg_path)},
+            idempotency_key=f"joern_cpg:{source.id}:{new_sha}",
+        )
+        await session.commit()
 
     # SCIP Polyglot Indexing
     scip_stats = {
@@ -1426,11 +1515,78 @@ async def sync_github_source(
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
+        import uuid as uuid_module
+
+        from contextmine_core.models import TwinScenario, TwinSourceVersion
+
         # Update sync run
         result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
         db_run = result.scalar_one()
         db_run.status = SyncRunStatus.SUCCESS
         db_run.finished_at = datetime.now(UTC)
+        scenario_version = None
+        scenario_id_raw = twin_stats.get("twin_asis_scenario_id")
+        if scenario_id_raw:
+            scenario = (
+                await session.execute(
+                    select(TwinScenario).where(
+                        TwinScenario.id == uuid_module.UUID(str(scenario_id_raw))
+                    )
+                )
+            ).scalar_one_or_none()
+            scenario_version = int(scenario.version) if scenario else None
+
+        if source_version_id:
+            await set_source_version_status(
+                session,
+                source_version_id=source_version_id,
+                status="ready",
+                stats={
+                    "commit_sha": new_sha,
+                    "sync_run_id": str(sync_run.id),
+                    "twin_nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
+                    "twin_edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
+                    "scenario_id": scenario_id_raw,
+                    "scenario_version": scenario_version,
+                },
+                finished=True,
+            )
+            stale_rows = (
+                (
+                    await session.execute(
+                        select(TwinSourceVersion).where(
+                            TwinSourceVersion.source_id == source.id,
+                            TwinSourceVersion.id != source_version_id,
+                            TwinSourceVersion.status == "ready",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for stale in stale_rows:
+                stale.status = "stale"
+                stale.updated_at = datetime.now(UTC)
+
+            await record_twin_event(
+                session,
+                collection_id=source.collection_id,
+                scenario_id=uuid_module.UUID(str(scenario_id_raw)) if scenario_id_raw else None,
+                source_id=source.id,
+                source_version_id=source_version_id,
+                event_type="materialization_complete",
+                status="ready",
+                payload={
+                    "scenario_version": scenario_version,
+                    "nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
+                    "edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
+                    "nodes_deactivated": int(twin_stats.get("twin_nodes_deactivated", 0)),
+                    "edges_deactivated": int(twin_stats.get("twin_edges_deactivated", 0)),
+                    "sample_node_keys": list(twin_stats.get("sample_node_keys", []))[:20],
+                },
+                idempotency_key=f"materialization_complete:{source.id}:{new_sha}",
+            )
+
         db_run.stats = {
             "files_scanned": stats.files_scanned,
             "files_indexed": stats.files_indexed,
@@ -1468,6 +1624,9 @@ async def sync_github_source(
                 "git_metric_total_change_frequency", 0.0
             ),
             "git_metric_total_churn": scip_stats.get("git_metric_total_churn", 0.0),
+            "source_version_id": str(source_version_id) if source_version_id else None,
+            "joern_cpg_path": str(cpg_path),
+            "joern_server_url": settings.joern_server_url,
         }
 
         await session.commit()
@@ -1780,11 +1939,49 @@ async def sync_source(source: Source) -> SyncRun | None:
     except Exception as e:
         # Mark run as failed
         async with get_session() as session:
+            from contextmine_core.models import TwinSourceVersion
+            from contextmine_core.twin import record_twin_event, set_source_version_status
+
             result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
             db_run = result.scalar_one()
             db_run.status = SyncRunStatus.FAILED
             db_run.finished_at = datetime.now(UTC)
             db_run.error = str(e)
+
+            failed_source_version = (
+                await session.execute(
+                    select(TwinSourceVersion)
+                    .where(
+                        TwinSourceVersion.source_id == source.id,
+                        TwinSourceVersion.status.in_(["queued", "materializing"]),
+                    )
+                    .order_by(TwinSourceVersion.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if failed_source_version:
+                await set_source_version_status(
+                    session,
+                    source_version_id=failed_source_version.id,
+                    status="failed",
+                    stats={
+                        "sync_run_id": str(sync_run.id),
+                        "error": str(e),
+                    },
+                    finished=True,
+                )
+                await record_twin_event(
+                    session,
+                    collection_id=source.collection_id,
+                    scenario_id=None,
+                    source_id=source.id,
+                    source_version_id=failed_source_version.id,
+                    event_type="materialization_failed",
+                    status="failed",
+                    payload={"sync_run_id": str(sync_run.id)},
+                    idempotency_key=f"materialization_failed:{source.id}:{sync_run.id}",
+                    error=str(e),
+                )
 
             # Still update source timestamps
             result = await session.execute(select(Source).where(Source.id == source.id))

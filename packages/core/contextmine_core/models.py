@@ -8,6 +8,7 @@ from contextmine_core.database import Base
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -632,6 +634,16 @@ class Symbol(Base):
     """
 
     __tablename__ = "symbols"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "qualified_name",
+            "start_line",
+            "end_line",
+            "kind",
+            name="uq_symbol_identity",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(
@@ -689,6 +701,16 @@ class SymbolEdge(Base):
     """
 
     __tablename__ = "symbol_edges"
+    __table_args__ = (
+        Index(
+            "uq_symbol_edge_identity",
+            "source_symbol_id",
+            "target_symbol_id",
+            "edge_type",
+            text("coalesce(source_line, -1)"),
+            unique=True,
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_symbol_id: Mapped[uuid.UUID] = mapped_column(
@@ -843,6 +865,13 @@ class KnowledgeEdge(Base):
 
     __tablename__ = "knowledge_edges"
     __table_args__ = (
+        UniqueConstraint(
+            "collection_id",
+            "source_node_id",
+            "target_node_id",
+            "kind",
+            name="uq_knowledge_edge_unique",
+        ),
         Index("ix_knowledge_edge_source", "source_node_id", "kind"),
         Index("ix_knowledge_edge_target", "target_node_id", "kind"),
         Index("ix_knowledge_edge_collection", "collection_id", "kind"),
@@ -1223,6 +1252,23 @@ class TwinNode(Base):
         ForeignKey("knowledge_nodes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1235,6 +1281,8 @@ class TwinNode(Base):
 
     scenario: Mapped["TwinScenario"] = relationship()
     provenance_node: Mapped["KnowledgeNode | None"] = relationship()
+    source: Mapped["Source | None"] = relationship()
+    source_version: Mapped["TwinSourceVersion | None"] = relationship()
 
 
 class TwinEdge(Base):
@@ -1270,13 +1318,239 @@ class TwinEdge(Base):
     )
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     scenario: Mapped["TwinScenario"] = relationship()
     source_node: Mapped["TwinNode"] = relationship(foreign_keys=[source_node_id])
     target_node: Mapped["TwinNode"] = relationship(foreign_keys=[target_node_id])
+    source: Mapped["Source | None"] = relationship()
+    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+
+
+class TwinSourceVersion(Base):
+    """Materialized source revision metadata for one collection/source."""
+
+    __tablename__ = "twin_source_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "revision_key",
+            "extractor_version",
+            name="uq_twin_source_version_revision",
+        ),
+        Index("ix_twin_source_version_collection", "collection_id", "finished_at"),
+        Index("ix_twin_source_version_source_status", "source_id", "status"),
+        CheckConstraint(
+            "status IN ('queued','materializing','ready','failed','stale','loading','generating')",
+            name="ck_twin_source_version_status",
+        ),
+        CheckConstraint(
+            "joern_status IN ('pending','generating','loading','ready','failed')",
+            name="ck_twin_source_version_joern_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    language_profile: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    stats: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    joern_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    joern_project: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    joern_cpg_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    joern_server_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    collection: Mapped["Collection"] = relationship()
+    source: Mapped["Source"] = relationship()
+
+
+class TwinEvent(Base):
+    """Append-only event log for twin materialization lifecycle."""
+
+    __tablename__ = "twin_events"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_twin_event_idempotency"),
+        Index("ix_twin_event_collection_ts", "collection_id", "event_ts"),
+        Index("ix_twin_event_source_ts", "source_id", "event_ts"),
+        Index("ix_twin_event_scenario_ts", "scenario_id", "event_ts"),
+        CheckConstraint(
+            "status IN ('queued','materializing','ready','failed','stale','loading','generating','degraded')",
+            name="ck_twin_event_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scenario_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    event_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    collection: Mapped["Collection"] = relationship()
+    scenario: Mapped["TwinScenario | None"] = relationship()
+    source: Mapped["Source | None"] = relationship()
+    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+
+
+class TwinAnalysisCache(Base):
+    """Cache for expensive twin analysis queries."""
+
+    __tablename__ = "twin_analysis_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "scenario_id",
+            "engine",
+            "tool_name",
+            "params_hash",
+            "cache_key",
+            name="uq_twin_analysis_cache_key",
+        ),
+        Index(
+            "ix_twin_analysis_cache_lookup",
+            "scenario_id",
+            "engine",
+            "tool_name",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cache_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="graphrag")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    params_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    scenario: Mapped["TwinScenario"] = relationship()
+
+
+class TwinFinding(Base):
+    """Normalized findings attached to twin scenario/source-version snapshots."""
+
+    __tablename__ = "twin_findings"
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "fingerprint", name="uq_twin_finding_fingerprint"),
+        Index("ix_twin_findings_scenario_created", "scenario_id", "created_at"),
+        Index("ix_twin_findings_status", "scenario_id", "status"),
+        Index("ix_twin_findings_type", "scenario_id", "finding_type"),
+        CheckConstraint(
+            "status IN ('open','triaged','resolved','false_positive','suppressed')",
+            name="ck_twin_findings_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    finding_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    filename: Mapped[str] = mapped_column(String(2048), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    flow_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+    source_version: Mapped["TwinSourceVersion | None"] = relationship()
 
 
 class TwinNodeLayer(Base):
@@ -1521,6 +1795,14 @@ class MetricSnapshot(Base):
     coupling: Mapped[float | None] = mapped_column(Float, nullable=True)
     coverage: Mapped[float | None] = mapped_column(Float, nullable=True)
     complexity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cohesion: Mapped[float | None] = mapped_column(Float, nullable=True)
+    instability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fan_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fan_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cycle_participation: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cycle_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duplication_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    crap_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_frequency: Mapped[float | None] = mapped_column(Float, nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     captured_at: Mapped[datetime] = mapped_column(

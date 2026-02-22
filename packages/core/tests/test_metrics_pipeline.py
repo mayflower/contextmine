@@ -230,6 +230,55 @@ def test_compute_file_coupling_bidirectional() -> None:
     assert coupling["src/a.py"]["coupling_in"] == 0
     assert coupling["src/b.py"]["coupling_in"] == 1
     assert coupling["src/b.py"]["coupling_out"] == 0
+    assert coupling["src/a.py"]["fan_out"] == 1
+    assert coupling["src/b.py"]["fan_in"] == 1
+    assert coupling["src/a.py"]["instability"] == pytest.approx(1.0)
+    assert coupling["src/b.py"]["instability"] == pytest.approx(0.0)
+    assert coupling["src/a.py"]["cohesion"] == pytest.approx(0.0)
+    assert coupling["src/a.py"]["cycle_participation"] is False
+    assert coupling["src/a.py"]["cycle_size"] == 0
+
+
+def test_compute_file_coupling_detects_cycles() -> None:
+    snapshot = Snapshot(
+        files=[],
+        symbols=[
+            Symbol("a", SymbolKind.FUNCTION, "src/a.py", Range(1, 0, 1, 1), "a"),
+            Symbol("b", SymbolKind.FUNCTION, "src/b.py", Range(1, 0, 1, 1), "b"),
+        ],
+        occurrences=[],
+        relations=[
+            Relation(
+                src_def_id="a",
+                kind=RelationKind.CALLS,
+                dst_def_id="b",
+                resolved=True,
+                weight=1.0,
+                meta={},
+            ),
+            Relation(
+                src_def_id="b",
+                kind=RelationKind.CALLS,
+                dst_def_id="a",
+                resolved=True,
+                weight=1.0,
+                meta={},
+            ),
+        ],
+        meta={"project_root": "/repo"},
+    ).to_dict()
+
+    coupling, _ = compute_file_coupling_from_snapshots(
+        snapshot_dicts=[snapshot],
+        repo_root=Path("/repo"),
+        project_root=Path("/repo"),
+        relevant_files={"src/a.py", "src/b.py"},
+    )
+
+    assert coupling["src/a.py"]["cycle_participation"] is True
+    assert coupling["src/b.py"]["cycle_participation"] is True
+    assert coupling["src/a.py"]["cycle_size"] == 2
+    assert coupling["src/b.py"]["cycle_size"] == 2
 
 
 def test_coupling_mapping_incomplete_raises() -> None:
