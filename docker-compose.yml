@@ -3,7 +3,7 @@ services:
     image: ghcr.io/mayflower/pg4ai:latest
     platform: ${POSTGRES_PLATFORM:-linux/amd64}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: contextmine
       POSTGRES_PASSWORD: contextmine
@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     ports:
-      - "8000:8000"
+      - "8111:8000"
     env_file:
       - .env
     environment:
@@ -45,7 +45,7 @@ services:
   codecharta:
     image: codecharta/codecharta-visualization:latest
     ports:
-      - "9000:80"
+      - "9001:80"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
       interval: 10s
@@ -73,6 +73,7 @@ services:
       start_period: 30s
 
   worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/worker/Dockerfile

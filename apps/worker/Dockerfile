@@ -56,8 +56,13 @@ RUN npm install -g \
     @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}
 
 # Install Coursier and scip-java (--contrib required for scip-java channel)
-RUN curl -fL https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz | \
-    gzip -d > /usr/local/bin/cs && \
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
+      CS_URL="https://github.com/coursier/launchers/raw/master/cs-aarch64-pc-linux.gz"; \
+    else \
+      CS_URL="https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz"; \
+    fi && \
+    curl -fL "$CS_URL" | gzip -d > /usr/local/bin/cs && \
     chmod +x /usr/local/bin/cs && \
     /usr/local/bin/cs install --contrib scip-java:${SCIP_JAVA_VERSION} --install-dir /usr/local/bin
 
@@ -110,7 +115,8 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app /data /home/appuser
 
 # Set environment for SCIP tools
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+RUN ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/java-21-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 ENV PATH="${PATH}:${JAVA_HOME}/bin"
 ENV NPM_CONFIG_CACHE=/home/appuser/.npm
 ENV GRADLE_USER_HOME=/home/appuser/.gradle
