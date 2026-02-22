@@ -277,8 +277,11 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
                 max_steps=budget,
             )
 
+            # Use budget_used for step count (steps list is not populated by LangGraph agent)
+            steps_used = result.budget_used or len(result.steps)
+
             # Send step summary
-            yield f"event: step\ndata: {json.dumps({'action': 'completed', 'description': f'Research completed with {len(result.evidence)} evidence items', 'step': len(result.steps)})}\n\n"
+            yield f"event: step\ndata: {json.dumps({'action': 'completed', 'description': f'Research completed with {len(result.evidence)} evidence items', 'step': steps_used})}\n\n"
 
             # Send answer
             if result.answer:
@@ -288,13 +291,13 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
                 citations = [
                     f"[{e.id}] {e.file_path}:{e.start_line}-{e.end_line}" for e in result.evidence
                 ]
-                yield f"event: citations\ndata: {json.dumps({'citations': citations, 'steps_used': len(result.steps), 'run_id': result.run_id})}\n\n"
+                yield f"event: citations\ndata: {json.dumps({'citations': citations, 'steps_used': steps_used, 'run_id': result.run_id})}\n\n"
             else:
                 error_msg = (
                     result.error_message or "Research completed but no conclusive answer was found."
                 )
                 yield f"event: answer\ndata: {json.dumps({'text': error_msg})}\n\n"
-                yield f"event: citations\ndata: {json.dumps({'citations': [], 'steps_used': len(result.steps), 'run_id': result.run_id})}\n\n"
+                yield f"event: citations\ndata: {json.dumps({'citations': [], 'steps_used': steps_used, 'run_id': result.run_id})}\n\n"
 
             yield "event: done\ndata: {}\n\n"
 

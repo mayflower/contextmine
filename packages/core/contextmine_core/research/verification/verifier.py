@@ -34,7 +34,7 @@ class GroundingCheckResult(BaseModel):
     is_grounded: bool
     grounding_score: float
     ungrounded_claims: list[str]
-    reasoning: str
+    reasoning: str = ""
 
 
 class AnswerVerifier:
@@ -201,7 +201,7 @@ List any claims that are NOT supported by the evidence."""
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
                 output_schema=GroundingCheckResult,
-                max_tokens=1024,
+                max_tokens=2048,
                 temperature=0.0,
             )
 

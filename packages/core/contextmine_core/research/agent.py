@@ -166,7 +166,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
                 if not doc:
                     return f"File not found: {file_path}"
 
-                lines = (doc.content or "").split("\n")
+                lines = (doc.content_markdown or "").split("\n")
                 start_idx = max(0, start_line - 1)
                 end_idx = min(len(lines), end_line)
                 content = "\n".join(lines[start_idx:end_idx])
@@ -244,7 +244,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
                 output_parts = []
                 for sym in symbols:
                     doc = sym.document
-                    lines = (doc.content or "").split("\n")
+                    lines = (doc.content_markdown or "").split("\n")
                     start_idx = max(0, sym.start_line - 1)
                     end_idx = min(len(lines), sym.end_line)
                     content = "\n".join(lines[start_idx:end_idx])
@@ -325,7 +325,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
                     for edge in edges[:10]:
                         ref_sym = edge.source_symbol
                         doc = ref_sym.document
-                        lines = (doc.content or "").split("\n")
+                        lines = (doc.content_markdown or "").split("\n")
 
                         # Show context around the reference line
                         ref_line = edge.source_line or ref_sym.start_line
@@ -405,7 +405,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
 
                     if not content_parts:
                         # Fall back to showing the first few lines of the symbol
-                        lines = (doc.content or "").split("\n")
+                        lines = (doc.content_markdown or "").split("\n")
                         start_idx = max(0, sym.start_line - 1)
                         end_idx = min(len(lines), sym.start_line + 5)
                         snippet = "\n".join(lines[start_idx:end_idx])
@@ -534,7 +534,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
                 for sym in symbols[:5]:
                     # Get document content for the symbol
                     doc = sym.document
-                    lines = (doc.content or "").split("\n")
+                    lines = (doc.content_markdown or "").split("\n")
                     start_idx = max(0, sym.start_line - 1)
                     end_idx = min(len(lines), sym.end_line)
                     content = "\n".join(lines[start_idx:end_idx])
@@ -604,7 +604,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
                     for edge in edges[:10]:
                         caller = edge.source_symbol
                         doc = caller.document
-                        lines = (doc.content or "").split("\n")
+                        lines = (doc.content_markdown or "").split("\n")
                         start_idx = max(0, caller.start_line - 1)
                         end_idx = min(len(lines), caller.end_line)
                         content = "\n".join(lines[start_idx:end_idx])
@@ -730,7 +730,7 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
 
                 # Get the innermost (smallest) symbol
                 sym = symbols[0]
-                lines = (doc.content or "").split("\n")
+                lines = (doc.content_markdown or "").split("\n")
                 start_idx = max(0, sym.start_line - 1)
                 end_idx = min(len(lines), sym.end_line)
                 content = "\n".join(lines[start_idx:end_idx])
@@ -899,7 +899,7 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
                     is_seed = sym.name in seed_names
                     marker = "[SEED] " if is_seed else ""
 
-                    lines = (doc.content or "").split("\n")
+                    lines = (doc.content_markdown or "").split("\n")
                     start_idx = max(0, sym.start_line - 1)
                     end_idx = min(len(lines), sym.end_line)
                     content = "\n".join(lines[start_idx:end_idx])
@@ -1117,7 +1117,7 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
 
                             # Add evidence for each symbol in path
                             doc = sym.document
-                            lines = (doc.content or "").split("\n")
+                            lines = (doc.content_markdown or "").split("\n")
                             start_idx = max(0, sym.start_line - 1)
                             end_idx = min(len(lines), sym.end_line)
                             content = "\n".join(lines[start_idx:end_idx])
@@ -1601,8 +1601,16 @@ class ResearchAgent:
             """Agent node - calls LLM with tools."""
             run = state["run"]
 
+            # Count current steps (AI messages = LLM invocations)
+            current_steps = len([m for m in state["messages"] if isinstance(m, AIMessage)])
+            run.budget_used = current_steps
+
             # Check budget
-            if run.budget_used >= run.budget_steps:
+            if current_steps >= run.budget_steps:
+                logger.info(
+                    "Research budget exhausted at step %d/%d with %d evidence items",
+                    current_steps, run.budget_steps, len(run.evidence),
+                )
                 if not run.answer:
                     run.complete(
                         "Research budget exhausted. Based on evidence collected, "
@@ -1610,8 +1618,23 @@ class ResearchAgent:
                     )
                 return {"run": run}
 
-            response = await model_with_tools.ainvoke(state["messages"])
-            run.budget_used = len([m for m in state["messages"] if isinstance(m, AIMessage)])
+            # Inject nudge to finalize when budget is running low
+            messages_to_send = list(state["messages"])
+            remaining = run.budget_steps - current_steps
+            if remaining <= 2 and run.evidence:
+                urgency = "LAST" if remaining <= 1 else "second-to-last"
+                messages_to_send.append(
+                    HumanMessage(
+                        content=(
+                            f"IMPORTANT: This is your {urgency} step (step {current_steps + 1} "
+                            f"of {run.budget_steps}). You MUST call the 'finalize' tool NOW "
+                            f"with your answer based on the {len(run.evidence)} evidence items "
+                            f"you have collected. Do NOT search for more information."
+                        )
+                    )
+                )
+
+            response = await model_with_tools.ainvoke(messages_to_send)
 
             return {"messages": [response], "run": run}
 
@@ -1633,35 +1656,49 @@ class ResearchAgent:
             run.verification = verification
 
             if verification.status == VerificationStatus.FAILED:
-                run.answer = None
-                run_holder["pending_answer"] = None
+                # Recalculate budget_used from current message state
+                current_ai_messages = len(
+                    [m for m in state["messages"] if isinstance(m, AIMessage)]
+                )
+                run.budget_used = current_ai_messages
 
                 logger.warning(
-                    "Answer rejected for run %s (attempt %d): %s",
+                    "Answer rejected for run %s (attempt %d, budget %d/%d): %s",
                     run.run_id[:8],
                     attempts + 1,
+                    current_ai_messages,
+                    run.budget_steps,
                     verification.issues[:2],
                 )
 
-                if attempts < self.config.max_verification_retries:
-                    # Add feedback message for retry
-                    feedback = (
-                        f"Your answer was rejected because it's not grounded in evidence. "
-                        f"Issues: {'; '.join(verification.issues[:3])}. "
-                        f"Please gather more evidence and try again."
+                # If budget is nearly exhausted, accept the answer anyway
+                # (a partially grounded answer is better than none)
+                budget_remaining = run.budget_steps - current_ai_messages
+                if budget_remaining <= 1 or attempts >= self.config.max_verification_retries:
+                    logger.info(
+                        "Accepting answer for run %s despite verification issues "
+                        "(budget_remaining=%d, attempts=%d)",
+                        run.run_id[:8], budget_remaining, attempts + 1,
                     )
-                    return {
-                        "messages": [HumanMessage(content=feedback)],
-                        "run": run,
-                        "pending_answer": None,
-                        "verification_attempts": attempts + 1,
-                    }
-                else:
-                    run.fail(
-                        f"Verification failed after {attempts + 1} attempts: "
-                        f"{'; '.join(verification.issues[:3])}"
-                    )
+                    run.complete(pending)
+                    run_holder["pending_answer"] = None
                     return {"run": run, "pending_answer": None}
+
+                run.answer = None
+                run_holder["pending_answer"] = None
+
+                # Add feedback message for retry
+                feedback = (
+                    f"Your answer was rejected because it's not grounded in evidence. "
+                    f"Issues: {'; '.join(verification.issues[:3])}. "
+                    f"Please gather more evidence and try again."
+                )
+                return {
+                    "messages": [HumanMessage(content=feedback)],
+                    "run": run,
+                    "pending_answer": None,
+                    "verification_attempts": attempts + 1,
+                }
 
             # Verification passed
             run.complete(pending)

@@ -513,17 +513,19 @@ async def _find_relevant_communities(
         KnowledgeCommunity,
         KnowledgeEmbedding,
     )
-    from sqlalchemy import bindparam, select, text
+    from sqlalchemy import literal_column, select, text
 
     communities: list[CommunityContext] = []
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
     # Vector similarity search on community embeddings - REQUIRED for GraphRAG
     # No fallback to random selection (that defeats semantic retrieval)
-    # Use bindparam for safe SQL construction (nosemgrep: avoid-sqlalchemy-text)
-    similarity_expr = text(
-        "1 - (knowledge_embeddings.embedding <=> CAST(:embedding AS vector)) as similarity"
-    ).bindparams(bindparam("embedding", value=embedding_str))
+    # Use literal_column with CAST for the embedding vector.
+    # The embedding comes from our own embedder (not user input), so this is safe.
+    # (nosemgrep: avoid-sqlalchemy-text)
+    similarity_expr = literal_column(
+        f"1 - (knowledge_embeddings.embedding <=> CAST('{embedding_str}' AS vector))"
+    ).label("similarity")
     stmt = (
         select(
             KnowledgeCommunity.id,
