@@ -17,6 +17,9 @@ from contextmine_core.semantic_snapshot import (
     build_snapshot,
     detect_projects,
 )
+from contextmine_core.semantic_snapshot.indexers import (
+    detect_projects_with_diagnostics,
+)
 from contextmine_core.semantic_snapshot.models import (
     IndexConfig,
     InstallDepsMode,
@@ -89,6 +92,18 @@ class TestSCIPProjectDetection:
         with tempfile.TemporaryDirectory() as tmpdir:
             (Path(tmpdir) / "composer.json").write_text('{"name": "test"}')
             (Path(tmpdir) / "composer.lock").write_text("{}")
+            (Path(tmpdir) / "index.php").write_text("<?php echo 'ok';")
+
+            projects = detect_projects(tmpdir)
+
+            assert len(projects) == 1
+            assert projects[0].language == Language.PHP
+
+    def test_detect_php_without_composer_lock(self) -> None:
+        """Test PHP detection without lockfile."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "composer.json").write_text('{"name": "test"}')
+            (Path(tmpdir) / "index.php").write_text("<?php echo 'ok';")
 
             projects = detect_projects(tmpdir)
 
@@ -120,15 +135,36 @@ class TestSCIPProjectDetection:
         """Test that node_modules is ignored."""
         with tempfile.TemporaryDirectory() as tmpdir:
             (Path(tmpdir) / "package.json").write_text('{"name": "test"}')
+            (Path(tmpdir) / "index.ts").write_text("export const x = 1;")
+            (Path(tmpdir) / "tsconfig.json").write_text("{}")
 
             node_modules = Path(tmpdir) / "node_modules" / "some-package"
             node_modules.mkdir(parents=True)
             (node_modules / "package.json").write_text('{"name": "dep"}')
+            (node_modules / "dep.ts").write_text("export const y = 2;")
 
             projects = detect_projects(tmpdir)
 
             # Should only detect root project
             assert len(projects) == 1
+
+    def test_detect_polyglot_root_languages(self) -> None:
+        """Detect TS + PHP in one repository root."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "composer.json").write_text('{"name": "test"}')
+            (root / "package.json").write_text('{"name": "test"}')
+            (root / "tsconfig.json").write_text("{}")
+            (root / "app.php").write_text("<?php echo 'ok';")
+            (root / "app.ts").write_text("export const app = true;")
+
+            projects, diagnostics = detect_projects_with_diagnostics(root)
+
+            languages = {project.language for project in projects}
+            assert Language.PHP in languages
+            assert Language.TYPESCRIPT in languages
+            assert "php" in diagnostics.languages_detected
+            assert "typescript" in diagnostics.languages_detected
 
 
 class TestSCIPModels:

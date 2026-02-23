@@ -96,12 +96,8 @@ def build_snapshot(index_path: Path | str) -> Snapshot:
 def detect_projects(repo_root: Path | str) -> list[ProjectTarget]:
     """Detect all indexable projects in a repository.
 
-    Scans for language-specific marker files:
-    - Python: pyproject.toml / setup.cfg / requirements.txt
-    - TypeScript: package.json + tsconfig.json
-    - JavaScript: package.json (no tsconfig)
-    - Java: pom.xml / build.gradle
-    - PHP: composer.json + composer.lock
+    Uses a language census (cloc-first) to identify all involved languages,
+    then uses repository markers only to refine project roots.
 
     Args:
         repo_root: Path to the repository root

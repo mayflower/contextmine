@@ -27,12 +27,14 @@ ARG NODE_VERSION=20
 
 # Install system dependencies
 # - git: for cloning repos
+# - cloc: language census for multi-language detection
 # - ca-certificates, libssl3: for spider_md and HTTPS
 # - curl: for installing Node.js and Coursier
 # - openjdk-21-jre-headless: for scip-java
 # - php-cli, composer: for scip-php
 RUN apt-get update && apt-get install -y \
     git \
+    cloc \
     ca-certificates \
     libssl3 \
     curl \

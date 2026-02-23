@@ -1298,15 +1298,23 @@ def _build_scip_index_config():
     retries=0,  # Don't retry - indexing is expensive
     tags=[TAG_SCIP_INDEX],
 )
-async def task_detect_scip_projects(repo_path: Path) -> list[dict]:
+async def task_detect_scip_projects(repo_path: Path) -> dict:
     """Detect projects suitable for SCIP indexing in a repository.
 
-    Returns list of ProjectTarget dicts for serialization.
+    Returns:
+        Dict with:
+        - projects: list of ProjectTarget dicts
+        - diagnostics: census and detection diagnostics
     """
-    from contextmine_core.semantic_snapshot import detect_projects
+    from contextmine_core.semantic_snapshot.indexers.detection import (
+        detect_projects_with_diagnostics,
+    )
 
-    projects = detect_projects(repo_path)
-    return [p.to_dict() for p in projects]
+    projects, diagnostics = detect_projects_with_diagnostics(repo_path)
+    return {
+        "projects": [p.to_dict() for p in projects],
+        "diagnostics": diagnostics.to_dict(),
+    }
 
 
 @task(
@@ -1603,6 +1611,11 @@ async def sync_github_source(
         "scip_projects_indexed": 0,
         "scip_symbols": 0,
         "scip_relations": 0,
+        "scip_languages_detected": [],
+        "scip_projects_by_language": {},
+        "scip_detection_warnings": [],
+        "scip_census_tool": "",
+        "scip_census_tool_version": "",
     }
     project_dicts: list[dict] = []
     snapshot_dicts: list[dict] = []
@@ -1614,8 +1627,17 @@ async def sync_github_source(
     try:
         import tempfile
 
-        # Detect projects
-        project_dicts = await task_detect_scip_projects(repo_path)
+        # Detect projects + language census diagnostics
+        detect_result = await task_detect_scip_projects(repo_path)
+        project_dicts = list(detect_result.get("projects") or [])
+        diagnostics = detect_result.get("diagnostics") or {}
+        scip_stats["scip_languages_detected"] = list(diagnostics.get("languages_detected") or [])
+        scip_stats["scip_projects_by_language"] = dict(
+            diagnostics.get("projects_by_language") or {}
+        )
+        scip_stats["scip_detection_warnings"] = list(diagnostics.get("warnings") or [])
+        scip_stats["scip_census_tool"] = str(diagnostics.get("census_tool") or "")
+        scip_stats["scip_census_tool_version"] = str(diagnostics.get("census_tool_version") or "")
         scip_stats["scip_projects_detected"] = len(project_dicts)
 
         if project_dicts:
@@ -2039,6 +2061,11 @@ async def sync_github_source(
             "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
             "scip_symbols": scip_stats.get("scip_symbols", 0),
             "scip_relations": scip_stats.get("scip_relations", 0),
+            "scip_languages_detected": scip_stats.get("scip_languages_detected", []),
+            "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
+            "scip_detection_warnings": scip_stats.get("scip_detection_warnings", []),
+            "scip_census_tool": scip_stats.get("scip_census_tool", ""),
+            "scip_census_tool_version": scip_stats.get("scip_census_tool_version", ""),
             # Twin stats
             "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
             "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),

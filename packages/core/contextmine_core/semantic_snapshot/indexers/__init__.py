@@ -13,6 +13,7 @@ from contextmine_core.semantic_snapshot.indexers.base import BaseIndexerBackend
 from contextmine_core.semantic_snapshot.indexers.detection import (
     detect_project_at,
     detect_projects,
+    detect_projects_with_diagnostics,
 )
 from contextmine_core.semantic_snapshot.indexers.java import JavaIndexerBackend
 from contextmine_core.semantic_snapshot.indexers.php import PhpIndexerBackend
@@ -49,6 +50,7 @@ __all__ = [
     # Detection
     "detect_projects",
     "detect_project_at",
+    "detect_projects_with_diagnostics",
     # Orchestration
     "index_repo",
     "index_project",
