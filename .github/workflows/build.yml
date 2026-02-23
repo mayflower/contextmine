@@ -62,21 +62,18 @@ jobs:
       # - CONTEXTMINE_SOURCE_ID
       # - CONTEXTMINE_INGEST_TOKEN
       - name: Push coverage to ContextMine
-        if: >-
-          ${{
-            always() &&
-            github.event_name == 'push' &&
-            github.ref == 'refs/heads/main' &&
-            secrets.CONTEXTMINE_URL != '' &&
-            secrets.CONTEXTMINE_SOURCE_ID != '' &&
-            secrets.CONTEXTMINE_INGEST_TOKEN != ''
-          }}
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         env:
           CONTEXTMINE_URL: ${{ secrets.CONTEXTMINE_URL }}
           CONTEXTMINE_SOURCE_ID: ${{ secrets.CONTEXTMINE_SOURCE_ID }}
           CONTEXTMINE_INGEST_TOKEN: ${{ secrets.CONTEXTMINE_INGEST_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [ -z "${CONTEXTMINE_URL}" ] || [ -z "${CONTEXTMINE_SOURCE_ID}" ] || [ -z "${CONTEXTMINE_INGEST_TOKEN}" ]; then
+            echo "ContextMine ingest secrets not set. Skipping ingest."
+            exit 0
+          fi
 
           if [ ! -f coverage.xml ]; then
             echo "coverage.xml not found. Skipping ContextMine ingest."

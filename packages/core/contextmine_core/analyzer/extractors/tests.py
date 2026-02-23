@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def _hash(value: str) -> str:
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]  # noqa: S324 - stable key only
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
 
 
 def _provenance(

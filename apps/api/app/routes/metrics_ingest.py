@@ -73,7 +73,7 @@ def _hash_ingest_token(token: str) -> str:
 
 def _ingest_source_key(request: Request) -> str:
     source_id = request.path_params.get("source_id", "unknown")
-    return f"{get_remote_address(request)}:{source_id}"
+    return ":".join((str(get_remote_address(request)), str(source_id)))
 
 
 async def _ensure_collection_member(db, collection_id: uuid.UUID, user_id: uuid.UUID) -> None:

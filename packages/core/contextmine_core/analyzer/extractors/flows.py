@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 def _hash(value: str) -> str:
-    return hashlib.sha1(value.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
 
 
 def _provenance(

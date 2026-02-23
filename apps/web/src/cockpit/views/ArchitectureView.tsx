@@ -81,11 +81,19 @@ function groupPortsByContainer(items: PortAdapterItem[], direction: 'inbound' | 
 
 async function renderMermaid(container: HTMLElement, id: string, content: string) {
   if (!content.trim()) {
-    container.innerHTML = '<pre></pre>'
+    const pre = document.createElement('pre')
+    container.replaceChildren(pre)
     return
   }
   const rendered = await mermaidLib.render(id, content)
-  container.innerHTML = rendered.svg
+  const parsed = new DOMParser().parseFromString(rendered.svg, 'image/svg+xml')
+  if (parsed.querySelector('parsererror')) {
+    const pre = document.createElement('pre')
+    pre.textContent = content
+    container.replaceChildren(pre)
+    return
+  }
+  container.replaceChildren(document.importNode(parsed.documentElement, true))
 }
 
 export default function ArchitectureView({

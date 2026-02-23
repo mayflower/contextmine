@@ -11,6 +11,18 @@ interface GraphRagProcessModalProps {
   onToggleFocus: () => void
 }
 
+function renderMermaidSvg(container: HTMLElement, svg: string, fallbackText: string): void {
+  const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml')
+  if (parsed.querySelector('parsererror')) {
+    const pre = document.createElement('pre')
+    pre.textContent = fallbackText
+    container.replaceChildren(pre)
+    return
+  }
+  const svgElement = parsed.documentElement
+  container.replaceChildren(document.importNode(svgElement, true))
+}
+
 function toMermaid(detail: GraphRagProcessDetailPayload): string {
   const lines: string[] = ['flowchart TD']
   const nodeLabelById = new Map<string, string>()
@@ -59,9 +71,11 @@ export default function GraphRagProcessModal({
       try {
         const id = `graphrag-process-${detail.process.id}-${Date.now()}`
         const { svg } = await mermaid.render(id, mermaidCode)
-        containerRef.current.innerHTML = svg
+        renderMermaidSvg(containerRef.current, svg, mermaidCode)
       } catch {
-        containerRef.current.innerHTML = `<pre>${mermaidCode}</pre>`
+        const pre = document.createElement('pre')
+        pre.textContent = mermaidCode
+        containerRef.current.replaceChildren(pre)
       }
     }
     render()

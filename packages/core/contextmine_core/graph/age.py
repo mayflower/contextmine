@@ -12,7 +12,7 @@ import re
 from uuid import UUID
 
 from contextmine_core.models import TwinEdge, TwinNode
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _MUTATING_PATTERNS = re.compile(
@@ -53,9 +53,10 @@ def ensure_read_only_cypher(query: str) -> None:
 
 async def ensure_age_ready(session: AsyncSession) -> None:
     """Load AGE and set search path for cypher() calls."""
-    await session.execute(text("CREATE EXTENSION IF NOT EXISTS age"))
-    await session.execute(text("LOAD 'age'"))
-    await session.execute(text('SET search_path = ag_catalog, "$user", public'))
+    conn = await session.connection()
+    await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS age")
+    await conn.exec_driver_sql("LOAD 'age'")
+    await conn.exec_driver_sql('SET search_path = ag_catalog, "$user", public')
 
 
 async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None:
@@ -65,20 +66,20 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
     graph_name = scenario_graph_name(scenario_id)
     _validate_graph_name(graph_name)
 
+    conn = await session.connection()
+
     # Create graph if it doesn't exist
-    await session.execute(
-        text(
-            f"""
-            SELECT create_graph('{graph_name}')
-            WHERE NOT EXISTS (
-                SELECT 1 FROM ag_catalog.ag_graph WHERE name = '{graph_name}'
-            )
-            """
-        ),
+    await conn.exec_driver_sql(
+        f"""
+        SELECT create_graph('{graph_name}')
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ag_catalog.ag_graph WHERE name = '{graph_name}'
+        )
+        """
     )
 
     # Clear existing graph data
-    await session.execute(text(_age_cypher_sql(graph_name, "MATCH (n) DETACH DELETE n")))
+    await conn.exec_driver_sql(_age_cypher_sql(graph_name, "MATCH (n) DETACH DELETE n"))
 
     # Load nodes
     nodes = (
@@ -95,7 +96,7 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
             f"name: '{_esc(node.name)}'"
             "})"
         )
-        await session.execute(text(_age_cypher_sql(graph_name, cypher)))
+        await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
 
     # Load edges
     edges = (
@@ -109,7 +110,7 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
             f"(t:Node {{id: '{_esc(str(edge.target_node_id))}'}}) "
             f"CREATE (s)-[r:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
         )
-        await session.execute(text(_age_cypher_sql(graph_name, cypher)))
+        await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
 
 
 async def run_read_only_cypher(
@@ -124,7 +125,8 @@ async def run_read_only_cypher(
     graph_name = scenario_graph_name(scenario_id)
     _validate_graph_name(graph_name)
     sql = f"SELECT result::text FROM cypher('{graph_name}', $$ {query} $$) AS (result agtype)"
-    result = await session.execute(text(sql))
+    conn = await session.connection()
+    result = await conn.exec_driver_sql(sql)
     return [row[0] for row in result.all()]
 
 
