@@ -5,6 +5,7 @@ Uses scip-php to index PHP projects.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
@@ -80,7 +81,33 @@ class PhpIndexerBackend(BaseIndexerBackend):
 
         # Install dependencies if needed
         if self._should_install_deps(target, cfg):
-            self._install_deps(target, cfg.timeout_s_by_language.get(Language.PHP, 300))
+            deps_result = self._install_deps(
+                target, cfg.timeout_s_by_language.get(Language.PHP, 300)
+            )
+            if deps_result.timed_out:
+                return IndexArtifact(
+                    language=target.language,
+                    project_root=target.root_path,
+                    scip_path=scip_path,
+                    logs_path=logs_path,
+                    tool_name=self.TOOL_NAME,
+                    tool_version=version,
+                    duration_s=time.monotonic() - start_time,
+                    success=False,
+                    error_message="composer install timed out",
+                )
+            if deps_result.exit_code != 0:
+                return IndexArtifact(
+                    language=target.language,
+                    project_root=target.root_path,
+                    scip_path=scip_path,
+                    logs_path=logs_path,
+                    tool_name=self.TOOL_NAME,
+                    tool_version=version,
+                    duration_s=time.monotonic() - start_time,
+                    success=False,
+                    error_message=f"composer install failed: {deps_result.stderr_tail}",
+                )
 
         # Build command
         cmd = self._build_command(target, tool_path)
@@ -188,9 +215,28 @@ class PhpIndexerBackend(BaseIndexerBackend):
         if cfg.install_deps_mode == InstallDepsMode.ALWAYS:
             return True
 
-        # AUTO mode: check if vendor exists
-        vendor = target.root_path / "vendor"
+        # AUTO mode: check if configured Composer vendor dir exists.
+        vendor = target.root_path / self._resolve_vendor_dir(target.root_path)
         return not vendor.exists()
+
+    def _resolve_vendor_dir(self, project_root: Path) -> Path:
+        """Resolve Composer vendor-dir from composer.json config.
+
+        Defaults to ``vendor`` when composer.json is missing or unparsable.
+        """
+        composer_json = project_root / "composer.json"
+        try:
+            content = json.loads(composer_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return Path("vendor")
+
+        config = content.get("config")
+        if not isinstance(config, dict):
+            return Path("vendor")
+        vendor_dir = str(config.get("vendor-dir") or "vendor").strip()
+        if not vendor_dir:
+            return Path("vendor")
+        return Path(vendor_dir)
 
     def _install_deps(self, target: ProjectTarget, timeout_s: int) -> CmdResult:
         """Install project dependencies using composer.
@@ -204,6 +250,7 @@ class PhpIndexerBackend(BaseIndexerBackend):
             "--no-interaction",
             "--prefer-dist",
             "--no-progress",
+            "--ignore-platform-reqs",
         ]
 
         logger.info("Installing dependencies with composer in %s", target.root_path)
