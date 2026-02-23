@@ -176,7 +176,7 @@ class Settings(BaseSettings):
         description="Timeout in seconds for Java SCIP indexing",
     )
     scip_timeout_php: int = Field(
-        default=300,
+        default=900,
         description="Timeout in seconds for PHP SCIP indexing",
     )
     scip_node_memory_mb: int = Field(
