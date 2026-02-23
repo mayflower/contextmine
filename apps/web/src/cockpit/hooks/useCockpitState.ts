@@ -24,6 +24,10 @@ const VALID_VIEWS: CockpitView[] = [
   'architecture',
   'city',
   'graphrag',
+  'ui_map',
+  'test_matrix',
+  'user_flows',
+  'rebuild_readiness',
   'exports',
 ]
 const VALID_OVERLAYS: OverlayMode[] = ['none', 'runtime', 'risk']

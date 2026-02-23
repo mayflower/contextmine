@@ -101,6 +101,19 @@ class KnowledgeNodeKind(enum.Enum):
     SERVICE_RPC = "service_rpc"
     # Job entities
     JOB = "job"
+    # Test semantics
+    TEST_SUITE = "test_suite"
+    TEST_CASE = "test_case"
+    TEST_FIXTURE = "test_fixture"
+    # UI semantics
+    UI_ROUTE = "ui_route"
+    UI_VIEW = "ui_view"
+    UI_COMPONENT = "ui_component"
+    # Product/user flow semantics
+    USER_FLOW = "user_flow"
+    FLOW_STEP = "flow_step"
+    # Interface-level contract semantics
+    INTERFACE_CONTRACT = "interface_contract"
     # Business rules
     RULE_CANDIDATE = "rule_candidate"
     BUSINESS_RULE = "business_rule"
@@ -132,6 +145,19 @@ class KnowledgeEdgeKind(enum.Enum):
     # Job relationships
     JOB_DEFINED_IN_FILE = "job_defined_in_file"
     JOB_DEPENDS_ON = "job_depends_on"
+    # Test semantics
+    TEST_CASE_COVERS_SYMBOL = "test_case_covers_symbol"
+    TEST_CASE_VALIDATES_RULE = "test_case_validates_rule"
+    TEST_USES_FIXTURE = "test_uses_fixture"
+    # UI semantics
+    UI_ROUTE_RENDERS_VIEW = "ui_route_renders_view"
+    UI_VIEW_COMPOSES_COMPONENT = "ui_view_composes_component"
+    # User flow semantics
+    FLOW_STEP_CALLS_ENDPOINT = "flow_step_calls_endpoint"
+    USER_FLOW_HAS_STEP = "user_flow_has_step"
+    TEST_CASE_VERIFIES_FLOW = "test_case_verifies_flow"
+    # Interface contract semantics
+    CONTRACT_GOVERNS_ENDPOINT = "contract_governs_endpoint"
     # Business rule relationships
     RULE_DERIVED_FROM_CANDIDATE = "rule_derived_from_candidate"
     RULE_EVIDENCED_BY = "rule_evidenced_by"
@@ -151,6 +177,7 @@ class KnowledgeArtifactKind(enum.Enum):
     CC_JSON = "cc_json"
     CX2 = "cx2"
     JGF = "jgf"
+    TWIN_MANIFEST = "twin_manifest"
     MERMAID_C4_ASIS = "mermaid_c4_asis"
     MERMAID_C4_TOBE = "mermaid_c4_tobe"
 

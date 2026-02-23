@@ -13,6 +13,7 @@ import type {
   GraphRagPathPayload,
   GraphRagProcessDetailPayload,
   GraphRagProcessSummary,
+  RebuildReadinessPayload,
   CockpitLayer,
   CockpitLoadState,
   CockpitProjection,
@@ -28,6 +29,9 @@ import type {
   GraphPagingState,
   ErmViewPayload,
   PortsAdaptersPayload,
+  TestMatrixPayload,
+  UIMapPayload,
+  UserFlowsPayload,
   MermaidPayload,
   ScenarioLite,
   TwinGraphResponse,
@@ -53,6 +57,10 @@ const DEFAULT_STATES: DataStates = {
   architecture: 'idle',
   city: 'idle',
   graphrag: 'idle',
+  ui_map: 'idle',
+  test_matrix: 'idle',
+  user_flows: 'idle',
+  rebuild_readiness: 'idle',
   exports: 'idle',
 }
 
@@ -64,6 +72,10 @@ const DEFAULT_ERRORS: DataErrors = {
   architecture: '',
   city: '',
   graphrag: '',
+  ui_map: '',
+  test_matrix: '',
+  user_flows: '',
+  rebuild_readiness: '',
   exports: '',
 }
 
@@ -166,6 +178,10 @@ export function useCockpitData({
   const [graphRagProcessDetail, setGraphRagProcessDetail] = useState<GraphRagProcessDetailPayload | null>(null)
   const [graphRagProcessDetailState, setGraphRagProcessDetailState] = useState<CockpitLoadState>('idle')
   const [graphRagProcessDetailError, setGraphRagProcessDetailError] = useState('')
+  const [uiMapSummary, setUiMapSummary] = useState<UIMapPayload['summary'] | null>(null)
+  const [testMatrix, setTestMatrix] = useState<TestMatrixPayload | null>(null)
+  const [userFlows, setUserFlows] = useState<UserFlowsPayload | null>(null)
+  const [rebuildReadiness, setRebuildReadiness] = useState<RebuildReadinessPayload | null>(null)
 
   const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
     setStates((prev) => ({ ...prev, [view]: nextState }))
@@ -339,6 +355,73 @@ export function useCockpitData({
           })
           setViewState(view, 'ready')
           markUpdated(view)
+          return
+        }
+
+        if (view === 'ui_map' || view === 'test_matrix' || view === 'user_flows') {
+          const endpoint =
+            view === 'ui_map' ? 'ui-map' : view === 'test_matrix' ? 'test-matrix' : 'user-flows'
+          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+          const query = new URLSearchParams({
+            scenario_id: scenarioId,
+            limit: String(limit),
+            page: String(graphPaging.page),
+          })
+          const response = await fetch(
+            `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
+            {
+              credentials: 'include',
+              signal: controller.signal,
+            },
+          )
+          if (!response.ok) {
+            throw new Error(`Could not load ${endpoint} (${response.status})`)
+          }
+          if (view === 'ui_map') {
+            const payload: UIMapPayload = await response.json()
+            setUiMapSummary(payload.summary)
+            setGraph({
+              ...(payload.graph || DEFAULT_GRAPH),
+              projection: 'code_symbol',
+              entity_level: payload.entity_level,
+            })
+          } else if (view === 'test_matrix') {
+            const payload: TestMatrixPayload = await response.json()
+            setTestMatrix(payload)
+            setGraph({
+              ...(payload.graph || DEFAULT_GRAPH),
+              projection: 'code_symbol',
+              entity_level: payload.entity_level,
+            })
+          } else {
+            const payload: UserFlowsPayload = await response.json()
+            setUserFlows(payload)
+            setGraph({
+              ...(payload.graph || DEFAULT_GRAPH),
+              projection: 'code_symbol',
+              entity_level: payload.entity_level,
+            })
+          }
+          setViewState(view, 'ready')
+          markUpdated(view)
+          return
+        }
+
+        if (view === 'rebuild_readiness') {
+          const response = await fetch(
+            `/api/twin/collections/${collectionId}/views/rebuild-readiness?scenario_id=${encodeURIComponent(scenarioId)}`,
+            {
+              credentials: 'include',
+              signal: controller.signal,
+            },
+          )
+          if (!response.ok) {
+            throw new Error(`Could not load rebuild-readiness (${response.status})`)
+          }
+          const payload: RebuildReadinessPayload = await response.json()
+          setRebuildReadiness(payload)
+          setViewState('rebuild_readiness', 'ready')
+          markUpdated('rebuild_readiness')
           return
         }
 
@@ -995,6 +1078,10 @@ export function useCockpitData({
     graphRagProcessDetail,
     graphRagProcessDetailState,
     graphRagProcessDetailError,
+    uiMapSummary,
+    testMatrix,
+    userFlows,
+    rebuildReadiness,
     traceGraphRagPath,
     loadGraphRagProcessDetail,
     generateExport,

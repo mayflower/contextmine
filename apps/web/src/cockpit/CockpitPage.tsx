@@ -18,6 +18,8 @@ import DeepDiveView from './views/DeepDiveView'
 import ExportsView from './views/ExportsView'
 import GraphRagView from './views/GraphRagView'
 import OverviewView from './views/OverviewView'
+import RebuildReadinessView from './views/RebuildReadinessView'
+import TestMatrixView from './views/TestMatrixView'
 import TopologyView from './views/TopologyView'
 import {
   type C4ViewMode,
@@ -240,6 +242,10 @@ export default function CockpitPage({
     graphRagProcessDetail,
     graphRagProcessDetailState,
     graphRagProcessDetailError,
+    uiMapSummary,
+    testMatrix,
+    userFlows,
+    rebuildReadiness,
     traceGraphRagPath,
     loadGraphRagProcessDetail,
     generateExport,
@@ -299,7 +305,12 @@ export default function CockpitPage({
   }, [selection.view, selection.layer])
 
   useEffect(() => {
-    const isGraphView = selection.view === 'topology' || selection.view === 'deep_dive'
+    const isGraphView =
+      selection.view === 'topology' ||
+      selection.view === 'deep_dive' ||
+      selection.view === 'ui_map' ||
+      selection.view === 'test_matrix' ||
+      selection.view === 'user_flows'
     if (!isGraphView) {
       return
     }
@@ -785,6 +796,124 @@ export default function CockpitPage({
           onSelectNodeId={handleSelectNodeId}
           onTracePath={traceGraphRagPath}
           onLoadProcessDetail={loadGraphRagProcessDetail}
+          onRetry={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'ui_map' ? (
+        <section className="cockpit2-workspace">
+          <div className="cockpit2-main">
+            {uiMapSummary ? (
+              <div className="cockpit2-arch-kpis">
+                <div>
+                  <strong>{uiMapSummary.routes}</strong>
+                  <span>Routes</span>
+                </div>
+                <div>
+                  <strong>{uiMapSummary.views}</strong>
+                  <span>Views</span>
+                </div>
+                <div>
+                  <strong>{uiMapSummary.components}</strong>
+                  <span>Components</span>
+                </div>
+                <div>
+                  <strong>{uiMapSummary.contracts}</strong>
+                  <span>Contracts</span>
+                </div>
+              </div>
+            ) : null}
+            <TopologyView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={topologyDensity}
+              layoutEngine={topologyLayoutEngine}
+              elkEnabled={cockpitFlags.elkLayout}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onDensityChange={setTopologyDensity}
+              onLayoutEngineChange={setTopologyLayoutEngine}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onSelectNodeId={handleSelectNodeId}
+              onLayoutCompleted={(engine, durationMs, nodeCount) => {
+                getFaro()?.api.pushEvent('cockpit_layout_completed', {
+                  engine,
+                  duration_ms: String(Math.round(durationMs)),
+                  node_count: String(nodeCount),
+                })
+              }}
+              onRetry={refreshActiveView}
+            />
+          </div>
+        </section>
+      ) : null}
+
+      {selection.view === 'test_matrix' ? (
+        <TestMatrixView
+          state={activeState}
+          error={activeError}
+          payload={testMatrix}
+          onRetry={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'user_flows' ? (
+        <section className="cockpit2-workspace">
+          <div className="cockpit2-main">
+            {userFlows ? (
+              <div className="cockpit2-arch-kpis">
+                <div>
+                  <strong>{userFlows.summary.user_flows}</strong>
+                  <span>User flows</span>
+                </div>
+                <div>
+                  <strong>{userFlows.summary.flow_steps}</strong>
+                  <span>Flow steps</span>
+                </div>
+                <div>
+                  <strong>{userFlows.summary.flow_edges}</strong>
+                  <span>Flow edges</span>
+                </div>
+                <div>
+                  <strong>{userFlows.flows.length}</strong>
+                  <span>Flow rows</span>
+                </div>
+              </div>
+            ) : null}
+            <TopologyView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={topologyDensity}
+              layoutEngine={topologyLayoutEngine}
+              elkEnabled={cockpitFlags.elkLayout}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onDensityChange={setTopologyDensity}
+              onLayoutEngineChange={setTopologyLayoutEngine}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onSelectNodeId={handleSelectNodeId}
+              onLayoutCompleted={(engine, durationMs, nodeCount) => {
+                getFaro()?.api.pushEvent('cockpit_layout_completed', {
+                  engine,
+                  duration_ms: String(Math.round(durationMs)),
+                  node_count: String(nodeCount),
+                })
+              }}
+              onRetry={refreshActiveView}
+            />
+          </div>
+        </section>
+      ) : null}
+
+      {selection.view === 'rebuild_readiness' ? (
+        <RebuildReadinessView
+          state={activeState}
+          error={activeError}
+          payload={rebuildReadiness}
           onRetry={refreshActiveView}
         />
       ) : null}

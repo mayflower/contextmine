@@ -38,6 +38,16 @@ def test_mcp_tool_returns_markdown() -> None:
     assert "# Context for: test query" in result
 
 
+def test_get_twin_graph_schema_includes_behavioral_filters() -> None:
+    tools = get_tools()
+    get_twin_graph = next(t for t in tools if t["name"] == "context.get_twin_graph")
+    properties = get_twin_graph["inputSchema"].get("properties", {})
+    assert "facet" in properties
+    assert "include_provenance_mode" in properties
+    assert "include_test_links" in properties
+    assert "include_ui_links" in properties
+
+
 def test_get_context_markdown_includes_sections() -> None:
     """Test that context markdown includes expected sections."""
     result = get_context_markdown_sync("example query")

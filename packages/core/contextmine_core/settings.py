@@ -229,6 +229,18 @@ class Settings(BaseSettings):
         default=True,
         description="Enable advisory architecture drift report generation",
     )
+    digital_twin_behavioral_enabled: bool = Field(
+        default=True,
+        description="Enable behavioral twin extraction (tests, UI, interface contracts)",
+    )
+    digital_twin_ui_enabled: bool = Field(
+        default=True,
+        description="Enable UI-map extraction and projection layers",
+    )
+    digital_twin_flows_enabled: bool = Field(
+        default=True,
+        description="Enable synthesized user-flow extraction and projection layers",
+    )
     joern_server_url: str = Field(
         default="http://localhost:8080",
         description="Base URL for Joern HTTP server used by twin analysis endpoints",

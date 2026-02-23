@@ -12,11 +12,21 @@ export type CockpitView =
   | 'architecture'
   | 'city'
   | 'graphrag'
+  | 'ui_map'
+  | 'test_matrix'
+  | 'user_flows'
+  | 'rebuild_readiness'
   | 'exports'
 
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
-export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4'
+export type ExportFormat =
+  | 'lpg_jsonl'
+  | 'cc_json'
+  | 'cx2'
+  | 'jgf'
+  | 'mermaid_c4'
+  | 'twin_manifest'
 export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol' | 'graphrag'
 export type CityProjection = 'architecture' | 'code_file'
 export type CityEntityLevel = 'domain' | 'container' | 'component'
@@ -117,6 +127,116 @@ export interface GraphViewPayload {
   grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
   excluded_kinds?: string[]
   graph: TwinGraphResponse
+}
+
+export interface UIMapPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'ui_map'
+  entity_level: 'ui'
+  summary: {
+    routes: number
+    views: number
+    components: number
+    contracts: number
+    trace_edges: number
+  }
+  warnings: string[]
+  graph: TwinGraphResponse
+}
+
+export interface TestMatrixRow {
+  test_case_id: string
+  test_case_key: string
+  test_case_name: string
+  covers_symbols: string[]
+  validates_rules: string[]
+  fixtures: string[]
+  verifies_flows: string[]
+  evidence_ids: string[]
+}
+
+export interface TestMatrixPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'test_matrix'
+  entity_level: 'test_case'
+  summary: {
+    test_cases: number
+    test_suites: number
+    test_fixtures: number
+    matrix_rows: number
+  }
+  matrix: TestMatrixRow[]
+  warnings: string[]
+  graph: TwinGraphResponse
+}
+
+export interface UserFlowStep {
+  step_id: string
+  name: string
+  order: number
+  endpoint_hints: string[]
+  calls_endpoints: string[]
+  evidence_ids: string[]
+}
+
+export interface UserFlowItem {
+  flow_id: string
+  flow_key: string
+  flow_name: string
+  route_path: string
+  steps: UserFlowStep[]
+  verified_by_tests: string[]
+  evidence_ids: string[]
+}
+
+export interface UserFlowsPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'user_flows'
+  entity_level: 'user_flow'
+  summary: {
+    user_flows: number
+    flow_steps: number
+    flow_edges: number
+  }
+  flows: UserFlowItem[]
+  warnings: string[]
+  graph: TwinGraphResponse
+}
+
+export interface RebuildReadinessCriticalNode {
+  node_id: string
+  kind: string
+  name: string
+  confidence: number
+  evidence_ids: string[]
+}
+
+export interface RebuildReadinessPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'rebuild_readiness'
+  score: number
+  summary: {
+    interface_test_coverage: number
+    flow_evidence_density: number
+    ui_to_endpoint_traceability: number
+    critical_inferred_only_count: number
+    total_nodes: number
+    total_edges: number
+  }
+  known_gaps: string[]
+  critical_inferred_only: RebuildReadinessCriticalNode[]
+  evidence_handles: Array<{
+    kind: string
+    ref: string
+    node_id?: string
+  }>
+  behavioral_layers_status: string | null
+  last_behavioral_materialized_at: string | null
+  deep_warnings: string[]
 }
 
 export interface GraphRagStatus {
@@ -484,6 +604,10 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'architecture', label: 'Architecture' },
   { key: 'city', label: 'City' },
   { key: 'graphrag', label: 'GraphRAG' },
+  { key: 'ui_map', label: 'UI Map' },
+  { key: 'test_matrix', label: 'Test Matrix' },
+  { key: 'user_flows', label: 'User Flows' },
+  { key: 'rebuild_readiness', label: 'Rebuild Readiness' },
   { key: 'exports', label: 'Exports' },
 ]
 
@@ -500,4 +624,5 @@ export const EXPORT_FORMATS: Array<{ key: ExportFormat; label: string; extension
   { key: 'jgf', label: 'JGF', extension: 'jgf.json' },
   { key: 'lpg_jsonl', label: 'LPG JSONL', extension: 'lpg.jsonl' },
   { key: 'mermaid_c4', label: 'Mermaid C4', extension: 'mmd' },
+  { key: 'twin_manifest', label: 'Twin Manifest', extension: 'json' },
 ]

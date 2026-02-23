@@ -14,6 +14,7 @@ from contextmine_core.exports.mermaid_c4 import (
     export_mermaid_c4,
     export_mermaid_c4_result,
 )
+from contextmine_core.exports.twin_manifest import export_twin_manifest
 
 __all__ = [
     "export_codecharta_json",
@@ -27,4 +28,5 @@ __all__ = [
     "export_mermaid_asis_tobe_result",
     "export_mermaid_c4",
     "export_mermaid_c4_result",
+    "export_twin_manifest",
 ]

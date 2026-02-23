@@ -123,13 +123,23 @@ export default function CockpitCommandBar({
   onOpenRuns,
 }: CockpitCommandBarProps) {
   const [showAdvancedGraphControls, setShowAdvancedGraphControls] = useState(false)
-  const showLayer = activeView === 'topology' || activeView === 'deep_dive'
+  const showLayer =
+    activeView === 'topology' ||
+    activeView === 'deep_dive' ||
+    activeView === 'ui_map' ||
+    activeView === 'test_matrix' ||
+    activeView === 'user_flows'
   const showFilter = activeView === 'overview'
   const showC4Controls = activeView === 'c4_diff'
   const showArchitectureControls = activeView === 'architecture'
   const showGraphRagControls = activeView === 'graphrag'
   const showGraphControls =
-    activeView === 'topology' || activeView === 'deep_dive' || activeView === 'graphrag'
+    activeView === 'topology' ||
+    activeView === 'deep_dive' ||
+    activeView === 'graphrag' ||
+    activeView === 'ui_map' ||
+    activeView === 'test_matrix' ||
+    activeView === 'user_flows'
   const advancedFilterCount = useMemo(() => {
     let count = 0
     if (includeKinds.length > 0) count += 1

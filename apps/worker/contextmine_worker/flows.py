@@ -7,6 +7,7 @@ Features:
 - Task result caching for idempotent operations
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -75,6 +76,85 @@ TAG_GITHUB_API = "github-api"
 TAG_EMBEDDING_API = "embedding-api"
 TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
+
+
+def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
+    if task.cancelled():
+        logger.warning("Behavioral layer background extraction task was cancelled.")
+        return
+    exc = task.exception()
+    if exc:
+        logger.warning("Behavioral layer background extraction failed: %s", exc)
+
+
+def _uri_to_file_path(uri: str) -> str:
+    """Normalize document URI to repo-relative file path."""
+    return uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+
+
+async def materialize_surface_catalog_for_source(
+    *,
+    source_id: str,
+    collection_id: str,
+) -> dict[str, int]:
+    """Deterministically materialize spec-driven surfaces for one source."""
+    import uuid as uuid_module
+
+    from contextmine_core.analyzer.extractors.surface import (
+        SurfaceCatalogExtractor,
+        build_surface_graph,
+    )
+    from contextmine_core.models import Document
+
+    source_uuid = uuid_module.UUID(source_id)
+    collection_uuid = uuid_module.UUID(collection_id)
+    stats: dict[str, int] = {
+        "surface_files_scanned": 0,
+        "surface_files_recognized": 0,
+        "surface_parse_errors": 0,
+        "endpoint_nodes": 0,
+        "endpoint_handler_links": 0,
+        "graphql_nodes": 0,
+        "proto_nodes": 0,
+        "job_nodes": 0,
+        "edges_created": 0,
+        "evidence_created": 0,
+    }
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Document.uri, Document.content_markdown).where(Document.source_id == source_uuid)
+        )
+        docs = result.all()
+        extractor = SurfaceCatalogExtractor()
+
+        for uri, content in docs:
+            if not content:
+                continue
+            stats["surface_files_scanned"] += 1
+            file_path = _uri_to_file_path(uri)
+            try:
+                if extractor.add_file(file_path, content):
+                    stats["surface_files_recognized"] += 1
+            except Exception as exc:
+                stats["surface_parse_errors"] += 1
+                logger.debug("Surface extraction failed for %s: %s", file_path, exc)
+
+        catalog = extractor.catalog
+        has_surfaces = (
+            catalog.openapi_specs
+            or catalog.graphql_schemas
+            or catalog.protobuf_files
+            or catalog.job_definitions
+        )
+        if has_surfaces:
+            graph_stats = await build_surface_graph(session, collection_uuid, catalog)
+            for key, value in graph_stats.items():
+                if isinstance(value, int):
+                    stats[key] = value
+        await session.commit()
+
+    return stats
 
 
 @task(
@@ -644,8 +724,8 @@ async def build_knowledge_graph(
             )
             if has_surfaces:
                 surface_stats = await build_surface_graph(session, collection_uuid, catalog)
-                stats["kg_endpoints"] = surface_stats.get("endpoint_nodes_created", 0)
-                stats["kg_jobs"] = surface_stats.get("job_nodes_created", 0)
+                stats["kg_endpoints"] = surface_stats.get("endpoint_nodes", 0)
+                stats["kg_jobs"] = surface_stats.get("job_nodes", 0)
                 await session.commit()
                 logger.info(
                     "Extracted %d endpoints, %d jobs",
@@ -950,6 +1030,224 @@ async def build_twin_graph(
         await session.commit()
 
     return stats
+
+
+async def _materialize_behavioral_layers_impl(
+    *,
+    source_id: str,
+    collection_id: str,
+    scenario_id: str | None,
+    source_version_id: str | None,
+) -> dict[str, object]:
+    """Build deep behavioral layers (tests/ui/flows) and append twin status metadata."""
+    import uuid as uuid_module
+
+    from contextmine_core.analyzer.extractors.flows import build_flows_graph, synthesize_user_flows
+    from contextmine_core.analyzer.extractors.tests import (
+        build_tests_graph,
+        extract_tests_from_files,
+    )
+    from contextmine_core.analyzer.extractors.ui import build_ui_graph, extract_ui_from_files
+    from contextmine_core.graph.age import sync_scenario_to_age
+    from contextmine_core.models import Document, TwinSourceVersion
+    from contextmine_core.twin import record_twin_event, seed_scenario_from_knowledge_graph
+
+    settings = get_settings()
+    now_iso = datetime.now(UTC).isoformat()
+
+    if not settings.digital_twin_behavioral_enabled:
+        return {
+            "behavioral_layers_status": "disabled",
+            "last_behavioral_materialized_at": None,
+            "deep_warnings": ["DIGITAL_TWIN_BEHAVIORAL_ENABLED=false"],
+        }
+
+    collection_uuid = uuid_module.UUID(collection_id)
+    source_uuid = uuid_module.UUID(source_id)
+    scenario_uuid = uuid_module.UUID(scenario_id) if scenario_id else None
+    source_version_uuid = uuid_module.UUID(source_version_id) if source_version_id else None
+
+    async with get_session() as session:
+        if source_version_uuid:
+            await record_twin_event(
+                session,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                source_id=source_uuid,
+                source_version_id=source_version_uuid,
+                event_type="behavioral_extract_started",
+                status="materializing",
+                payload={"started_at": now_iso},
+                idempotency_key=f"behavioral_extract_started:{source_id}:{source_version_id}",
+            )
+            await session.commit()
+
+        result = await session.execute(
+            select(Document.uri, Document.content_markdown).where(Document.source_id == source_uuid)
+        )
+        docs = result.all()
+
+        files: list[tuple[str, str]] = []
+        for uri, content in docs:
+            if not content:
+                continue
+            file_path = _uri_to_file_path(uri)
+            files.append((file_path, content))
+
+        deep_warnings: list[str] = []
+        test_extractions = (
+            extract_tests_from_files(files) if settings.digital_twin_behavioral_enabled else []
+        )
+        ui_extractions = extract_ui_from_files(files) if settings.digital_twin_ui_enabled else []
+
+        behavioral_stats: dict[str, int] = {}
+        if test_extractions:
+            behavioral_stats.update(
+                await build_tests_graph(
+                    session,
+                    collection_uuid,
+                    test_extractions,
+                    source_id=source_uuid,
+                )
+            )
+        if ui_extractions:
+            behavioral_stats.update(
+                await build_ui_graph(
+                    session,
+                    collection_uuid,
+                    ui_extractions,
+                    source_id=source_uuid,
+                )
+            )
+        if settings.digital_twin_flows_enabled:
+            synthesis = synthesize_user_flows(ui_extractions, test_extractions)
+            behavioral_stats.update(
+                await build_flows_graph(
+                    session,
+                    collection_uuid,
+                    synthesis,
+                    source_id=source_uuid,
+                )
+            )
+
+        if not test_extractions:
+            deep_warnings.append("No test semantics extracted from current source.")
+        if settings.digital_twin_ui_enabled and not ui_extractions:
+            deep_warnings.append("No UI semantics extracted from current source.")
+
+        if scenario_uuid:
+            await seed_scenario_from_knowledge_graph(
+                session,
+                scenario_uuid,
+                collection_uuid,
+                clear_existing=False,
+            )
+            await sync_scenario_to_age(session, scenario_uuid)
+
+        if source_version_uuid:
+            source_version = (
+                await session.execute(
+                    select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_uuid)
+                )
+            ).scalar_one_or_none()
+            if source_version:
+                merged = dict(source_version.stats or {})
+                merged.update(
+                    {
+                        "behavioral_layers_status": "ready",
+                        "last_behavioral_materialized_at": now_iso,
+                        "deep_warnings": deep_warnings,
+                        "behavioral_extract": behavioral_stats,
+                    }
+                )
+                source_version.stats = merged
+
+            await record_twin_event(
+                session,
+                collection_id=collection_uuid,
+                scenario_id=scenario_uuid,
+                source_id=source_uuid,
+                source_version_id=source_version_uuid,
+                event_type="behavioral_extract_ready",
+                status="ready",
+                payload={
+                    "finished_at": now_iso,
+                    "deep_warnings": deep_warnings,
+                    "stats": behavioral_stats,
+                },
+                idempotency_key=f"behavioral_extract_ready:{source_id}:{source_version_id}",
+            )
+        await session.commit()
+
+        return {
+            "behavioral_layers_status": "ready",
+            "last_behavioral_materialized_at": now_iso,
+            "deep_warnings": deep_warnings,
+            "behavioral_extract": behavioral_stats,
+        }
+
+
+@traced_task()
+@task(
+    retries=0,
+    tags=[TAG_DB_HEAVY],
+)
+async def materialize_behavioral_layers(
+    source_id: str,
+    collection_id: str,
+    scenario_id: str | None = None,
+    source_version_id: str | None = None,
+) -> dict[str, object]:
+    """Task wrapper for behavioral layer extraction."""
+    try:
+        return await _materialize_behavioral_layers_impl(
+            source_id=source_id,
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            source_version_id=source_version_id,
+        )
+    except Exception as exc:
+        import uuid as uuid_module
+
+        from contextmine_core.models import TwinSourceVersion
+        from contextmine_core.twin import record_twin_event
+
+        collection_uuid = uuid_module.UUID(collection_id)
+        source_uuid = uuid_module.UUID(source_id)
+        scenario_uuid = uuid_module.UUID(scenario_id) if scenario_id else None
+        source_version_uuid = uuid_module.UUID(source_version_id) if source_version_id else None
+
+        async with get_session() as session:
+            if source_version_uuid:
+                source_version = (
+                    await session.execute(
+                        select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_uuid)
+                    )
+                ).scalar_one_or_none()
+                if source_version:
+                    merged = dict(source_version.stats or {})
+                    merged.update(
+                        {
+                            "behavioral_layers_status": "failed",
+                            "last_behavioral_materialized_at": None,
+                            "deep_warnings": [str(exc)],
+                        }
+                    )
+                    source_version.stats = merged
+                await record_twin_event(
+                    session,
+                    collection_id=collection_uuid,
+                    scenario_id=scenario_uuid,
+                    source_id=source_uuid,
+                    source_version_id=source_version_uuid,
+                    event_type="behavioral_extract_failed",
+                    status="failed",
+                    payload={},
+                    idempotency_key=f"behavioral_extract_failed:{source_id}:{source_version_id}",
+                    error=str(exc),
+                )
+                await session.commit()
+        raise
 
 
 def _build_scip_index_config():
@@ -1615,6 +1913,20 @@ async def sync_github_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
+    # Materialize deterministic interface/spec surfaces (OpenAPI/GraphQL/Protobuf/jobs)
+    surface_stats: dict[str, int] = {}
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=95, description="Materializing interface/spec surfaces..."
+    )
+    try:
+        surface_stats = await materialize_surface_catalog_for_source(
+            source_id=str(source.id),
+            collection_id=collection_id_str,
+        )
+    except Exception as exc:
+        logger.warning("Surface materialization failed for source %s: %s", source.id, exc)
+        surface_stats = {}
+
     # Build digital twin from indexed documents and semantic snapshots
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building digital twin..."
@@ -1660,6 +1972,7 @@ async def sync_github_source(
                 stats={
                     "commit_sha": new_sha,
                     "sync_run_id": str(sync_run.id),
+                    "surface_extract": surface_stats,
                     "twin_nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
                     "twin_edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
                     "scenario_id": scenario_id_raw,
@@ -1743,9 +2056,31 @@ async def sync_github_source(
             "source_version_id": str(source_version_id) if source_version_id else None,
             "joern_cpg_path": str(cpg_path),
             "joern_server_url": settings.joern_server_url,
+            # Surface extraction stats
+            "surface_files_scanned": surface_stats.get("surface_files_scanned", 0),
+            "surface_files_recognized": surface_stats.get("surface_files_recognized", 0),
+            "surface_parse_errors": surface_stats.get("surface_parse_errors", 0),
+            "surface_endpoint_nodes": surface_stats.get("endpoint_nodes", 0),
+            "surface_endpoint_handler_links": surface_stats.get("endpoint_handler_links", 0),
+            "surface_graphql_nodes": surface_stats.get("graphql_nodes", 0),
+            "surface_proto_nodes": surface_stats.get("proto_nodes", 0),
+            "surface_job_nodes": surface_stats.get("job_nodes", 0),
+            "surface_edges_created": surface_stats.get("edges_created", 0),
         }
 
         await session.commit()
+
+    scenario_for_behavioral = str(twin_stats.get("twin_asis_scenario_id") or "")
+    if scenario_for_behavioral:
+        background = asyncio.create_task(
+            _materialize_behavioral_layers_impl(
+                source_id=str(source.id),
+                collection_id=collection_id_str,
+                scenario_id=scenario_for_behavioral,
+                source_version_id=str(source_version_id) if source_version_id else None,
+            )
+        )
+        background.add_done_callback(_log_background_task_failure)
 
     await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 
@@ -1948,6 +2283,20 @@ async def sync_web_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
+    # Materialize deterministic interface/spec surfaces (OpenAPI/GraphQL/Protobuf/jobs)
+    surface_stats: dict[str, int] = {}
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=95, description="Materializing interface/spec surfaces..."
+    )
+    try:
+        surface_stats = await materialize_surface_catalog_for_source(
+            source_id=str(source.id),
+            collection_id=collection_id_str,
+        )
+    except Exception as exc:
+        logger.warning("Surface materialization failed for source %s: %s", source.id, exc)
+        surface_stats = {}
+
     # Build Twin graph from indexed documents
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building digital twin..."
@@ -1988,9 +2337,31 @@ async def sync_web_source(
             "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
+            # Surface extraction stats
+            "surface_files_scanned": surface_stats.get("surface_files_scanned", 0),
+            "surface_files_recognized": surface_stats.get("surface_files_recognized", 0),
+            "surface_parse_errors": surface_stats.get("surface_parse_errors", 0),
+            "surface_endpoint_nodes": surface_stats.get("endpoint_nodes", 0),
+            "surface_endpoint_handler_links": surface_stats.get("endpoint_handler_links", 0),
+            "surface_graphql_nodes": surface_stats.get("graphql_nodes", 0),
+            "surface_proto_nodes": surface_stats.get("proto_nodes", 0),
+            "surface_job_nodes": surface_stats.get("job_nodes", 0),
+            "surface_edges_created": surface_stats.get("edges_created", 0),
         }
 
         await session.commit()
+
+    scenario_for_behavioral = str(twin_stats.get("twin_asis_scenario_id") or "")
+    if scenario_for_behavioral:
+        background = asyncio.create_task(
+            _materialize_behavioral_layers_impl(
+                source_id=str(source.id),
+                collection_id=collection_id_str,
+                scenario_id=scenario_for_behavioral,
+                source_version_id=None,
+            )
+        )
+        background.add_done_callback(_log_background_task_failure)
 
     await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 

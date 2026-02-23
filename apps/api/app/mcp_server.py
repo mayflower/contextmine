@@ -71,6 +71,83 @@ def _parse_csv_list(value: str | None) -> list[str] | None:
     return items or None
 
 
+def _node_kind_in_scope(kind: str, scope: str) -> bool:
+    normalized = kind.strip().lower()
+    if scope == "all":
+        return True
+    test_kinds = {"test_suite", "test_case", "test_fixture"}
+    ui_kinds = {"ui_route", "ui_view", "ui_component", "interface_contract"}
+    flow_kinds = {"user_flow", "flow_step"}
+    if scope == "tests":
+        return normalized in test_kinds
+    if scope == "ui":
+        return normalized in ui_kinds
+    if scope == "flows":
+        return normalized in flow_kinds
+    if scope == "code":
+        return normalized not in (test_kinds | ui_kinds | flow_kinds)
+    return True
+
+
+def _filter_graph_payload(
+    graph: dict,
+    *,
+    scope: str = "all",
+    provenance_mode: str | None = None,
+    include_test_links: bool | None = None,
+    include_ui_links: bool | None = None,
+) -> dict:
+    nodes = list(graph.get("nodes") or [])
+    edges = list(graph.get("edges") or [])
+
+    if scope != "all":
+        allowed_ids = {
+            str(node.get("id"))
+            for node in nodes
+            if _node_kind_in_scope(str(node.get("kind") or ""), scope)
+        }
+        nodes = [node for node in nodes if str(node.get("id")) in allowed_ids]
+        edges = [
+            edge
+            for edge in edges
+            if str(edge.get("source_node_id")) in allowed_ids
+            and str(edge.get("target_node_id")) in allowed_ids
+        ]
+
+    if provenance_mode:
+        mode = provenance_mode.strip().lower()
+        if mode in {"deterministic", "inferred"}:
+            allowed_ids = {
+                str(node.get("id"))
+                for node in nodes
+                if str(((node.get("meta") or {}).get("provenance") or {}).get("mode") or "").lower()
+                == mode
+            }
+            nodes = [node for node in nodes if str(node.get("id")) in allowed_ids]
+            edges = [
+                edge
+                for edge in edges
+                if str(edge.get("source_node_id")) in allowed_ids
+                and str(edge.get("target_node_id")) in allowed_ids
+            ]
+
+    if include_test_links is False:
+        edges = [
+            edge for edge in edges if not str(edge.get("kind") or "").lower().startswith("test_")
+        ]
+    if include_ui_links is False:
+        edges = [
+            edge for edge in edges if not str(edge.get("kind") or "").lower().startswith("ui_")
+        ]
+
+    return {
+        **graph,
+        "nodes": nodes,
+        "edges": edges,
+        "total_nodes": len(nodes),
+    }
+
+
 async def _resolve_collection_for_tool(
     db,
     *,
@@ -1295,7 +1372,10 @@ async def research_data_model(
 
 @mcp.tool(name="research_architecture")
 async def research_architecture(
-    topic: Annotated[str, "Architecture topic to research (e.g., 'deployment', 'security', 'api')"],
+    topic: Annotated[
+        str,
+        "Architecture topic to research: deployment|security|api|database|ui|tests|flows|rebuild",
+    ],
     collection_id: Annotated[str | None, "Filter to specific collection"] = None,
 ) -> str:
     """Research system architecture for a specific topic.
@@ -1309,6 +1389,10 @@ async def research_architecture(
     - "security" - authentication, authorization patterns
     - "api" - REST endpoints, GraphQL, RPC services
     - "database" - data model, tables, relationships
+    - "ui" - screens, routes, and component composition
+    - "tests" - suites, cases, fixtures, and obligations
+    - "flows" - user flows and step evidence
+    - "rebuild" - replacement readiness and known gaps
     """
     user_id = get_current_user_id()
 
@@ -1409,9 +1493,101 @@ async def research_architecture(
                             lines.append(f"- {meta['natural_language']}")
                         lines.append("")
 
+            if any(word in topic_lower for word in ["ui", "screen", "view", "route"]):
+                ui_stmt = select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id.in_(collection_ids),
+                    KnowledgeNode.kind.in_(
+                        [
+                            KnowledgeNodeKind.UI_ROUTE,
+                            KnowledgeNodeKind.UI_VIEW,
+                            KnowledgeNodeKind.UI_COMPONENT,
+                        ]
+                    ),
+                )
+                ui_rows = (await db.execute(ui_stmt)).scalars().all()
+                if ui_rows:
+                    by_kind: dict[str, int] = {}
+                    for row in ui_rows:
+                        key = row.kind.value
+                        by_kind[key] = by_kind.get(key, 0) + 1
+                    lines.append("## UI Topology\n")
+                    for key, count in sorted(by_kind.items()):
+                        lines.append(f"- **{key}**: {count}")
+                    lines.append("")
+
+            if any(word in topic_lower for word in ["test", "qa", "verification"]):
+                test_stmt = select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id.in_(collection_ids),
+                    KnowledgeNode.kind.in_(
+                        [
+                            KnowledgeNodeKind.TEST_SUITE,
+                            KnowledgeNodeKind.TEST_CASE,
+                            KnowledgeNodeKind.TEST_FIXTURE,
+                        ]
+                    ),
+                )
+                test_rows = (await db.execute(test_stmt)).scalars().all()
+                if test_rows:
+                    lines.append("## Test Semantics\n")
+                    lines.append(
+                        f"- Suites: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_SUITE)}"
+                    )
+                    lines.append(
+                        f"- Cases: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_CASE)}"
+                    )
+                    lines.append(
+                        f"- Fixtures: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_FIXTURE)}"
+                    )
+                    lines.append("")
+
+            if any(word in topic_lower for word in ["flow", "journey", "rebuild"]):
+                flow_stmt = select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id.in_(collection_ids),
+                    KnowledgeNode.kind.in_(
+                        [KnowledgeNodeKind.USER_FLOW, KnowledgeNodeKind.FLOW_STEP]
+                    ),
+                )
+                flow_rows = (await db.execute(flow_stmt)).scalars().all()
+                if flow_rows:
+                    lines.append("## User Flows\n")
+                    lines.append(
+                        f"- User flows: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.USER_FLOW)}"
+                    )
+                    lines.append(
+                        f"- Flow steps: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.FLOW_STEP)}"
+                    )
+                    lines.append("")
+
+            if "rebuild" in topic_lower:
+                inferred_critical = 0
+                critical_kinds = {
+                    KnowledgeNodeKind.INTERFACE_CONTRACT,
+                    KnowledgeNodeKind.USER_FLOW,
+                    KnowledgeNodeKind.FLOW_STEP,
+                    KnowledgeNodeKind.TEST_CASE,
+                    KnowledgeNodeKind.UI_ROUTE,
+                }
+                readiness_stmt = select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id.in_(collection_ids),
+                    KnowledgeNode.kind.in_(list(critical_kinds)),
+                )
+                for row in (await db.execute(readiness_stmt)).scalars().all():
+                    prov = (row.meta or {}).get("provenance") or {}
+                    if (
+                        str(prov.get("mode") or "") == "inferred"
+                        and float(prov.get("confidence") or 0.0) < 0.65
+                    ):
+                        inferred_critical += 1
+                lines.append("## Rebuild Readiness Signals\n")
+                lines.append(f"- Critical inferred-only nodes: {inferred_critical}")
+                lines.append("- Use `export_twin_view(format='twin_manifest')` for full handoff.")
+                lines.append("")
+
             if len(lines) == 1:
                 lines.append(f"No specific architecture information found for topic: `{topic}`\n")
-                lines.append("Try topics like: api, deployment, database, security")
+                lines.append(
+                    "Try topics like: api, deployment, database, security, ui, tests, flows"
+                )
 
             return "\n".join(lines)
 
@@ -1505,6 +1681,8 @@ async def mcp_graph_rag(
     max_depth: Annotated[int, "Graph expansion depth (1-3)"] = 2,
     format: Annotated[str, "Output format: 'markdown' or 'json'"] = "markdown",
     answer: Annotated[bool, "Use map-reduce to generate synthesized answer (requires LLM)"] = False,
+    twin_scope: Annotated[str, "Context scope: code|tests|ui|flows|all"] = "all",
+    rebuild_mode: Annotated[bool, "Append rebuild-oriented architecture sections"] = False,
 ) -> str:
     """Graph-augmented retrieval with global (community) and local (entity) context.
 
@@ -1525,6 +1703,25 @@ async def mcp_graph_rag(
     user_id = get_current_user_id()
 
     try:
+        scope = (twin_scope or "all").strip().lower()
+        if scope not in {"code", "tests", "ui", "flows", "all"}:
+            return "# Error\n\nInvalid twin_scope. Use code|tests|ui|flows|all."
+
+        def apply_scope_filter(result_pack):  # noqa: ANN001
+            if scope == "all":
+                return result_pack
+            allowed_entities = [
+                entity for entity in result_pack.entities if _node_kind_in_scope(entity.kind, scope)
+            ]
+            allowed_ids = {str(entity.node_id) for entity in allowed_entities}
+            result_pack.entities = allowed_entities
+            result_pack.edges = [
+                edge
+                for edge in result_pack.edges
+                if edge.source_id in allowed_ids and edge.target_id in allowed_ids
+            ]
+            return result_pack
+
         collection_uuid = uuid.UUID(collection_id) if collection_id else None
 
         if answer:
@@ -1553,6 +1750,8 @@ async def mcp_graph_rag(
                     max_communities=min(max_communities, 10),
                     max_entities=min(max_entities, 50),
                 )
+                if result.context:
+                    result.context = apply_scope_filter(result.context)
 
                 # Format response
                 lines = [
@@ -1566,6 +1765,34 @@ async def mcp_graph_rag(
                     lines.append("\n## Key Citations")
                     for cit in result.context.citations[:5]:
                         lines.append(f"- `{cit.format()}`")
+
+                if rebuild_mode and result.context:
+                    entities = result.context.entities
+                    by_kind: dict[str, int] = {}
+                    for entity in entities:
+                        by_kind[entity.kind] = by_kind.get(entity.kind, 0) + 1
+                    lines.append("\n## System Boundaries")
+                    lines.append(f"- Entities in scope: {len(entities)} (scope: {scope})")
+                    lines.append("\n## Interfaces")
+                    lines.append(
+                        f"- API/contract entities: {sum(by_kind.get(k, 0) for k in ['api_endpoint', 'service_rpc', 'interface_contract'])}"
+                    )
+                    lines.append("\n## UI Screens")
+                    lines.append(
+                        f"- UI entities: {sum(by_kind.get(k, 0) for k in ['ui_route', 'ui_view', 'ui_component'])}"
+                    )
+                    lines.append("\n## User Flows")
+                    lines.append(
+                        f"- Flow entities: {sum(by_kind.get(k, 0) for k in ['user_flow', 'flow_step'])}"
+                    )
+                    lines.append("\n## Test Obligations")
+                    lines.append(
+                        f"- Test entities: {sum(by_kind.get(k, 0) for k in ['test_suite', 'test_case', 'test_fixture'])}"
+                    )
+                    lines.append("\n## Known Gaps")
+                    lines.append(
+                        "- Prefer `export_twin_view(format='twin_manifest')` for full rebuild handoff."
+                    )
 
                 return "\n".join(lines)
 
@@ -1583,9 +1810,45 @@ async def mcp_graph_rag(
                     max_entities=min(max_entities, 50),
                     max_depth=min(max_depth, 3),
                 )
+                result = apply_scope_filter(result)
 
                 if format.lower() == "json":
-                    return json.dumps(result.to_dict(), indent=2)
+                    payload = result.to_dict()
+                    if rebuild_mode:
+                        kinds = [entity.get("kind") for entity in payload.get("entities", [])]
+                        payload["rebuild_sections"] = {
+                            "System Boundaries": {"entity_count": len(payload.get("entities", []))},
+                            "Interfaces": {
+                                "entity_count": sum(
+                                    1
+                                    for kind in kinds
+                                    if kind in {"api_endpoint", "service_rpc", "interface_contract"}
+                                )
+                            },
+                            "UI Screens": {
+                                "entity_count": sum(
+                                    1
+                                    for kind in kinds
+                                    if kind in {"ui_route", "ui_view", "ui_component"}
+                                )
+                            },
+                            "User Flows": {
+                                "entity_count": sum(
+                                    1 for kind in kinds if kind in {"user_flow", "flow_step"}
+                                )
+                            },
+                            "Test Obligations": {
+                                "entity_count": sum(
+                                    1
+                                    for kind in kinds
+                                    if kind in {"test_suite", "test_case", "test_fixture"}
+                                )
+                            },
+                            "Known Gaps": [
+                                "Use twin_manifest export for end-to-end rebuild planning."
+                            ],
+                        }
+                    return json.dumps(payload, indent=2)
 
                 md = result.to_markdown()
                 if (
@@ -1594,6 +1857,13 @@ async def mcp_graph_rag(
                     == f"# GraphRAG Context: {query}\n\nFound 0 communities, 0 entities, 0 citations.\n"
                 ):
                     return f"# No Results\n\nNo relevant content found for: {query}"
+
+                if rebuild_mode:
+                    md += (
+                        "\n\n## Rebuild Mode\n"
+                        f"- Scope: `{scope}`\n"
+                        "- Add `format='json'` for machine-consumable rebuild sections.\n"
+                    )
 
                 return md
 
@@ -1723,6 +1993,19 @@ async def mcp_get_twin_graph(
     page: Annotated[int, "Page index"] = 0,
     limit: Annotated[int, "Nodes per page"] = 200,
     format: Annotated[str, "Output format: markdown or json"] = "markdown",
+    facet: Annotated[str | None, "Facet filter: code|tests|ui|flows|all"] = None,
+    include_provenance_mode: Annotated[
+        str | None,
+        "Optional provenance mode filter: deterministic|inferred",
+    ] = None,
+    include_test_links: Annotated[
+        bool | None,
+        "Include test semantic links (omit to keep existing default behavior)",
+    ] = None,
+    include_ui_links: Annotated[
+        bool | None,
+        "Include UI semantic links (omit to keep existing default behavior)",
+    ] = None,
 ) -> str:
     """Read a paginated twin graph view."""
     try:
@@ -1734,6 +2017,16 @@ async def mcp_get_twin_graph(
 
         async with get_db_session() as db:
             graph = await get_scenario_graph(db, scenario_uuid, layer_value, page, min(limit, 5000))
+        scope = (facet or "all").strip().lower()
+        if scope not in {"code", "tests", "ui", "flows", "all"}:
+            return "# Error\n\nInvalid facet. Use code|tests|ui|flows|all."
+        graph = _filter_graph_payload(
+            graph,
+            scope=scope,
+            provenance_mode=include_provenance_mode,
+            include_test_links=include_test_links,
+            include_ui_links=include_ui_links,
+        )
 
         if format.lower() == "json":
             return json.dumps(graph, indent=2)
@@ -1743,6 +2036,7 @@ async def mcp_get_twin_graph(
             "",
             f"- Nodes: {len(graph['nodes'])}/{graph['total_nodes']}",
             f"- Edges: {len(graph['edges'])}",
+            f"- Facet: {scope}",
             "",
             "## Nodes",
         ]
@@ -2670,7 +2964,7 @@ async def mcp_export_sarif(
 @mcp.tool(name="export_twin_view")
 async def mcp_export_twin_view(
     scenario_id: Annotated[str, "Scenario UUID"],
-    format: Annotated[str, "lpg_jsonl|cc_json|cx2|jgf|mermaid_c4"],
+    format: Annotated[str, "lpg_jsonl|cc_json|cx2|jgf|mermaid_c4|twin_manifest"],
 ) -> str:
     """Generate and persist an export artifact for a scenario."""
     try:
@@ -2680,6 +2974,7 @@ async def mcp_export_twin_view(
             export_jgf,
             export_lpg_jsonl,
             export_mermaid_c4,
+            export_twin_manifest,
         )
         from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
         from contextmine_core.twin import GraphProjection
@@ -2722,6 +3017,10 @@ async def mcp_export_twin_view(
                     else KnowledgeArtifactKind.MERMAID_C4_TOBE
                 )
                 name = f"{scenario.name}.mmd"
+            elif format == "twin_manifest":
+                content = await export_twin_manifest(db, scenario.id)
+                kind = KnowledgeArtifactKind.TWIN_MANIFEST
+                name = f"{scenario.name}.twin_manifest.json"
             else:
                 return "# Error\n\nUnsupported export format."
 
@@ -2900,6 +3199,10 @@ def get_tools() -> list[dict]:
                     "page": {"type": "integer"},
                     "limit": {"type": "integer"},
                     "format": {"type": "string"},
+                    "facet": {"type": "string"},
+                    "include_provenance_mode": {"type": "string"},
+                    "include_test_links": {"type": "boolean"},
+                    "include_ui_links": {"type": "boolean"},
                 },
                 "required": ["scenario_id"],
             },
@@ -2956,7 +3259,7 @@ def get_tools() -> list[dict]:
         },
         {
             "name": "context.export_twin_view",
-            "description": "Generate and persist lpg_jsonl, cc_json, cx2, jgf, or mermaid_c4 exports.",
+            "description": "Generate and persist lpg_jsonl, cc_json, cx2, jgf, mermaid_c4, or twin_manifest exports.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"scenario_id": {"type": "string"}, "format": {"type": "string"}},

@@ -356,3 +356,371 @@ def build_code_symbol_projection(
             projected_edges.append(edge)
 
     return projected_nodes, projected_edges
+
+
+def _subgraph_by_kind(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    include_node_kinds: set[str],
+    include_edge_kinds: set[str],
+    include_linked_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    include_node_kinds = {kind.lower() for kind in include_node_kinds}
+    include_edge_kinds = {kind.lower() for kind in include_edge_kinds}
+    include_linked_kinds = {kind.lower() for kind in (include_linked_kinds or set())}
+
+    node_by_id = {str(node.get("id")): node for node in nodes}
+    selected_ids: set[str] = set()
+    for node in nodes:
+        kind = str(node.get("kind") or "").lower()
+        if kind in include_node_kinds:
+            selected_ids.add(str(node.get("id")))
+
+    selected_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        edge_kind = str(edge.get("kind") or "").lower()
+        if edge_kind not in include_edge_kinds:
+            continue
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        src_kind = str((node_by_id.get(src) or {}).get("kind") or "").lower()
+        dst_kind = str((node_by_id.get(dst) or {}).get("kind") or "").lower()
+        if src in selected_ids or dst in selected_ids:
+            selected_ids.add(src)
+            selected_ids.add(dst)
+            selected_edges.append(edge)
+            continue
+        if src_kind in include_linked_kinds and dst_kind in include_linked_kinds:
+            selected_ids.add(src)
+            selected_ids.add(dst)
+            selected_edges.append(edge)
+
+    selected_nodes = [node for node in nodes if str(node.get("id")) in selected_ids]
+    return selected_nodes, selected_edges
+
+
+def build_ui_map_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build UI map subgraph and summary stats."""
+    ui_nodes, ui_edges = _subgraph_by_kind(
+        nodes,
+        edges,
+        include_node_kinds={"ui_route", "ui_view", "ui_component", "interface_contract"},
+        include_edge_kinds={
+            "ui_route_renders_view",
+            "ui_view_composes_component",
+            "contract_governs_endpoint",
+        },
+        include_linked_kinds={"api_endpoint"},
+    )
+    return {
+        "summary": {
+            "routes": sum(1 for node in ui_nodes if str(node.get("kind")) == "ui_route"),
+            "views": sum(1 for node in ui_nodes if str(node.get("kind")) == "ui_view"),
+            "components": sum(1 for node in ui_nodes if str(node.get("kind")) == "ui_component"),
+            "contracts": sum(
+                1 for node in ui_nodes if str(node.get("kind")) == "interface_contract"
+            ),
+            "trace_edges": len(ui_edges),
+        },
+        "graph": {
+            "nodes": ui_nodes,
+            "edges": ui_edges,
+            "total_nodes": len(ui_nodes),
+        },
+    }
+
+
+def build_test_matrix_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build test matrix subgraph and tabular rows."""
+    test_nodes, test_edges = _subgraph_by_kind(
+        nodes,
+        edges,
+        include_node_kinds={"test_suite", "test_case", "test_fixture"},
+        include_edge_kinds={
+            "test_case_covers_symbol",
+            "test_case_validates_rule",
+            "test_uses_fixture",
+            "test_case_verifies_flow",
+        },
+        include_linked_kinds={"symbol", "business_rule", "user_flow"},
+    )
+    node_by_id = {str(node.get("id")): node for node in test_nodes}
+    rows: dict[str, dict[str, Any]] = {}
+    for edge in test_edges:
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        src_node = node_by_id.get(src) or {}
+        dst_node = node_by_id.get(dst) or {}
+        if str(src_node.get("kind")) != "test_case":
+            continue
+        case_key = str(src_node.get("natural_key") or src)
+        row = rows.setdefault(
+            case_key,
+            {
+                "test_case_id": src,
+                "test_case_key": case_key,
+                "test_case_name": str(src_node.get("name") or ""),
+                "covers_symbols": [],
+                "validates_rules": [],
+                "fixtures": [],
+                "verifies_flows": [],
+                "evidence_ids": list(
+                    ((src_node.get("meta") or {}).get("provenance") or {}).get("evidence_ids") or []
+                ),
+            },
+        )
+        target_name = str(dst_node.get("name") or "")
+        kind = str(edge.get("kind") or "")
+        if kind == "test_case_covers_symbol":
+            row["covers_symbols"].append(target_name)
+        elif kind == "test_case_validates_rule":
+            row["validates_rules"].append(target_name)
+        elif kind == "test_uses_fixture":
+            row["fixtures"].append(target_name)
+        elif kind == "test_case_verifies_flow":
+            row["verifies_flows"].append(target_name)
+
+    matrix_rows = []
+    for row in rows.values():
+        matrix_rows.append(
+            {
+                **row,
+                "covers_symbols": sorted(set(row["covers_symbols"])),
+                "validates_rules": sorted(set(row["validates_rules"])),
+                "fixtures": sorted(set(row["fixtures"])),
+                "verifies_flows": sorted(set(row["verifies_flows"])),
+            }
+        )
+    matrix_rows.sort(key=lambda row: row["test_case_name"])
+
+    return {
+        "summary": {
+            "test_cases": sum(1 for node in test_nodes if str(node.get("kind")) == "test_case"),
+            "test_suites": sum(1 for node in test_nodes if str(node.get("kind")) == "test_suite"),
+            "test_fixtures": sum(
+                1 for node in test_nodes if str(node.get("kind")) == "test_fixture"
+            ),
+            "matrix_rows": len(matrix_rows),
+        },
+        "matrix": matrix_rows,
+        "graph": {
+            "nodes": test_nodes,
+            "edges": test_edges,
+            "total_nodes": len(test_nodes),
+        },
+    }
+
+
+def build_user_flows_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build user-flow graph and ordered flow payload."""
+    flow_nodes, flow_edges = _subgraph_by_kind(
+        nodes,
+        edges,
+        include_node_kinds={"user_flow", "flow_step"},
+        include_edge_kinds={
+            "user_flow_has_step",
+            "flow_step_calls_endpoint",
+            "test_case_verifies_flow",
+        },
+        include_linked_kinds={"api_endpoint", "test_case"},
+    )
+    node_by_id = {str(node.get("id")): node for node in flow_nodes}
+    steps_by_flow: dict[str, list[dict[str, Any]]] = {}
+    endpoint_by_step: dict[str, list[str]] = defaultdict(list)
+    tests_by_flow: dict[str, list[str]] = defaultdict(list)
+
+    for edge in flow_edges:
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        kind = str(edge.get("kind") or "")
+        src_node = node_by_id.get(src) or {}
+        dst_node = node_by_id.get(dst) or {}
+        if kind == "user_flow_has_step" and str(src_node.get("kind")) == "user_flow":
+            step_meta = dst_node.get("meta") or {}
+            steps_by_flow.setdefault(src, []).append(
+                {
+                    "step_id": dst,
+                    "name": str(dst_node.get("name") or ""),
+                    "order": int(step_meta.get("order") or 0),
+                    "endpoint_hints": list(step_meta.get("endpoint_hints") or []),
+                    "evidence_ids": list(
+                        (step_meta.get("provenance") or {}).get("evidence_ids") or []
+                    ),
+                }
+            )
+        elif kind == "flow_step_calls_endpoint" and str(src_node.get("kind")) == "flow_step":
+            endpoint_by_step[src].append(
+                str(dst_node.get("name") or dst_node.get("natural_key") or dst)
+            )
+        elif kind == "test_case_verifies_flow" and str(dst_node.get("kind")) == "user_flow":
+            tests_by_flow[dst].append(
+                str(src_node.get("name") or src_node.get("natural_key") or src)
+            )
+
+    flows_payload: list[dict[str, Any]] = []
+    for node in flow_nodes:
+        if str(node.get("kind")) != "user_flow":
+            continue
+        flow_id = str(node.get("id"))
+        flow_steps = steps_by_flow.get(flow_id, [])
+        flow_steps.sort(key=lambda item: (item["order"], item["name"]))
+        for step in flow_steps:
+            step["calls_endpoints"] = sorted(set(endpoint_by_step.get(step["step_id"], [])))
+        flows_payload.append(
+            {
+                "flow_id": flow_id,
+                "flow_key": str(node.get("natural_key") or flow_id),
+                "flow_name": str(node.get("name") or ""),
+                "route_path": str((node.get("meta") or {}).get("route_path") or ""),
+                "steps": flow_steps,
+                "verified_by_tests": sorted(set(tests_by_flow.get(flow_id, []))),
+                "evidence_ids": list(
+                    ((node.get("meta") or {}).get("provenance") or {}).get("evidence_ids") or []
+                ),
+            }
+        )
+    flows_payload.sort(key=lambda row: row["flow_name"])
+
+    return {
+        "summary": {
+            "user_flows": len(flows_payload),
+            "flow_steps": sum(len(flow["steps"]) for flow in flows_payload),
+            "flow_edges": len(flow_edges),
+        },
+        "flows": flows_payload,
+        "graph": {
+            "nodes": flow_nodes,
+            "edges": flow_edges,
+            "total_nodes": len(flow_nodes),
+        },
+    }
+
+
+def compute_rebuild_readiness(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compute rebuild-readiness score and explainable contributors."""
+    node_by_id = {str(node.get("id")): node for node in nodes}
+
+    endpoint_ids = {
+        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "api_endpoint"
+    }
+    test_case_ids = {
+        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "test_case"
+    }
+    ui_route_ids = {
+        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "ui_route"
+    }
+    flow_ids = {str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "user_flow"}
+    flow_step_ids = {
+        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "flow_step"
+    }
+
+    tested_endpoints: set[str] = set()
+    flow_evidence_total = 0
+    flow_step_count = 0
+    ui_routed_views: set[str] = set()
+    views_with_endpoint_calls: set[str] = set()
+    critical_inferred_only: list[dict[str, Any]] = []
+
+    critical_kinds = {"interface_contract", "user_flow", "flow_step", "ui_route", "test_case"}
+    for node in nodes:
+        kind = str(node.get("kind") or "")
+        if kind not in critical_kinds:
+            continue
+        provenance = (node.get("meta") or {}).get("provenance") or {}
+        mode = str(provenance.get("mode") or "")
+        confidence = float(provenance.get("confidence") or 0.0)
+        if mode == "inferred" and confidence < 0.65:
+            critical_inferred_only.append(
+                {
+                    "node_id": str(node.get("id")),
+                    "kind": kind,
+                    "name": str(node.get("name") or ""),
+                    "confidence": round(confidence, 4),
+                    "evidence_ids": list(provenance.get("evidence_ids") or []),
+                }
+            )
+
+    for edge in edges:
+        kind = str(edge.get("kind") or "")
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        if kind in {"test_case_covers_symbol", "test_case_validates_rule"} and src in test_case_ids:
+            continue
+        if kind == "flow_step_calls_endpoint" and src in flow_step_ids and dst in endpoint_ids:
+            tested_endpoints.add(dst)
+        if kind == "test_case_verifies_flow" and src in test_case_ids and dst in flow_ids:
+            tested_endpoints.update(
+                {
+                    str(flow_edge.get("target_node_id"))
+                    for flow_edge in edges
+                    if str(flow_edge.get("kind") or "") == "flow_step_calls_endpoint"
+                    and str(flow_edge.get("source_node_id")) in flow_step_ids
+                    and str(
+                        (node_by_id.get(str(flow_edge.get("source_node_id"))) or {}).get("kind")
+                    )
+                    == "flow_step"
+                }
+            )
+        if kind == "ui_route_renders_view" and src in ui_route_ids:
+            ui_routed_views.add(dst)
+        if kind == "flow_step_calls_endpoint":
+            step_meta = (node_by_id.get(src) or {}).get("meta") or {}
+            if step_meta:
+                flow_step_count += 1
+                flow_evidence_total += len(
+                    (step_meta.get("provenance") or {}).get("evidence_ids") or []
+                )
+        if kind == "contract_governs_endpoint":
+            views_with_endpoint_calls.add(src)
+
+    endpoint_coverage = len(tested_endpoints) / len(endpoint_ids) if endpoint_ids else 0.0
+    flow_evidence_density = flow_evidence_total / flow_step_count if flow_step_count > 0 else 0.0
+    ui_traceability = (
+        len(views_with_endpoint_calls) / len(ui_routed_views) if ui_routed_views else 0.0
+    )
+    inferred_penalty = min(1.0, len(critical_inferred_only) / 10.0)
+
+    score = (
+        (endpoint_coverage * 0.35)
+        + (min(flow_evidence_density / 2.0, 1.0) * 0.25)
+        + (ui_traceability * 0.25)
+        + ((1.0 - inferred_penalty) * 0.15)
+    )
+    score_100 = int(round(max(0.0, min(score, 1.0)) * 100))
+
+    known_gaps: list[str] = []
+    if endpoint_coverage < 0.5:
+        known_gaps.append("Low endpoint verification coverage from tests/flows.")
+    if ui_traceability < 0.5:
+        known_gaps.append("Low UI to endpoint traceability.")
+    if flow_evidence_density < 0.75:
+        known_gaps.append("Sparse flow evidence on synthesized steps.")
+    if critical_inferred_only:
+        known_gaps.append("Critical inferred-only nodes require deterministic confirmation.")
+
+    return {
+        "score": score_100,
+        "summary": {
+            "interface_test_coverage": round(endpoint_coverage, 4),
+            "flow_evidence_density": round(flow_evidence_density, 4),
+            "ui_to_endpoint_traceability": round(ui_traceability, 4),
+            "critical_inferred_only_count": len(critical_inferred_only),
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+        },
+        "critical_inferred_only": critical_inferred_only[:50],
+        "known_gaps": known_gaps,
+    }

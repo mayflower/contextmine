@@ -105,6 +105,27 @@ components:
         assert "CreateUserRequest" in result.schemas
         assert "User" in result.schemas
 
+    def test_extract_handler_hints_from_vendor_extensions(self) -> None:
+        """Test extracting explicit handler symbols from vendor extensions."""
+        content = """
+openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0.0"
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      x-handler: "OrdersController.createOrder"
+      responses:
+        "201":
+          description: Created
+"""
+        result = extract_from_openapi("api.yaml", content)
+        assert len(result.endpoints) == 1
+        assert result.endpoints[0].operation_id == "createOrder"
+        assert result.endpoints[0].handler_hints == ["OrdersController.createOrder"]
+
 
 class TestGraphQLExtractor:
     """Tests for GraphQL schema parsing."""
@@ -400,6 +421,27 @@ paths:
           description: OK
 """
         result = extractor.add_file("api/openapi.yaml", content)
+        assert result is True
+        assert len(extractor.catalog.openapi_specs) == 1
+
+    def test_auto_detect_swagger_json(self) -> None:
+        """Test deterministic detection of Swagger 2 specs."""
+        extractor = SurfaceCatalogExtractor()
+        content = """
+{
+  "swagger": "2.0",
+  "info": {"title": "Test", "version": "1.0"},
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}
+"""
+        result = extractor.add_file("swagger.json", content)
         assert result is True
         assert len(extractor.catalog.openapi_specs) == 1
 

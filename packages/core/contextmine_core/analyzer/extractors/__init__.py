@@ -20,6 +20,13 @@ Legacy extractors (kept for backwards compatibility):
 # LLM-based generic extractors
 # Legacy extractors (backwards compatibility)
 from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
+from contextmine_core.analyzer.extractors.flows import (
+    FlowStepDef,
+    FlowSynthesis,
+    UserFlowDef,
+    build_flows_graph,
+    synthesize_user_flows,
+)
 
 # Standard spec extractors (inherently generic)
 from contextmine_core.analyzer.extractors.graphql import (
@@ -72,6 +79,23 @@ from contextmine_core.analyzer.extractors.surface import (
     SurfaceCatalogExtractor,
     build_surface_graph,
 )
+from contextmine_core.analyzer.extractors.tests import (
+    TestCaseDef,
+    TestFixtureDef,
+    TestsExtraction,
+    TestSuiteDef,
+    build_tests_graph,
+    extract_tests_from_file,
+    extract_tests_from_files,
+)
+from contextmine_core.analyzer.extractors.ui import (
+    UIExtraction,
+    UIRouteDef,
+    UIViewDef,
+    build_ui_graph,
+    extract_ui_from_file,
+    extract_ui_from_files,
+)
 
 # Re-exports for backwards compatibility
 # The old erm module used ERMExtractor and ERMSchema - map to new schema module
@@ -112,6 +136,25 @@ __all__ = [
     "EndpointDef",
     "extract_from_graphql",
     "GraphQLExtraction",
+    # Behavioral extractors
+    "extract_tests_from_file",
+    "extract_tests_from_files",
+    "TestsExtraction",
+    "TestSuiteDef",
+    "TestCaseDef",
+    "TestFixtureDef",
+    "build_tests_graph",
+    "extract_ui_from_file",
+    "extract_ui_from_files",
+    "UIExtraction",
+    "UIRouteDef",
+    "UIViewDef",
+    "build_ui_graph",
+    "synthesize_user_flows",
+    "FlowSynthesis",
+    "UserFlowDef",
+    "FlowStepDef",
+    "build_flows_graph",
     "extract_from_protobuf",
     "ProtobufExtraction",
     # Surface catalog

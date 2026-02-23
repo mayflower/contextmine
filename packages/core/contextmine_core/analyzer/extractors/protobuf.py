@@ -1,18 +1,19 @@
-"""Protobuf (.proto) file extractor.
-
-Parses Protocol Buffer definition files to extract:
-- Messages
-- Services and RPCs
-- Enums
-- Field definitions
-"""
+"""Protobuf (.proto) extractor using AST parsing."""
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from contextmine_core.analyzer.extractors.ast_utils import (
+    children_of,
+    first_child,
+    node_text,
+    parse_with_language,
+    unquote,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,32 +81,8 @@ class ProtobufExtraction:
     services: list[ProtoServiceDef] = field(default_factory=list)
 
 
-# Regex patterns for protobuf parsing
-SYNTAX_PATTERN = re.compile(r'syntax\s*=\s*"(proto[23])"\s*;')
-PACKAGE_PATTERN = re.compile(r"package\s+([\w.]+)\s*;")
-IMPORT_PATTERN = re.compile(r'import\s+"([^"]+)"\s*;')
-MESSAGE_PATTERN = re.compile(r"message\s+(\w+)\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}")
-ENUM_PATTERN = re.compile(r"enum\s+(\w+)\s*\{([^}]*)\}")
-SERVICE_PATTERN = re.compile(r"service\s+(\w+)\s*\{([^}]*)\}")
-FIELD_PATTERN = re.compile(
-    r"(repeated\s+|optional\s+)?"  # Optional modifiers
-    r"(map<(\w+),\s*(\w+)>|[\w.]+)"  # Type (including map)
-    r"\s+(\w+)"  # Field name
-    r"\s*=\s*(\d+)"  # Field number
-)
-ENUM_VALUE_PATTERN = re.compile(r"(\w+)\s*=\s*(-?\d+)")
-RPC_PATTERN = re.compile(
-    r"rpc\s+(\w+)\s*\("  # RPC name
-    r"\s*(stream\s+)?(\w+)\s*\)"  # Request type
-    r"\s*returns\s*\("
-    r"\s*(stream\s+)?(\w+)\s*\)"  # Response type
-)
-
-
 def extract_from_protobuf(file_path: str, content: str) -> ProtobufExtraction:
     """Extract message, service, and enum definitions from a protobuf file.
-
-    Uses regex-based parsing for common protobuf constructs.
 
     Args:
         file_path: Path to the proto file
@@ -115,115 +92,207 @@ def extract_from_protobuf(file_path: str, content: str) -> ProtobufExtraction:
         ProtobufExtraction with extracted definitions
     """
     result = ProtobufExtraction(file_path=file_path)
+    root = parse_with_language("proto", content)
+    if root is None:
+        logger.warning("Protobuf parser unavailable; skipping AST extraction for %s", file_path)
+        return result
 
-    # Remove comments
-    content_clean = _remove_comments(content)
-
-    # Extract syntax
-    syntax_match = SYNTAX_PATTERN.search(content_clean)
-    if syntax_match:
-        result.syntax = syntax_match.group(1)
-
-    # Extract package
-    package_match = PACKAGE_PATTERN.search(content_clean)
-    if package_match:
-        result.package = package_match.group(1)
-
-    # Extract imports
-    for import_match in IMPORT_PATTERN.finditer(content_clean):
-        result.imports.append(import_match.group(1))
-
-    # Extract enums (before messages to handle nested)
-    for enum_match in ENUM_PATTERN.finditer(content_clean):
-        result.enums.append(_parse_enum(enum_match.group(1), enum_match.group(2)))
-
-    # Extract messages
-    for msg_match in MESSAGE_PATTERN.finditer(content_clean):
-        result.messages.append(_parse_message(msg_match.group(1), msg_match.group(2)))
-
-    # Extract services
-    for svc_match in SERVICE_PATTERN.finditer(content_clean):
-        result.services.append(_parse_service(svc_match.group(1), svc_match.group(2)))
-
+    for node in root.children:
+        if node.type == "syntax":
+            syntax_value = unquote(node_text(content, first_child(node, "string")))
+            if syntax_value:
+                result.syntax = syntax_value
+        elif node.type == "package":
+            package_name = node_text(content, first_child(node, "full_ident")).strip()
+            if package_name:
+                result.package = package_name
+        elif node.type == "import":
+            imported = unquote(node_text(content, first_child(node, "string")))
+            if imported:
+                result.imports.append(imported)
+        elif node.type == "enum":
+            parsed = _parse_enum(content, node)
+            if parsed is not None:
+                result.enums.append(parsed)
+        elif node.type == "message":
+            parsed = _parse_message(content, node)
+            if parsed is not None:
+                result.messages.append(parsed)
+        elif node.type == "service":
+            parsed = _parse_service(content, node)
+            if parsed is not None:
+                result.services.append(parsed)
     return result
 
 
-def _remove_comments(content: str) -> str:
-    """Remove single-line and multi-line comments from protobuf content."""
-    # Remove multi-line comments
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    # Remove single-line comments
-    content = re.sub(r"//.*$", "", content, flags=re.MULTILINE)
-    return content
+def _parse_message(content: str, message_node: object) -> ProtoMessageDef | None:
+    name = node_text(
+        content, first_child(first_child(message_node, "message_name"), "identifier")
+    ).strip()
+    if not name:
+        return None
+
+    message = ProtoMessageDef(name=name)
+    body = first_child(message_node, "message_body")
+    if body is None:
+        return message
+
+    for child in body.children:
+        if child.type == "field":
+            field = _parse_field(content, child)
+            if field is not None:
+                message.fields.append(field)
+        elif child.type == "map_field":
+            field = _parse_map_field(content, child)
+            if field is not None:
+                message.fields.append(field)
+        elif child.type == "message":
+            nested_name = node_text(
+                content,
+                first_child(first_child(child, "message_name"), "identifier"),
+            ).strip()
+            if nested_name:
+                message.nested_messages.append(nested_name)
+        elif child.type == "enum":
+            nested_enum_name = node_text(
+                content,
+                first_child(first_child(child, "enum_name"), "identifier"),
+            ).strip()
+            if nested_enum_name:
+                message.nested_enums.append(nested_enum_name)
+
+    return message
 
 
-def _parse_message(name: str, body: str) -> ProtoMessageDef:
-    """Parse a message definition body."""
-    msg = ProtoMessageDef(name=name)
+def _parse_field(content: str, node: object) -> ProtoFieldDef | None:
+    field_name = node_text(content, first_child(node, "identifier")).strip()
+    type_node = first_child(node, "type")
+    number_node = first_child(node, "field_number")
+    if not field_name or type_node is None or number_node is None:
+        return None
 
-    # Find nested messages
-    for nested_match in re.finditer(r"message\s+(\w+)", body):
-        msg.nested_messages.append(nested_match.group(1))
+    try:
+        number = int(node_text(content, number_node).strip())
+    except ValueError:
+        return None
 
-    # Find nested enums
-    for nested_match in re.finditer(r"enum\s+(\w+)", body):
-        msg.nested_enums.append(nested_match.group(1))
-
-    # Parse fields (excluding nested message/enum blocks)
-    # Simple approach: find fields by pattern
-    for field_match in FIELD_PATTERN.finditer(body):
-        modifier = field_match.group(1)
-        type_full = field_match.group(2)
-        map_key = field_match.group(3)
-        map_value = field_match.group(4)
-        field_name = field_match.group(5)
-        field_number = int(field_match.group(6))
-
-        field_def = ProtoFieldDef(
-            name=field_name,
-            field_type=type_full,
-            number=field_number,
-        )
-
-        if modifier:
-            modifier = modifier.strip()
-            field_def.repeated = modifier == "repeated"
-            field_def.optional = modifier == "optional"
-
-        if map_key and map_value:
-            field_def.map_key_type = map_key
-            field_def.map_value_type = map_value
-
-        msg.fields.append(field_def)
-
-    return msg
+    return ProtoFieldDef(
+        name=field_name,
+        field_type=node_text(content, type_node).strip(),
+        number=number,
+        repeated=first_child(node, "repeated") is not None,
+        optional=first_child(node, "optional") is not None,
+    )
 
 
-def _parse_enum(name: str, body: str) -> ProtoEnumDef:
-    """Parse an enum definition body."""
+def _parse_map_field(content: str, node: object) -> ProtoFieldDef | None:
+    field_name = node_text(content, first_child(node, "identifier")).strip()
+    key_type = node_text(content, first_child(node, "key_type")).strip()
+    value_type = node_text(content, first_child(node, "type")).strip()
+    number_node = first_child(node, "field_number")
+    if not field_name or not key_type or not value_type or number_node is None:
+        return None
+
+    try:
+        number = int(node_text(content, number_node).strip())
+    except ValueError:
+        return None
+
+    return ProtoFieldDef(
+        name=field_name,
+        field_type=f"map<{key_type},{value_type}>",
+        number=number,
+        map_key_type=key_type,
+        map_value_type=value_type,
+    )
+
+
+def _parse_enum(content: str, enum_node: object) -> ProtoEnumDef | None:
+    name = node_text(
+        content, first_child(first_child(enum_node, "enum_name"), "identifier")
+    ).strip()
+    if not name:
+        return None
+
     enum_def = ProtoEnumDef(name=name)
+    enum_body = first_child(enum_node, "enum_body")
+    if enum_body is None:
+        return enum_def
 
-    for value_match in ENUM_VALUE_PATTERN.finditer(body):
-        enum_def.values.append((value_match.group(1), int(value_match.group(2))))
-
+    for enum_field in children_of(enum_body, "enum_field"):
+        ident = node_text(content, first_child(enum_field, "identifier")).strip()
+        value_node = first_child(enum_field, "int_lit")
+        if not ident or value_node is None:
+            continue
+        try:
+            value = int(node_text(content, value_node).strip())
+        except ValueError:
+            continue
+        enum_def.values.append((ident, value))
     return enum_def
 
 
-def _parse_service(name: str, body: str) -> ProtoServiceDef:
-    """Parse a service definition body."""
+def _parse_service(content: str, service_node: object) -> ProtoServiceDef | None:
+    name = node_text(
+        content,
+        first_child(first_child(service_node, "service_name"), "identifier"),
+    ).strip()
+    if not name:
+        return None
+
     service = ProtoServiceDef(name=name)
-
-    for rpc_match in RPC_PATTERN.finditer(body):
-        rpc = ProtoRPCDef(
-            name=rpc_match.group(1),
-            request_type=rpc_match.group(3),
-            response_type=rpc_match.group(5),
-            request_stream=rpc_match.group(2) is not None,
-            response_stream=rpc_match.group(4) is not None,
-        )
-        service.rpcs.append(rpc)
-
+    for rpc_node in children_of(service_node, "rpc"):
+        rpc = _parse_rpc(content, rpc_node)
+        if rpc is not None:
+            service.rpcs.append(rpc)
     return service
+
+
+def _parse_rpc(content: str, rpc_node: Any) -> ProtoRPCDef | None:
+    name = node_text(content, first_child(first_child(rpc_node, "rpc_name"), "identifier")).strip()
+    if not name:
+        return None
+
+    request_type = ""
+    response_type = ""
+    request_stream = False
+    response_stream = False
+    stage = "seek_request"
+
+    for child in rpc_node.children:
+        if stage == "seek_request":
+            if child.type == "(":
+                stage = "request"
+            continue
+        if stage == "request":
+            if child.type == "stream":
+                request_stream = True
+            elif child.type == "message_or_enum_type":
+                request_type = node_text(content, child).strip()
+            elif child.type == ")":
+                stage = "seek_response"
+            continue
+        if stage == "seek_response":
+            if child.type == "(":
+                stage = "response"
+            continue
+        if stage == "response":
+            if child.type == "stream":
+                response_stream = True
+            elif child.type == "message_or_enum_type":
+                response_type = node_text(content, child).strip()
+            elif child.type == ")":
+                break
+
+    if not request_type or not response_type:
+        return None
+    return ProtoRPCDef(
+        name=name,
+        request_type=request_type,
+        response_type=response_type,
+        request_stream=request_stream,
+        response_stream=response_stream,
+    )
 
 
 def extract_from_protobuf_file(file_path: Path | str) -> ProtobufExtraction:

@@ -30,6 +30,7 @@ from contextmine_core.exports import (
     export_mermaid_asis_tobe_result,
     export_mermaid_c4,
     export_mermaid_c4_result,
+    export_twin_manifest,
 )
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.graphrag import trace_path as graphrag_trace_path
@@ -80,6 +81,12 @@ from contextmine_core.twin import (
     submit_intent,
     trigger_collection_refresh,
 )
+from contextmine_core.twin.projections import (
+    build_test_matrix_projection,
+    build_ui_map_projection,
+    build_user_flows_projection,
+    compute_rebuild_readiness,
+)
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -100,7 +107,7 @@ class CypherRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    format: Literal["lpg_jsonl", "cc_json", "cx2", "jgf", "mermaid_c4"]
+    format: Literal["lpg_jsonl", "cc_json", "cx2", "jgf", "mermaid_c4", "twin_manifest"]
     projection: Literal["architecture", "code_file", "code_symbol"] | None = None
     entity_level: Literal["domain", "container", "component", "file", "symbol"] | None = None
     c4_view: Literal["context", "container", "component", "code", "deployment"] | None = None
@@ -612,6 +619,42 @@ def _extract_neighborhood(
         and str(edge.get("target_node_id")) in neighborhood_ids
     ]
     return neighborhood_nodes, neighborhood_edges
+
+
+def _paginate_graph(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    page: int,
+    limit: int,
+) -> dict[str, Any]:
+    sorted_nodes = sorted(
+        nodes,
+        key=lambda node: (
+            str(node.get("kind") or ""),
+            str(node.get("name") or ""),
+            str(node.get("natural_key") or ""),
+            str(node.get("id") or ""),
+        ),
+    )
+    total_nodes = len(sorted_nodes)
+    start = max(page, 0) * max(limit, 1)
+    end = start + max(limit, 1)
+    page_nodes = sorted_nodes[start:end]
+    page_ids = {str(node.get("id")) for node in page_nodes}
+    page_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in page_ids
+        and str(edge.get("target_node_id")) in page_ids
+    ]
+    return {
+        "nodes": page_nodes,
+        "edges": page_edges,
+        "page": max(page, 0),
+        "limit": max(limit, 1),
+        "total_nodes": total_nodes,
+    }
 
 
 def _safe_meta(value: Any) -> dict[str, Any]:
@@ -2195,6 +2238,177 @@ async def deep_dive_view(
         }
 
 
+@router.get("/collections/{collection_id}/views/ui-map")
+async def ui_map_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=1200, ge=1, le=10000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        full_graph = await get_full_scenario_graph(
+            db,
+            scenario.id,
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+        )
+        projection = build_ui_map_projection(full_graph["nodes"], full_graph["edges"])
+        graph = _paginate_graph(
+            projection["graph"]["nodes"],
+            projection["graph"]["edges"],
+            page=page,
+            limit=limit,
+        )
+        warnings: list[str] = []
+        if projection["summary"]["routes"] == 0:
+            warnings.append("No UI route nodes found. UI extraction may still be pending.")
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "ui_map",
+            "entity_level": "ui",
+            "summary": projection["summary"],
+            "warnings": warnings,
+            "graph": graph,
+        }
+
+
+@router.get("/collections/{collection_id}/views/test-matrix")
+async def test_matrix_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=1200, ge=1, le=10000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        full_graph = await get_full_scenario_graph(
+            db,
+            scenario.id,
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+        )
+        projection = build_test_matrix_projection(full_graph["nodes"], full_graph["edges"])
+        graph = _paginate_graph(
+            projection["graph"]["nodes"],
+            projection["graph"]["edges"],
+            page=page,
+            limit=limit,
+        )
+        warnings: list[str] = []
+        if projection["summary"]["test_cases"] == 0:
+            warnings.append("No TEST_CASE nodes found. Test extraction may still be pending.")
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "test_matrix",
+            "entity_level": "test_case",
+            "summary": projection["summary"],
+            "matrix": projection["matrix"],
+            "warnings": warnings,
+            "graph": graph,
+        }
+
+
+@router.get("/collections/{collection_id}/views/user-flows")
+async def user_flows_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=1200, ge=1, le=10000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        full_graph = await get_full_scenario_graph(
+            db,
+            scenario.id,
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+        )
+        projection = build_user_flows_projection(full_graph["nodes"], full_graph["edges"])
+        graph = _paginate_graph(
+            projection["graph"]["nodes"],
+            projection["graph"]["edges"],
+            page=page,
+            limit=limit,
+        )
+        warnings: list[str] = []
+        if projection["summary"]["user_flows"] == 0:
+            warnings.append("No USER_FLOW nodes found. Flow synthesis may still be pending.")
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "user_flows",
+            "entity_level": "user_flow",
+            "summary": projection["summary"],
+            "flows": projection["flows"],
+            "warnings": warnings,
+            "graph": graph,
+        }
+
+
+@router.get("/collections/{collection_id}/views/rebuild-readiness")
+async def rebuild_readiness_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    scenario_uuid = _parse_optional_scenario_id(scenario_id)
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        full_graph = await get_full_scenario_graph(
+            db,
+            scenario.id,
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+        )
+        readiness = compute_rebuild_readiness(full_graph["nodes"], full_graph["edges"])
+        status = await get_collection_twin_status(
+            db,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+        )
+        evidence_handles: list[dict[str, Any]] = []
+        for item in readiness.get("critical_inferred_only") or []:
+            for evidence_id in item.get("evidence_ids") or []:
+                evidence_handles.append(
+                    {
+                        "kind": "evidence",
+                        "ref": str(evidence_id),
+                        "node_id": item.get("node_id"),
+                    }
+                )
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "rebuild_readiness",
+            "score": readiness["score"],
+            "summary": readiness["summary"],
+            "known_gaps": readiness["known_gaps"],
+            "critical_inferred_only": readiness["critical_inferred_only"],
+            "evidence_handles": evidence_handles[:200],
+            "behavioral_layers_status": status.get("behavioral_layers_status"),
+            "last_behavioral_materialized_at": status.get("last_behavioral_materialized_at"),
+            "deep_warnings": status.get("deep_warnings") or [],
+        }
+
+
 @router.get("/collections/{collection_id}/views/graphrag")
 async def graphrag_view(
     request: Request,
@@ -3196,6 +3410,10 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
                 content = export_jgf_from_graph(scenario.id, graph)
             kind = KnowledgeArtifactKind.JGF
             name = f"{scenario.name}.jgf.json"
+        elif body.format == "twin_manifest":
+            content = await export_twin_manifest(db, scenario.id)
+            kind = KnowledgeArtifactKind.TWIN_MANIFEST
+            name = f"{scenario.name}.twin_manifest.json"
         else:
             selected_c4_view = _parse_c4_view(body.c4_view)
             selected_c4_scope = _parse_c4_scope(body.c4_scope)
@@ -3264,7 +3482,7 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             "projection": projection.value,
             "entity_level": body.entity_level,
         }
-        if body.format == "mermaid":
+        if body.format == "mermaid_c4":
             meta["c4_view"] = selected_c4_view
             meta["c4_scope"] = selected_c4_scope
             meta["max_nodes"] = selected_max_nodes

@@ -303,6 +303,9 @@ async def get_collection_twin_status(
 
     stage_latest: dict[str, UUID] = {}
     stage_timings: dict[str, float] = defaultdict(float)
+    behavioral_status_values: list[str] = []
+    behavioral_materialized_at: datetime | None = None
+    deep_warnings: list[str] = []
 
     for source in sources:
         latest = (
@@ -356,6 +359,24 @@ async def get_collection_twin_status(
                 "source_version_id": str(latest.id) if latest else None,
             }
         )
+        if latest:
+            latest_stats = dict(latest.stats or {})
+            behavioral_status = str(latest_stats.get("behavioral_layers_status") or "").strip()
+            if behavioral_status:
+                behavioral_status_values.append(behavioral_status)
+
+            behavioral_ts_raw = latest_stats.get("last_behavioral_materialized_at")
+            if isinstance(behavioral_ts_raw, str) and behavioral_ts_raw.strip():
+                try:
+                    parsed = datetime.fromisoformat(behavioral_ts_raw.replace("Z", "+00:00"))
+                    if behavioral_materialized_at is None or parsed > behavioral_materialized_at:
+                        behavioral_materialized_at = parsed
+                except ValueError:
+                    pass
+
+            warnings = latest_stats.get("deep_warnings")
+            if isinstance(warnings, list):
+                deep_warnings.extend(str(item) for item in warnings if str(item).strip())
 
     events = (
         (
@@ -387,12 +408,30 @@ async def get_collection_twin_status(
     else:
         freshness = "materializing"
 
+    if not behavioral_status_values:
+        behavioral_layers_status = "pending"
+    elif any(status == "failed" for status in behavioral_status_values):
+        behavioral_layers_status = "failed"
+    elif any(status in {"materializing", "queued"} for status in behavioral_status_values):
+        behavioral_layers_status = "materializing"
+    elif all(status == "ready" for status in behavioral_status_values):
+        behavioral_layers_status = "ready"
+    elif all(status == "disabled" for status in behavioral_status_values):
+        behavioral_layers_status = "disabled"
+    else:
+        behavioral_layers_status = "pending"
+
     return {
         "collection_id": str(collection_id),
         "scenario_id": str(scenario.id) if scenario else None,
         "scenario_version": int(scenario.version) if scenario else None,
         "materialized_at": materialized_at.isoformat() if materialized_at else None,
         "freshness": freshness,
+        "behavioral_layers_status": behavioral_layers_status,
+        "last_behavioral_materialized_at": (
+            behavioral_materialized_at.isoformat() if behavioral_materialized_at else None
+        ),
+        "deep_warnings": sorted(set(deep_warnings))[:100],
         "sources": source_rows,
         "pipeline": {
             "stage_timings": {key: round(value, 3) for key, value in stage_timings.items()},

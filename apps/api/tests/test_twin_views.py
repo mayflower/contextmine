@@ -52,6 +52,22 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/collections/some-id/views/graphrag/processes/proc_1")
         assert response.status_code == 401
 
+    async def test_ui_map_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/ui-map")
+        assert response.status_code == 401
+
+    async def test_test_matrix_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/test-matrix")
+        assert response.status_code == 401
+
+    async def test_user_flows_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/user-flows")
+        assert response.status_code == 401
+
+    async def test_rebuild_readiness_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/rebuild-readiness")
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,

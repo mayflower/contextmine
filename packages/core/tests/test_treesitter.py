@@ -43,6 +43,9 @@ class TestLanguageDetection:
             ("test.h", TreeSitterLanguage.C),
             ("test.cpp", TreeSitterLanguage.CPP),
             ("test.hpp", TreeSitterLanguage.CPP),
+            ("schema.graphql", TreeSitterLanguage.GRAPHQL),
+            ("schema.gql", TreeSitterLanguage.GRAPHQL),
+            ("users.proto", TreeSitterLanguage.PROTO),
             # Unsupported
             ("test.txt", None),
             ("test.md", None),

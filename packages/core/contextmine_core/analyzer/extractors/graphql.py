@@ -1,17 +1,19 @@
-"""GraphQL schema extractor.
-
-Parses GraphQL schema files (.graphql/.gql) to extract:
-- Types (object, input, enum, interface, union)
-- Operations (query, mutation, subscription)
-- Field definitions
-"""
+"""GraphQL schema extractor using AST parsing."""
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from contextmine_core.analyzer.extractors.ast_utils import (
+    children_of,
+    first_child,
+    node_text,
+    parse_with_language,
+    unquote,
+    walk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,37 +59,8 @@ class GraphQLExtraction:
     operations: list[GraphQLOperationDef] = field(default_factory=list)
 
 
-# Regex patterns for GraphQL schema parsing
-# These handle the most common SDL constructs
-TYPE_PATTERN = re.compile(
-    r'(?:"""([^"]*?)"""\s*)?'  # Optional description
-    r"(type|interface|input|enum|union|scalar)\s+"
-    r"(\w+)"  # Type name
-    r"(?:\s+implements\s+([\w\s&]+))?"  # Optional implements clause
-    r"(?:\s*=\s*([\w\s|]+))?"  # Optional union types
-    r"(?:\s*\{([^}]*)\})?",  # Optional field block
-    re.MULTILINE | re.DOTALL,
-)
-
-FIELD_PATTERN = re.compile(
-    r'(?:"""([^"]*?)"""\s*)?'  # Optional description
-    r"(\w+)"  # Field name
-    r"(?:\(([^)]*)\))?"  # Optional arguments
-    r"\s*:\s*"  # Colon
-    r"([\w\[\]!]+)",  # Type
-    re.MULTILINE,
-)
-
-ENUM_VALUE_PATTERN = re.compile(r"^\s*(\w+)\s*$", re.MULTILINE)
-
-ARGUMENT_PATTERN = re.compile(r"(\w+)\s*:\s*([\w\[\]!]+)")
-
-
 def extract_from_graphql(file_path: str, content: str) -> GraphQLExtraction:
     """Extract type and operation definitions from a GraphQL schema.
-
-    Uses regex-based parsing for SDL (Schema Definition Language).
-    For production use, consider using graphql-core library.
 
     Args:
         file_path: Path to the schema file
@@ -97,74 +70,117 @@ def extract_from_graphql(file_path: str, content: str) -> GraphQLExtraction:
         GraphQLExtraction with extracted definitions
     """
     result = GraphQLExtraction(file_path=file_path)
+    root = parse_with_language("graphql", content)
+    if root is None:
+        logger.warning("GraphQL parser unavailable; skipping AST extraction for %s", file_path)
+        return result
 
-    # Remove comments (lines starting with #)
-    content_clean = "\n".join(
-        line for line in content.split("\n") if not line.strip().startswith("#")
-    )
+    kind_map = {
+        "object_type_definition": "type",
+        "interface_type_definition": "interface",
+        "input_object_type_definition": "input",
+        "enum_type_definition": "enum",
+        "union_type_definition": "union",
+        "scalar_type_definition": "scalar",
+    }
 
-    for match in TYPE_PATTERN.finditer(content_clean):
-        description = match.group(1)
-        kind = match.group(2)
-        name = match.group(3)
-        implements_str = match.group(4)
-        union_str = match.group(5)
-        body = match.group(6)
+    for node in walk(root):
+        kind = kind_map.get(node.type)
+        if kind is None:
+            continue
 
-        type_def = GraphQLTypeDef(
-            name=name,
-            kind=kind,
-            description=description.strip() if description else None,
+        name_node = first_child(node, "name")
+        name = node_text(content, name_node).strip()
+        if not name:
+            continue
+
+        description = _extract_description(content, node)
+        type_def = GraphQLTypeDef(name=name, kind=kind, description=description)
+        type_def.implements = _extract_named_types(
+            content, first_child(node, "implements_interfaces")
+        )
+        type_def.union_types = _extract_named_types(
+            content, first_child(node, "union_member_types")
         )
 
-        # Parse implements
-        if implements_str:
-            type_def.implements = [i.strip() for i in implements_str.replace("&", ",").split(",")]
-
-        # Parse union types
-        if union_str and kind == "union":
-            type_def.union_types = [t.strip() for t in union_str.split("|")]
-
-        # Parse fields or enum values
-        if body:
-            if kind == "enum":
-                type_def.enum_values = [
-                    m.group(1) for m in ENUM_VALUE_PATTERN.finditer(body) if m.group(1)
-                ]
-            elif kind in ("type", "interface", "input"):
-                type_def.fields = _parse_fields(body)
+        if kind == "enum":
+            enum_values_node = first_child(node, "enum_values_definition")
+            if enum_values_node is not None:
+                for enum_value in children_of(enum_values_node, "enum_value_definition"):
+                    enum_name = ""
+                    for sub in walk(enum_value):
+                        if sub.type == "name":
+                            enum_name = node_text(content, sub).strip()
+                            if enum_name:
+                                break
+                    if enum_name:
+                        type_def.enum_values.append(enum_name)
+        elif kind in {"type", "interface"}:
+            fields_node = first_child(node, "fields_definition")
+            if fields_node is not None:
+                type_def.fields = _parse_field_definitions(
+                    content, fields_node, field_type="field_definition"
+                )
+        elif kind == "input":
+            fields_node = first_child(node, "input_fields_definition")
+            if fields_node is not None:
+                type_def.fields = _parse_field_definitions(
+                    content,
+                    fields_node,
+                    field_type="input_value_definition",
+                )
 
         result.types.append(type_def)
-
-        # Check if this is a root operation type
-        if name in ("Query", "Mutation", "Subscription"):
-            op = GraphQLOperationDef(name=name, kind=name, fields=type_def.fields)
-            result.operations.append(op)
-
+        if name in {"Query", "Mutation", "Subscription"}:
+            result.operations.append(
+                GraphQLOperationDef(name=name, kind=name, fields=type_def.fields)
+            )
     return result
 
 
-def _parse_fields(body: str) -> list[GraphQLFieldDef]:
-    """Parse field definitions from a type body."""
-    fields = []
+def _extract_description(content: str, node: object) -> str | None:
+    description_node = first_child(node, "description")
+    if description_node is None:
+        return None
+    return unquote(node_text(content, description_node))
 
-    for match in FIELD_PATTERN.finditer(body):
-        description = match.group(1)
-        name = match.group(2)
-        args_str = match.group(3)
-        field_type = match.group(4)
+
+def _extract_named_types(content: str, node: object | None) -> list[str]:
+    if node is None:
+        return []
+    values: list[str] = []
+    for sub in walk(node):
+        if sub.type != "named_type":
+            continue
+        type_name = node_text(content, first_child(sub, "name")).strip()
+        if type_name:
+            values.append(type_name)
+    return list(dict.fromkeys(values))
+
+
+def _parse_field_definitions(
+    content: str, container: object, field_type: str
+) -> list[GraphQLFieldDef]:
+    fields: list[GraphQLFieldDef] = []
+    for field_node in children_of(container, field_type):
+        name = node_text(content, first_child(field_node, "name")).strip()
+        out_type = node_text(content, first_child(field_node, "type")).strip()
+        if not name or not out_type:
+            continue
 
         field_def = GraphQLFieldDef(
             name=name,
-            field_type=field_type,
-            description=description.strip() if description else None,
+            field_type=out_type,
+            description=_extract_description(content, field_node),
         )
 
-        # Parse arguments
-        if args_str:
-            for arg_match in ARGUMENT_PATTERN.finditer(args_str):
-                field_def.arguments.append((arg_match.group(1), arg_match.group(2)))
-
+        args_node = first_child(field_node, "arguments_definition")
+        if args_node is not None:
+            for arg in children_of(args_node, "input_value_definition"):
+                arg_name = node_text(content, first_child(arg, "name")).strip()
+                arg_type = node_text(content, first_child(arg, "type")).strip()
+                if arg_name and arg_type:
+                    field_def.arguments.append((arg_name, arg_type))
         fields.append(field_def)
 
     return fields

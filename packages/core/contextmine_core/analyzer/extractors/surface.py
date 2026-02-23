@@ -6,24 +6,28 @@ and builds knowledge graph nodes and edges.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+import yaml
 from contextmine_core.analyzer.extractors.graphql import (
     GraphQLExtraction,
     extract_from_graphql,
 )
 from contextmine_core.analyzer.extractors.jobs import JobsExtraction, extract_jobs
 from contextmine_core.analyzer.extractors.openapi import (
+    EndpointDef,
     OpenAPIExtraction,
-    extract_from_openapi,
+    extract_from_openapi_document,
 )
 from contextmine_core.analyzer.extractors.protobuf import (
     ProtobufExtraction,
     extract_from_protobuf,
 )
+from contextmine_core.analyzer.extractors.traceability import symbol_token_variants
 from contextmine_core.models import (
     KnowledgeEdge,
     KnowledgeEdgeKind,
@@ -49,6 +53,24 @@ class SurfaceCatalog:
     job_definitions: list[JobsExtraction] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _SymbolCandidate:
+    node_id: UUID
+    name: str
+    natural_key: str
+
+
+def _provenance(*, mode: str, extractor: str, confidence: float) -> dict[str, Any]:
+    return {
+        "provenance": {
+            "mode": mode,
+            "extractor": extractor,
+            "confidence": round(max(0.0, min(confidence, 1.0)), 4),
+            "evidence_ids": [],
+        }
+    }
+
+
 class SurfaceCatalogExtractor:
     """Extracts system surface definitions from various spec files."""
 
@@ -65,9 +87,10 @@ class SurfaceCatalogExtractor:
         Returns:
             True if the file was processed, False otherwise
         """
-        # OpenAPI specs
-        if self._is_openapi(file_path, content):
-            extraction = extract_from_openapi(file_path, content)
+        # OpenAPI/Swagger specs
+        openapi_doc = self._load_openapi_document(file_path, content)
+        if openapi_doc is not None:
+            extraction = extract_from_openapi_document(file_path, openapi_doc)
             if extraction.endpoints:
                 self.catalog.openapi_specs.append(extraction)
                 return True
@@ -95,16 +118,24 @@ class SurfaceCatalogExtractor:
 
         return False
 
-    def _is_openapi(self, file_path: str, content: str) -> bool:
-        """Check if file is likely an OpenAPI spec."""
+    def _load_openapi_document(self, file_path: str, content: str) -> dict[str, Any] | None:
+        """Parse and validate OpenAPI/Swagger docs deterministically."""
         if not file_path.endswith((".yml", ".yaml", ".json")):
-            return False
+            return None
 
-        # Quick content check
-        content_lower = content[:2000].lower()
-        return (
-            "openapi" in content_lower or "swagger" in content_lower or '"openapi"' in content_lower
-        )
+        try:
+            parsed = yaml.safe_load(content)
+        except (yaml.YAMLError, json.JSONDecodeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+
+        # OpenAPI 3.x / Swagger 2.0 identity + path table are required.
+        has_spec_version = bool(parsed.get("openapi")) or bool(parsed.get("swagger"))
+        has_paths = isinstance(parsed.get("paths"), dict)
+        if not (has_spec_version and has_paths):
+            return None
+        return parsed
 
     def _is_job_file(self, file_path: str) -> bool:
         """Check if file is a job definition file."""
@@ -143,32 +174,52 @@ async def build_surface_graph(
 
     stats = {
         "endpoint_nodes": 0,
+        "endpoint_handler_links": 0,
         "graphql_nodes": 0,
         "proto_nodes": 0,
         "job_nodes": 0,
         "edges_created": 0,
         "evidence_created": 0,
     }
+    symbol_candidates = await _load_symbol_candidates(session, collection_id)
 
     # Process OpenAPI specs
     for spec in catalog.openapi_specs:
         for endpoint in spec.endpoints:
             natural_key = f"api:{endpoint.method}:{endpoint.path}"
+            resolved_handler_symbols = _resolve_endpoint_handler_symbols(
+                endpoint=endpoint,
+                symbol_candidates=symbol_candidates,
+            )
+            endpoint_meta = {
+                "method": endpoint.method,
+                "path": endpoint.path,
+                "operation_id": endpoint.operation_id,
+                "summary": endpoint.summary,
+                "tags": endpoint.tags,
+                "request_body_ref": endpoint.request_body_ref,
+                "response_refs": endpoint.response_refs,
+                "handler_hints": endpoint.handler_hints,
+                "handler_symbol_names": [item["symbol_name"] for item in resolved_handler_symbols],
+                "handler_symbol_node_ids": [
+                    item["symbol_node_id"] for item in resolved_handler_symbols
+                ],
+                # Backward-compatible key expected by existing endpoint symbol index helper.
+                "handler_symbols": [item["symbol_name"] for item in resolved_handler_symbols],
+                "spec_file_path": spec.file_path,
+                **_provenance(
+                    mode="deterministic" if endpoint.operation_id else "inferred",
+                    extractor="surface.openapi.v2",
+                    confidence=0.96 if endpoint.operation_id else 0.8,
+                ),
+            }
 
             stmt = pg_insert(KnowledgeNode).values(
                 collection_id=collection_id,
                 kind=KnowledgeNodeKind.API_ENDPOINT,
                 natural_key=natural_key,
                 name=f"{endpoint.method} {endpoint.path}",
-                meta={
-                    "method": endpoint.method,
-                    "path": endpoint.path,
-                    "operation_id": endpoint.operation_id,
-                    "summary": endpoint.summary,
-                    "tags": endpoint.tags,
-                    "request_body_ref": endpoint.request_body_ref,
-                    "response_refs": endpoint.response_refs,
-                },
+                meta=endpoint_meta,
             )
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_knowledge_node_natural",
@@ -181,10 +232,25 @@ async def build_surface_graph(
             result = await session.execute(stmt)
             node_id = result.scalar_one()
             stats["endpoint_nodes"] += 1
+            stats["endpoint_handler_links"] += len(resolved_handler_symbols)
 
             # Create evidence
-            await _create_evidence(session, node_id, spec.file_path)
+            evidence_id = await _create_evidence(session, node_id, spec.file_path)
             stats["evidence_created"] += 1
+            if evidence_id:
+                endpoint_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            stmt = pg_insert(KnowledgeNode).values(
+                collection_id=collection_id,
+                kind=KnowledgeNodeKind.API_ENDPOINT,
+                natural_key=natural_key,
+                name=f"{endpoint.method} {endpoint.path}",
+                meta=endpoint_meta,
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_knowledge_node_natural",
+                set_={"name": stmt.excluded.name, "meta": stmt.excluded.meta},
+            )
+            await session.execute(stmt)
 
     # Process GraphQL schemas
     for schema in catalog.graphql_schemas:
@@ -205,6 +271,12 @@ async def build_surface_graph(
                     "implements": type_def.implements,
                     "enum_values": type_def.enum_values,
                     "union_types": type_def.union_types,
+                    "spec_file_path": schema.file_path,
+                    **_provenance(
+                        mode="deterministic",
+                        extractor="surface.graphql.v1",
+                        confidence=0.96,
+                    ),
                 },
             )
             stmt = stmt.on_conflict_do_update(
@@ -232,6 +304,12 @@ async def build_surface_graph(
                 meta={
                     "kind": op.kind,
                     "fields": [{"name": f.name, "type": f.field_type} for f in op.fields],
+                    "spec_file_path": schema.file_path,
+                    **_provenance(
+                        mode="deterministic",
+                        extractor="surface.graphql.v1",
+                        confidence=0.95,
+                    ),
                 },
             )
             stmt = stmt.on_conflict_do_update(
@@ -272,6 +350,12 @@ async def build_surface_graph(
                     ],
                     "nested_messages": msg.nested_messages,
                     "nested_enums": msg.nested_enums,
+                    "spec_file_path": proto.file_path,
+                    **_provenance(
+                        mode="deterministic",
+                        extractor="surface.protobuf.v1",
+                        confidence=0.95,
+                    ),
                 },
             )
             stmt = stmt.on_conflict_do_update(
@@ -313,6 +397,12 @@ async def build_surface_graph(
                         }
                         for r in service.rpcs
                     ],
+                    "spec_file_path": proto.file_path,
+                    **_provenance(
+                        mode="deterministic",
+                        extractor="surface.protobuf.v1",
+                        confidence=0.94,
+                    ),
                 },
             )
             stmt = stmt.on_conflict_do_update(
@@ -366,6 +456,11 @@ async def build_surface_graph(
                     "schedule": job.schedule,
                     "triggers": [{"type": t.trigger_type, "cron": t.cron} for t in job.triggers],
                     "container_image": job.container_image,
+                    **_provenance(
+                        mode="deterministic",
+                        extractor="surface.jobs.v1",
+                        confidence=0.93,
+                    ),
                     **job.meta,
                 },
             )
@@ -388,7 +483,7 @@ async def build_surface_graph(
     return stats
 
 
-async def _create_evidence(session: AsyncSession, node_id: UUID, file_path: str) -> None:
+async def _create_evidence(session: AsyncSession, node_id: UUID, file_path: str) -> str | None:
     """Create evidence record linking node to source file."""
     from sqlalchemy import select
 
@@ -396,8 +491,9 @@ async def _create_evidence(session: AsyncSession, node_id: UUID, file_path: str)
     existing = await session.execute(
         select(KnowledgeNodeEvidence.evidence_id).where(KnowledgeNodeEvidence.node_id == node_id)
     )
-    if existing.scalar_one_or_none():
-        return
+    existing_id = existing.scalar_one_or_none()
+    if existing_id:
+        return str(existing_id)
 
     evidence = KnowledgeEvidence(
         file_path=file_path,
@@ -412,3 +508,67 @@ async def _create_evidence(session: AsyncSession, node_id: UUID, file_path: str)
         evidence_id=evidence.id,
     )
     session.add(link)
+    return str(evidence.id)
+
+
+async def _load_symbol_candidates(
+    session: AsyncSession,
+    collection_id: UUID,
+) -> dict[str, list[_SymbolCandidate]]:
+    from sqlalchemy import select
+
+    rows = (
+        (
+            await session.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    indexed: dict[str, list[_SymbolCandidate]] = {}
+    for row in rows:
+        candidate = _SymbolCandidate(node_id=row.id, name=row.name, natural_key=row.natural_key)
+        for token in symbol_token_variants(row.name):
+            indexed.setdefault(token, []).append(candidate)
+    return indexed
+
+
+def _resolve_endpoint_handler_symbols(
+    *,
+    endpoint: EndpointDef,
+    symbol_candidates: dict[str, list[_SymbolCandidate]],
+) -> list[dict[str, str | float]]:
+    hints: list[tuple[str, str, float]] = []
+    if endpoint.operation_id:
+        hints.append((endpoint.operation_id, "operation_id", 0.84))
+    for handler_hint in endpoint.handler_hints:
+        hints.append((handler_hint, "handler_hint", 0.94))
+
+    by_symbol_id: dict[UUID, dict[str, str | float]] = {}
+    for hint_value, source, base_confidence in hints:
+        for token in symbol_token_variants(hint_value):
+            for candidate in symbol_candidates.get(token, []):
+                confidence = base_confidence
+                if candidate.name.strip().lower() == hint_value.strip().lower():
+                    confidence = min(0.99, confidence + 0.04)
+                record = by_symbol_id.get(candidate.node_id)
+                if record and float(record["confidence"]) >= confidence:
+                    continue
+                by_symbol_id[candidate.node_id] = {
+                    "symbol_node_id": str(candidate.node_id),
+                    "symbol_name": candidate.name,
+                    "symbol_natural_key": candidate.natural_key,
+                    "match_source": source,
+                    "confidence": round(confidence, 4),
+                }
+    return sorted(
+        by_symbol_id.values(),
+        key=lambda item: (
+            -float(item["confidence"]),
+            str(item["symbol_name"]).lower(),
+        ),
+    )

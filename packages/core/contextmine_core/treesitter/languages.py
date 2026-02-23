@@ -25,6 +25,8 @@ class TreeSitterLanguage(Enum):
     CSHARP = "c_sharp"
     RUBY = "ruby"
     PHP = "php"
+    GRAPHQL = "graphql"
+    PROTO = "proto"
 
 
 # Map file extensions to tree-sitter language names
@@ -49,6 +51,9 @@ EXTENSION_TO_LANGUAGE: dict[str, TreeSitterLanguage] = {
     ".cs": TreeSitterLanguage.CSHARP,
     ".rb": TreeSitterLanguage.RUBY,
     ".php": TreeSitterLanguage.PHP,
+    ".graphql": TreeSitterLanguage.GRAPHQL,
+    ".gql": TreeSitterLanguage.GRAPHQL,
+    ".proto": TreeSitterLanguage.PROTO,
 }
 
 

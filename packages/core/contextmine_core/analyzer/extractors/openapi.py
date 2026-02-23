@@ -33,6 +33,7 @@ class EndpointDef:
     response_refs: dict[str, str] = field(default_factory=dict)  # status -> schema ref
     parameters: list[dict[str, Any]] = field(default_factory=list)
     security: list[dict[str, list[str]]] = field(default_factory=list)
+    handler_hints: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -69,55 +70,78 @@ def extract_from_openapi(file_path: str, content: str) -> OpenAPIExtraction:
     Returns:
         OpenAPIExtraction with extracted definitions
     """
-    result = OpenAPIExtraction(file_path=file_path)
-
     try:
-        # Try YAML first (also handles JSON)
         spec = yaml.safe_load(content)
         if not isinstance(spec, dict):
-            return result
-
-        # Extract basic info
-        info = spec.get("info", {})
-        result.title = info.get("title")
-        result.version = info.get("version")
-
-        # Get base path from servers
-        servers = spec.get("servers", [])
-        if servers and isinstance(servers[0], dict):
-            result.base_path = servers[0].get("url", "")
-
-        # Extract paths/endpoints
-        paths = spec.get("paths", {})
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
-                continue
-
-            for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
-                if method not in path_item:
-                    continue
-
-                operation = path_item[method]
-                if not isinstance(operation, dict):
-                    continue
-
-                endpoint = _parse_endpoint(path, method, operation)
-                result.endpoints.append(endpoint)
-
-        # Extract schemas from components
-        components = spec.get("components", {})
-        schemas = components.get("schemas", {})
-        for name, schema in schemas.items():
-            if isinstance(schema, dict):
-                result.schemas[name] = _parse_schema(name, schema)
+            return OpenAPIExtraction(file_path=file_path)
+        return extract_from_openapi_document(file_path, spec)
 
     except (yaml.YAMLError, json.JSONDecodeError) as e:
         logger.warning("Failed to parse OpenAPI spec %s: %s", file_path, e)
+    return OpenAPIExtraction(file_path=file_path)
+
+
+def extract_from_openapi_document(file_path: str, spec: dict[str, Any]) -> OpenAPIExtraction:
+    """Extract endpoint/schema definitions from an already parsed OpenAPI/Swagger document."""
+    result = OpenAPIExtraction(file_path=file_path)
+    if not isinstance(spec, dict):
+        return result
+
+    # Extract basic info
+    info = spec.get("info", {})
+    if isinstance(info, dict):
+        result.title = info.get("title")
+        result.version = info.get("version")
+
+    # Prefer OpenAPI server URL, fallback to Swagger 2 basePath.
+    servers = spec.get("servers", [])
+    if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+        result.base_path = servers[0].get("url", "")
+    else:
+        base_path = spec.get("basePath")
+        if isinstance(base_path, str) and base_path.strip():
+            result.base_path = base_path
+
+    is_swagger2 = bool(spec.get("swagger")) and not bool(spec.get("openapi"))
+
+    # Extract paths/endpoints
+    paths = spec.get("paths", {})
+    if isinstance(paths, dict):
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+            for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
+                operation = path_item.get(method)
+                if not isinstance(operation, dict):
+                    continue
+                endpoint = _parse_endpoint(path, method, operation, is_swagger2=is_swagger2)
+                result.endpoints.append(endpoint)
+
+    # Extract schemas from components (OpenAPI 3) or definitions (Swagger 2)
+    schema_defs: dict[str, Any] = {}
+    components = spec.get("components", {})
+    if isinstance(components, dict):
+        schemas = components.get("schemas", {})
+        if isinstance(schemas, dict):
+            schema_defs.update(schemas)
+    definitions = spec.get("definitions", {})
+    if isinstance(definitions, dict):
+        schema_defs.update(definitions)
+
+    for name, schema in schema_defs.items():
+        if isinstance(schema, dict):
+            result.schemas[name] = _parse_schema(name, schema)
 
     return result
 
 
-def _parse_endpoint(path: str, method: str, operation: dict[str, Any]) -> EndpointDef:
+def _parse_endpoint(
+    path: str,
+    method: str,
+    operation: dict[str, Any],
+    *,
+    is_swagger2: bool,
+) -> EndpointDef:
     """Parse an endpoint operation definition."""
     endpoint = EndpointDef(
         path=path,
@@ -126,39 +150,85 @@ def _parse_endpoint(path: str, method: str, operation: dict[str, Any]) -> Endpoi
         summary=operation.get("summary"),
         description=operation.get("description"),
         tags=operation.get("tags", []),
+        handler_hints=_extract_handler_hints(operation),
     )
 
-    # Parse request body
-    request_body = operation.get("requestBody", {})
-    if isinstance(request_body, dict):
-        content = request_body.get("content", {})
-        for _media_type, media_def in content.items():
-            if isinstance(media_def, dict) and "schema" in media_def:
-                schema = media_def["schema"]
+    if is_swagger2:
+        parameters = operation.get("parameters", [])
+        if isinstance(parameters, list):
+            for param in parameters:
+                if not isinstance(param, dict):
+                    continue
+                if param.get("in") != "body":
+                    continue
+                schema = param.get("schema")
                 if isinstance(schema, dict) and "$ref" in schema:
                     endpoint.request_body_ref = _extract_ref_name(schema["$ref"])
-                break
+                    break
+    else:
+        # Parse OpenAPI 3 request body
+        request_body = operation.get("requestBody", {})
+        if isinstance(request_body, dict):
+            content = request_body.get("content", {})
+            if isinstance(content, dict):
+                for _media_type, media_def in content.items():
+                    if isinstance(media_def, dict) and "schema" in media_def:
+                        schema = media_def["schema"]
+                        if isinstance(schema, dict) and "$ref" in schema:
+                            endpoint.request_body_ref = _extract_ref_name(schema["$ref"])
+                        break
 
     # Parse responses
     responses = operation.get("responses", {})
-    for status, response in responses.items():
-        if not isinstance(response, dict):
-            continue
-        content = response.get("content", {})
-        for _media_type, media_def in content.items():
-            if isinstance(media_def, dict) and "schema" in media_def:
-                schema = media_def["schema"]
+    if isinstance(responses, dict):
+        for status, response in responses.items():
+            if not isinstance(response, dict):
+                continue
+            if is_swagger2:
+                schema = response.get("schema")
                 if isinstance(schema, dict) and "$ref" in schema:
                     endpoint.response_refs[str(status)] = _extract_ref_name(schema["$ref"])
-                break
+                continue
+
+            content = response.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            for _media_type, media_def in content.items():
+                if isinstance(media_def, dict) and "schema" in media_def:
+                    schema = media_def["schema"]
+                    if isinstance(schema, dict) and "$ref" in schema:
+                        endpoint.response_refs[str(status)] = _extract_ref_name(schema["$ref"])
+                    break
 
     # Parse parameters
-    endpoint.parameters = operation.get("parameters", [])
+    params = operation.get("parameters", [])
+    endpoint.parameters = params if isinstance(params, list) else []
 
     # Parse security
-    endpoint.security = operation.get("security", [])
+    security = operation.get("security", [])
+    endpoint.security = security if isinstance(security, list) else []
 
     return endpoint
+
+
+def _extract_handler_hints(operation: dict[str, Any]) -> list[str]:
+    """Extract implementation symbol hints from vendor extension fields."""
+    hints: list[str] = []
+    for key in (
+        "x-handler",
+        "x-handler-name",
+        "x-handler-symbol",
+        "x-operation-handler",
+        "x-controller",
+    ):
+        value = operation.get(key)
+        if isinstance(value, str) and value.strip():
+            hints.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    hints.append(item.strip())
+    return list(dict.fromkeys(hints))
 
 
 def _parse_schema(name: str, schema: dict[str, Any]) -> SchemaDef:
