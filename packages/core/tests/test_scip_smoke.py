@@ -110,6 +110,26 @@ class TestSCIPProjectDetection:
             assert len(projects) == 1
             assert projects[0].language == Language.PHP
 
+    def test_detect_php_ignores_custom_vendor_dir_subprojects(self) -> None:
+        """Do not descend into Composer custom vendor-dir dependencies."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "composer.json").write_text(
+                '{"name":"root/app","config":{"vendor-dir":"phpmyfaq/src/libs"}}'
+            )
+            (root / "composer.lock").write_text("{}")
+            (root / "index.php").write_text("<?php echo 'ok';")
+
+            dep = root / "phpmyfaq" / "src" / "libs" / "some-package"
+            dep.mkdir(parents=True)
+            (dep / "composer.json").write_text('{"name":"dep/pkg"}')
+            (dep / "dep.php").write_text("<?php echo 'dep';")
+
+            projects = detect_projects(tmpdir)
+
+            php_roots = [p.root_path.resolve() for p in projects if p.language == Language.PHP]
+            assert php_roots == [root.resolve()]
+
     def test_detect_monorepo(self) -> None:
         """Test detection of multiple projects in a monorepo."""
         with tempfile.TemporaryDirectory() as tmpdir:

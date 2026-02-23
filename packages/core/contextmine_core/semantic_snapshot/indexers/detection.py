@@ -6,6 +6,7 @@ localization, and supports multiple languages per repository root.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -278,9 +279,15 @@ def _code_under_root(report: LanguageCensusReport, language: Language, root: Pat
 
 def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
     roots: set[Path] = set()
+    skipped_paths: set[Path] = set()
 
     def should_skip(path: Path) -> bool:
-        return path.name in IGNORE_DIRS or path.name.startswith(".")
+        if path.name in IGNORE_DIRS or path.name.startswith("."):
+            return True
+        resolved = path.resolve()
+        return any(
+            resolved == skipped or resolved.is_relative_to(skipped) for skipped in skipped_paths
+        )
 
     stack = [repo_root]
     while stack:
@@ -295,6 +302,12 @@ def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
             continue
 
         file_names = {child.name for child in children if child.is_file()}
+        if "composer.json" in file_names:
+            for vendor_dir in _composer_vendor_dirs(current):
+                vendor_path = (current / vendor_dir).resolve()
+                if vendor_path.exists() and vendor_path.is_dir():
+                    skipped_paths.add(vendor_path)
+
         if _directory_matches_language_markers(file_names, language):
             roots.add(current.resolve())
 
@@ -303,6 +316,24 @@ def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
                 stack.append(child)
 
     return sorted(roots, key=lambda p: len(p.parts), reverse=True)
+
+
+def _composer_vendor_dirs(project_root: Path) -> set[Path]:
+    """Resolve Composer vendor directories declared in composer.json."""
+    composer_json = project_root / "composer.json"
+    try:
+        payload = json.loads(composer_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {Path("vendor")}
+
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        return {Path("vendor")}
+
+    vendor_dir = str(config.get("vendor-dir") or "vendor").strip()
+    if not vendor_dir:
+        vendor_dir = "vendor"
+    return {Path(vendor_dir)}
 
 
 def _language_has_root_marker(repo_root: Path, language: Language) -> bool:
