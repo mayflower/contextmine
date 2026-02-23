@@ -522,7 +522,7 @@ async def _find_relevant_communities(
     # No fallback to random selection (that defeats semantic retrieval)
     # Use bindparam for safe SQL construction (nosemgrep: avoid-sqlalchemy-text)
     similarity_expr = text(
-        "1 - (knowledge_embeddings.embedding <=> :embedding::vector) as similarity"
+        "1 - (knowledge_embeddings.embedding <=> CAST(:embedding AS vector)) as similarity"
     ).bindparams(bindparam("embedding", value=embedding_str))
     stmt = (
         select(
