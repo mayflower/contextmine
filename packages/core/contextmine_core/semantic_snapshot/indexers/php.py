@@ -215,9 +215,10 @@ class PhpIndexerBackend(BaseIndexerBackend):
         if cfg.install_deps_mode == InstallDepsMode.ALWAYS:
             return True
 
-        # AUTO mode: check if configured Composer vendor dir exists.
+        # AUTO mode: ensure configured vendor dir and its autoload file exist.
         vendor = target.root_path / self._resolve_vendor_dir(target.root_path)
-        return not vendor.exists()
+        autoload = vendor / "autoload.php"
+        return (not vendor.exists()) or (not autoload.exists())
 
     def _resolve_vendor_dir(self, project_root: Path) -> Path:
         """Resolve Composer vendor-dir from composer.json config.

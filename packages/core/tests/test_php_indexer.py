@@ -33,9 +33,29 @@ def test_should_install_deps_checks_custom_vendor_dir(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (project_root / "phpmyfaq" / "src" / "libs").mkdir(parents=True)
+    (project_root / "phpmyfaq" / "src" / "libs" / "autoload.php").write_text(
+        "<?php\n",
+        encoding="utf-8",
+    )
 
     backend = PhpIndexerBackend()
     target = ProjectTarget(language=Language.PHP, root_path=project_root)
     cfg = IndexConfig(install_deps_mode=InstallDepsMode.AUTO)
 
     assert backend._should_install_deps(target, cfg) is False
+
+
+def test_should_install_deps_when_autoload_missing(tmp_path: Path) -> None:
+    """AUTO mode should install deps if vendor dir exists but autoload is missing."""
+    project_root = tmp_path
+    (project_root / "composer.json").write_text(
+        '{"name":"acme/test","config":{"vendor-dir":"phpmyfaq/src/libs"}}',
+        encoding="utf-8",
+    )
+    (project_root / "phpmyfaq" / "src" / "libs").mkdir(parents=True)
+
+    backend = PhpIndexerBackend()
+    target = ProjectTarget(language=Language.PHP, root_path=project_root)
+    cfg = IndexConfig(install_deps_mode=InstallDepsMode.AUTO)
+
+    assert backend._should_install_deps(target, cfg) is True
