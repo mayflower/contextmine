@@ -168,7 +168,7 @@ def _run_cloc(repo_root: Path) -> LanguageCensusReport:
             report.warnings.append(f"cloc_summary_failed: {msg}")
             return report
 
-        parsed = json.loads(summary_proc.stdout or "{}")
+        parsed = _load_cloc_json(summary_proc.stdout or "{}", report, "cloc_summary")
         report.entries = _parse_cloc_summary(parsed)
 
         by_file_proc = subprocess.run(
@@ -186,7 +186,7 @@ def _run_cloc(repo_root: Path) -> LanguageCensusReport:
             timeout=180,
         )
         if by_file_proc.returncode == 0:
-            by_file = json.loads(by_file_proc.stdout or "{}")
+            by_file = _load_cloc_json(by_file_proc.stdout or "{}", report, "cloc_by_file")
             report.file_stats = _parse_cloc_by_file(by_file, repo_root)
         else:
             msg = (by_file_proc.stderr or by_file_proc.stdout or "cloc --by-file failed").strip()
@@ -203,6 +203,32 @@ def _run_cloc(repo_root: Path) -> LanguageCensusReport:
         logger.warning("Language census via cloc failed: %s", exc)
         report.warnings.append(f"cloc_error: {exc}")
         return report
+
+
+def _load_cloc_json(raw_output: str, report: LanguageCensusReport, label: str) -> dict:
+    """Parse cloc JSON output robustly.
+
+    Some cloc versions emit additional trailing text after the JSON payload.
+    We parse the first JSON object and record a warning if trailing output exists.
+    """
+    text = raw_output.strip()
+    if not text:
+        return {}
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+
+        decoder = json.JSONDecoder()
+        parsed, consumed = decoder.raw_decode(text[start:])
+        trailing = text[start + consumed :].strip()
+        if trailing:
+            report.warnings.append(f"{label}_trailing_output_ignored")
+        return parsed if isinstance(parsed, dict) else {}
 
 
 def _parse_cloc_summary(parsed: dict) -> dict[Language, LanguageCensusEntry]:

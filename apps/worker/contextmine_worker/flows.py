@@ -904,13 +904,21 @@ async def build_twin_graph(
             stats["twin_edges_upserted"] += int(edges)
 
         if file_metrics:
+            requested_metric_files = len(
+                {
+                    str(metric.get("file_path", "")).strip()
+                    for metric in file_metrics
+                    if str(metric.get("file_path", "")).strip()
+                }
+            )
             enriched = await apply_file_metrics_to_scenario(session, as_is.id, file_metrics)
-            if enriched < len(file_metrics):
+            if enriched < requested_metric_files:
                 raise RuntimeError(
                     "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
-                    f"(mapped={enriched}, metrics={len(file_metrics)})"
+                    f"(mapped={enriched}, metrics={requested_metric_files})"
                 )
             stats["twin_metric_nodes_enriched"] = enriched
+            stats["twin_metric_nodes_requested"] = requested_metric_files
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
         stats["twin_validation_snapshots"] = await refresh_validation_snapshots(

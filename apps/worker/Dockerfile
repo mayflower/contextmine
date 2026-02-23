@@ -67,12 +67,15 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 ENV COMPOSER_HOME=/opt/composer
 ENV PATH="${PATH}:${COMPOSER_HOME}/vendor/bin"
 RUN composer global require davidrjenni/scip-php:${SCIP_PHP_VERSION} && \
+    composer install --working-dir=${COMPOSER_HOME}/vendor/davidrjenni/scip-php --no-interaction --prefer-dist --no-progress --no-dev && \
+    test -f ${COMPOSER_HOME}/vendor/davidrjenni/scip-php/vendor/autoload.php && \
     chmod -R 755 ${COMPOSER_HOME}
 
 # Verify SCIP tools are installed (smoke test)
 RUN scip-typescript --version && \
     scip-python --version && \
     scip-java --help | head -1 && \
+    test -x ${COMPOSER_HOME}/vendor/bin/scip-php && \
     php --version
 
 WORKDIR /app
