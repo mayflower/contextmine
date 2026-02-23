@@ -250,6 +250,7 @@ class PhpIndexerBackend(BaseIndexerBackend):
             "--no-interaction",
             "--prefer-dist",
             "--no-progress",
+            "--no-dev",
             "--ignore-platform-reqs",
         ]
 
