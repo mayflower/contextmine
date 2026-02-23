@@ -234,7 +234,7 @@ RUN curl -fL https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux
 
 # PHP + Composer (for scip-php)
 RUN apt-get install -y php-cli composer
-RUN composer global require nicosantangelo/scip-php
+RUN composer global require davidrjenni/scip-php
 ENV PATH="${PATH}:/root/.composer/vendor/bin"
 ```
 

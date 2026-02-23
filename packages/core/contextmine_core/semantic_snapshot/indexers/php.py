@@ -36,6 +36,10 @@ class PhpIndexerBackend(BaseIndexerBackend):
     """
 
     TOOL_NAME = "scip-php"
+    _FALLBACK_TOOL_PATHS = (
+        Path("/opt/composer/vendor/bin/scip-php"),
+        Path.home() / ".composer" / "vendor" / "bin" / "scip-php",
+    )
 
     def can_handle(self, target: ProjectTarget) -> bool:
         """Check if this backend can handle the project."""
@@ -64,19 +68,22 @@ class PhpIndexerBackend(BaseIndexerBackend):
         scip_path = output_dir / f"{target.root_path.name}.scip"
         logs_path = output_dir / f"{target.root_path.name}.log"
 
-        # Check tool availability
-        available, version = self.check_tool_available()
-        if not available:
+        # Resolve tool path up front so PATH issues do not break indexing.
+        tool_path = self._resolve_tool_path()
+        if tool_path is None:
             raise CommandNotFoundError(
-                f"{self.TOOL_NAME} not found. Install with: composer global require nicosantangelo/scip-php"
+                f"{self.TOOL_NAME} not found. Install with: composer global require davidrjenni/scip-php"
             )
+        available, version = self._check_tool_available(tool_path)
+        if not available:
+            raise CommandNotFoundError(f"{self.TOOL_NAME} is not executable at {tool_path}")
 
         # Install dependencies if needed
         if self._should_install_deps(target, cfg):
             self._install_deps(target, cfg.timeout_s_by_language.get(Language.PHP, 300))
 
         # Build command
-        cmd = self._build_command(target)
+        cmd = self._build_command(target, tool_path)
 
         # Run indexer
         timeout = cfg.timeout_s_by_language.get(Language.PHP, 300)
@@ -149,9 +156,29 @@ class PhpIndexerBackend(BaseIndexerBackend):
             success=True,
         )
 
-    def _build_command(self, target: ProjectTarget) -> list[str]:
+    def _build_command(self, target: ProjectTarget, tool_path: str) -> list[str]:
         """Build the scip-php command."""
-        return [self.TOOL_NAME]
+        return [tool_path]
+
+    def _resolve_tool_path(self) -> str | None:
+        """Resolve scip-php executable path.
+
+        Falls back to common Composer global bin locations if PATH is incomplete.
+        """
+        resolved = shutil.which(self.TOOL_NAME)
+        if resolved:
+            return resolved
+        for candidate in self._FALLBACK_TOOL_PATHS:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        return None
+
+    def _check_tool_available(self, tool_path: str) -> tuple[bool, str]:
+        """Check whether resolved tool path is executable and retrieve version."""
+        # Import locally to avoid expanding module-level surface for a small helper.
+        from contextmine_core.semantic_snapshot.indexers.runner import check_tool_version
+
+        return check_tool_version(tool_path)
 
     def _should_install_deps(self, target: ProjectTarget, cfg: IndexConfig) -> bool:
         """Check if dependencies should be installed."""
