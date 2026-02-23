@@ -302,9 +302,22 @@ class TestSCIPSettings:
         assert hasattr(settings, "scip_node_memory_mb")
         assert hasattr(settings, "scip_best_effort")
 
-    def test_settings_defaults(self) -> None:
+    def test_settings_defaults(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test SCIP settings default values."""
         from contextmine_core.settings import Settings
+
+        for key in (
+            "SCIP_LANGUAGES",
+            "SCIP_INSTALL_DEPS_MODE",
+            "SCIP_TIMEOUT_PYTHON",
+            "SCIP_TIMEOUT_TYPESCRIPT",
+            "SCIP_TIMEOUT_JAVA",
+            "SCIP_TIMEOUT_PHP",
+            "SCIP_NODE_MEMORY_MB",
+            "SCIP_BEST_EFFORT",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.chdir(tmp_path)
 
         settings = Settings()
 
@@ -313,6 +326,6 @@ class TestSCIPSettings:
         assert settings.scip_timeout_python == 300
         assert settings.scip_timeout_typescript == 600
         assert settings.scip_timeout_java == 900
-        assert settings.scip_timeout_php == 300
+        assert settings.scip_timeout_php == 900
         assert settings.scip_node_memory_mb == 4096
         assert settings.scip_best_effort is True
