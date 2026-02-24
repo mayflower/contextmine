@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+from contextmine_core.pathing import canonicalize_repo_relative_path
 
 DEFAULT_COVERAGE_REPORT_PATTERNS: tuple[str, ...] = (
     "**/lcov.info",
@@ -17,13 +19,7 @@ DEFAULT_COVERAGE_REPORT_PATTERNS: tuple[str, ...] = (
 
 def normalize_posix_path(path: str) -> str:
     """Normalize path separators and remove leading './' segments."""
-    normalized = path.strip().replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = str(PurePosixPath(normalized))
-    if normalized == ".":
-        return ""
-    return normalized.lstrip("/")
+    return canonicalize_repo_relative_path(path)
 
 
 def to_repo_relative_path(

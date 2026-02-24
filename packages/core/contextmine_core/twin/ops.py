@@ -306,6 +306,16 @@ async def get_collection_twin_status(
     behavioral_status_values: list[str] = []
     behavioral_materialized_at: datetime | None = None
     deep_warnings: list[str] = []
+    scip_projects_by_language: dict[str, int] = defaultdict(int)
+    scip_failed_projects: list[dict[str, Any]] = []
+    scip_projects_detected = 0
+    scip_projects_indexed = 0
+    scip_projects_failed = 0
+    scip_has_degraded = False
+    metrics_requested_files = 0
+    metrics_mapped_files = 0
+    metrics_gate_failed = False
+    metrics_unmapped_sample: set[str] = set()
 
     for source in sources:
         latest = (
@@ -378,6 +388,44 @@ async def get_collection_twin_status(
             if isinstance(warnings, list):
                 deep_warnings.extend(str(item) for item in warnings if str(item).strip())
 
+            scip_projects_detected += int(latest_stats.get("scip_projects_detected", 0) or 0)
+            scip_projects_indexed += int(latest_stats.get("scip_projects_indexed", 0) or 0)
+            scip_projects_failed += int(latest_stats.get("scip_projects_failed", 0) or 0)
+            if bool(latest_stats.get("scip_degraded", False)):
+                scip_has_degraded = True
+
+            projects_by_language = latest_stats.get("scip_projects_by_language")
+            if isinstance(projects_by_language, dict):
+                for language, count in projects_by_language.items():
+                    normalized_language = str(language).strip().lower()
+                    if not normalized_language:
+                        continue
+                    try:
+                        scip_projects_by_language[normalized_language] += int(count or 0)
+                    except (TypeError, ValueError):
+                        continue
+
+            failed_projects = latest_stats.get("scip_failed_projects")
+            if isinstance(failed_projects, list):
+                for failed in failed_projects[:100]:
+                    if isinstance(failed, dict):
+                        scip_failed_projects.append(dict(failed))
+
+            requested = int(latest_stats.get("metrics_requested_files", 0) or 0)
+            mapped = int(latest_stats.get("metrics_mapped_files", 0) or 0)
+            metrics_requested_files += requested
+            metrics_mapped_files += mapped
+            if requested > 0 and mapped < requested:
+                metrics_gate_failed = True
+            if str(latest_stats.get("metrics_gate", "")).strip().lower() == "fail":
+                metrics_gate_failed = True
+            unmapped = latest_stats.get("metrics_unmapped_sample")
+            if isinstance(unmapped, list):
+                for item in unmapped:
+                    value = str(item).strip()
+                    if value:
+                        metrics_unmapped_sample.add(value)
+
     events = (
         (
             await session.execute(
@@ -421,6 +469,13 @@ async def get_collection_twin_status(
     else:
         behavioral_layers_status = "pending"
 
+    if scip_projects_detected <= 0 or scip_projects_indexed <= 0:
+        scip_status = "failed"
+    elif scip_projects_failed > 0 or scip_has_degraded:
+        scip_status = "degraded"
+    else:
+        scip_status = "ready"
+
     return {
         "collection_id": str(collection_id),
         "scenario_id": str(scenario.id) if scenario else None,
@@ -432,6 +487,17 @@ async def get_collection_twin_status(
             behavioral_materialized_at.isoformat() if behavioral_materialized_at else None
         ),
         "deep_warnings": sorted(set(deep_warnings))[:100],
+        "scip_status": scip_status,
+        "scip_projects_by_language": {
+            key: int(value) for key, value in sorted(scip_projects_by_language.items())
+        },
+        "scip_failed_projects": scip_failed_projects[:100],
+        "metrics_gate": {
+            "status": "fail" if metrics_gate_failed else "pass",
+            "requested_files": int(metrics_requested_files),
+            "mapped_files": int(metrics_mapped_files),
+            "unmapped_sample": sorted(metrics_unmapped_sample)[:25],
+        },
         "sources": source_rows,
         "pipeline": {
             "stage_timings": {key: round(value, 3) for key, value in stage_timings.items()},

@@ -9,8 +9,8 @@ from contextmine_core.metrics.complexity_loc_lizard import aggregate_lizard_metr
 from contextmine_core.metrics.coupling_from_snapshot import compute_file_coupling_from_snapshots
 from contextmine_core.metrics.coverage_reports import parse_coverage_reports
 from contextmine_core.metrics.discovery import to_repo_relative_path
-from contextmine_core.metrics.models import MetricsGateError
-from contextmine_core.metrics.pipeline import run_polyglot_metrics_pipeline
+from contextmine_core.metrics.models import FileMetricRecord, MetricsGateError, ProjectMetricBundle
+from contextmine_core.metrics.pipeline import flatten_metric_bundles, run_polyglot_metrics_pipeline
 from contextmine_core.semantic_snapshot.models import (
     FileInfo,
     Range,
@@ -358,3 +358,198 @@ def test_to_repo_relative_path_handles_windows_style() -> None:
     repo_root = Path("/repo")
     normalized = to_repo_relative_path("src\\module\\main.py", repo_root=repo_root)
     assert normalized == "src/module/main.py"
+
+
+def test_pipeline_groups_snapshots_by_language_for_shared_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "src").mkdir()
+    (repo_root / "src" / "main.php").write_text("<?php echo 'x';\n", encoding="utf-8")
+    (repo_root / "src" / "main.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    php_snapshot = Snapshot(
+        files=[FileInfo("./src/main.php", "php")],
+        symbols=[
+            Symbol(
+                "php_main",
+                SymbolKind.FUNCTION,
+                "./src/main.php",
+                Range(1, 0, 1, 1),
+                "php_main",
+            )
+        ],
+        occurrences=[],
+        relations=[],
+        meta={
+            "project_root": str(repo_root),
+            "repo_relative_root": "",
+            "language": "php",
+        },
+    ).to_dict()
+    ts_snapshot = Snapshot(
+        files=[FileInfo("src/main.ts", "typescript")],
+        symbols=[
+            Symbol("ts_main", SymbolKind.FUNCTION, "src/main.ts", Range(1, 0, 1, 1), "ts_main")
+        ],
+        occurrences=[],
+        relations=[],
+        meta={
+            "project_root": str(repo_root),
+            "repo_relative_root": "",
+            "language": "typescript",
+        },
+    ).to_dict()
+
+    project_dicts = [
+        {"language": "php", "root_path": str(repo_root)},
+        {"language": "typescript", "root_path": str(repo_root)},
+    ]
+
+    import contextmine_core.metrics.pipeline as pipeline_mod
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "extract_complexity_loc_metrics",
+        lambda **kwargs: {
+            file_path: {"loc": 10, "complexity": 1.0} for file_path in kwargs["relevant_files"]
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "compute_file_coupling_from_snapshots",
+        lambda **kwargs: (
+            {
+                file_path: {"coupling_in": 0, "coupling_out": 0, "coupling": 0.0}
+                for file_path in kwargs["relevant_files"]
+            },
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "compute_file_duplication_ratio",
+        lambda **kwargs: (
+            {file_path: 0.0 for file_path in kwargs["relevant_files"]},
+            {},
+        ),
+    )
+
+    bundles = run_polyglot_metrics_pipeline(
+        repo_root=repo_root,
+        project_dicts=project_dicts,
+        snapshot_dicts=[php_snapshot, ts_snapshot],
+        strict_mode=True,
+        metrics_languages="php,typescript",
+    )
+
+    by_language = {
+        bundle.language: {record.file_path for record in bundle.files} for bundle in bundles
+    }
+    assert by_language["php"] == {"src/main.php"}
+    assert by_language["typescript"] == {"src/main.ts"}
+
+
+def test_pipeline_allows_javascript_project_to_use_typescript_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "web").mkdir()
+    (repo_root / "web" / "index.ts").write_text("export const app = 1;\n", encoding="utf-8")
+
+    ts_snapshot = Snapshot(
+        files=[FileInfo("web/index.ts", "typescript")],
+        symbols=[
+            Symbol("web_main", SymbolKind.FUNCTION, "web/index.ts", Range(1, 0, 1, 1), "web_main")
+        ],
+        occurrences=[],
+        relations=[],
+        meta={
+            "project_root": str(repo_root),
+            "repo_relative_root": "",
+            "language": "typescript",
+        },
+    ).to_dict()
+
+    import contextmine_core.metrics.pipeline as pipeline_mod
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "extract_complexity_loc_metrics",
+        lambda **kwargs: {
+            file_path: {"loc": 10, "complexity": 1.0} for file_path in kwargs["relevant_files"]
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "compute_file_coupling_from_snapshots",
+        lambda **kwargs: (
+            {
+                file_path: {"coupling_in": 0, "coupling_out": 0, "coupling": 0.0}
+                for file_path in kwargs["relevant_files"]
+            },
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "compute_file_duplication_ratio",
+        lambda **kwargs: (
+            {file_path: 0.0 for file_path in kwargs["relevant_files"]},
+            {},
+        ),
+    )
+
+    bundles = run_polyglot_metrics_pipeline(
+        repo_root=repo_root,
+        project_dicts=[{"language": "javascript", "root_path": str(repo_root)}],
+        snapshot_dicts=[ts_snapshot],
+        strict_mode=True,
+        metrics_languages="javascript",
+    )
+
+    assert len(bundles) == 1
+    assert bundles[0].language == "javascript"
+    assert [record.file_path for record in bundles[0].files] == ["web/index.ts"]
+
+
+def test_flatten_metric_bundles_deduplicates_same_file() -> None:
+    bundles = [
+        ProjectMetricBundle(
+            project_root="/repo",
+            language="javascript",
+            files=[
+                FileMetricRecord(
+                    file_path="web/index.ts",
+                    language="javascript",
+                    loc=10,
+                    complexity=1.0,
+                    coupling_in=0,
+                    coupling_out=0,
+                    coupling=0.0,
+                )
+            ],
+        ),
+        ProjectMetricBundle(
+            project_root="/repo",
+            language="typescript",
+            files=[
+                FileMetricRecord(
+                    file_path="web/index.ts",
+                    language="typescript",
+                    loc=20,
+                    complexity=2.0,
+                    coupling_in=1,
+                    coupling_out=1,
+                    coupling=2.0,
+                )
+            ],
+        ),
+    ]
+
+    flattened = flatten_metric_bundles(bundles)
+    assert len(flattened) == 1
+    assert flattened[0].language == "typescript"
+    assert flattened[0].loc == 20

@@ -2406,6 +2406,10 @@ async def rebuild_readiness_view(
             "behavioral_layers_status": status.get("behavioral_layers_status"),
             "last_behavioral_materialized_at": status.get("last_behavioral_materialized_at"),
             "deep_warnings": status.get("deep_warnings") or [],
+            "scip_status": status.get("scip_status"),
+            "scip_projects_by_language": status.get("scip_projects_by_language") or {},
+            "scip_failed_projects": status.get("scip_failed_projects") or [],
+            "metrics_gate": status.get("metrics_gate") or {},
         }
 
 

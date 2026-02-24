@@ -41,6 +41,18 @@ GENERATED_PATTERNS = (
 )
 
 
+def _normalize_language(language: str) -> str:
+    return language.strip().lower()
+
+
+def _project_snapshot_languages(language: str) -> tuple[str, ...]:
+    normalized = _normalize_language(language)
+    if normalized == "javascript":
+        # Explicit compatibility: JS projects may consume scip-typescript snapshots.
+        return ("javascript", "typescript")
+    return (normalized,)
+
+
 def parse_metrics_languages(raw: str) -> set[str]:
     return {value.strip().lower() for value in raw.split(",") if value.strip()}
 
@@ -65,7 +77,7 @@ def is_relevant_production_file(file_path: str) -> bool:
     return True
 
 
-def _project_key(project_root: Path, repo_root: Path) -> tuple[str, str]:
+def _project_key(project_root: Path, repo_root: Path, language: str) -> tuple[str, str, str]:
     resolved_project = project_root.resolve()
     resolved_repo = repo_root.resolve()
     try:
@@ -74,20 +86,21 @@ def _project_key(project_root: Path, repo_root: Path) -> tuple[str, str]:
             relative = ""
     except ValueError:
         relative = ""
-    return (relative, str(resolved_project))
+    return (relative, str(resolved_project), _normalize_language(language))
 
 
 def _group_snapshots_by_project(
     snapshot_dicts: list[dict[str, Any]],
-) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for snapshot_dict in snapshot_dicts:
         meta = dict(snapshot_dict.get("meta") or {})
         repo_relative_root = str(meta.get("repo_relative_root") or "")
         if repo_relative_root == ".":
             repo_relative_root = ""
         project_root = str(meta.get("project_root") or "")
-        key = (repo_relative_root, project_root)
+        language = _normalize_language(str(meta.get("language") or ""))
+        key = (repo_relative_root, project_root, language)
         grouped.setdefault(key, []).append(snapshot_dict)
     return grouped
 
@@ -205,20 +218,23 @@ def run_polyglot_metrics_pipeline(
     grouped_snapshots = _group_snapshots_by_project(snapshot_dicts)
 
     bundles: list[ProjectMetricBundle] = []
+    claimed_files: set[str] = set()
 
     for project_dict in project_dicts:
-        language = str(project_dict.get("language", "")).lower()
+        language = _normalize_language(str(project_dict.get("language", "")))
         if language not in enabled_languages:
             continue
 
         project_root = Path(str(project_dict["root_path"])).resolve()
-        key = _project_key(project_root, repo_root)
-
-        project_snapshots = grouped_snapshots.get(key)
+        project_snapshots: list[dict[str, Any]] = []
+        for snapshot_language in _project_snapshot_languages(language):
+            key = _project_key(project_root, repo_root, snapshot_language)
+            project_snapshots.extend(grouped_snapshots.get(key, []))
         if not project_snapshots:
             continue
 
         relevant_files = _collect_relevant_files(repo_root, project_root, project_snapshots)
+        relevant_files = {path for path in relevant_files if path not in claimed_files}
         if not relevant_files:
             continue
 
@@ -251,6 +267,7 @@ def run_polyglot_metrics_pipeline(
             coupling_provenance=coupling_provenance,
             strict_mode=strict_mode,
         )
+        claimed_files.update(record.file_path for record in files)
 
         bundles.append(
             ProjectMetricBundle(
@@ -266,6 +283,24 @@ def run_polyglot_metrics_pipeline(
 def flatten_metric_bundles(bundles: list[ProjectMetricBundle]) -> list[FileMetricRecord]:
     """Flatten project bundles into file metric records."""
     flattened: list[FileMetricRecord] = []
+    by_file: dict[str, FileMetricRecord] = {}
+
+    def language_priority(language: str) -> int:
+        normalized = _normalize_language(language)
+        if normalized == "typescript":
+            return 2
+        if normalized == "javascript":
+            return 1
+        return 0
+
     for bundle in bundles:
-        flattened.extend(bundle.files)
+        for record in bundle.files:
+            existing = by_file.get(record.file_path)
+            if existing is None:
+                by_file[record.file_path] = record
+                continue
+            if language_priority(record.language) > language_priority(existing.language):
+                by_file[record.file_path] = record
+
+    flattened.extend(by_file[path] for path in sorted(by_file.keys()))
     return flattened

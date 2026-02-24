@@ -9,11 +9,16 @@ from contextmine_core.models import (
     Collection,
     CollectionVisibility,
     MetricSnapshot,
+    TwinEdge,
     TwinNode,
     TwinScenario,
     User,
 )
-from contextmine_core.twin.service import apply_file_metrics_to_scenario, refresh_metric_snapshots
+from contextmine_core.twin.service import (
+    apply_file_metrics_to_scenario,
+    refresh_metric_snapshots,
+    repair_twin_file_path_canonicalization,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -37,7 +42,12 @@ async def test_session() -> AsyncGenerator[AsyncSession, None]:
     await engine.dispose()
 
 
-async def _seed_scenario_with_file_node(session: AsyncSession) -> tuple[TwinScenario, TwinNode]:
+async def _seed_scenario_with_file_node(
+    session: AsyncSession,
+    *,
+    natural_key: str = "file:src/main.py",
+    file_path: str = "src/main.py",
+) -> tuple[TwinScenario, TwinNode]:
     user = User(
         id=uuid.uuid4(),
         github_user_id=12345,
@@ -61,10 +71,10 @@ async def _seed_scenario_with_file_node(session: AsyncSession) -> tuple[TwinScen
     file_node = TwinNode(
         id=uuid.uuid4(),
         scenario_id=scenario.id,
-        natural_key="file:src/main.py",
+        natural_key=natural_key,
         kind="file",
         name="main.py",
-        meta={"file_path": "src/main.py"},
+        meta={"file_path": file_path},
     )
     session.add_all([user, collection, scenario, file_node])
     await session.flush()
@@ -168,3 +178,88 @@ async def test_refresh_metric_snapshots_keeps_churn_in_snapshot_meta(
     assert snapshot.duplication_ratio == pytest.approx(0.05)
     assert snapshot.crap_score == pytest.approx(8.4)
     assert float((snapshot.meta or {}).get("churn", 0.0)) == pytest.approx(15.0)
+
+
+@pytest.mark.anyio
+async def test_apply_file_metrics_to_scenario_matches_legacy_file_dot_slash_keys(
+    test_session: AsyncSession,
+) -> None:
+    scenario, file_node = await _seed_scenario_with_file_node(
+        test_session,
+        natural_key="file:./src/main.py",
+        file_path="./src/main.py",
+    )
+
+    updated = await apply_file_metrics_to_scenario(
+        test_session,
+        scenario.id,
+        [
+            {
+                "file_path": "src/main.py",
+                "language": "python",
+                "loc": 10,
+                "complexity": 2.0,
+                "coupling_in": 0,
+                "coupling_out": 1,
+                "coupling": 1.0,
+                "sources": {},
+            }
+        ],
+    )
+    await test_session.flush()
+
+    assert updated == 1
+    assert file_node.meta["file_path"] == "src/main.py"
+    assert bool(file_node.meta["metrics_structural_ready"]) is True
+
+
+@pytest.mark.anyio
+async def test_repair_twin_file_path_canonicalization_is_idempotent(
+    test_session: AsyncSession,
+) -> None:
+    scenario, _ = await _seed_scenario_with_file_node(test_session)
+    canonical_file = TwinNode(
+        id=uuid.uuid4(),
+        scenario_id=scenario.id,
+        natural_key="file:src/other.py",
+        kind="file",
+        name="other.py",
+        meta={"file_path": "src/other.py"},
+    )
+    legacy_file = TwinNode(
+        id=uuid.uuid4(),
+        scenario_id=scenario.id,
+        natural_key="file:./src/other.py",
+        kind="file",
+        name="./src/other.py",
+        meta={"file_path": "./src/other.py"},
+    )
+    symbol_node = TwinNode(
+        id=uuid.uuid4(),
+        scenario_id=scenario.id,
+        natural_key="symbol:other",
+        kind="function",
+        name="other",
+        meta={"file_path": "./src/other.py"},
+    )
+    edge = TwinEdge(
+        id=uuid.uuid4(),
+        scenario_id=scenario.id,
+        source_node_id=legacy_file.id,
+        target_node_id=symbol_node.id,
+        kind="file_defines_symbol",
+        meta={},
+    )
+    test_session.add_all([canonical_file, legacy_file, symbol_node, edge])
+    await test_session.flush()
+
+    first = await repair_twin_file_path_canonicalization(test_session, scenario_id=scenario.id)
+    await test_session.flush()
+    second = await repair_twin_file_path_canonicalization(test_session, scenario_id=scenario.id)
+    await test_session.flush()
+
+    assert first["legacy_candidates"] >= 1
+    assert first["duplicates_deactivated"] == 1
+    assert first["meta_paths_updated"] >= 1
+    assert second["legacy_candidates"] == 0
+    assert second["duplicates_deactivated"] == 0

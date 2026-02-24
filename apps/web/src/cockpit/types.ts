@@ -237,6 +237,19 @@ export interface RebuildReadinessPayload {
   behavioral_layers_status: string | null
   last_behavioral_materialized_at: string | null
   deep_warnings: string[]
+  scip_status?: 'ready' | 'degraded' | 'failed' | null
+  scip_projects_by_language?: Record<string, number>
+  scip_failed_projects?: Array<{
+    language?: string
+    project_root?: string
+    error?: string
+  }>
+  metrics_gate?: {
+    status?: 'pass' | 'fail'
+    requested_files?: number
+    mapped_files?: number
+    unmapped_sample?: string[]
+  }
 }
 
 export interface GraphRagStatus {

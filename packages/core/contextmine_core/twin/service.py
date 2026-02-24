@@ -36,6 +36,7 @@ from contextmine_core.models import (
     TwinPatch,
     TwinScenario,
 )
+from contextmine_core.pathing import canonicalize_repo_relative_path
 from contextmine_core.semantic_snapshot.models import RelationKind, Snapshot, SymbolKind
 from contextmine_core.twin.projections import (
     GraphProjection,
@@ -43,7 +44,7 @@ from contextmine_core.twin.projections import (
     build_code_file_projection,
     build_code_symbol_projection,
 )
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -394,25 +395,32 @@ async def ingest_snapshot_into_as_is(
     edge_count = 0
 
     for file_info in snapshot.files:
-        file_key = f"file:{file_info.path}"
-        file_node_ids[file_info.path] = await _upsert_twin_node(
+        canonical_file_path = canonicalize_repo_relative_path(file_info.path)
+        if not canonical_file_path:
+            continue
+        file_key = f"file:{canonical_file_path}"
+        file_node_id = await _upsert_twin_node(
             session,
             scenario.id,
             natural_key=file_key,
             kind="file",
-            name=file_info.path,
+            name=canonical_file_path,
             meta={
+                "file_path": canonical_file_path,
                 "language": file_info.language,
                 "source_id": str(source_id) if source_id else None,
                 **(snapshot.meta or {}),
             },
             provenance_node_id=None,
         )
+        file_node_ids[canonical_file_path] = file_node_id
+        file_node_ids[file_info.path] = file_node_id
         node_count += 1
 
     for symbol in snapshot.symbols:
         if symbol.kind == SymbolKind.UNKNOWN:
             continue
+        canonical_symbol_path = canonicalize_repo_relative_path(symbol.file_path)
         symbol_key = f"symbol:{symbol.def_id}"
         symbol_node_ids[symbol.def_id] = await _upsert_twin_node(
             session,
@@ -421,7 +429,7 @@ async def ingest_snapshot_into_as_is(
             kind=symbol.kind.value,
             name=symbol.name or symbol.def_id,
             meta={
-                "file_path": symbol.file_path,
+                "file_path": canonical_symbol_path or symbol.file_path,
                 "def_id": symbol.def_id,
                 "symbol_kind": symbol.kind.value,
                 "range": symbol.range.to_dict(),
@@ -430,7 +438,7 @@ async def ingest_snapshot_into_as_is(
         )
         node_count += 1
 
-        file_node_id = file_node_ids.get(symbol.file_path)
+        file_node_id = file_node_ids.get(canonical_symbol_path or symbol.file_path)
         if file_node_id:
             await _upsert_twin_edge(
                 session,
@@ -944,10 +952,16 @@ async def apply_file_metrics_to_scenario(
 
     by_key: dict[str, dict[str, Any]] = {}
     for metric in file_metrics:
-        file_path = str(metric.get("file_path", "")).strip()
+        file_path = canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
         if not file_path:
             continue
-        by_key[f"file:{file_path}"] = metric
+        normalized_metric = dict(metric)
+        normalized_metric["file_path"] = file_path
+        canonical_key = f"file:{file_path}"
+        by_key[canonical_key] = normalized_metric
+        # Transitional compatibility for one run while legacy keys still exist.
+        legacy_key = f"file:./{file_path}"
+        by_key.setdefault(legacy_key, normalized_metric)
 
     if not by_key:
         return 0
@@ -965,10 +979,15 @@ async def apply_file_metrics_to_scenario(
         .all()
     )
 
-    updated = 0
-    for node in nodes:
+    updated_file_paths: set[str] = set()
+    for node in sorted(nodes, key=lambda current: current.natural_key.startswith("file:./")):
         metric = by_key.get(node.natural_key)
         if not metric:
+            continue
+        metric_file_path = canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
+        if not metric_file_path:
+            continue
+        if metric_file_path in updated_file_paths:
             continue
 
         meta = dict(node.meta or {})
@@ -977,6 +996,7 @@ async def apply_file_metrics_to_scenario(
                 "metrics_real": False,
                 "metrics_structural_ready": True,
                 "coverage_ready": False,
+                "file_path": metric_file_path,
                 "loc": int(metric["loc"]),
                 "complexity": float(metric["complexity"]),
                 "coupling_in": int(metric["coupling_in"]),
@@ -1000,9 +1020,9 @@ async def apply_file_metrics_to_scenario(
             }
         )
         node.meta = meta
-        updated += 1
+        updated_file_paths.add(metric_file_path)
 
-    return updated
+    return len(updated_file_paths)
 
 
 async def apply_coverage_metrics_to_scenario(
@@ -1037,16 +1057,19 @@ async def apply_coverage_metrics_to_scenario(
         if str(meta.get("source_id") or "") != source_id_str:
             continue
 
-        file_path = node.natural_key.removeprefix("file:")
-        if file_path not in coverage_map:
+        natural_path = node.natural_key.removeprefix("file:")
+        canonical_path = canonicalize_repo_relative_path(natural_path)
+        coverage_key = canonical_path if canonical_path in coverage_map else natural_path
+        if coverage_key not in coverage_map:
             continue
 
         metrics_sources = dict(meta.get("metrics_sources") or {})
-        metrics_sources["coverage"] = coverage_sources.get(file_path, {})
+        metrics_sources["coverage"] = coverage_sources.get(coverage_key, {})
         complexity_value = float(meta["complexity"]) if meta.get("complexity") is not None else None
-        coverage_value = float(coverage_map[file_path])
+        coverage_value = float(coverage_map[coverage_key])
         meta.update(
             {
+                "file_path": canonical_path or natural_path,
                 "coverage": coverage_value,
                 "coverage_ready": True,
                 "metrics_real": bool(meta.get("metrics_structural_ready")),
@@ -1063,3 +1086,178 @@ async def apply_coverage_metrics_to_scenario(
         updated += 1
 
     return updated
+
+
+async def repair_twin_file_path_canonicalization(
+    session: AsyncSession,
+    *,
+    collection_id: UUID | None = None,
+    scenario_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Canonicalize legacy twin file keys and related file_path metadata.
+
+    This repair is idempotent and safe to rerun. It rewires edges when a canonical
+    target node already exists, then marks the legacy duplicate inactive.
+    """
+    scenario_stmt = select(TwinScenario.id, TwinScenario.collection_id)
+    if collection_id is not None:
+        scenario_stmt = scenario_stmt.where(TwinScenario.collection_id == collection_id)
+    if scenario_id is not None:
+        scenario_stmt = scenario_stmt.where(TwinScenario.id == scenario_id)
+    scenario_rows = (await session.execute(scenario_stmt)).all()
+    if not scenario_rows:
+        return {
+            "legacy_candidates": 0,
+            "updated_in_place": 0,
+            "duplicates_deactivated": 0,
+            "edges_rewired": 0,
+            "meta_paths_updated": 0,
+            "collections_changed": [],
+            "scenarios_changed": [],
+        }
+
+    scenario_ids = {row.id for row in scenario_rows}
+    scenario_to_collection = {row.id: row.collection_id for row in scenario_rows}
+
+    legacy_nodes = (
+        (
+            await session.execute(
+                select(TwinNode).where(
+                    TwinNode.scenario_id.in_(scenario_ids),
+                    TwinNode.kind == "file",
+                    TwinNode.is_active.is_(True),
+                    TwinNode.natural_key.like("file:./%"),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    updated_in_place = 0
+    duplicates_deactivated = 0
+    edges_rewired = 0
+    changed_scenarios: set[UUID] = set()
+    changed_collections: set[UUID] = set()
+
+    for node in legacy_nodes:
+        legacy_path = node.natural_key.removeprefix("file:")
+        canonical_path = canonicalize_repo_relative_path(legacy_path)
+        if not canonical_path:
+            continue
+        canonical_key = f"file:{canonical_path}"
+        if canonical_key == node.natural_key:
+            continue
+
+        canonical_target = (
+            await session.execute(
+                select(TwinNode).where(
+                    TwinNode.scenario_id == node.scenario_id,
+                    TwinNode.natural_key == canonical_key,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if canonical_target is None:
+            node.natural_key = canonical_key
+            node.name = canonical_path
+            node_meta = dict(node.meta or {})
+            node_meta["file_path"] = canonical_path
+            node.meta = node_meta
+            node.is_active = True
+            updated_in_place += 1
+            changed_scenarios.add(node.scenario_id)
+            changed_collections.add(scenario_to_collection[node.scenario_id])
+            continue
+
+        # Merge connectivity into the canonical node before removing legacy edges.
+        legacy_edges = (
+            (
+                await session.execute(
+                    select(TwinEdge).where(
+                        TwinEdge.scenario_id == node.scenario_id,
+                        or_(
+                            TwinEdge.source_node_id == node.id,
+                            TwinEdge.target_node_id == node.id,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for edge in legacy_edges:
+            source_node_id = edge.source_node_id
+            target_node_id = edge.target_node_id
+            if source_node_id == node.id:
+                source_node_id = canonical_target.id
+            if target_node_id == node.id:
+                target_node_id = canonical_target.id
+            await _upsert_twin_edge(
+                session=session,
+                scenario_id=node.scenario_id,
+                source_node_id=source_node_id,
+                target_node_id=target_node_id,
+                kind=edge.kind,
+                meta=dict(edge.meta or {}),
+            )
+            edges_rewired += 1
+
+        await session.execute(
+            delete(TwinEdge).where(
+                TwinEdge.scenario_id == node.scenario_id,
+                or_(
+                    TwinEdge.source_node_id == node.id,
+                    TwinEdge.target_node_id == node.id,
+                ),
+            )
+        )
+        legacy_meta = dict(node.meta or {})
+        legacy_meta["canonical_replaced_by"] = canonical_key
+        legacy_meta["is_duplicate_of"] = str(canonical_target.id)
+        node.meta = legacy_meta
+        node.is_active = False
+        duplicates_deactivated += 1
+        changed_scenarios.add(node.scenario_id)
+        changed_collections.add(scenario_to_collection[node.scenario_id])
+
+        canonical_meta = dict(canonical_target.meta or {})
+        canonical_meta["file_path"] = canonical_path
+        canonical_target.meta = canonical_meta
+        canonical_target.is_active = True
+
+    all_nodes = (
+        (
+            await session.execute(
+                select(TwinNode).where(
+                    TwinNode.scenario_id.in_(scenario_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    meta_paths_updated = 0
+    for node in all_nodes:
+        meta = dict(node.meta or {})
+        raw_path = meta.get("file_path")
+        if not isinstance(raw_path, str):
+            continue
+        canonical_path = canonicalize_repo_relative_path(raw_path)
+        if not canonical_path or canonical_path == raw_path:
+            continue
+        meta["file_path"] = canonical_path
+        node.meta = meta
+        meta_paths_updated += 1
+        changed_scenarios.add(node.scenario_id)
+        changed_collections.add(scenario_to_collection[node.scenario_id])
+
+    return {
+        "legacy_candidates": len(legacy_nodes),
+        "updated_in_place": updated_in_place,
+        "duplicates_deactivated": duplicates_deactivated,
+        "edges_rewired": edges_rewired,
+        "meta_paths_updated": meta_paths_updated,
+        "collections_changed": sorted(str(value) for value in changed_collections),
+        "scenarios_changed": sorted(str(value) for value in changed_scenarios),
+    }

@@ -46,6 +46,7 @@ from contextmine_core.twin.service import (
     ingest_snapshot_into_as_is,
     list_scenario_patches,
     refresh_metric_snapshots,
+    repair_twin_file_path_canonicalization,
     seed_scenario_from_knowledge_graph,
     submit_intent,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "normalize_analysis_engines",
     "parse_timestamp_value",
     "record_twin_event",
+    "repair_twin_file_path_canonicalization",
     "refresh_metric_snapshots",
     "sanitize_regex_query",
     "seed_scenario_from_knowledge_graph",

@@ -55,6 +55,14 @@ export default function RebuildReadinessView({
         </p>
       </div>
 
+      <p className="muted">
+        SCIP: {payload?.scip_status || 'failed'} • Metrics gate: {payload?.metrics_gate?.status || 'pass'}
+        {typeof payload?.metrics_gate?.mapped_files === 'number' &&
+        typeof payload?.metrics_gate?.requested_files === 'number'
+          ? ` (${payload.metrics_gate.mapped_files}/${payload.metrics_gate.requested_files})`
+          : ''}
+      </p>
+
       <div className="cockpit2-arch-kpis">
         <div>
           <strong>{payload?.score ?? 0}</strong>
@@ -91,6 +99,19 @@ export default function RebuildReadinessView({
           <ul>
             {(payload?.deep_warnings || []).map((warning) => (
               <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </article>
+      ) : null}
+
+      {(payload?.scip_failed_projects || []).length > 0 ? (
+        <article className="cockpit2-architecture-card">
+          <h4>SCIP failed projects</h4>
+          <ul>
+            {(payload?.scip_failed_projects || []).slice(0, 10).map((project, index) => (
+              <li key={`${project.project_root || 'project'}-${project.language || 'lang'}-${index}`}>
+                [{project.language || 'unknown'}] {project.project_root || 'unknown root'}: {project.error || 'unknown error'}
+              </li>
             ))}
           </ul>
         </article>

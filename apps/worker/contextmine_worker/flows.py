@@ -852,8 +852,10 @@ async def build_twin_graph(
     from contextmine_core.models import (
         KnowledgeArtifact,
         KnowledgeArtifactKind,
+        TwinNode,
         TwinScenario,
     )
+    from contextmine_core.pathing import canonicalize_repo_relative_path
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
         apply_file_metrics_to_scenario,
@@ -866,10 +868,12 @@ async def build_twin_graph(
 
     collection_uuid = uuid_module.UUID(collection_id)
     source_uuid = uuid_module.UUID(source_id)
-    stats: dict[str, int | str] = {
+    stats: dict[str, int | str | list[str]] = {
         "twin_nodes_upserted": 0,
         "twin_edges_upserted": 0,
         "twin_metric_nodes_enriched": 0,
+        "metrics_requested_files": 0,
+        "metrics_mapped_files": 0,
         "twin_metrics_snapshots": 0,
         "twin_validation_snapshots": 0,
         "arch_facts_count": 0,
@@ -904,14 +908,36 @@ async def build_twin_graph(
             stats["twin_edges_upserted"] += int(edges)
 
         if file_metrics:
-            requested_metric_files = len(
-                {
-                    str(metric.get("file_path", "")).strip()
-                    for metric in file_metrics
-                    if str(metric.get("file_path", "")).strip()
-                }
+            requested_metric_paths = {
+                canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
+                for metric in file_metrics
+                if canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
+            }
+            requested_metric_files = len(requested_metric_paths)
+            available_nodes = (
+                (
+                    await session.execute(
+                        select(TwinNode.natural_key).where(
+                            TwinNode.scenario_id == as_is.id,
+                            TwinNode.kind == "file",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            available_paths = {
+                canonicalize_repo_relative_path(str(node_key).removeprefix("file:"))
+                for node_key in available_nodes
+                if str(node_key).startswith("file:")
+            }
+            metrics_unmapped = sorted(
+                path for path in requested_metric_paths if path not in available_paths
             )
             enriched = await apply_file_metrics_to_scenario(session, as_is.id, file_metrics)
+            stats["metrics_requested_files"] = requested_metric_files
+            stats["metrics_mapped_files"] = enriched
+            stats["metrics_unmapped_sample"] = metrics_unmapped[:25]
             if enriched < requested_metric_files:
                 raise RuntimeError(
                     "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
@@ -919,6 +945,7 @@ async def build_twin_graph(
                 )
             stats["twin_metric_nodes_enriched"] = enriched
             stats["twin_metric_nodes_requested"] = requested_metric_files
+            stats["metrics_gate"] = "pass"
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
         stats["twin_validation_snapshots"] = await refresh_validation_snapshots(
@@ -1617,8 +1644,11 @@ async def sync_github_source(
     scip_stats = {
         "scip_projects_detected": 0,
         "scip_projects_indexed": 0,
+        "scip_projects_failed": 0,
         "scip_symbols": 0,
         "scip_relations": 0,
+        "scip_degraded": False,
+        "scip_failed_projects": [],
         "scip_languages_detected": [],
         "scip_projects_by_language": {},
         "scip_detection_warnings": [],
@@ -1685,16 +1715,36 @@ async def sync_github_source(
                             snapshot_dicts.append(snapshot_dict)
                             scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
                             scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
+                else:
+                    scip_stats["scip_projects_failed"] += 1
+                    scip_stats["scip_failed_projects"].append(
+                        {
+                            "language": str(proj_dict.get("language", "")).lower(),
+                            "project_root": str(proj_dict.get("root_path", "")),
+                            "error": (
+                                str(artifact_dict.get("error_message", "")).strip()
+                                if artifact_dict
+                                else "indexer_returned_no_artifact"
+                            ),
+                        }
+                    )
+
+            scip_stats["scip_degraded"] = bool(scip_stats["scip_projects_failed"])
 
             logger.info(
-                "SCIP indexing complete: %d/%d projects, %d symbols, %d relations",
+                "SCIP indexing complete: %d/%d projects (%d failed), %d symbols, %d relations",
                 scip_stats["scip_projects_indexed"],
                 scip_stats["scip_projects_detected"],
+                scip_stats["scip_projects_failed"],
                 scip_stats["scip_symbols"],
                 scip_stats["scip_relations"],
             )
     except Exception as e:
         logger.warning("SCIP indexing failed: %s", e)
+        scip_stats["scip_degraded"] = True
+        scip_stats["scip_detection_warnings"] = list(scip_stats["scip_detection_warnings"]) + [
+            f"scip_indexing_exception:{e}"
+        ]
 
     await update_progress_artifact(
         progress_id, progress=14, description="Extracting structural code metrics..."
@@ -2003,8 +2053,25 @@ async def sync_github_source(
                     "commit_sha": new_sha,
                     "sync_run_id": str(sync_run.id),
                     "surface_extract": surface_stats,
+                    "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
+                    "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+                    "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
+                    "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
+                    "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
+                    "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
                     "twin_nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
                     "twin_edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
+                    "metrics_requested_files": int(twin_stats.get("metrics_requested_files", 0)),
+                    "metrics_mapped_files": int(twin_stats.get("metrics_mapped_files", 0)),
+                    "metrics_unmapped_sample": list(
+                        twin_stats.get("metrics_unmapped_sample", []) or []
+                    )[:25],
+                    "metrics_gate": (
+                        "pass"
+                        if int(twin_stats.get("metrics_mapped_files", 0))
+                        >= int(twin_stats.get("metrics_requested_files", 0))
+                        else "fail"
+                    ),
                     "scenario_id": scenario_id_raw,
                     "scenario_version": scenario_version,
                 },
@@ -2067,8 +2134,11 @@ async def sync_github_source(
             # SCIP Polyglot Indexing stats
             "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
             "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+            "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
             "scip_symbols": scip_stats.get("scip_symbols", 0),
             "scip_relations": scip_stats.get("scip_relations", 0),
+            "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
+            "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
             "scip_languages_detected": scip_stats.get("scip_languages_detected", []),
             "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
             "scip_detection_warnings": scip_stats.get("scip_detection_warnings", []),
@@ -2078,6 +2148,15 @@ async def sync_github_source(
             "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
             "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),
             "twin_metric_nodes_enriched": twin_stats.get("twin_metric_nodes_enriched", 0),
+            "metrics_requested_files": twin_stats.get("metrics_requested_files", 0),
+            "metrics_mapped_files": twin_stats.get("metrics_mapped_files", 0),
+            "metrics_unmapped_sample": twin_stats.get("metrics_unmapped_sample", []),
+            "metrics_gate": (
+                "pass"
+                if int(twin_stats.get("metrics_mapped_files", 0))
+                >= int(twin_stats.get("metrics_requested_files", 0))
+                else "fail"
+            ),
             "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
@@ -2482,14 +2561,27 @@ async def sync_source(source: Source) -> SyncRun | None:
                 )
             ).scalar_one_or_none()
             if failed_source_version:
+                failure_stats: dict[str, object] = {
+                    "sync_run_id": str(sync_run.id),
+                    "error": str(e),
+                }
+                error_text = str(e)
+                if "METRICS_GATE_FAILED" in error_text:
+                    failure_stats["metrics_gate"] = "fail"
+                    if "(mapped=" in error_text and ", metrics=" in error_text:
+                        try:
+                            mapped_part = error_text.split("(mapped=", 1)[1]
+                            mapped_raw = mapped_part.split(",", 1)[0]
+                            metrics_raw = mapped_part.split("metrics=", 1)[1].split(")", 1)[0]
+                            failure_stats["metrics_mapped_files"] = int(mapped_raw)
+                            failure_stats["metrics_requested_files"] = int(metrics_raw)
+                        except Exception:  # noqa: BLE001
+                            pass
                 await set_source_version_status(
                     session,
                     source_version_id=failed_source_version.id,
                     status="failed",
-                    stats={
-                        "sync_run_id": str(sync_run.id),
-                        "error": str(e),
-                    },
+                    stats=failure_stats,
                     finished=True,
                 )
                 await record_twin_event(
@@ -2560,6 +2652,7 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
 
     from contextmine_core.metrics.coverage_reports import parse_coverage_reports
     from contextmine_core.models import TwinNode
+    from contextmine_core.pathing import canonicalize_repo_relative_path
     from contextmine_core.twin import (
         apply_coverage_metrics_to_scenario,
         get_or_create_as_is_scenario,
@@ -2651,7 +2744,9 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
                 continue
             if not bool(meta.get("metrics_structural_ready")):
                 continue
-            relevant_files.add(node.natural_key.removeprefix("file:"))
+            file_path = canonicalize_repo_relative_path(node.natural_key.removeprefix("file:"))
+            if file_path:
+                relevant_files.add(file_path)
 
         if not relevant_files:
             await session.commit()
@@ -2878,3 +2973,78 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
         }
     except Exception as e:
         return {"source_id": source_id, "error": str(e)}
+
+
+@traced_task()
+@task(retries=0, tags=[TAG_DB_HEAVY])
+async def task_repair_twin_file_path_canonicalization(
+    collection_id: str | None = None,
+    scenario_id: str | None = None,
+) -> dict:
+    """Repair legacy twin file keys and refresh snapshots for affected scenarios."""
+    import uuid as uuid_module
+
+    from contextmine_core.twin import (
+        record_twin_event,
+        refresh_metric_snapshots,
+        repair_twin_file_path_canonicalization,
+    )
+
+    collection_uuid = uuid_module.UUID(collection_id) if collection_id else None
+    scenario_uuid = uuid_module.UUID(scenario_id) if scenario_id else None
+
+    async with get_session() as session:
+        repair_stats = await repair_twin_file_path_canonicalization(
+            session,
+            collection_id=collection_uuid,
+            scenario_id=scenario_uuid,
+        )
+
+        scenario_snapshot_counts: dict[str, int] = {}
+        for scenario_id_raw in repair_stats.get("scenarios_changed", []):
+            scenario_uuid_local = uuid_module.UUID(str(scenario_id_raw))
+            snapshot_count = await refresh_metric_snapshots(session, scenario_uuid_local)
+            scenario_snapshot_counts[str(scenario_uuid_local)] = snapshot_count
+
+        repair_stats["metric_snapshots_refreshed"] = int(sum(scenario_snapshot_counts.values()))
+        repair_stats["metric_snapshots_by_scenario"] = scenario_snapshot_counts
+
+        for collection_id_raw in repair_stats.get("collections_changed", []):
+            collection_uuid_local = uuid_module.UUID(str(collection_id_raw))
+            await record_twin_event(
+                session=session,
+                collection_id=collection_uuid_local,
+                scenario_id=None,
+                source_id=None,
+                source_version_id=None,
+                event_type="file_path_canonicalization_repair",
+                status="ready",
+                payload={
+                    "legacy_candidates": int(repair_stats.get("legacy_candidates", 0)),
+                    "updated_in_place": int(repair_stats.get("updated_in_place", 0)),
+                    "duplicates_deactivated": int(repair_stats.get("duplicates_deactivated", 0)),
+                    "edges_rewired": int(repair_stats.get("edges_rewired", 0)),
+                    "meta_paths_updated": int(repair_stats.get("meta_paths_updated", 0)),
+                    "metric_snapshots_refreshed": int(
+                        repair_stats.get("metric_snapshots_refreshed", 0)
+                    ),
+                    "scenarios_changed": list(repair_stats.get("scenarios_changed", [])),
+                },
+                idempotency_key=f"file_path_repair:{collection_uuid_local}:{uuid_module.uuid4()}",
+            )
+
+        await session.commit()
+        return repair_stats
+
+
+@traced_flow()
+@flow(name="repair_twin_file_paths")
+async def repair_twin_file_paths(
+    collection_id: str | None = None,
+    scenario_id: str | None = None,
+) -> dict:
+    """Admin flow to repair legacy twin file-path canonicalization defects."""
+    return await task_repair_twin_file_path_canonicalization(
+        collection_id=collection_id,
+        scenario_id=scenario_id,
+    )
