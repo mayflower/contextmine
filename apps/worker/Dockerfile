@@ -22,7 +22,8 @@ FROM python:3.12-slim
 ARG SCIP_TYPESCRIPT_VERSION=0.3.14
 ARG SCIP_PYTHON_VERSION=0.6.6
 ARG SCIP_JAVA_VERSION=0.10.3
-ARG SCIP_PHP_VERSION=dev-lint-php8.4
+ARG SCIP_PHP_VERSION=dev-main
+ARG SCIP_PHP_REPO_URL=https://github.com/mayflower/scip-php.git
 ARG NODE_VERSION=20
 
 # Install system dependencies
@@ -66,7 +67,8 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 # Install scip-php via Composer global
 ENV COMPOSER_HOME=/opt/composer
 ENV PATH="${PATH}:${COMPOSER_HOME}/vendor/bin"
-RUN composer global require davidrjenni/scip-php:${SCIP_PHP_VERSION} && \
+RUN composer global config repositories.scip-php vcs ${SCIP_PHP_REPO_URL} && \
+    composer global require davidrjenni/scip-php:${SCIP_PHP_VERSION} && \
     composer install --working-dir=${COMPOSER_HOME}/vendor/davidrjenni/scip-php --no-interaction --prefer-dist --no-progress --no-dev && \
     test -f ${COMPOSER_HOME}/vendor/davidrjenni/scip-php/vendor/autoload.php && \
     chmod -R 755 ${COMPOSER_HOME}
