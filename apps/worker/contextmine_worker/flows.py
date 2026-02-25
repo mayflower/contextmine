@@ -1699,6 +1699,7 @@ async def sync_github_source(
         "scip_census_tool": "",
         "scip_census_tool_version": "",
     }
+    kg_stats: dict[str, Any] = {}
 
     def _scip_failed_projects() -> list[dict[str, str]]:
         failed = scip_stats.get("scip_failed_projects")
@@ -2250,6 +2251,23 @@ async def sync_github_source(
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
 
+    # Build Knowledge Graph (FILE/SYMBOL + semantic entities + communities).
+    await update_progress_artifact(  # type: ignore[misc]
+        progress_id, progress=94, description="Building knowledge graph..."
+    )
+    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
+    try:
+        kg_stats = await build_knowledge_graph(
+            source_id=str(source.id),
+            collection_id=collection_id_str,
+            changed_doc_ids=changed_doc_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Knowledge graph build failed for source %s: %s", source.id, exc)
+        kg_errors = list((kg_stats or {}).get("kg_errors") or [])
+        kg_errors.append(f"pipeline: {exc}")
+        kg_stats = {"kg_errors": kg_errors}
+
     # Materialize deterministic interface/spec surfaces (OpenAPI/GraphQL/Protobuf/jobs)
     surface_stats: dict[str, int] = {}
     await update_progress_artifact(  # type: ignore[misc]
@@ -2268,7 +2286,6 @@ async def sync_github_source(
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building digital twin..."
     )
-    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
     twin_stats = await build_twin_graph(
         str(source.id),
         collection_id_str,
@@ -2311,6 +2328,7 @@ async def sync_github_source(
                     "commit_sha": new_sha,
                     "sync_run_id": str(sync_run.id),
                     "surface_extract": surface_stats,
+                    "knowledge_extract": kg_stats,
                     "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
                     "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
                     "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
@@ -2477,6 +2495,21 @@ async def sync_github_source(
             "source_version_id": str(source_version_id) if source_version_id else None,
             "joern_cpg_path": str(cpg_path),
             "joern_server_url": settings.joern_server_url,
+            # Knowledge Graph extraction stats
+            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
+            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
+            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
+            "kg_tables": kg_stats.get("kg_tables", 0),
+            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
+            "kg_jobs": kg_stats.get("kg_jobs", 0),
+            "kg_semantic_entities": kg_stats.get("kg_semantic_entities", 0),
+            "kg_semantic_relationships": kg_stats.get("kg_semantic_relationships", 0),
+            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
+            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
+            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
+            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
+            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
+            "kg_errors": list(kg_stats.get("kg_errors", []) or []),
             # Surface extraction stats
             "surface_files_scanned": surface_stats.get("surface_files_scanned", 0),
             "surface_files_recognized": surface_stats.get("surface_files_recognized", 0),
