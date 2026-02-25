@@ -76,10 +76,6 @@ def detect_projects_with_diagnostics(
         # but still provide explicit build markers.
         qualified.update(_marker_languages(root))
 
-    # scip-typescript indexes JS + TS. Avoid duplicate root indexing when TS is present.
-    if Language.TYPESCRIPT in qualified:
-        qualified.discard(Language.JAVASCRIPT)
-
     projects: list[ProjectTarget] = []
     warnings = list(report.warnings)
 

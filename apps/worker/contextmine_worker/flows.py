@@ -11,7 +11,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from contextmine_core import (
     Chunk,
@@ -78,6 +78,7 @@ TAG_GITHUB_API = "github-api"
 TAG_EMBEDDING_API = "embedding-api"
 TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
+SYNC_RUN_STALE_AFTER = timedelta(hours=6)
 
 
 def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
@@ -1670,9 +1671,10 @@ async def sync_github_source(
         await session.commit()
 
     # SCIP Polyglot Indexing
-    scip_stats = {
+    scip_stats: dict[str, Any] = {
         "scip_projects_detected": 0,
         "scip_projects_indexed": 0,
+        "scip_snapshots_parsed": 0,
         "scip_projects_failed": 0,
         "scip_symbols": 0,
         "scip_relations": 0,
@@ -1680,10 +1682,26 @@ async def sync_github_source(
         "scip_failed_projects": [],
         "scip_languages_detected": [],
         "scip_projects_by_language": {},
+        "scip_detected_files_by_language": {},
+        "scip_detected_code_by_language": {},
+        "scip_indexed_files_by_language": {},
+        "scip_missing_languages": [],
+        "scip_coverage_complete": True,
+        "scip_recovery_attempts": 0,
+        "scip_recovery_successes": 0,
+        "evolution_commits_considered": 0,
         "scip_detection_warnings": [],
         "scip_census_tool": "",
         "scip_census_tool_version": "",
     }
+
+    def _scip_failed_projects() -> list[dict[str, str]]:
+        failed = scip_stats.get("scip_failed_projects")
+        if not isinstance(failed, list):
+            failed = []
+            scip_stats["scip_failed_projects"] = failed
+        return cast(list[dict[str, str]], failed)
+
     project_dicts: list[dict] = []
     snapshot_dicts: list[dict] = []
     file_metric_dicts: list[dict] = []
@@ -1694,6 +1712,146 @@ async def sync_github_source(
 
     try:
         import tempfile
+
+        from contextmine_core.semantic_snapshot.indexers.language_census import (
+            EXTENSION_TO_LANGUAGE,
+            build_language_census,
+        )
+        from contextmine_core.semantic_snapshot.models import Language
+
+        def _normalize_language(value: object) -> str:
+            return str(value or "").strip().lower()
+
+        supported_languages = {language.value for language in Language}
+        attempted_targets: set[tuple[str, str]] = set()
+
+        def _project_key_for(proj_dict: dict) -> tuple[str, str]:
+            language = _normalize_language(proj_dict.get("language"))
+            root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
+            return language, root
+
+        def _snapshot_repo_file_path(file_info: dict[str, object], snapshot_meta: dict) -> str:
+            raw_path = str(file_info.get("path") or "").strip().replace("\\", "/")
+            if not raw_path:
+                return ""
+
+            path_obj = Path(raw_path)
+            if path_obj.is_absolute():
+                try:
+                    return path_obj.resolve().relative_to(repo_path.resolve()).as_posix()
+                except ValueError:
+                    return raw_path.lstrip("./")
+
+            repo_relative_root = str(snapshot_meta.get("repo_relative_root") or "").strip()
+            normalized = raw_path.lstrip("./")
+            if repo_relative_root:
+                repo_relative_root = repo_relative_root.replace("\\", "/").strip("/")
+                if normalized != repo_relative_root and not normalized.startswith(
+                    f"{repo_relative_root}/"
+                ):
+                    normalized = f"{repo_relative_root}/{normalized}".strip("/")
+            return normalized
+
+        def _snapshot_file_language(
+            *,
+            repo_relative_path: str,
+            file_info: dict[str, object],
+            snapshot_language: str,
+        ) -> str | None:
+            explicit = _normalize_language(file_info.get("language"))
+            if explicit in supported_languages:
+                return explicit
+            extension_language = EXTENSION_TO_LANGUAGE.get(Path(repo_relative_path).suffix.lower())
+            if extension_language:
+                return extension_language.value
+            if snapshot_language in supported_languages:
+                return snapshot_language
+            return None
+
+        def _collect_indexed_files_by_language(
+            snapshots: list[dict],
+        ) -> dict[str, int]:
+            indexed: dict[str, set[str]] = {}
+            for snapshot_dict in snapshots:
+                snapshot_meta = dict(snapshot_dict.get("meta") or {})
+                snapshot_language = _normalize_language(snapshot_meta.get("language"))
+                files = snapshot_dict.get("files") or []
+                if not isinstance(files, list):
+                    continue
+                for item in files:
+                    if not isinstance(item, dict):
+                        continue
+                    repo_relative_path = _snapshot_repo_file_path(item, snapshot_meta)
+                    if not repo_relative_path:
+                        continue
+                    language = _snapshot_file_language(
+                        repo_relative_path=repo_relative_path,
+                        file_info=item,
+                        snapshot_language=snapshot_language,
+                    )
+                    if not language:
+                        continue
+                    indexed.setdefault(language, set()).add(repo_relative_path)
+            return {language: len(paths) for language, paths in indexed.items()}
+
+        async def _index_project_target(proj_dict: dict) -> bool:
+            language = _normalize_language(proj_dict.get("language"))
+            project_root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
+            artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
+            if artifact_dict and artifact_dict.get("success"):
+                scip_stats["scip_projects_indexed"] += 1
+                scip_path = artifact_dict.get("scip_path")
+                if scip_path:
+                    snapshot_dict = await task_parse_scip_snapshot(str(scip_path))
+                    if snapshot_dict:
+                        project_root_path = Path(project_root)
+                        try:
+                            repo_relative_root = (
+                                project_root_path.resolve()
+                                .relative_to(repo_path.resolve())
+                                .as_posix()
+                            )
+                        except ValueError:
+                            repo_relative_root = ""
+
+                        snapshot_meta = dict(snapshot_dict.get("meta") or {})
+                        snapshot_meta.update(
+                            {
+                                "project_root": str(project_root_path.resolve()),
+                                "repo_relative_root": repo_relative_root,
+                                "language": language,
+                            }
+                        )
+                        snapshot_dict["meta"] = snapshot_meta
+                        snapshot_dicts.append(snapshot_dict)
+                        scip_stats["scip_snapshots_parsed"] += 1
+                        scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
+                        scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
+                        return True
+
+                scip_stats["scip_projects_failed"] += 1
+                _scip_failed_projects().append(
+                    {
+                        "language": language,
+                        "project_root": project_root,
+                        "error": "snapshot_parse_failed",
+                    }
+                )
+                return False
+
+            scip_stats["scip_projects_failed"] += 1
+            _scip_failed_projects().append(
+                {
+                    "language": language,
+                    "project_root": project_root,
+                    "error": (
+                        str(artifact_dict.get("error_message", "")).strip()
+                        if artifact_dict
+                        else "indexer_returned_no_artifact"
+                    ),
+                }
+            )
+            return False
 
         # Detect projects + language census diagnostics
         detect_result = await task_detect_scip_projects(repo_path)
@@ -1708,67 +1866,109 @@ async def sync_github_source(
         scip_stats["scip_census_tool_version"] = str(diagnostics.get("census_tool_version") or "")
         scip_stats["scip_projects_detected"] = len(project_dicts)
 
+        census = build_language_census(repo_path)
+        detected_files_by_language = {
+            language.value: int(entry.files)
+            for language, entry in census.entries.items()
+            if int(entry.files) > 0
+        }
+        detected_code_by_language = {
+            language.value: int(entry.code)
+            for language, entry in census.entries.items()
+            if int(entry.code) > 0
+        }
+        scip_stats["scip_detected_files_by_language"] = detected_files_by_language
+        scip_stats["scip_detected_code_by_language"] = detected_code_by_language
+
         if project_dicts:
             # Create temp output directory for SCIP files
             scip_output_dir = Path(tempfile.mkdtemp(prefix="scip_"))
 
             # Index each project
             for proj_dict in project_dicts:
-                artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
-                if artifact_dict and artifact_dict.get("success"):
-                    scip_stats["scip_projects_indexed"] += 1
+                attempted_targets.add(_project_key_for(proj_dict))
+                await _index_project_target(proj_dict)
 
-                    # Parse SCIP snapshot
-                    scip_path = artifact_dict.get("scip_path")
-                    if scip_path:
-                        snapshot_dict = await task_parse_scip_snapshot(scip_path)
-                        if snapshot_dict:
-                            project_root = Path(str(proj_dict.get("root_path", repo_path)))
-                            try:
-                                repo_relative_root = (
-                                    project_root.resolve()
-                                    .relative_to(repo_path.resolve())
-                                    .as_posix()
-                                )
-                            except ValueError:
-                                repo_relative_root = ""
+            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
+            missing_languages = sorted(
+                language
+                for language, file_count in detected_files_by_language.items()
+                if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
+            )
 
-                            snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                            snapshot_meta.update(
-                                {
-                                    "project_root": str(project_root.resolve()),
-                                    "repo_relative_root": repo_relative_root,
-                                    "language": str(proj_dict.get("language", "")).lower(),
-                                }
-                            )
-                            snapshot_dict["meta"] = snapshot_meta
-                            snapshot_dicts.append(snapshot_dict)
-                            scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
-                            scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
-                else:
-                    scip_stats["scip_projects_failed"] += 1
-                    scip_stats["scip_failed_projects"].append(
-                        {
-                            "language": str(proj_dict.get("language", "")).lower(),
-                            "project_root": str(proj_dict.get("root_path", "")),
-                            "error": (
-                                str(artifact_dict.get("error_message", "")).strip()
-                                if artifact_dict
-                                else "indexer_returned_no_artifact"
-                            ),
-                        }
-                    )
+            if missing_languages:
+                scip_stats["scip_detection_warnings"] = list(
+                    scip_stats.get("scip_detection_warnings") or []
+                ) + [
+                    f"missing_language_index_coverage_initial:{language}"
+                    for language in missing_languages
+                ]
+
+            for language in missing_languages:
+                candidates = [
+                    proj
+                    for proj in project_dicts
+                    if _normalize_language(proj.get("language")) == language
+                ]
+                fallback_target = dict(candidates[0]) if candidates else {}
+                fallback_target["language"] = language
+                fallback_target["root_path"] = str(repo_path.resolve())
+                fallback_metadata = dict(fallback_target.get("metadata") or {})
+                fallback_metadata["recovery_pass"] = True
+                fallback_target["metadata"] = fallback_metadata
+
+                key = _project_key_for(fallback_target)
+                if key in attempted_targets:
+                    continue
+
+                attempted_targets.add(key)
+                scip_stats["scip_recovery_attempts"] += 1
+                recovered = await _index_project_target(fallback_target)
+                if recovered:
+                    scip_stats["scip_recovery_successes"] += 1
+
+            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
+            missing_languages = sorted(
+                language
+                for language, file_count in detected_files_by_language.items()
+                if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
+            )
+
+            scip_stats["scip_indexed_files_by_language"] = indexed_files_by_language
+            scip_stats["scip_missing_languages"] = missing_languages
+            scip_stats["scip_coverage_complete"] = len(missing_languages) == 0
+            if missing_languages:
+                scip_stats["scip_detection_warnings"] = list(
+                    scip_stats.get("scip_detection_warnings") or []
+                ) + [
+                    f"missing_language_index_coverage:{language}" for language in missing_languages
+                ]
 
             scip_stats["scip_degraded"] = bool(scip_stats["scip_projects_failed"])
+            if not scip_stats["scip_coverage_complete"]:
+                scip_stats["scip_degraded"] = True
 
             logger.info(
-                "SCIP indexing complete: %d/%d projects (%d failed), %d symbols, %d relations",
+                "SCIP indexing complete: %d/%d projects (%d failed), %d snapshots, %d symbols, %d relations",
                 scip_stats["scip_projects_indexed"],
                 scip_stats["scip_projects_detected"],
                 scip_stats["scip_projects_failed"],
+                scip_stats["scip_snapshots_parsed"],
                 scip_stats["scip_symbols"],
                 scip_stats["scip_relations"],
             )
+        else:
+            missing_languages = sorted(detected_files_by_language.keys())
+            scip_stats["scip_indexed_files_by_language"] = {}
+            scip_stats["scip_missing_languages"] = missing_languages
+            scip_stats["scip_coverage_complete"] = len(missing_languages) == 0
+            if missing_languages:
+                scip_stats["scip_detection_warnings"] = list(
+                    scip_stats.get("scip_detection_warnings") or []
+                ) + [
+                    f"missing_language_index_coverage:{language}" for language in missing_languages
+                ]
+                scip_stats["scip_degraded"] = True
     except Exception as e:
         logger.warning("SCIP indexing failed: %s", e)
         scip_stats["scip_degraded"] = True
@@ -1776,13 +1976,19 @@ async def sync_github_source(
             f"scip_indexing_exception:{e}"
         ]
 
+    settings = get_settings()
+    missing_language_coverage = list(scip_stats.get("scip_missing_languages") or [])
+    if settings.scip_require_language_coverage and missing_language_coverage:
+        raise RuntimeError(
+            "SCIP_GATE_FAILED: language_coverage_incomplete "
+            f"(missing={','.join(missing_language_coverage)})"
+        )
+
     await update_progress_artifact(
         progress_id, progress=14, description="Extracting structural code metrics..."
     )  # type: ignore[misc]
     if snapshot_dicts and project_dicts:
         from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
-
-        settings = get_settings()
 
         bundles = run_polyglot_metrics_pipeline(
             repo_root=repo_path,
@@ -1848,6 +2054,9 @@ async def sync_github_source(
             evolution_stats = dict(evolution_payload.get("stats") or {})
             scip_stats["evolution_window_days"] = evolution_window_days
             scip_stats["evolution_commits_scanned"] = int(evolution_stats.get("commits_scanned", 0))
+            scip_stats["evolution_commits_considered"] = int(
+                evolution_stats.get("commits_considered", 0)
+            )
             scip_stats["evolution_files_seen"] = int(evolution_stats.get("files_seen", 0))
             scip_stats["evolution_ownership_rows"] = int(evolution_stats.get("ownership_rows", 0))
             scip_stats["evolution_coupling_rows"] = int(evolution_stats.get("coupling_rows", 0))
@@ -2099,13 +2308,30 @@ async def sync_github_source(
                     "surface_extract": surface_stats,
                     "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
                     "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+                    "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
                     "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
                     "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
                     "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
+                    "scip_detected_files_by_language": scip_stats.get(
+                        "scip_detected_files_by_language", {}
+                    ),
+                    "scip_detected_code_by_language": scip_stats.get(
+                        "scip_detected_code_by_language", {}
+                    ),
+                    "scip_indexed_files_by_language": scip_stats.get(
+                        "scip_indexed_files_by_language", {}
+                    ),
+                    "scip_missing_languages": scip_stats.get("scip_missing_languages", []),
+                    "scip_coverage_complete": bool(scip_stats.get("scip_coverage_complete", True)),
+                    "scip_recovery_attempts": scip_stats.get("scip_recovery_attempts", 0),
+                    "scip_recovery_successes": scip_stats.get("scip_recovery_successes", 0),
                     "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
                     "evolution_window_days": int(scip_stats.get("evolution_window_days", 0)),
                     "evolution_commits_scanned": int(
                         scip_stats.get("evolution_commits_scanned", 0)
+                    ),
+                    "evolution_commits_considered": int(
+                        scip_stats.get("evolution_commits_considered", 0)
                     ),
                     "evolution_files_seen": int(scip_stats.get("evolution_files_seen", 0)),
                     "evolution_warnings": list(scip_stats.get("evolution_warnings", []) or []),
@@ -2190,6 +2416,7 @@ async def sync_github_source(
             # SCIP Polyglot Indexing stats
             "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
             "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+            "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
             "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
             "scip_symbols": scip_stats.get("scip_symbols", 0),
             "scip_relations": scip_stats.get("scip_relations", 0),
@@ -2197,6 +2424,15 @@ async def sync_github_source(
             "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
             "scip_languages_detected": scip_stats.get("scip_languages_detected", []),
             "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
+            "scip_detected_files_by_language": scip_stats.get(
+                "scip_detected_files_by_language", {}
+            ),
+            "scip_detected_code_by_language": scip_stats.get("scip_detected_code_by_language", {}),
+            "scip_indexed_files_by_language": scip_stats.get("scip_indexed_files_by_language", {}),
+            "scip_missing_languages": scip_stats.get("scip_missing_languages", []),
+            "scip_coverage_complete": bool(scip_stats.get("scip_coverage_complete", True)),
+            "scip_recovery_attempts": scip_stats.get("scip_recovery_attempts", 0),
+            "scip_recovery_successes": scip_stats.get("scip_recovery_successes", 0),
             "scip_detection_warnings": scip_stats.get("scip_detection_warnings", []),
             "scip_census_tool": scip_stats.get("scip_census_tool", ""),
             "scip_census_tool_version": scip_stats.get("scip_census_tool_version", ""),
@@ -2225,6 +2461,7 @@ async def sync_github_source(
             "git_metric_total_churn": scip_stats.get("git_metric_total_churn", 0.0),
             "evolution_window_days": scip_stats.get("evolution_window_days", 0),
             "evolution_commits_scanned": scip_stats.get("evolution_commits_scanned", 0),
+            "evolution_commits_considered": scip_stats.get("evolution_commits_considered", 0),
             "evolution_files_seen": scip_stats.get("evolution_files_seen", 0),
             "evolution_warnings": scip_stats.get("evolution_warnings", []),
             "evolution_ownership_rows": twin_stats.get("evolution_ownership_rows", 0),
@@ -2575,7 +2812,31 @@ async def sync_source(source: Source) -> SyncRun | None:
             # Another sync already has the lock
             return None
 
-        # Check if there's already a running sync for this source
+        # Recover stale running rows so new syncs are not blocked indefinitely.
+        running_runs = select(SyncRun).where(
+            SyncRun.source_id == source.id,
+            SyncRun.status == SyncRunStatus.RUNNING,
+        )
+        running_rows = (await session.execute(running_runs)).scalars().all()
+        now = datetime.now(UTC)
+        stale_cutoff = now - SYNC_RUN_STALE_AFTER
+        stale_recovered = 0
+
+        for candidate in running_rows:
+            started = candidate.started_at
+            if started and started < stale_cutoff:
+                candidate.status = SyncRunStatus.FAILED
+                candidate.finished_at = now
+                candidate.error = (
+                    "AUTO_RECOVERED_STALE_RUN: worker did not finish within "
+                    f"{int(SYNC_RUN_STALE_AFTER.total_seconds())}s"
+                )
+                stale_recovered += 1
+
+        if stale_recovered:
+            await session.commit()
+
+        # Check if there's still a fresh running sync for this source.
         existing_run = await session.execute(
             select(SyncRun).where(
                 SyncRun.source_id == source.id,
@@ -2640,6 +2901,16 @@ async def sync_source(source: Source) -> SyncRun | None:
                             metrics_raw = mapped_part.split("metrics=", 1)[1].split(")", 1)[0]
                             failure_stats["metrics_mapped_files"] = int(mapped_raw)
                             failure_stats["metrics_requested_files"] = int(metrics_raw)
+                        except Exception:  # noqa: BLE001
+                            pass
+                if "SCIP_GATE_FAILED" in error_text:
+                    failure_stats["scip_gate"] = "fail"
+                    if "(missing=" in error_text:
+                        try:
+                            missing_raw = error_text.split("(missing=", 1)[1].split(")", 1)[0]
+                            failure_stats["scip_missing_languages"] = [
+                                language for language in missing_raw.split(",") if language
+                            ]
                         except Exception:  # noqa: BLE001
                             pass
                 await set_source_version_status(

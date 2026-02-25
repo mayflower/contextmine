@@ -187,6 +187,10 @@ class Settings(BaseSettings):
         default=True,
         description="Continue indexing other projects if one fails",
     )
+    scip_require_language_coverage: bool = Field(
+        default=True,
+        description="Fail sync when any detected supported language has zero indexed files",
+    )
 
     # Real metrics pipeline settings
     metrics_strict_mode: bool = Field(

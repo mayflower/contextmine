@@ -54,6 +54,20 @@ class TestSCIPProjectDetection:
             assert len(projects) == 1
             assert projects[0].language == Language.TYPESCRIPT
 
+    def test_detect_typescript_and_javascript_in_same_root(self) -> None:
+        """TS + JS should both be detected so coverage can be enforced per language."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "package.json").write_text('{"name": "test"}')
+            (Path(tmpdir) / "tsconfig.json").write_text("{}")
+            (Path(tmpdir) / "index.ts").write_text("export const hello = 'ts';")
+            (Path(tmpdir) / "legacy.js").write_text("module.exports = { hello: 'js' };")
+
+            projects = detect_projects(tmpdir)
+
+            languages = {project.language for project in projects}
+            assert Language.TYPESCRIPT in languages
+            assert Language.JAVASCRIPT in languages
+
     def test_detect_javascript_project(self) -> None:
         """Test detection of JavaScript projects."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -321,6 +335,7 @@ class TestSCIPSettings:
         assert hasattr(settings, "scip_timeout_php")
         assert hasattr(settings, "scip_node_memory_mb")
         assert hasattr(settings, "scip_best_effort")
+        assert hasattr(settings, "scip_require_language_coverage")
 
     def test_settings_defaults(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test SCIP settings default values."""
@@ -335,6 +350,7 @@ class TestSCIPSettings:
             "SCIP_TIMEOUT_PHP",
             "SCIP_NODE_MEMORY_MB",
             "SCIP_BEST_EFFORT",
+            "SCIP_REQUIRE_LANGUAGE_COVERAGE",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.chdir(tmp_path)
@@ -349,3 +365,4 @@ class TestSCIPSettings:
         assert settings.scip_timeout_php == 900
         assert settings.scip_node_memory_mb == 4096
         assert settings.scip_best_effort is True
+        assert settings.scip_require_language_coverage is True

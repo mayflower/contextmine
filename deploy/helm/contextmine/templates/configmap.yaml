@@ -49,6 +49,7 @@ data:
   SCIP_TIMEOUT_PHP: {{ .Values.config.scip.timeoutPhp | quote }}
   SCIP_NODE_MEMORY_MB: {{ .Values.config.scip.nodeMemoryMb | quote }}
   SCIP_BEST_EFFORT: {{ .Values.config.scip.bestEffort | quote }}
+  SCIP_REQUIRE_LANGUAGE_COVERAGE: {{ .Values.config.scip.requireLanguageCoverage | quote }}
 
   # Real metrics pipeline settings
   METRICS_STRICT_MODE: {{ .Values.config.metrics.strictMode | quote }}

@@ -440,9 +440,37 @@ def compute_git_evolution_snapshots(
 
     file_to_container: dict[str, str | None] = {}
 
+    warnings: list[str] = []
     commits_scanned = 0
+    commits_considered = 0
+
+    def _iter_window_commits() -> list:
+        """Collect commits in the requested window with a robust fallback path."""
+        try:
+            scoped = list(repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat()))
+        except Exception:  # noqa: BLE001
+            scoped = []
+        if scoped:
+            return scoped
+
+        # Some git/python combinations can produce empty results with since filtering.
+        # Fall back to full history scan and apply the time filter in Python.
+        try:
+            fallback: list = []
+            for commit in repo.iter_commits("HEAD", no_merges=True):
+                commit_dt = _canonical_utc(commit.authored_datetime)
+                if commit_dt >= since_dt:
+                    fallback.append(commit)
+            if fallback:
+                warnings.append("git_since_filter_fallback_used")
+            return fallback
+        except Exception:  # noqa: BLE001
+            return []
+
     try:
-        for commit in repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat()):
+        window_commits = _iter_window_commits()
+        commits_considered = len(window_commits)
+        for commit in window_commits:
             files = commit.stats.files or {}
             touched = sorted(path for path in files if path in target_files)
             if not touched:
@@ -525,6 +553,7 @@ def compute_git_evolution_snapshots(
             "stats": {
                 "window_days": int(window_days),
                 "commits_scanned": commits_scanned,
+                "commits_considered": commits_considered,
                 "files_seen": 0,
                 "ownership_rows": 0,
                 "coupling_rows": 0,
@@ -576,17 +605,21 @@ def compute_git_evolution_snapshots(
         )
     )
 
+    if commits_considered == 0:
+        warnings.append("no_commits_in_window")
+
     return {
         "ownership_rows": ownership_rows,
         "coupling_rows": coupling_rows,
         "stats": {
             "window_days": int(window_days),
             "commits_scanned": commits_scanned,
+            "commits_considered": commits_considered,
             "files_seen": len(file_change_counts),
             "ownership_rows": len(ownership_rows),
             "coupling_rows": len(coupling_rows),
         },
-        "warnings": [],
+        "warnings": warnings,
     }
 
 

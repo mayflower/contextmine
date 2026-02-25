@@ -250,6 +250,8 @@ config:
     nodeMemoryMb: "4096"
     # -- Continue indexing if individual projects fail
     bestEffort: "true"
+    # -- Fail sync when a detected supported language has no indexed files
+    requireLanguageCoverage: "true"
   # -- Real metrics pipeline settings
   metrics:
     # -- Require real LOC/complexity/coupling/coverage for relevant files
