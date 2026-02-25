@@ -5,6 +5,7 @@ Uses scip-typescript to index TypeScript and JavaScript projects.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
@@ -75,8 +76,8 @@ class TypescriptIndexerBackend(BaseIndexerBackend):
         if self._should_install_deps(target, cfg):
             self._install_deps(target, cfg.timeout_s_by_language.get(target.language, 600))
 
-        # Build command
-        cmd = self._build_command(target, scip_path)
+        # Build command (JS may require an explicit project config with allowJs=true)
+        cmd, generated_project_config = self._build_command(target, scip_path)
 
         # Build environment
         env = dict(cfg.env_overrides)
@@ -99,6 +100,9 @@ class TypescriptIndexerBackend(BaseIndexerBackend):
             )
         except CommandNotFoundError:
             raise
+        finally:
+            if generated_project_config and generated_project_config.exists():
+                generated_project_config.unlink(missing_ok=True)
 
         duration = time.monotonic() - start_time
 
@@ -158,15 +162,48 @@ class TypescriptIndexerBackend(BaseIndexerBackend):
             success=True,
         )
 
-    def _build_command(self, target: ProjectTarget, output_path: Path) -> list[str]:
+    def _build_command(
+        self,
+        target: ProjectTarget,
+        output_path: Path,
+    ) -> tuple[list[str], Path | None]:
         """Build the scip-typescript command."""
         cmd = [self.TOOL_NAME, "index"]
 
-        # For JavaScript (no tsconfig), use --infer-tsconfig
+        # For JavaScript, force a project config that enables JS coverage.
         if target.language == Language.JAVASCRIPT:
-            cmd.append("--infer-tsconfig")
+            project_config = self._create_javascript_project_config(target.root_path)
+            cmd.extend(["--project", str(project_config)])
+            return cmd, project_config
 
-        return cmd
+        return cmd, None
+
+    def _create_javascript_project_config(self, root_path: Path) -> Path:
+        """Create a temporary tsconfig for JavaScript indexing with allowJs enabled."""
+        generated_config_path = root_path / ".contextmine.scip.javascript.json"
+        existing_tsconfig = root_path / "tsconfig.json"
+
+        config: dict[str, object] = {
+            "compilerOptions": {
+                "allowJs": True,
+                "checkJs": False,
+                "noEmit": True,
+                "skipLibCheck": True,
+            },
+            "include": ["**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs"],
+            "exclude": [
+                "**/node_modules/**",
+                "**/dist/**",
+                "**/build/**",
+                "**/vendor/**",
+                "**/.git/**",
+            ],
+        }
+        if existing_tsconfig.exists():
+            config["extends"] = "./tsconfig.json"
+
+        generated_config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        return generated_config_path
 
     def _should_install_deps(self, target: ProjectTarget, cfg: IndexConfig) -> bool:
         """Check if dependencies should be installed."""
