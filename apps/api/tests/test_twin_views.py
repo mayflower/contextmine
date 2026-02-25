@@ -68,6 +68,10 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/collections/some-id/views/rebuild-readiness")
         assert response.status_code == 401
 
+    async def test_semantic_map_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get("/api/twin/collections/some-id/views/semantic-map")
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,
@@ -105,6 +109,122 @@ class TestTwinViewRoutes:
         )
         assert response.status_code == 400
         assert "Invalid community_mode" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_semantic_map_invalid_mode_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/semantic-map?map_mode=bad"
+        )
+        assert response.status_code == 400
+        assert "Invalid map_mode" in response.json()["detail"]
+
+    @patch("app.routes.twin.get_session")
+    async def test_semantic_map_invalid_threshold_rejected(
+        self,
+        mock_get_session: Any,
+        client: AsyncClient,
+    ) -> None:
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+        collection_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/semantic-map"
+            "?mixed_cluster_max_dominant_ratio=1.5"
+        )
+        assert response.status_code == 422
+
+    @patch("app.routes.twin._compute_symbol_communities")
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_semantic_map_code_structure_returns_points(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_compute_symbol_communities: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+
+        symbol_node = MagicMock()
+        symbol_node.id = uuid.uuid4()
+        symbol_node.kind.value = "symbol"
+        symbol_node.name = "CreateInvoice"
+        symbol_node.natural_key = "symbol:src/billing/invoice.py:create_invoice"
+        symbol_node.meta = {"file_path": "src/billing/invoice.py"}
+
+        symbol_nodes_result = MagicMock()
+        symbol_nodes_result.scalars.return_value.all.return_value = [symbol_node]
+        symbol_edges_result = MagicMock()
+        symbol_edges_result.scalars.return_value.all.return_value = []
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(side_effect=[symbol_nodes_result, symbol_edges_result])
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+        mock_compute_symbol_communities.return_value = (
+            {symbol_node.id: "comm_1"},
+            {
+                "comm_1": {
+                    "id": "comm_1",
+                    "label": "Billing (1)",
+                    "size": 1,
+                    "cohesion": 1.0,
+                    "top_kinds": [{"kind": "symbol", "count": 1}],
+                    "sample_nodes": [
+                        {
+                            "id": str(symbol_node.id),
+                            "name": symbol_node.name,
+                            "kind": "symbol",
+                            "natural_key": symbol_node.natural_key,
+                        }
+                    ],
+                    "member_node_ids": [symbol_node.id],
+                }
+            },
+        )
+
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/semantic-map?map_mode=code_structure"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["projection"] == "semantic_map"
+        assert payload["map_mode"] == "code_structure"
+        assert payload["status"]["status"] == "ready"
+        assert payload["summary"]["points"] == 1
+        assert payload["points"][0]["id"] == "comm_1"
+        assert payload["points"][0]["anchor_node_id"] == str(symbol_node.id)
+        assert payload["thresholds"]["mixed_cluster_max_dominant_ratio"] == 0.55
+        assert payload["thresholds"]["isolated_distance_multiplier"] == 1.2
+        assert payload["thresholds"]["semantic_duplication_min_similarity"] == 0.35
+        assert payload["thresholds"]["semantic_duplication_max_source_overlap"] == 0.35
+        assert payload["thresholds"]["misplaced_min_dominant_ratio"] == 0.6
 
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)

@@ -12,6 +12,7 @@ export type CockpitView =
   | 'architecture'
   | 'city'
   | 'graphrag'
+  | 'semantic_map'
   | 'ui_map'
   | 'test_matrix'
   | 'user_flows'
@@ -36,6 +37,7 @@ export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
 export type OverlayMode = 'none' | 'runtime' | 'risk'
 export type C4ViewMode = 'context' | 'container' | 'component' | 'code' | 'deployment'
 export type GraphRagCommunityMode = 'none' | 'color' | 'focus'
+export type SemanticMapMode = 'code_structure' | 'semantic'
 
 export interface CockpitSelection {
   collectionId: string
@@ -266,6 +268,83 @@ export interface GraphRagPayload {
   community_id?: string | null
   status: GraphRagStatus
   graph: TwinGraphResponse
+}
+
+export interface SemanticMapStatus {
+  status: 'ready' | 'unavailable'
+  reason: 'ok' | 'no_symbol_communities' | 'no_semantic_communities' | 'no_community_embeddings'
+}
+
+export interface SemanticMapPoint {
+  id: string
+  label: string
+  x: number
+  y: number
+  member_count: number
+  cohesion: number
+  top_kinds: Array<{ kind: string; count: number }>
+  domain_counts: Array<{ domain: string; count: number }>
+  dominant_domain: string | null
+  dominant_ratio: number
+  summary: string | null
+  anchor_node_id: string
+  sample_nodes: Array<{
+    id: string
+    name: string
+    kind: string
+    natural_key: string
+  }>
+  member_node_ids: string[]
+}
+
+export interface SemanticMapSignal {
+  community_id?: string
+  left_community_id?: string
+  right_community_id?: string
+  left_label?: string
+  right_label?: string
+  label?: string
+  score: number
+  anchor_node_id: string
+  reason: string
+  sample_nodes?: Array<{
+    id: string
+    name: string
+    kind: string
+    domain: string
+  }>
+}
+
+export interface SemanticMapPayload {
+  collection_id: string
+  scenario: ViewScenario
+  projection: 'semantic_map'
+  map_mode: SemanticMapMode
+  status: SemanticMapStatus
+  thresholds: SemanticMapThresholds
+  summary: {
+    points: number
+    mixed_clusters: number
+    isolated_points: number
+    semantic_duplication: number
+    misplaced_code: number
+  }
+  warnings: string[]
+  signals: {
+    mixed_clusters: SemanticMapSignal[]
+    isolated_points: SemanticMapSignal[]
+    semantic_duplication: SemanticMapSignal[]
+    misplaced_code: SemanticMapSignal[]
+  }
+  points: SemanticMapPoint[]
+}
+
+export interface SemanticMapThresholds {
+  mixed_cluster_max_dominant_ratio: number
+  isolated_distance_multiplier: number
+  semantic_duplication_min_similarity: number
+  semantic_duplication_max_source_overlap: number
+  misplaced_min_dominant_ratio: number
 }
 
 export interface GraphRagCommunityKindCount {
@@ -617,6 +696,7 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'architecture', label: 'Architecture' },
   { key: 'city', label: 'City' },
   { key: 'graphrag', label: 'GraphRAG' },
+  { key: 'semantic_map', label: 'Semantic Map' },
   { key: 'ui_map', label: 'UI Map' },
   { key: 'test_matrix', label: 'Test Matrix' },
   { key: 'user_flows', label: 'User Flows' },

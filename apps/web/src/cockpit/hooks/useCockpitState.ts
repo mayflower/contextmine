@@ -24,6 +24,7 @@ const VALID_VIEWS: CockpitView[] = [
   'architecture',
   'city',
   'graphrag',
+  'semantic_map',
   'ui_map',
   'test_matrix',
   'user_flows',

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from collections import defaultdict, deque
 from dataclasses import asdict
@@ -35,12 +36,16 @@ from contextmine_core.exports import (
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.graphrag import trace_path as graphrag_trace_path
 from contextmine_core.models import (
+    CommunityMember,
     CoverageIngestJob,
     Document,
+    EmbeddingTargetType,
     KnowledgeArtifact,
     KnowledgeArtifactKind,
+    KnowledgeCommunity,
     KnowledgeEdge,
     KnowledgeEdgeKind,
+    KnowledgeEmbedding,
     KnowledgeEvidence,
     KnowledgeNode,
     KnowledgeNodeEvidence,
@@ -90,7 +95,7 @@ from contextmine_core.twin.projections import (
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select
 
 from app.middleware import get_session
 
@@ -530,6 +535,467 @@ def _parse_graphrag_community_mode(raw_value: str | None) -> str:
     if normalized not in {"none", "color", "focus"}:
         raise HTTPException(status_code=400, detail="Invalid community_mode")
     return normalized
+
+
+def _parse_semantic_map_mode(raw_value: str | None) -> str:
+    if not raw_value:
+        return "code_structure"
+    normalized = raw_value.strip().lower()
+    if normalized not in {"code_structure", "semantic"}:
+        raise HTTPException(status_code=400, detail="Invalid map_mode")
+    return normalized
+
+
+def _parse_pgvector_text(raw_value: str | None) -> list[float]:
+    if not raw_value:
+        return []
+    stripped = raw_value.strip()
+    if not stripped or stripped == "[]":
+        return []
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1]
+    values: list[float] = []
+    for token in stripped.split(","):
+        item = token.strip()
+        if not item:
+            continue
+        try:
+            values.append(float(item))
+        except ValueError:
+            continue
+    return values
+
+
+def _extract_domain_token(path_like: str | None) -> str | None:
+    if not path_like:
+        return None
+    normalized = str(path_like).strip().lower()
+    if not normalized:
+        return None
+    for prefix in ("file:", "symbol:", "entity:"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+    if "://" in normalized:
+        remainder = normalized.split("://", 1)[1]
+        normalized = remainder.split("/", 1)[1] if "/" in remainder else remainder
+    normalized = normalized.split("?", 1)[0].strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return None
+    if "." in parts[-1]:
+        parts = parts[:-1]
+    if not parts:
+        return None
+
+    ignored = {
+        "src",
+        "main",
+        "lib",
+        "app",
+        "apps",
+        "package",
+        "packages",
+        "core",
+        "contextmine_core",
+        "services",
+        "service",
+        "api",
+        "backend",
+        "frontend",
+        "server",
+        "client",
+        "code",
+        "python",
+        "java",
+        "javascript",
+        "typescript",
+        "ts",
+        "js",
+    }
+    for part in reversed(parts):
+        token = part.strip().replace("_", "-")
+        if len(token) < 2:
+            continue
+        if token in ignored:
+            continue
+        return token
+    return parts[-1]
+
+
+def _node_domain_info(
+    node: KnowledgeNode,
+) -> tuple[str | None, set[str]]:
+    meta = _safe_meta(node.meta)
+    source_refs: set[str] = set()
+
+    file_path = meta.get("file_path")
+    if isinstance(file_path, str) and file_path.strip():
+        source_refs.add(file_path)
+
+    for key in ("source_files", "source_symbols"):
+        raw_refs = meta.get(key)
+        if isinstance(raw_refs, list):
+            for ref in raw_refs:
+                if isinstance(ref, str) and ref.strip():
+                    source_refs.add(ref)
+        elif isinstance(raw_refs, str) and raw_refs.strip():
+            source_refs.add(raw_refs)
+
+    if node.natural_key:
+        source_refs.add(node.natural_key)
+
+    domains = [token for token in (_extract_domain_token(ref) for ref in source_refs) if token]
+    if not domains:
+        return None, source_refs
+    counts: dict[str, int] = defaultdict(int)
+    for token in domains:
+        counts[token] += 1
+    dominant_domain = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    return dominant_domain, source_refs
+
+
+def _community_profile(
+    member_nodes: list[KnowledgeNode],
+) -> dict[str, Any]:
+    kind_counts: dict[str, int] = defaultdict(int)
+    domain_counts: dict[str, int] = defaultdict(int)
+    source_refs: set[str] = set()
+    node_domain_by_id: dict[uuid.UUID, str] = {}
+    name_tokens: set[str] = set()
+
+    for member in member_nodes:
+        kind_counts[member.kind.value] += 1
+        dominant_domain, node_sources = _node_domain_info(member)
+        source_refs.update(node_sources)
+        if dominant_domain:
+            domain_counts[dominant_domain] += 1
+            node_domain_by_id[member.id] = dominant_domain
+
+        for token in member.name.lower().replace("_", " ").replace("-", " ").split():
+            if len(token) >= 4:
+                name_tokens.add(token)
+
+    total_domains = sum(domain_counts.values())
+    dominant_domain = None
+    dominant_ratio = 0.0
+    if domain_counts:
+        dominant_domain, count = sorted(
+            domain_counts.items(), key=lambda item: (-item[1], item[0])
+        )[0]
+        dominant_ratio = count / total_domains if total_domains > 0 else 0.0
+
+    top_kinds = [
+        {"kind": kind, "count": count}
+        for kind, count in sorted(kind_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    domain_rows = [
+        {"domain": domain, "count": count}
+        for domain, count in sorted(domain_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        "top_kinds": top_kinds,
+        "domain_counts": domain_rows,
+        "dominant_domain": dominant_domain,
+        "dominant_ratio": round(dominant_ratio, 4),
+        "node_domain_by_id": node_domain_by_id,
+        "source_refs": sorted(source_refs),
+        "name_tokens": sorted(name_tokens),
+    }
+
+
+def _build_projection_coeffs(dim: int, seed: int) -> list[float]:
+    state = seed & 0xFFFFFFFF
+    coeffs: list[float] = []
+    for _ in range(dim):
+        state = (1664525 * state + 1013904223) & 0xFFFFFFFF
+        coeff = ((state & 0xFFFF) / 32767.5) - 1.0
+        coeffs.append(coeff)
+    return coeffs
+
+
+def _project_vectors(points: list[dict[str, Any]], vector_key: str) -> None:
+    vectors = [point[vector_key] for point in points if point.get(vector_key)]
+    if not vectors:
+        for point in points:
+            point["x"] = point.get("x", 0.0)
+            point["y"] = point.get("y", 0.0)
+        return
+
+    dim = max(len(vector) for vector in vectors)
+    coeff_x = _build_projection_coeffs(dim, seed=17)
+    coeff_y = _build_projection_coeffs(dim, seed=89)
+
+    for index, point in enumerate(points):
+        vector = point.get(vector_key) or []
+        if not vector:
+            point["x"] = math.sin(index * 0.73)
+            point["y"] = math.cos(index * 1.13)
+            continue
+        padded = vector + [0.0] * (dim - len(vector))
+        point["x"] = float(
+            sum(value * coeff for value, coeff in zip(padded, coeff_x, strict=False))
+        )
+        point["y"] = float(
+            sum(value * coeff for value, coeff in zip(padded, coeff_y, strict=False))
+        )
+
+
+def _normalize_xy(points: list[dict[str, Any]]) -> None:
+    if not points:
+        return
+    min_x = min(float(point.get("x", 0.0)) for point in points)
+    max_x = max(float(point.get("x", 0.0)) for point in points)
+    min_y = min(float(point.get("y", 0.0)) for point in points)
+    max_y = max(float(point.get("y", 0.0)) for point in points)
+    span_x = max(max_x - min_x, 1e-9)
+    span_y = max(max_y - min_y, 1e-9)
+    for point in points:
+        x = float(point.get("x", 0.0))
+        y = float(point.get("y", 0.0))
+        point["x"] = round(((x - min_x) / span_x) * 2 - 1, 6)
+        point["y"] = round(((y - min_y) / span_y) * 2 - 1, 6)
+
+
+def _layout_code_structure_points(
+    point_ids: list[str],
+    pair_weights: dict[tuple[str, str], float],
+) -> dict[str, tuple[float, float]]:
+    if not point_ids:
+        return {}
+    if len(point_ids) == 1:
+        return {point_ids[0]: (0.0, 0.0)}
+    if len(point_ids) > 220:
+        return {
+            point_id: (
+                round(math.sin(index * 0.79), 6),
+                round(math.cos(index * 1.07), 6),
+            )
+            for index, point_id in enumerate(point_ids)
+        }
+
+    positions: dict[str, list[float]] = {}
+    for index, point_id in enumerate(point_ids):
+        angle = (2 * math.pi * index) / max(len(point_ids), 1)
+        positions[point_id] = [math.cos(angle), math.sin(angle)]
+
+    repulsion = 0.055
+    spring = 0.04
+    damping = 0.82
+    step = 0.06
+    for _ in range(120):
+        delta: dict[str, list[float]] = {point_id: [0.0, 0.0] for point_id in point_ids}
+
+        for i, source_id in enumerate(point_ids):
+            sx, sy = positions[source_id]
+            for target_id in point_ids[i + 1 :]:
+                tx, ty = positions[target_id]
+                dx = sx - tx
+                dy = sy - ty
+                dist_sq = max(dx * dx + dy * dy, 1e-4)
+                force = repulsion / dist_sq
+                fx = force * dx
+                fy = force * dy
+                delta[source_id][0] += fx
+                delta[source_id][1] += fy
+                delta[target_id][0] -= fx
+                delta[target_id][1] -= fy
+
+        for (source_id, target_id), weight in pair_weights.items():
+            sx, sy = positions[source_id]
+            tx, ty = positions[target_id]
+            dx = tx - sx
+            dy = ty - sy
+            dist = max(math.sqrt(dx * dx + dy * dy), 1e-6)
+            desired = 0.55
+            force = spring * weight * (dist - desired)
+            fx = force * (dx / dist)
+            fy = force * (dy / dist)
+            delta[source_id][0] += fx
+            delta[source_id][1] += fy
+            delta[target_id][0] -= fx
+            delta[target_id][1] -= fy
+
+        for point_id in point_ids:
+            positions[point_id][0] += max(min(delta[point_id][0] * step, 0.16), -0.16)
+            positions[point_id][1] += max(min(delta[point_id][1] * step, 0.16), -0.16)
+
+        step *= damping
+
+    return {
+        point_id: (round(positions[point_id][0], 6), round(positions[point_id][1], 6))
+        for point_id in point_ids
+    }
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right:
+        return 0.0
+    dim = min(len(left), len(right))
+    if dim == 0:
+        return 0.0
+    dot = sum(left[index] * right[index] for index in range(dim))
+    left_norm = math.sqrt(sum(value * value for value in left[:dim]))
+    right_norm = math.sqrt(sum(value * value for value in right[:dim]))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _detect_isolated_point_ids(
+    points: list[dict[str, Any]],
+    *,
+    distance_multiplier: float = 1.2,
+) -> tuple[set[str], dict[str, float]]:
+    if len(points) <= 1:
+        return {point["id"] for point in points}, {point["id"]: 0.0 for point in points}
+    nearest_distances: dict[str, float] = {}
+    for point in points:
+        px = float(point.get("x", 0.0))
+        py = float(point.get("y", 0.0))
+        nearest = float("inf")
+        for other in points:
+            if other["id"] == point["id"]:
+                continue
+            ox = float(other.get("x", 0.0))
+            oy = float(other.get("y", 0.0))
+            distance = math.sqrt((px - ox) ** 2 + (py - oy) ** 2)
+            nearest = min(nearest, distance)
+        nearest_distances[point["id"]] = nearest if nearest != float("inf") else 0.0
+
+    values = list(nearest_distances.values())
+    mean_distance = sum(values) / len(values)
+    variance = sum((value - mean_distance) ** 2 for value in values) / len(values)
+    threshold = mean_distance + math.sqrt(variance) * max(distance_multiplier, 0.0)
+    isolated_ids = {
+        point_id for point_id, distance in nearest_distances.items() if distance >= threshold
+    }
+    return isolated_ids, nearest_distances
+
+
+def _build_semantic_map_signals(
+    points: list[dict[str, Any]],
+    *,
+    mode: str,
+    mixed_cluster_max_dominant_ratio: float = 0.55,
+    isolated_distance_multiplier: float = 1.2,
+    semantic_duplication_min_similarity: float | None = None,
+    semantic_duplication_max_source_overlap: float | None = None,
+    misplaced_min_dominant_ratio: float = 0.6,
+) -> dict[str, list[dict[str, Any]]]:
+    isolated_ids, nearest_distances = _detect_isolated_point_ids(
+        points, distance_multiplier=isolated_distance_multiplier
+    )
+    if semantic_duplication_min_similarity is None:
+        semantic_duplication_min_similarity = 0.86 if mode == "semantic" else 0.35
+    if semantic_duplication_max_source_overlap is None:
+        semantic_duplication_max_source_overlap = 0.30 if mode == "semantic" else 0.35
+
+    mixed_clusters: list[dict[str, Any]] = []
+    isolated_points: list[dict[str, Any]] = []
+    semantic_duplication: list[dict[str, Any]] = []
+    misplaced_code: list[dict[str, Any]] = []
+
+    for point in points:
+        point_id = str(point["id"])
+        member_count = int(point.get("member_count", 0))
+        dominant_ratio = float(point.get("dominant_ratio", 0.0))
+        domain_counts = point.get("domain_counts", [])
+        if (
+            member_count >= 4
+            and len(domain_counts) >= 2
+            and dominant_ratio < mixed_cluster_max_dominant_ratio
+        ):
+            mixed_clusters.append(
+                {
+                    "community_id": point_id,
+                    "label": point.get("label", point_id),
+                    "score": round(1.0 - dominant_ratio, 4),
+                    "anchor_node_id": point.get("anchor_node_id", ""),
+                    "reason": "Domain signals are strongly mixed inside this cluster.",
+                }
+            )
+        if point_id in isolated_ids:
+            isolated_points.append(
+                {
+                    "community_id": point_id,
+                    "label": point.get("label", point_id),
+                    "score": round(float(nearest_distances.get(point_id, 0.0)), 4),
+                    "anchor_node_id": point.get("anchor_node_id", ""),
+                    "reason": "This cluster is far from other clusters in the map projection.",
+                }
+            )
+
+        dominant_domain = point.get("dominant_domain")
+        misplaced_nodes = point.get("misplaced_nodes", [])
+        if dominant_domain and dominant_ratio >= misplaced_min_dominant_ratio and misplaced_nodes:
+            misplaced_code.append(
+                {
+                    "community_id": point_id,
+                    "label": point.get("label", point_id),
+                    "score": round(len(misplaced_nodes) / max(member_count, 1), 4),
+                    "anchor_node_id": misplaced_nodes[0]["id"],
+                    "reason": f"Some members diverge from dominant domain '{dominant_domain}'.",
+                    "sample_nodes": misplaced_nodes[:6],
+                }
+            )
+
+    for index, left in enumerate(points):
+        left_tokens = set(left.get("name_tokens", []))
+        left_sources = set(left.get("source_refs", []))
+        left_vector = left.get("vector") or []
+        for right in points[index + 1 :]:
+            right_tokens = set(right.get("name_tokens", []))
+            right_sources = set(right.get("source_refs", []))
+            right_vector = right.get("vector") or []
+            source_overlap = _jaccard(left_sources, right_sources)
+
+            if mode == "semantic":
+                similarity = _cosine_similarity(left_vector, right_vector)
+                if (
+                    similarity < semantic_duplication_min_similarity
+                    or source_overlap >= semantic_duplication_max_source_overlap
+                ):
+                    continue
+            else:
+                similarity = _jaccard(left_tokens, right_tokens)
+                if (
+                    similarity < semantic_duplication_min_similarity
+                    or source_overlap >= semantic_duplication_max_source_overlap
+                ):
+                    continue
+
+            semantic_duplication.append(
+                {
+                    "left_community_id": left["id"],
+                    "right_community_id": right["id"],
+                    "left_label": left.get("label", left["id"]),
+                    "right_label": right.get("label", right["id"]),
+                    "score": round(similarity, 4),
+                    "anchor_node_id": left.get("anchor_node_id", ""),
+                    "reason": "Two clusters are semantically close but have little source overlap.",
+                }
+            )
+
+    semantic_duplication.sort(key=lambda item: float(item["score"]), reverse=True)
+    mixed_clusters.sort(key=lambda item: float(item["score"]), reverse=True)
+    misplaced_code.sort(key=lambda item: float(item["score"]), reverse=True)
+    isolated_points.sort(key=lambda item: float(item["score"]), reverse=True)
+
+    return {
+        "mixed_clusters": mixed_clusters[:20],
+        "isolated_points": isolated_points[:20],
+        "semantic_duplication": semantic_duplication[:20],
+        "misplaced_code": misplaced_code[:20],
+    }
 
 
 def _escape_like_pattern(value: str) -> str:
@@ -2648,6 +3114,390 @@ async def graphrag_communities_view(
             "page": page,
             "limit": limit,
             "total": len(ordered),
+        }
+
+
+@router.get("/collections/{collection_id}/views/semantic-map")
+async def semantic_map_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    map_mode: str | None = Query(default="code_structure"),
+    include_kinds: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
+    edge_kinds: str | None = Query(default=None),
+    mixed_cluster_max_dominant_ratio: float = Query(default=0.55, ge=0.0, le=1.0),
+    isolated_distance_multiplier: float = Query(default=1.2, ge=0.1, le=10.0),
+    semantic_duplication_min_similarity: float | None = Query(default=None, ge=0.0, le=1.0),
+    semantic_duplication_max_source_overlap: float | None = Query(default=None, ge=0.0, le=1.0),
+    misplaced_min_dominant_ratio: float = Query(default=0.6, ge=0.0, le=1.0),
+    page: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=5000),
+) -> dict:
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+    resolved_map_mode = _parse_semantic_map_mode(map_mode)
+    include_node_kinds = _parse_knowledge_node_kinds(include_kinds)
+    exclude_node_kinds = _parse_knowledge_node_kinds(exclude_kinds)
+    include_edge_kinds = _parse_knowledge_edge_kinds(edge_kinds)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+
+        points: list[dict[str, Any]] = []
+        warnings: list[str] = []
+
+        if resolved_map_mode == "code_structure":
+            if (
+                (include_node_kinds and KnowledgeNodeKind.SYMBOL not in include_node_kinds)
+                or (exclude_node_kinds and KnowledgeNodeKind.SYMBOL in exclude_node_kinds)
+                or (
+                    include_edge_kinds
+                    and KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL not in include_edge_kinds
+                )
+            ):
+                points = []
+            else:
+                symbol_nodes = (
+                    (
+                        await db.execute(
+                            select(KnowledgeNode).where(
+                                KnowledgeNode.collection_id == collection_uuid,
+                                KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                symbol_node_ids = {node.id for node in symbol_nodes}
+                symbol_edges: list[KnowledgeEdge] = []
+                if symbol_node_ids:
+                    symbol_edges = (
+                        (
+                            await db.execute(
+                                select(KnowledgeEdge).where(
+                                    KnowledgeEdge.collection_id == collection_uuid,
+                                    KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                                    KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                                    KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+
+                node_to_community, communities = _compute_symbol_communities(
+                    symbol_nodes, symbol_edges
+                )
+                node_by_id = {node.id: node for node in symbol_nodes}
+
+                pair_weights: dict[tuple[str, str], float] = defaultdict(float)
+                for edge in symbol_edges:
+                    source_community = node_to_community.get(edge.source_node_id)
+                    target_community = node_to_community.get(edge.target_node_id)
+                    if (
+                        not source_community
+                        or not target_community
+                        or source_community == target_community
+                    ):
+                        continue
+                    pair = (
+                        (source_community, target_community)
+                        if source_community < target_community
+                        else (target_community, source_community)
+                    )
+                    pair_weights[pair] += 1.0
+
+                ordered_communities = sorted(
+                    communities.values(),
+                    key=lambda item: (-int(item["size"]), str(item["label"])),
+                )
+                if page > 0 or limit > 0:
+                    start = page * limit
+                    end = start + limit
+                    ordered_communities = ordered_communities[start:end]
+
+                point_ids = [str(item["id"]) for item in ordered_communities]
+                point_id_set = set(point_ids)
+                scoped_weights = {
+                    pair: weight
+                    for pair, weight in pair_weights.items()
+                    if pair[0] in point_id_set and pair[1] in point_id_set
+                }
+                positions = _layout_code_structure_points(point_ids, scoped_weights)
+
+                for community in ordered_communities:
+                    member_ids = list(community.get("member_node_ids", []))
+                    member_nodes = [
+                        node_by_id[node_id] for node_id in member_ids if node_id in node_by_id
+                    ]
+                    profile = _community_profile(member_nodes)
+                    dominant_domain = profile["dominant_domain"]
+                    dominant_ratio = float(profile["dominant_ratio"])
+                    misplaced_nodes: list[dict[str, Any]] = []
+                    if dominant_domain and dominant_ratio >= 0.6:
+                        for member in member_nodes:
+                            member_domain = profile["node_domain_by_id"].get(member.id)
+                            if member_domain and member_domain != dominant_domain:
+                                misplaced_nodes.append(
+                                    {
+                                        "id": str(member.id),
+                                        "name": member.name,
+                                        "kind": member.kind.value,
+                                        "domain": member_domain,
+                                    }
+                                )
+
+                    x, y = positions.get(str(community["id"]), (0.0, 0.0))
+                    points.append(
+                        {
+                            "id": str(community["id"]),
+                            "label": str(community["label"]),
+                            "x": x,
+                            "y": y,
+                            "member_count": int(community["size"]),
+                            "cohesion": float(community["cohesion"]),
+                            "top_kinds": profile["top_kinds"],
+                            "domain_counts": profile["domain_counts"],
+                            "dominant_domain": dominant_domain,
+                            "dominant_ratio": dominant_ratio,
+                            "summary": None,
+                            "anchor_node_id": str(community["sample_nodes"][0]["id"])
+                            if community.get("sample_nodes")
+                            else "",
+                            "sample_nodes": list(community.get("sample_nodes", [])),
+                            "member_node_ids": [
+                                str(member_node_id)
+                                for member_node_id in community.get("member_node_ids", [])
+                            ],
+                            "vector": [],
+                            "source_refs": profile["source_refs"],
+                            "name_tokens": profile["name_tokens"],
+                            "misplaced_nodes": misplaced_nodes,
+                        }
+                    )
+
+                _normalize_xy(points)
+
+        else:
+            if (
+                include_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY not in include_node_kinds
+            ) or (exclude_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY in exclude_node_kinds):
+                points = []
+            else:
+                community_rows = (
+                    (
+                        await db.execute(
+                            select(KnowledgeCommunity).where(
+                                KnowledgeCommunity.collection_id == collection_uuid
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if community_rows:
+                    selected_level = min(community.level for community in community_rows)
+                    selected_communities = [
+                        community
+                        for community in community_rows
+                        if community.level == selected_level
+                    ]
+
+                    selected_communities.sort(
+                        key=lambda community: (community.title, str(community.id))
+                    )
+                    if page > 0 or limit > 0:
+                        start = page * limit
+                        end = start + limit
+                        selected_communities = selected_communities[start:end]
+
+                    community_ids = [community.id for community in selected_communities]
+                    members_by_community: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
+                    vectors_by_community: dict[uuid.UUID, list[float]] = {}
+
+                    if community_ids:
+                        member_rows = await db.execute(
+                            select(CommunityMember, KnowledgeNode)
+                            .join(KnowledgeNode, CommunityMember.node_id == KnowledgeNode.id)
+                            .where(CommunityMember.community_id.in_(community_ids))
+                            .order_by(
+                                CommunityMember.community_id,
+                                CommunityMember.score.desc(),
+                                KnowledgeNode.name,
+                            )
+                        )
+                        for member, node in member_rows.all():
+                            members_by_community[member.community_id].append(node)
+
+                        embedding_text = literal_column(
+                            "knowledge_embeddings.embedding::text"
+                        ).label("embedding_text")
+                        embedding_rows = await db.execute(
+                            select(
+                                KnowledgeEmbedding.target_id,
+                                KnowledgeEmbedding.updated_at,
+                                embedding_text,
+                            )
+                            .where(
+                                KnowledgeEmbedding.collection_id == collection_uuid,
+                                KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
+                                KnowledgeEmbedding.target_id.in_(community_ids),
+                            )
+                            .order_by(
+                                KnowledgeEmbedding.target_id,
+                                KnowledgeEmbedding.updated_at.desc(),
+                            )
+                        )
+                        for target_id, _updated_at, raw_embedding in embedding_rows.all():
+                            if target_id in vectors_by_community:
+                                continue
+                            parsed = _parse_pgvector_text(
+                                str(raw_embedding) if raw_embedding is not None else None
+                            )
+                            if parsed:
+                                vectors_by_community[target_id] = parsed
+
+                    for community in selected_communities:
+                        member_nodes = members_by_community.get(community.id, [])
+                        if not member_nodes:
+                            continue
+                        profile = _community_profile(member_nodes)
+                        dominant_domain = profile["dominant_domain"]
+                        dominant_ratio = float(profile["dominant_ratio"])
+                        misplaced_nodes: list[dict[str, Any]] = []
+                        if dominant_domain and dominant_ratio >= 0.6:
+                            for member in member_nodes:
+                                member_domain = profile["node_domain_by_id"].get(member.id)
+                                if member_domain and member_domain != dominant_domain:
+                                    misplaced_nodes.append(
+                                        {
+                                            "id": str(member.id),
+                                            "name": member.name,
+                                            "kind": member.kind.value,
+                                            "domain": member_domain,
+                                        }
+                                    )
+
+                        meta = _safe_meta(community.meta)
+                        points.append(
+                            {
+                                "id": str(community.id),
+                                "label": community.title or community.natural_key,
+                                "x": 0.0,
+                                "y": 0.0,
+                                "member_count": len(member_nodes),
+                                "cohesion": round(float(meta.get("modularity", 0.0)), 4),
+                                "top_kinds": profile["top_kinds"],
+                                "domain_counts": profile["domain_counts"],
+                                "dominant_domain": dominant_domain,
+                                "dominant_ratio": dominant_ratio,
+                                "summary": community.summary,
+                                "anchor_node_id": str(member_nodes[0].id),
+                                "sample_nodes": [
+                                    {
+                                        "id": str(member.id),
+                                        "name": member.name,
+                                        "kind": member.kind.value,
+                                        "natural_key": member.natural_key,
+                                    }
+                                    for member in member_nodes[:6]
+                                ],
+                                "member_node_ids": [str(member.id) for member in member_nodes],
+                                "vector": vectors_by_community.get(community.id, []),
+                                "source_refs": profile["source_refs"],
+                                "name_tokens": profile["name_tokens"],
+                                "misplaced_nodes": misplaced_nodes,
+                            }
+                        )
+
+                    _project_vectors(points, "vector")
+                    _normalize_xy(points)
+
+                    if points and not any(point["vector"] for point in points):
+                        warnings.append(
+                            "No community embeddings found. Using fallback projection for semantic mode."
+                        )
+
+        signals = _build_semantic_map_signals(
+            points,
+            mode=resolved_map_mode,
+            mixed_cluster_max_dominant_ratio=mixed_cluster_max_dominant_ratio,
+            isolated_distance_multiplier=isolated_distance_multiplier,
+            semantic_duplication_min_similarity=semantic_duplication_min_similarity,
+            semantic_duplication_max_source_overlap=semantic_duplication_max_source_overlap,
+            misplaced_min_dominant_ratio=misplaced_min_dominant_ratio,
+        )
+
+        status = {"status": "ready", "reason": "ok"}
+        if not points:
+            status = {
+                "status": "unavailable",
+                "reason": "no_symbol_communities"
+                if resolved_map_mode == "code_structure"
+                else "no_semantic_communities",
+            }
+        elif resolved_map_mode == "semantic" and not any(point["vector"] for point in points):
+            status = {"status": "ready", "reason": "no_community_embeddings"}
+
+        public_points = [
+            {
+                "id": point["id"],
+                "label": point["label"],
+                "x": point["x"],
+                "y": point["y"],
+                "member_count": point["member_count"],
+                "cohesion": point["cohesion"],
+                "top_kinds": point["top_kinds"],
+                "domain_counts": point["domain_counts"],
+                "dominant_domain": point["dominant_domain"],
+                "dominant_ratio": point["dominant_ratio"],
+                "summary": point["summary"],
+                "anchor_node_id": point["anchor_node_id"],
+                "sample_nodes": point["sample_nodes"],
+                "member_node_ids": point.get("member_node_ids", []),
+            }
+            for point in points
+        ]
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "projection": "semantic_map",
+            "map_mode": resolved_map_mode,
+            "status": status,
+            "thresholds": {
+                "mixed_cluster_max_dominant_ratio": round(
+                    float(mixed_cluster_max_dominant_ratio), 4
+                ),
+                "isolated_distance_multiplier": round(float(isolated_distance_multiplier), 4),
+                "semantic_duplication_min_similarity": round(
+                    float(semantic_duplication_min_similarity)
+                    if semantic_duplication_min_similarity is not None
+                    else (0.86 if resolved_map_mode == "semantic" else 0.35),
+                    4,
+                ),
+                "semantic_duplication_max_source_overlap": round(
+                    float(semantic_duplication_max_source_overlap)
+                    if semantic_duplication_max_source_overlap is not None
+                    else (0.30 if resolved_map_mode == "semantic" else 0.35),
+                    4,
+                ),
+                "misplaced_min_dominant_ratio": round(float(misplaced_min_dominant_ratio), 4),
+            },
+            "summary": {
+                "points": len(public_points),
+                "mixed_clusters": len(signals["mixed_clusters"]),
+                "isolated_points": len(signals["isolated_points"]),
+                "semantic_duplication": len(signals["semantic_duplication"]),
+                "misplaced_code": len(signals["misplaced_code"]),
+            },
+            "warnings": warnings,
+            "signals": signals,
+            "points": public_points,
         }
 
 

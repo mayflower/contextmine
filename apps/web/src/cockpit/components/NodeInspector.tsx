@@ -38,7 +38,7 @@ export default function NodeInspector({
         <div className="cockpit2-panel-header-row">
           <h3>Node inspector</h3>
         </div>
-        <p className="muted">Select a node in Topology or Deep Dive to inspect details.</p>
+        <p className="muted">Select a node in Topology, Deep Dive, or Semantic Map to inspect details.</p>
       </aside>
     )
   }

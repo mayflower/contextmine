@@ -13,6 +13,9 @@ import type {
   GraphRagPathPayload,
   GraphRagProcessDetailPayload,
   GraphRagProcessSummary,
+  SemanticMapMode,
+  SemanticMapPayload,
+  SemanticMapThresholds,
   RebuildReadinessPayload,
   CockpitLayer,
   CockpitLoadState,
@@ -58,6 +61,7 @@ const DEFAULT_STATES: DataStates = {
   city: 'idle',
   graphrag: 'idle',
   ui_map: 'idle',
+  semantic_map: 'idle',
   test_matrix: 'idle',
   user_flows: 'idle',
   rebuild_readiness: 'idle',
@@ -73,6 +77,7 @@ const DEFAULT_ERRORS: DataErrors = {
   city: '',
   graphrag: '',
   ui_map: '',
+  semantic_map: '',
   test_matrix: '',
   user_flows: '',
   rebuild_readiness: '',
@@ -95,6 +100,8 @@ interface UseCockpitDataArgs {
   graphPaging: GraphPagingState
   graphRagCommunityMode: GraphRagCommunityMode
   graphRagCommunityId: string
+  semanticMapMode: SemanticMapMode
+  semanticMapThresholdsByMode: Record<SemanticMapMode, SemanticMapThresholds>
   selectedNodeId: string
   onScenarioAutoSelect: (scenarioId: string) => void
   onViewError?: (view: CockpitView, message: string) => void
@@ -122,6 +129,8 @@ export function useCockpitData({
   graphPaging,
   graphRagCommunityMode,
   graphRagCommunityId,
+  semanticMapMode,
+  semanticMapThresholdsByMode,
   selectedNodeId,
   onScenarioAutoSelect,
   onViewError,
@@ -179,6 +188,8 @@ export function useCockpitData({
   const [graphRagProcessDetailState, setGraphRagProcessDetailState] = useState<CockpitLoadState>('idle')
   const [graphRagProcessDetailError, setGraphRagProcessDetailError] = useState('')
   const [uiMapSummary, setUiMapSummary] = useState<UIMapPayload['summary'] | null>(null)
+  const [semanticMap, setSemanticMap] = useState<SemanticMapPayload | null>(null)
+  const [semanticMapComparison, setSemanticMapComparison] = useState<SemanticMapPayload | null>(null)
   const [testMatrix, setTestMatrix] = useState<TestMatrixPayload | null>(null)
   const [userFlows, setUserFlows] = useState<UserFlowsPayload | null>(null)
   const [rebuildReadiness, setRebuildReadiness] = useState<RebuildReadinessPayload | null>(null)
@@ -404,6 +415,111 @@ export function useCockpitData({
           }
           setViewState(view, 'ready')
           markUpdated(view)
+          return
+        }
+
+        if (view === 'semantic_map') {
+          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+          const buildMapQuery = (mode: SemanticMapMode) => {
+            const thresholds = semanticMapThresholdsByMode[mode]
+            const query = new URLSearchParams({
+              scenario_id: scenarioId,
+              map_mode: mode,
+              limit: String(limit),
+              page: String(graphPaging.page),
+              mixed_cluster_max_dominant_ratio: String(
+                thresholds.mixed_cluster_max_dominant_ratio,
+              ),
+              isolated_distance_multiplier: String(thresholds.isolated_distance_multiplier),
+              semantic_duplication_min_similarity: String(
+                thresholds.semantic_duplication_min_similarity,
+              ),
+              semantic_duplication_max_source_overlap: String(
+                thresholds.semantic_duplication_max_source_overlap,
+              ),
+              misplaced_min_dominant_ratio: String(
+                thresholds.misplaced_min_dominant_ratio,
+              ),
+            })
+            if (graphFilters.includeKinds.length > 0) {
+              query.set('include_kinds', graphFilters.includeKinds.join(','))
+            }
+            if (graphFilters.excludeKinds.length > 0) {
+              query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+            }
+            if (graphFilters.edgeKinds.length > 0) {
+              query.set('edge_kinds', graphFilters.edgeKinds.join(','))
+            }
+            return query
+          }
+
+          const loadMap = async (mode: SemanticMapMode): Promise<SemanticMapPayload> => {
+            const response = await fetch(
+              `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(mode).toString()}`,
+              {
+                credentials: 'include',
+                signal: controller.signal,
+              },
+            )
+            if (!response.ok) {
+              throw new Error(`Could not load semantic map (${response.status})`)
+            }
+            return (await response.json()) as SemanticMapPayload
+          }
+
+          const comparisonMode: SemanticMapMode =
+            semanticMapMode === 'semantic' ? 'code_structure' : 'semantic'
+          const [activeMapResult, comparisonMapResult] = await Promise.allSettled([
+            loadMap(semanticMapMode),
+            loadMap(comparisonMode),
+          ])
+
+          if (activeMapResult.status !== 'fulfilled') {
+            throw activeMapResult.reason
+          }
+
+          setSemanticMap(activeMapResult.value)
+          if (comparisonMapResult.status === 'fulfilled') {
+            setSemanticMapComparison(comparisonMapResult.value)
+          } else {
+            setSemanticMapComparison(null)
+          }
+
+          const graphQuery = new URLSearchParams({
+            scenario_id: scenarioId,
+            community_mode: 'color',
+            limit: String(limit),
+            page: String(graphPaging.page),
+          })
+          if (graphFilters.includeKinds.length > 0) {
+            graphQuery.set('include_kinds', graphFilters.includeKinds.join(','))
+          }
+          if (graphFilters.excludeKinds.length > 0) {
+            graphQuery.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+          }
+          if (graphFilters.edgeKinds.length > 0) {
+            graphQuery.set('edge_kinds', graphFilters.edgeKinds.join(','))
+          }
+
+          const graphResponse = await fetch(
+            `/api/twin/collections/${collectionId}/views/graphrag?${graphQuery.toString()}`,
+            {
+              credentials: 'include',
+              signal: controller.signal,
+            },
+          )
+          if (!graphResponse.ok) {
+            throw new Error(`Could not load semantic map graph (${graphResponse.status})`)
+          }
+          const graphPayload: GraphRagPayload = await graphResponse.json()
+          setGraph({
+            ...(graphPayload.graph || DEFAULT_GRAPH),
+            projection: graphPayload.projection,
+            entity_level: graphPayload.entity_level,
+          })
+
+          setViewState('semantic_map', 'ready')
+          markUpdated('semantic_map')
           return
         }
 
@@ -730,6 +846,17 @@ export function useCockpitData({
     graphPaging.page,
     graphRagCommunityMode,
     graphRagCommunityId,
+    semanticMapMode,
+    semanticMapThresholdsByMode.code_structure.mixed_cluster_max_dominant_ratio,
+    semanticMapThresholdsByMode.code_structure.isolated_distance_multiplier,
+    semanticMapThresholdsByMode.code_structure.semantic_duplication_min_similarity,
+    semanticMapThresholdsByMode.code_structure.semantic_duplication_max_source_overlap,
+    semanticMapThresholdsByMode.code_structure.misplaced_min_dominant_ratio,
+    semanticMapThresholdsByMode.semantic.mixed_cluster_max_dominant_ratio,
+    semanticMapThresholdsByMode.semantic.isolated_distance_multiplier,
+    semanticMapThresholdsByMode.semantic.semantic_duplication_min_similarity,
+    semanticMapThresholdsByMode.semantic.semantic_duplication_max_source_overlap,
+    semanticMapThresholdsByMode.semantic.misplaced_min_dominant_ratio,
     cityProjection,
     cityEntityLevel,
     refreshNonce,
@@ -1079,6 +1206,8 @@ export function useCockpitData({
     graphRagProcessDetailState,
     graphRagProcessDetailError,
     uiMapSummary,
+    semanticMap,
+    semanticMapComparison,
     testMatrix,
     userFlows,
     rebuildReadiness,

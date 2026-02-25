@@ -19,6 +19,7 @@ import ExportsView from './views/ExportsView'
 import GraphRagView from './views/GraphRagView'
 import OverviewView from './views/OverviewView'
 import RebuildReadinessView from './views/RebuildReadinessView'
+import SemanticMapView from './views/SemanticMapView'
 import TestMatrixView from './views/TestMatrixView'
 import TopologyView from './views/TopologyView'
 import {
@@ -29,6 +30,8 @@ import {
   type GraphRagCommunityMode,
   type LayoutEngine,
   type OverlayState,
+  type SemanticMapMode,
+  type SemanticMapThresholds,
   EXPORT_FORMATS,
 } from './types'
 
@@ -150,6 +153,27 @@ export default function CockpitPage({
   const [driftBaselineScenarioId, setDriftBaselineScenarioId] = useState('')
   const [graphRagCommunityMode, setGraphRagCommunityMode] = useState<GraphRagCommunityMode>('color')
   const [graphRagCommunityId, setGraphRagCommunityId] = useState('')
+  const [semanticMapMode, setSemanticMapMode] = useState<SemanticMapMode>('code_structure')
+  const [semanticMapShowDiffOverlay, setSemanticMapShowDiffOverlay] = useState(true)
+  const [semanticMapDiffMinDrift, setSemanticMapDiffMinDrift] = useState(0.6)
+  const [semanticMapThresholdsByMode, setSemanticMapThresholdsByMode] = useState<
+    Record<SemanticMapMode, SemanticMapThresholds>
+  >({
+    code_structure: {
+      mixed_cluster_max_dominant_ratio: 0.55,
+      isolated_distance_multiplier: 1.2,
+      semantic_duplication_min_similarity: 0.35,
+      semantic_duplication_max_source_overlap: 0.35,
+      misplaced_min_dominant_ratio: 0.6,
+    },
+    semantic: {
+      mixed_cluster_max_dominant_ratio: 0.55,
+      isolated_distance_multiplier: 1.2,
+      semantic_duplication_min_similarity: 0.86,
+      semantic_duplication_max_source_overlap: 0.3,
+      misplaced_min_dominant_ratio: 0.6,
+    },
+  })
   const [toast, setToast] = useState<CockpitToast | null>(null)
   const [overlayData, setOverlayData] = useState<OverlayState>({
     mode: overlayMode,
@@ -184,6 +208,38 @@ export default function CockpitPage({
     }),
     [graphPage, graphLimit],
   )
+
+  const handleSemanticMapDiffMinDriftChange = useCallback((value: number) => {
+    setSemanticMapDiffMinDrift(Math.max(0, Math.min(1, value)))
+  }, [])
+
+  const handleSemanticMapThresholdsChange = useCallback((value: SemanticMapThresholds) => {
+    setSemanticMapThresholdsByMode((prev) => ({
+      ...prev,
+      [semanticMapMode]: {
+        mixed_cluster_max_dominant_ratio: Math.max(
+          0,
+          Math.min(1, value.mixed_cluster_max_dominant_ratio),
+        ),
+        isolated_distance_multiplier: Math.max(
+          0.1,
+          Math.min(10, value.isolated_distance_multiplier),
+        ),
+        semantic_duplication_min_similarity: Math.max(
+          0,
+          Math.min(1, value.semantic_duplication_min_similarity),
+        ),
+        semantic_duplication_max_source_overlap: Math.max(
+          0,
+          Math.min(1, value.semantic_duplication_max_source_overlap),
+        ),
+        misplaced_min_dominant_ratio: Math.max(
+          0,
+          Math.min(1, value.misplaced_min_dominant_ratio),
+        ),
+      },
+    }))
+  }, [semanticMapMode])
 
   const onViewError = useCallback(
     (view: CockpitView, message: string) => {
@@ -242,6 +298,8 @@ export default function CockpitPage({
     graphRagProcessDetail,
     graphRagProcessDetailState,
     graphRagProcessDetailError,
+    semanticMap,
+    semanticMapComparison,
     uiMapSummary,
     testMatrix,
     userFlows,
@@ -266,6 +324,8 @@ export default function CockpitPage({
     graphPaging,
     graphRagCommunityMode,
     graphRagCommunityId,
+    semanticMapMode,
+    semanticMapThresholdsByMode,
     selectedNodeId,
     onScenarioAutoSelect: setScenarioId,
     onViewError,
@@ -487,6 +547,10 @@ export default function CockpitPage({
           graphRagCommunityMode={graphRagCommunityMode}
           graphRagCommunityId={graphRagCommunityId}
           graphRagCommunities={graphRagCommunities}
+          semanticMapMode={semanticMapMode}
+          semanticMapShowDiffOverlay={semanticMapShowDiffOverlay}
+          semanticMapDiffMinDrift={semanticMapDiffMinDrift}
+          semanticMapThresholds={semanticMapThresholdsByMode[semanticMapMode]}
           c4View={c4View}
           c4Scope={c4Scope}
           c4MaxNodes={c4MaxNodes}
@@ -526,6 +590,10 @@ export default function CockpitPage({
           onOverlayModeChange={setOverlayMode}
           onGraphRagCommunityModeChange={setGraphRagCommunityMode}
           onGraphRagCommunityIdChange={setGraphRagCommunityId}
+          onSemanticMapModeChange={setSemanticMapMode}
+          onSemanticMapShowDiffOverlayChange={setSemanticMapShowDiffOverlay}
+          onSemanticMapDiffMinDriftChange={handleSemanticMapDiffMinDriftChange}
+          onSemanticMapThresholdsChange={handleSemanticMapThresholdsChange}
           onC4ViewChange={setC4View}
           onC4ScopeChange={setC4Scope}
           onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
@@ -581,6 +649,10 @@ export default function CockpitPage({
         graphRagCommunityMode={graphRagCommunityMode}
         graphRagCommunityId={graphRagCommunityId}
         graphRagCommunities={graphRagCommunities}
+        semanticMapMode={semanticMapMode}
+        semanticMapShowDiffOverlay={semanticMapShowDiffOverlay}
+        semanticMapDiffMinDrift={semanticMapDiffMinDrift}
+        semanticMapThresholds={semanticMapThresholdsByMode[semanticMapMode]}
         c4View={c4View}
         c4Scope={c4Scope}
         c4MaxNodes={c4MaxNodes}
@@ -626,6 +698,10 @@ export default function CockpitPage({
         onOverlayModeChange={setOverlayMode}
         onGraphRagCommunityModeChange={setGraphRagCommunityMode}
         onGraphRagCommunityIdChange={setGraphRagCommunityId}
+        onSemanticMapModeChange={setSemanticMapMode}
+        onSemanticMapShowDiffOverlayChange={setSemanticMapShowDiffOverlay}
+        onSemanticMapDiffMinDriftChange={handleSemanticMapDiffMinDriftChange}
+        onSemanticMapThresholdsChange={handleSemanticMapThresholdsChange}
         onC4ViewChange={setC4View}
         onC4ScopeChange={setC4Scope}
         onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
@@ -798,6 +874,39 @@ export default function CockpitPage({
           onLoadProcessDetail={loadGraphRagProcessDetail}
           onRetry={refreshActiveView}
         />
+      ) : null}
+
+      {selection.view === 'semantic_map' ? (
+        <section className="cockpit2-workspace">
+          <div className="cockpit2-main">
+            <SemanticMapView
+              state={activeState}
+              error={activeError}
+              payload={semanticMap}
+              comparisonPayload={semanticMapComparison}
+              mode={semanticMapMode}
+              selectedNodeId={resolvedNodeId}
+              showDiffOverlay={semanticMapShowDiffOverlay}
+              diffMinDrift={semanticMapDiffMinDrift}
+              onModeChange={setSemanticMapMode}
+              onSelectNodeId={handleSelectNodeId}
+              onRetry={refreshActiveView}
+            />
+          </div>
+          {cockpitFlags.inspector ? (
+            <div className="cockpit2-rail">
+              <NodeInspector
+                selectedNodeId={resolvedNodeId}
+                graph={graph}
+                neighborhood={neighborhood}
+                neighborhoodState={neighborhoodState}
+                neighborhoodError={neighborhoodError}
+                overlay={overlayData}
+                onClearSelection={() => setSelectedNodeId('')}
+              />
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       {selection.view === 'ui_map' ? (

@@ -5,6 +5,8 @@ import {
   type C4ViewMode,
   type CockpitLayer,
   type GraphRagCommunityMode,
+  type SemanticMapMode,
+  type SemanticMapThresholds,
   type CockpitView,
   type CollectionLite,
   type GraphRagCommunity,
@@ -30,6 +32,10 @@ interface CockpitCommandBarProps {
   graphRagCommunityMode: GraphRagCommunityMode
   graphRagCommunityId: string
   graphRagCommunities: GraphRagCommunity[]
+  semanticMapMode: SemanticMapMode
+  semanticMapShowDiffOverlay: boolean
+  semanticMapDiffMinDrift: number
+  semanticMapThresholds: SemanticMapThresholds
   c4View: C4ViewMode
   c4Scope: string
   c4MaxNodes: number
@@ -54,6 +60,10 @@ interface CockpitCommandBarProps {
   onOverlayModeChange: (mode: 'none' | 'runtime' | 'risk') => void
   onGraphRagCommunityModeChange: (mode: GraphRagCommunityMode) => void
   onGraphRagCommunityIdChange: (communityId: string) => void
+  onSemanticMapModeChange: (mode: SemanticMapMode) => void
+  onSemanticMapShowDiffOverlayChange: (enabled: boolean) => void
+  onSemanticMapDiffMinDriftChange: (value: number) => void
+  onSemanticMapThresholdsChange: (value: SemanticMapThresholds) => void
   onC4ViewChange: (value: C4ViewMode) => void
   onC4ScopeChange: (value: string) => void
   onC4MaxNodesChange: (value: number) => void
@@ -86,6 +96,10 @@ export default function CockpitCommandBar({
   graphRagCommunityMode,
   graphRagCommunityId,
   graphRagCommunities,
+  semanticMapMode,
+  semanticMapShowDiffOverlay,
+  semanticMapDiffMinDrift,
+  semanticMapThresholds,
   c4View,
   c4Scope,
   c4MaxNodes,
@@ -110,6 +124,10 @@ export default function CockpitCommandBar({
   onOverlayModeChange,
   onGraphRagCommunityModeChange,
   onGraphRagCommunityIdChange,
+  onSemanticMapModeChange,
+  onSemanticMapShowDiffOverlayChange,
+  onSemanticMapDiffMinDriftChange,
+  onSemanticMapThresholdsChange,
   onC4ViewChange,
   onC4ScopeChange,
   onC4MaxNodesChange,
@@ -133,10 +151,12 @@ export default function CockpitCommandBar({
   const showC4Controls = activeView === 'c4_diff'
   const showArchitectureControls = activeView === 'architecture'
   const showGraphRagControls = activeView === 'graphrag'
+  const showSemanticMapControls = activeView === 'semantic_map'
   const showGraphControls =
     activeView === 'topology' ||
     activeView === 'deep_dive' ||
     activeView === 'graphrag' ||
+    activeView === 'semantic_map' ||
     activeView === 'ui_map' ||
     activeView === 'test_matrix' ||
     activeView === 'user_flows'
@@ -213,6 +233,17 @@ export default function CockpitCommandBar({
               <option value="code">Code</option>
               <option value="context">Context</option>
               <option value="deployment">Deployment</option>
+            </select>
+          </label>
+        ) : showSemanticMapControls ? (
+          <label>
+            <span>Map mode</span>
+            <select
+              value={semanticMapMode}
+              onChange={(event) => onSemanticMapModeChange(event.target.value as SemanticMapMode)}
+            >
+              <option value="code_structure">Code structure</option>
+              <option value="semantic">Semantic</option>
             </select>
           </label>
         ) : showGraphRagControls ? (
@@ -439,6 +470,104 @@ export default function CockpitCommandBar({
               <span>Hide isolated nodes</span>
             </label>
           </div>
+          {showSemanticMapControls ? (
+            <div className="cockpit2-command-grid">
+              <label className="cockpit2-checkbox">
+                <input
+                  type="checkbox"
+                  checked={semanticMapShowDiffOverlay}
+                  onChange={(event) => onSemanticMapShowDiffOverlayChange(event.target.checked)}
+                />
+                <span>Diff overlay</span>
+              </label>
+              <label>
+                <span>Min drift</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={semanticMapDiffMinDrift}
+                  onChange={(event) => onSemanticMapDiffMinDriftChange(Number(event.target.value))}
+                />
+              </label>
+              <label>
+                <span>Mixed max dominant ratio</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={semanticMapThresholds.mixed_cluster_max_dominant_ratio}
+                  onChange={(event) =>
+                    onSemanticMapThresholdsChange({
+                      ...semanticMapThresholds,
+                      mixed_cluster_max_dominant_ratio: Number(event.target.value),
+                    })}
+                />
+              </label>
+              <label>
+                <span>Isolated sigma multiplier</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={10}
+                  step={0.1}
+                  value={semanticMapThresholds.isolated_distance_multiplier}
+                  onChange={(event) =>
+                    onSemanticMapThresholdsChange({
+                      ...semanticMapThresholds,
+                      isolated_distance_multiplier: Number(event.target.value),
+                    })}
+                />
+              </label>
+              <label>
+                <span>Duplication min similarity</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={semanticMapThresholds.semantic_duplication_min_similarity}
+                  onChange={(event) =>
+                    onSemanticMapThresholdsChange({
+                      ...semanticMapThresholds,
+                      semantic_duplication_min_similarity: Number(event.target.value),
+                    })}
+                />
+              </label>
+              <label>
+                <span>Duplication max source overlap</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={semanticMapThresholds.semantic_duplication_max_source_overlap}
+                  onChange={(event) =>
+                    onSemanticMapThresholdsChange({
+                      ...semanticMapThresholds,
+                      semantic_duplication_max_source_overlap: Number(event.target.value),
+                    })}
+                />
+              </label>
+              <label>
+                <span>Misplaced min dominant ratio</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={semanticMapThresholds.misplaced_min_dominant_ratio}
+                  onChange={(event) =>
+                    onSemanticMapThresholdsChange({
+                      ...semanticMapThresholds,
+                      misplaced_min_dominant_ratio: Number(event.target.value),
+                    })}
+                />
+              </label>
+            </div>
+          ) : null}
         </details>
       ) : null}
 
