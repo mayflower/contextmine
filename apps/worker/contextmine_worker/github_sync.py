@@ -219,11 +219,18 @@ def clone_or_pull_repo(
             # Update remote URL
             origin.set_url(clone_url)
 
-            # Fetch and checkout branch with custom environment
+            # Fetch and reset hard to remote branch to guarantee deterministic state.
+            # Indexers may install dependencies (e.g. composer/npm) into the working tree;
+            # those artifacts must not leak into later runs/retries.
             with repo.git.custom_environment(**env):
                 origin.fetch()
-                repo.git.checkout(branch)
-                repo.git.pull("origin", branch)
+                remote_ref = f"origin/{branch}"
+                try:
+                    repo.git.checkout(branch)
+                except GitCommandError:
+                    repo.git.checkout("-B", branch, remote_ref)
+                repo.git.reset("--hard", remote_ref)
+                repo.git.clean("-fdx")
         else:
             # Clone
             repo_path.parent.mkdir(parents=True, exist_ok=True)
