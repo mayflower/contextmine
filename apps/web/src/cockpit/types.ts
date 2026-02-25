@@ -11,6 +11,7 @@ export type CockpitView =
   | 'c4_diff'
   | 'architecture'
   | 'city'
+  | 'evolution'
   | 'graphrag'
   | 'semantic_map'
   | 'ui_map'
@@ -499,6 +500,165 @@ export interface CityPayload {
   cc_json: Record<string, unknown>
 }
 
+export interface InvestmentUtilizationItem {
+  entity_key: string
+  label: string
+  size: number
+  investment_score: number
+  utilization_score: number | null
+  coverage_avg: number | null
+  change_frequency_avg: number
+  churn_avg: number
+  quadrant: 'strength' | 'overinvestment' | 'efficient_core' | 'opportunity_or_retire' | 'unknown'
+}
+
+export interface InvestmentUtilizationPayload {
+  collection_id: string
+  scenario: ViewScenario
+  status: 'ready' | 'unavailable'
+  reason: string
+  entity_level: 'container' | 'component'
+  window_days: number
+  summary: {
+    total_entities: number
+    coverage_entity_ratio: number
+    utilization_available: boolean
+    quadrants: Record<string, number>
+  }
+  items: InvestmentUtilizationItem[]
+  warnings: string[]
+}
+
+export interface KnowledgeIslandEntity {
+  entity_key: string
+  label: string
+  files: number
+  bus_factor: number
+  dominant_owner: string | null
+  dominant_share: number
+  single_owner_ratio: number
+}
+
+export interface KnowledgeIslandFileRisk {
+  node_natural_key: string
+  path: string | null
+  entity_key: string
+  dominant_owner: string
+  dominant_share: number
+  additions_total: number
+  touches: number
+  single_owner: boolean
+  churn: number
+  coverage: number | null
+  last_touched_at: string | null
+}
+
+export interface KnowledgeIslandsPayload {
+  collection_id: string
+  scenario: ViewScenario
+  status: 'ready' | 'unavailable'
+  reason: string
+  entity_level: 'container' | 'component'
+  ownership_threshold: number
+  window_days: number
+  summary: {
+    files: number
+    entities: number
+    bus_factor_global: number
+    single_owner_files: number
+    churn_p75: number
+  }
+  entities: KnowledgeIslandEntity[]
+  at_risk_files: KnowledgeIslandFileRisk[]
+  warnings: string[]
+}
+
+export interface TemporalCouplingNode {
+  id: string
+  key: string
+  label: string
+  entity_level: 'file' | 'container' | 'component'
+}
+
+export interface TemporalCouplingEdge {
+  id: string
+  source: string
+  target: string
+  co_change_count: number
+  source_change_count: number
+  target_change_count: number
+  ratio_source_to_target: number
+  ratio_target_to_source: number
+  jaccard: number
+  cross_boundary: boolean
+}
+
+export interface TemporalCouplingPayload {
+  collection_id: string
+  scenario: ViewScenario
+  status: 'ready' | 'unavailable'
+  reason: string
+  entity_level: 'file' | 'container' | 'component'
+  window_days: number
+  min_jaccard: number
+  max_edges: number
+  summary: {
+    nodes: number
+    edges: number
+    cross_boundary_edges: number
+    avg_jaccard: number
+  }
+  graph: {
+    nodes: TemporalCouplingNode[]
+    edges: TemporalCouplingEdge[]
+  }
+  warnings: string[]
+}
+
+export interface FitnessRuleSummary {
+  rule_id: string
+  finding_type: string
+  count: number
+  open: number
+  resolved: number
+  highest_severity: 'critical' | 'high' | 'medium' | 'low'
+}
+
+export interface FitnessViolationItem {
+  id: string
+  rule_id: string
+  finding_type: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  confidence: string
+  status: string
+  subject: string | null
+  message: string
+  filename: string
+  line_number: number
+  created_at: string
+  updated_at: string
+  meta: Record<string, unknown>
+}
+
+export interface FitnessFunctionsPayload {
+  collection_id: string
+  scenario: ViewScenario
+  status: 'ready' | 'unavailable'
+  reason: string
+  include_resolved: boolean
+  window_days: number
+  summary: {
+    rules: number
+    violations: number
+    open: number
+    resolved: number
+    highest_severity: 'critical' | 'high' | 'medium' | 'low'
+  }
+  rules: FitnessRuleSummary[]
+  violations: FitnessViolationItem[]
+  warnings: string[]
+}
+
 export interface MermaidPayload {
   collection_id: string
   scenario: ViewScenario
@@ -695,6 +855,7 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'c4_diff', label: 'C4 Diff' },
   { key: 'architecture', label: 'Architecture' },
   { key: 'city', label: 'City' },
+  { key: 'evolution', label: 'Evolution' },
   { key: 'graphrag', label: 'GraphRAG' },
   { key: 'semantic_map', label: 'Semantic Map' },
   { key: 'ui_map', label: 'UI Map' },

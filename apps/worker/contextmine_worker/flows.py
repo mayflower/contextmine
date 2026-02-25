@@ -11,6 +11,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from contextmine_core import (
     Chunk,
@@ -43,6 +44,7 @@ from contextmine_worker.github_sync import (
     clone_or_pull_repo,
     compute_content_hash,
     compute_git_change_metrics,
+    compute_git_evolution_snapshots,
     ensure_repos_dir,
     get_changed_files,
     get_file_title,
@@ -843,6 +845,7 @@ async def build_twin_graph(
     snapshot_dicts: list[dict] | None = None,
     changed_doc_ids: list[str] | None = None,
     file_metrics: list[dict] | None = None,
+    evolution_payload: dict[str, object] | None = None,
 ) -> dict:
     """Build digital twin graph from semantic snapshots (SCIP/LSIF) and existing KG."""
     del changed_doc_ids
@@ -859,16 +862,18 @@ async def build_twin_graph(
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
         apply_file_metrics_to_scenario,
+        evaluate_and_store_fitness_findings,
         get_or_create_as_is_scenario,
         ingest_snapshot_into_as_is,
         refresh_metric_snapshots,
+        replace_evolution_snapshots,
         seed_scenario_from_knowledge_graph,
     )
     from contextmine_core.validation import refresh_validation_snapshots
 
     collection_uuid = uuid_module.UUID(collection_id)
     source_uuid = uuid_module.UUID(source_id)
-    stats: dict[str, int | str | list[str]] = {
+    stats: dict[str, Any] = {
         "twin_nodes_upserted": 0,
         "twin_edges_upserted": 0,
         "twin_metric_nodes_enriched": 0,
@@ -948,6 +953,30 @@ async def build_twin_graph(
             stats["metrics_gate"] = "pass"
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
+        if evolution_payload:
+            ownership_rows = list(evolution_payload.get("ownership_rows") or [])
+            coupling_rows = list(evolution_payload.get("coupling_rows") or [])
+            persist_stats = await replace_evolution_snapshots(
+                session,
+                scenario_id=as_is.id,
+                ownership_rows=ownership_rows,
+                coupling_rows=coupling_rows,
+            )
+            stats["evolution_ownership_rows"] = int(persist_stats.get("ownership_rows", 0))
+            stats["evolution_coupling_rows"] = int(persist_stats.get("coupling_rows", 0))
+
+            window_days = int(
+                evolution_payload.get("window_days") or get_settings().twin_evolution_window_days
+            )
+            fitness_stats = await evaluate_and_store_fitness_findings(
+                session,
+                collection_id=collection_uuid,
+                scenario_id=as_is.id,
+                window_days=window_days,
+            )
+            stats["fitness_findings_written"] = int(fitness_stats.get("created", 0))
+            stats["fitness_findings_by_type"] = fitness_stats.get("by_type", {})
+            stats["fitness_findings_warnings"] = fitness_stats.get("warnings", [])
         stats["twin_validation_snapshots"] = await refresh_validation_snapshots(
             session, collection_uuid
         )
@@ -1658,6 +1687,7 @@ async def sync_github_source(
     project_dicts: list[dict] = []
     snapshot_dicts: list[dict] = []
     file_metric_dicts: list[dict] = []
+    evolution_payload: dict[str, object] | None = None
     await update_progress_artifact(
         progress_id, progress=10, description="Running SCIP polyglot indexing..."
     )  # type: ignore[misc]
@@ -1809,6 +1839,19 @@ async def sync_github_source(
             scip_stats["git_metric_files_with_history"] = files_with_history
             scip_stats["git_metric_total_change_frequency"] = total_change_frequency
             scip_stats["git_metric_total_churn"] = total_churn
+            evolution_window_days = int(settings.twin_evolution_window_days)
+            evolution_payload = compute_git_evolution_snapshots(
+                git_repo,
+                target_files,
+                window_days=evolution_window_days,
+            )
+            evolution_stats = dict(evolution_payload.get("stats") or {})
+            scip_stats["evolution_window_days"] = evolution_window_days
+            scip_stats["evolution_commits_scanned"] = int(evolution_stats.get("commits_scanned", 0))
+            scip_stats["evolution_files_seen"] = int(evolution_stats.get("files_seen", 0))
+            scip_stats["evolution_ownership_rows"] = int(evolution_stats.get("ownership_rows", 0))
+            scip_stats["evolution_coupling_rows"] = int(evolution_stats.get("coupling_rows", 0))
+            scip_stats["evolution_warnings"] = list(evolution_payload.get("warnings") or [])
 
     await update_progress_artifact(
         progress_id, progress=15, description="Detecting changed files..."
@@ -2018,6 +2061,7 @@ async def sync_github_source(
         snapshot_dicts=snapshot_dicts,
         changed_doc_ids=changed_doc_ids,
         file_metrics=file_metric_dicts,
+        evolution_payload=evolution_payload,
     )
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
@@ -2059,8 +2103,20 @@ async def sync_github_source(
                     "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
                     "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
                     "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
+                    "evolution_window_days": int(scip_stats.get("evolution_window_days", 0)),
+                    "evolution_commits_scanned": int(
+                        scip_stats.get("evolution_commits_scanned", 0)
+                    ),
+                    "evolution_files_seen": int(scip_stats.get("evolution_files_seen", 0)),
+                    "evolution_warnings": list(scip_stats.get("evolution_warnings", []) or []),
                     "twin_nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
                     "twin_edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
+                    "evolution_ownership_rows": int(twin_stats.get("evolution_ownership_rows", 0)),
+                    "evolution_coupling_rows": int(twin_stats.get("evolution_coupling_rows", 0)),
+                    "fitness_findings_written": int(twin_stats.get("fitness_findings_written", 0)),
+                    "fitness_findings_by_type": dict(
+                        twin_stats.get("fitness_findings_by_type", {}) or {}
+                    ),
                     "metrics_requested_files": int(twin_stats.get("metrics_requested_files", 0)),
                     "metrics_mapped_files": int(twin_stats.get("metrics_mapped_files", 0)),
                     "metrics_unmapped_sample": list(
@@ -2167,6 +2223,15 @@ async def sync_github_source(
                 "git_metric_total_change_frequency", 0.0
             ),
             "git_metric_total_churn": scip_stats.get("git_metric_total_churn", 0.0),
+            "evolution_window_days": scip_stats.get("evolution_window_days", 0),
+            "evolution_commits_scanned": scip_stats.get("evolution_commits_scanned", 0),
+            "evolution_files_seen": scip_stats.get("evolution_files_seen", 0),
+            "evolution_warnings": scip_stats.get("evolution_warnings", []),
+            "evolution_ownership_rows": twin_stats.get("evolution_ownership_rows", 0),
+            "evolution_coupling_rows": twin_stats.get("evolution_coupling_rows", 0),
+            "fitness_findings_written": twin_stats.get("fitness_findings_written", 0),
+            "fitness_findings_by_type": twin_stats.get("fitness_findings_by_type", {}),
+            "fitness_findings_warnings": twin_stats.get("fitness_findings_warnings", []),
             "source_version_id": str(source_version_id) if source_version_id else None,
             "joern_cpg_path": str(cpg_path),
             "joern_server_url": settings.joern_server_url,

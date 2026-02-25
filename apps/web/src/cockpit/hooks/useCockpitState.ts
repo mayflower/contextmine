@@ -23,6 +23,7 @@ const VALID_VIEWS: CockpitView[] = [
   'c4_diff',
   'architecture',
   'city',
+  'evolution',
   'graphrag',
   'semantic_map',
   'ui_map',

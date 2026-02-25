@@ -154,8 +154,9 @@ The web app includes an **Architecture Cockpit** for project/collection-level Tw
 1. `Overview` - City KPIs and hotspot analysis.
 2. `Topology` - Layered architecture graph view.
 3. `Deep Dive` - Large graph slices for dependency/controlflow inspection.
-4. `C4 Diff` - AS-IS / TO-BE Mermaid compare with selectable C4 view level.
-5. `Exports` - Generate `cc_json`, `cx2`, `jgf`, `lpg_jsonl`, `mermaid_c4`.
+4. `Evolution` - Investment/Utilization, Knowledge Islands, Temporal Coupling, Fitness Functions.
+5. `C4 Diff` - AS-IS / TO-BE Mermaid compare with selectable C4 view level.
+6. `Exports` - Generate `cc_json`, `cx2`, `jgf`, `lpg_jsonl`, `mermaid_c4`.
 
 ### C4 View Controls
 

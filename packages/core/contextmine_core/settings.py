@@ -229,6 +229,14 @@ class Settings(BaseSettings):
         default=True,
         description="Enable advisory architecture drift report generation",
     )
+    twin_evolution_view_enabled: bool = Field(
+        default=True,
+        description="Enable evolution cockpit view endpoints (investment, ownership, coupling, fitness)",
+    )
+    twin_evolution_window_days: int = Field(
+        default=365,
+        description="Time window in days for git-based evolution analytics",
+    )
     digital_twin_behavioral_enabled: bool = Field(
         default=True,
         description="Enable behavioral twin extraction (tests, UI, interface contracts)",

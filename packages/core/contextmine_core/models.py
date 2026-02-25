@@ -1838,3 +1838,90 @@ class MetricSnapshot(Base):
     )
 
     scenario: Mapped["TwinScenario"] = relationship()
+
+
+class TwinOwnershipSnapshot(Base):
+    """Git ownership distribution per file and author for one scenario window."""
+
+    __tablename__ = "twin_ownership_snapshots"
+    __table_args__ = (
+        Index("ix_twin_ownership_scenario_node", "scenario_id", "node_natural_key"),
+        Index("ix_twin_ownership_scenario_author", "scenario_id", "author_key"),
+        Index("ix_twin_ownership_scenario_captured", "scenario_id", "captured_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    author_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    author_label: Mapped[str] = mapped_column(String(320), nullable=False)
+    additions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deletions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    touches: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ownership_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_touched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=365)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()
+
+
+class TwinTemporalCouplingSnapshot(Base):
+    """Temporal co-change coupling between architecture entities for one scenario window."""
+
+    __tablename__ = "twin_temporal_coupling_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "scenario_id",
+            "entity_level",
+            "source_key",
+            "target_key",
+            "window_days",
+            name="uq_twin_temporal_coupling_key",
+        ),
+        Index(
+            "ix_twin_temporal_coupling_scenario_level",
+            "scenario_id",
+            "entity_level",
+            "captured_at",
+        ),
+        Index(
+            "ix_twin_temporal_coupling_scenario_level_jaccard",
+            "scenario_id",
+            "entity_level",
+            "jaccard",
+        ),
+        CheckConstraint(
+            "entity_level IN ('file','container','component')",
+            name="ck_twin_temporal_coupling_entity_level",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    entity_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    target_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    co_change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    target_change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ratio_source_to_target: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    ratio_target_to_source: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    jaccard: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cross_boundary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=365)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    scenario: Mapped["TwinScenario"] = relationship()

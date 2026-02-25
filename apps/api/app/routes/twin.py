@@ -58,6 +58,9 @@ from contextmine_core.models import (
     TwinScenario,
 )
 from contextmine_core.twin import (
+    DEFAULT_EVOLUTION_WINDOW_DAYS,
+    DEFAULT_MAX_COUPLING_EDGES,
+    DEFAULT_MIN_JACCARD,
     GraphProjection,
     approve_and_execute_intent,
     coerce_source_ids,
@@ -70,9 +73,13 @@ from contextmine_core.twin import (
     get_codebase_summary_multi,
     get_collection_twin_diff,
     get_collection_twin_status,
+    get_fitness_functions_payload,
     get_full_scenario_graph,
+    get_investment_utilization_payload,
+    get_knowledge_islands_payload,
     get_or_create_as_is_scenario,
     get_scenario_graph,
+    get_temporal_coupling_payload,
     get_variable_flow_multi,
     list_calls_multi,
     list_collection_twin_events,
@@ -181,6 +188,12 @@ def _parse_engines_query(engines: str | None) -> list[str] | None:
         return None
     values = [item.strip() for item in engines.split(",") if item.strip()]
     return values or None
+
+
+def _ensure_evolution_enabled() -> None:
+    settings = get_settings()
+    if not settings.twin_evolution_view_enabled:
+        raise HTTPException(status_code=404, detail="Evolution view is disabled")
 
 
 def _serialize_scenario(scenario: TwinScenario) -> dict:
@@ -4120,6 +4133,143 @@ async def city_view(
                 for metric in hotspots
             ],
             "cc_json": cc_json_payload,
+        }
+
+
+@router.get("/collections/{collection_id}/views/evolution/investment-utilization")
+async def evolution_investment_utilization_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    entity_level: str = Query(default="container"),
+    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
+) -> dict:
+    _ensure_evolution_enabled()
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        try:
+            payload = await get_investment_utilization_payload(
+                db,
+                scenario_id=scenario.id,
+                entity_level=entity_level.strip().lower(),
+                window_days=window_days,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "entity_level": entity_level.strip().lower(),
+            **payload,
+        }
+
+
+@router.get("/collections/{collection_id}/views/evolution/knowledge-islands")
+async def evolution_knowledge_islands_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    entity_level: str = Query(default="container"),
+    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
+    ownership_threshold: float = Query(default=0.7, ge=0.0, le=1.0),
+) -> dict:
+    _ensure_evolution_enabled()
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        try:
+            payload = await get_knowledge_islands_payload(
+                db,
+                scenario_id=scenario.id,
+                entity_level=entity_level.strip().lower(),
+                window_days=window_days,
+                ownership_threshold=ownership_threshold,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "entity_level": entity_level.strip().lower(),
+            "ownership_threshold": ownership_threshold,
+            **payload,
+        }
+
+
+@router.get("/collections/{collection_id}/views/evolution/temporal-coupling")
+async def evolution_temporal_coupling_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    entity_level: str = Query(default="component"),
+    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
+    min_jaccard: float = Query(default=DEFAULT_MIN_JACCARD, ge=0.0, le=1.0),
+    max_edges: int = Query(default=DEFAULT_MAX_COUPLING_EDGES, ge=1, le=2000),
+) -> dict:
+    _ensure_evolution_enabled()
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        try:
+            payload = await get_temporal_coupling_payload(
+                db,
+                scenario_id=scenario.id,
+                entity_level=entity_level.strip().lower(),
+                window_days=window_days,
+                min_jaccard=min_jaccard,
+                max_edges=max_edges,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "entity_level": entity_level.strip().lower(),
+            "min_jaccard": min_jaccard,
+            "max_edges": max_edges,
+            **payload,
+        }
+
+
+@router.get("/collections/{collection_id}/views/evolution/fitness-functions")
+async def evolution_fitness_functions_view(
+    request: Request,
+    collection_id: str,
+    scenario_id: str | None = Query(default=None),
+    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
+    include_resolved: bool = Query(default=False),
+) -> dict:
+    _ensure_evolution_enabled()
+    user_id = _user_id_or_401(request)
+    collection_uuid = _parse_collection_id(collection_id)
+
+    async with get_db_session() as db:
+        await _ensure_member(db, collection_uuid, user_id)
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        payload = await get_fitness_functions_payload(
+            db,
+            scenario_id=scenario.id,
+            window_days=window_days,
+            include_resolved=include_resolved,
+        )
+        return {
+            "collection_id": str(collection_uuid),
+            "scenario": _serialize_scenario(scenario),
+            "include_resolved": include_resolved,
+            **payload,
         }
 
 

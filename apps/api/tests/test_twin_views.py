@@ -72,6 +72,32 @@ class TestTwinViewRoutes:
         response = await client.get("/api/twin/collections/some-id/views/semantic-map")
         assert response.status_code == 401
 
+    async def test_evolution_investment_utilization_requires_auth(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/evolution/investment-utilization"
+        )
+        assert response.status_code == 401
+
+    async def test_evolution_knowledge_islands_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/evolution/knowledge-islands"
+        )
+        assert response.status_code == 401
+
+    async def test_evolution_temporal_coupling_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/evolution/temporal-coupling"
+        )
+        assert response.status_code == 401
+
+    async def test_evolution_fitness_functions_requires_auth(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/api/twin/collections/some-id/views/evolution/fitness-functions"
+        )
+        assert response.status_code == 401
+
     @patch("app.routes.twin.get_session")
     async def test_view_invalid_collection_id_rejected(
         self,

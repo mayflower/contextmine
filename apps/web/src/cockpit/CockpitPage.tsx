@@ -15,6 +15,7 @@ import C4DiffView from './views/C4DiffView'
 import ArchitectureView from './views/ArchitectureView'
 import CityView from './views/CityView'
 import DeepDiveView from './views/DeepDiveView'
+import EvolutionView from './views/EvolutionView'
 import ExportsView from './views/ExportsView'
 import GraphRagView from './views/GraphRagView'
 import OverviewView from './views/OverviewView'
@@ -271,6 +272,11 @@ export default function CockpitPage({
     cityEntityLevel,
     setCityEntityLevel,
     cityEmbedUrl,
+    investmentUtilization,
+    knowledgeIslands,
+    temporalCoupling,
+    fitnessFunctions,
+    evolutionPanelErrors,
     exportFormat,
     setExportFormat,
     exportProjection,
@@ -839,6 +845,19 @@ export default function CockpitPage({
           onProjectionChange={setCityProjection}
           onEntityLevelChange={setCityEntityLevel}
           onReload={refreshActiveView}
+        />
+      ) : null}
+
+      {selection.view === 'evolution' ? (
+        <EvolutionView
+          state={activeState}
+          error={activeError}
+          investmentUtilization={investmentUtilization}
+          knowledgeIslands={knowledgeIslands}
+          temporalCoupling={temporalCoupling}
+          fitnessFunctions={fitnessFunctions}
+          panelErrors={evolutionPanelErrors}
+          onRetry={refreshActiveView}
         />
       ) : null}
 

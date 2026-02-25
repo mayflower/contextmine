@@ -12,6 +12,10 @@ This page documents the current backend contracts used by the read-only Architec
 6. `GET /api/twin/collections/{collection_id}/views/arc42/drift`
 7. `GET /api/twin/collections/{collection_id}/views/ports-adapters`
 8. `GET /api/twin/collections/{collection_id}/views/erm`
+9. `GET /api/twin/collections/{collection_id}/views/evolution/investment-utilization`
+10. `GET /api/twin/collections/{collection_id}/views/evolution/knowledge-islands`
+11. `GET /api/twin/collections/{collection_id}/views/evolution/temporal-coupling`
+12. `GET /api/twin/collections/{collection_id}/views/evolution/fitness-functions`
 
 ## Scenario and Export Endpoints
 
@@ -182,6 +186,68 @@ Response highlights:
 2. `tables[]` with `name`, `column_count`, `primary_keys`, and `columns[]`
 3. `foreign_keys[]` with source/target table+column pairs
 4. `mermaid.content` with ERD Mermaid source when `MERMAID_ERD` artifact exists
+
+## Evolution View Responses
+
+### Investment/Utilization
+
+`GET /api/twin/collections/{collection_id}/views/evolution/investment-utilization`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `entity_level` (`container|component`, default `container`)
+3. `window_days` (default `365`)
+
+Response highlights:
+1. `status|reason` (`ready|unavailable`)
+2. `summary.total_entities|coverage_entity_ratio|utilization_available`
+3. `summary.quadrants`
+4. `items[]` with `investment_score`, `utilization_score`, `quadrant`, `size`
+
+### Knowledge Islands
+
+`GET /api/twin/collections/{collection_id}/views/evolution/knowledge-islands`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `entity_level` (`container|component`, default `container`)
+3. `window_days` (default `365`)
+4. `ownership_threshold` (default `0.7`)
+
+Response highlights:
+1. `summary.bus_factor_global|single_owner_files|churn_p75`
+2. `entities[]` with `bus_factor`, `dominant_owner`, `single_owner_ratio`
+3. `at_risk_files[]` with `dominant_share`, `churn`, `coverage`, `last_touched_at`
+
+### Temporal Coupling
+
+`GET /api/twin/collections/{collection_id}/views/evolution/temporal-coupling`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `entity_level` (`file|container|component`, default `component`)
+3. `window_days` (default `365`)
+4. `min_jaccard` (default `0.2`)
+5. `max_edges` (default `300`)
+
+Response highlights:
+1. `summary.nodes|edges|cross_boundary_edges|avg_jaccard`
+2. `graph.nodes[]` and `graph.edges[]`
+3. `edges[]` include `co_change_count`, directional ratios, and `cross_boundary`
+
+### Fitness Functions
+
+`GET /api/twin/collections/{collection_id}/views/evolution/fitness-functions`
+
+Query parameters:
+1. `scenario_id` (optional)
+2. `window_days` (default `365`)
+3. `include_resolved` (`true|false`, default `false`)
+
+Response highlights:
+1. `summary.rules|violations|open|resolved|highest_severity`
+2. `rules[]` grouped by `rule_id`
+3. `violations[]` sourced from persisted `twin_findings` (`finding_type` prefixed `fitness.`)
 
 ## Source Config Contract for Coverage Reports
 

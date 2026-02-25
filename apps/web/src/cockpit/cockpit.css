@@ -83,6 +83,24 @@
   color: #b91c1c;
 }
 
+.cockpit2-chip.risk-high {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.cockpit2-chip.risk-medium {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+
+.cockpit2-chip.risk-low {
+  background: #f0f9ff;
+  color: #075985;
+  border-color: #bae6fd;
+}
+
 .cockpit2-commandbar {
   position: sticky;
   top: 8px;
@@ -824,6 +842,27 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.cockpit2-evolution-scatter-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cockpit2-evolution-scatter {
+  width: 100%;
+  min-height: 280px;
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.cockpit2-evolution-coupling-graph {
+  height: 420px;
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .cockpit2-community-chip {

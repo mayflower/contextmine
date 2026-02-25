@@ -1,5 +1,17 @@
 """Digital twin services."""
 
+from contextmine_core.twin.evolution import (
+    DEFAULT_EVOLUTION_WINDOW_DAYS,
+    DEFAULT_MAX_COUPLING_EDGES,
+    DEFAULT_MIN_JACCARD,
+    derive_arch_group,
+    evaluate_and_store_fitness_findings,
+    get_fitness_functions_payload,
+    get_investment_utilization_payload,
+    get_knowledge_islands_payload,
+    get_temporal_coupling_payload,
+    replace_evolution_snapshots,
+)
 from contextmine_core.twin.ops import (
     coerce_source_ids,
     compute_analysis_context_key,
@@ -66,6 +78,9 @@ __all__ = [
     "find_taint_sinks_multi",
     "find_taint_sources",
     "find_taint_sources_multi",
+    "DEFAULT_EVOLUTION_WINDOW_DAYS",
+    "DEFAULT_MAX_COUPLING_EDGES",
+    "DEFAULT_MIN_JACCARD",
     "get_codebase_summary",
     "get_codebase_summary_multi",
     "get_collection_twin_diff",
@@ -90,8 +105,15 @@ __all__ = [
     "normalize_analysis_engines",
     "parse_timestamp_value",
     "record_twin_event",
+    "replace_evolution_snapshots",
     "repair_twin_file_path_canonicalization",
     "refresh_metric_snapshots",
+    "derive_arch_group",
+    "evaluate_and_store_fitness_findings",
+    "get_fitness_functions_payload",
+    "get_investment_utilization_payload",
+    "get_knowledge_islands_payload",
+    "get_temporal_coupling_payload",
     "sanitize_regex_query",
     "seed_scenario_from_knowledge_graph",
     "set_source_version_status",

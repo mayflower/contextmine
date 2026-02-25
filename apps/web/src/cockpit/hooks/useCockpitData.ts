@@ -7,6 +7,7 @@ import type {
   CityEntityLevel,
   CityProjection,
   CityPayload,
+  FitnessFunctionsPayload,
   GraphRagCommunity,
   GraphRagCommunityMode,
   GraphRagCommunitiesPayload,
@@ -30,6 +31,8 @@ import type {
   GraphRagPayload,
   GraphNeighborhoodResponse,
   GraphPagingState,
+  InvestmentUtilizationPayload,
+  KnowledgeIslandsPayload,
   ErmViewPayload,
   PortsAdaptersPayload,
   TestMatrixPayload,
@@ -37,6 +40,7 @@ import type {
   UserFlowsPayload,
   MermaidPayload,
   ScenarioLite,
+  TemporalCouplingPayload,
   TwinGraphResponse,
 } from '../types'
 
@@ -59,6 +63,7 @@ const DEFAULT_STATES: DataStates = {
   c4_diff: 'idle',
   architecture: 'idle',
   city: 'idle',
+  evolution: 'idle',
   graphrag: 'idle',
   ui_map: 'idle',
   semantic_map: 'idle',
@@ -75,6 +80,7 @@ const DEFAULT_ERRORS: DataErrors = {
   c4_diff: '',
   architecture: '',
   city: '',
+  evolution: '',
   graphrag: '',
   ui_map: '',
   semantic_map: '',
@@ -162,6 +168,21 @@ export function useCockpitData({
   const [cityProjection, setCityProjection] = useState<CityProjection>('architecture')
   const [cityEntityLevel, setCityEntityLevel] = useState<CityEntityLevel>('container')
   const [cityEmbedUrl, setCityEmbedUrl] = useState('')
+  const [investmentUtilization, setInvestmentUtilization] = useState<InvestmentUtilizationPayload | null>(null)
+  const [knowledgeIslands, setKnowledgeIslands] = useState<KnowledgeIslandsPayload | null>(null)
+  const [temporalCoupling, setTemporalCoupling] = useState<TemporalCouplingPayload | null>(null)
+  const [fitnessFunctions, setFitnessFunctions] = useState<FitnessFunctionsPayload | null>(null)
+  const [evolutionPanelErrors, setEvolutionPanelErrors] = useState<{
+    investment: string
+    knowledge: string
+    coupling: string
+    fitness: string
+  }>({
+    investment: '',
+    knowledge: '',
+    coupling: '',
+    fitness: '',
+  })
   const [exportFormat, setExportFormat] = useState<ExportFormat>('cc_json')
   const [exportProjection, setExportProjection] = useState<CockpitProjection>('architecture')
   const [exportContent, setExportContent] = useState('')
@@ -645,6 +666,108 @@ export function useCockpitData({
             markUpdated('architecture')
           } else {
             setViewState('architecture', 'error')
+          }
+          return
+        }
+
+        if (view === 'evolution') {
+          const loadPayload = async <T>(url: string, label: string): Promise<T> => {
+            const response = await fetch(url, {
+              credentials: 'include',
+              signal: controller.signal,
+            })
+            if (!response.ok) {
+              throw new Error(`Could not load ${label} (${response.status})`)
+            }
+            return (await response.json()) as T
+          }
+
+          const [investmentResult, knowledgeResult, couplingResult, fitnessResult] =
+            await Promise.allSettled([
+              loadPayload<InvestmentUtilizationPayload>(
+                `/api/twin/collections/${collectionId}/views/evolution/investment-utilization?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365`,
+                'evolution investment/utilization',
+              ),
+              loadPayload<KnowledgeIslandsPayload>(
+                `/api/twin/collections/${collectionId}/views/evolution/knowledge-islands?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365&ownership_threshold=0.7`,
+                'evolution knowledge islands',
+              ),
+              loadPayload<TemporalCouplingPayload>(
+                `/api/twin/collections/${collectionId}/views/evolution/temporal-coupling?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=component&window_days=365&min_jaccard=0.2&max_edges=300`,
+                'evolution temporal coupling',
+              ),
+              loadPayload<FitnessFunctionsPayload>(
+                `/api/twin/collections/${collectionId}/views/evolution/fitness-functions?scenario_id=${encodeURIComponent(scenarioId)}&window_days=365&include_resolved=false`,
+                'evolution fitness functions',
+              ),
+            ])
+
+          let successCount = 0
+          const nextErrors = {
+            investment: '',
+            knowledge: '',
+            coupling: '',
+            fitness: '',
+          }
+
+          if (investmentResult.status === 'fulfilled') {
+            setInvestmentUtilization(investmentResult.value)
+            successCount += 1
+          } else {
+            nextErrors.investment =
+              investmentResult.reason instanceof Error
+                ? investmentResult.reason.message
+                : 'Could not load investment/utilization panel'
+          }
+
+          if (knowledgeResult.status === 'fulfilled') {
+            setKnowledgeIslands(knowledgeResult.value)
+            successCount += 1
+          } else {
+            nextErrors.knowledge =
+              knowledgeResult.reason instanceof Error
+                ? knowledgeResult.reason.message
+                : 'Could not load knowledge islands panel'
+          }
+
+          if (couplingResult.status === 'fulfilled') {
+            setTemporalCoupling(couplingResult.value)
+            successCount += 1
+          } else {
+            nextErrors.coupling =
+              couplingResult.reason instanceof Error
+                ? couplingResult.reason.message
+                : 'Could not load temporal coupling panel'
+          }
+
+          if (fitnessResult.status === 'fulfilled') {
+            setFitnessFunctions(fitnessResult.value)
+            successCount += 1
+          } else {
+            nextErrors.fitness =
+              fitnessResult.reason instanceof Error
+                ? fitnessResult.reason.message
+                : 'Could not load fitness functions panel'
+          }
+
+          setEvolutionPanelErrors(nextErrors)
+          const allErrors = [
+            nextErrors.investment,
+            nextErrors.knowledge,
+            nextErrors.coupling,
+            nextErrors.fitness,
+          ].filter(Boolean)
+          if (allErrors.length > 0) {
+            setViewError('evolution', allErrors.join(' • '))
+          } else {
+            setViewError('evolution', '')
+          }
+
+          if (successCount > 0) {
+            setViewState('evolution', 'ready')
+            markUpdated('evolution')
+          } else {
+            setViewState('evolution', 'error')
           }
           return
         }
@@ -1177,6 +1300,11 @@ export function useCockpitData({
     setCityEntityLevel,
     cityEmbedUrl,
     setCityEmbedUrl,
+    investmentUtilization,
+    knowledgeIslands,
+    temporalCoupling,
+    fitnessFunctions,
+    evolutionPanelErrors,
     exportFormat,
     setExportFormat,
     exportProjection,

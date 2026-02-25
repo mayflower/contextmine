@@ -5,7 +5,10 @@ import logging
 import os
 import shutil
 import tempfile
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from itertools import combinations
 from pathlib import Path
 
 from git import Repo
@@ -326,6 +329,265 @@ def compute_git_change_metrics(repo: Repo, target_files: set[str]) -> dict[str, 
         }
 
     return metrics
+
+
+def compute_git_evolution_snapshots(
+    repo: Repo,
+    target_files: set[str],
+    *,
+    window_days: int,
+) -> dict[str, object]:
+    """Compute ownership and temporal coupling snapshots from git history.
+
+    The output format is designed to be persisted by the twin evolution subsystem.
+    """
+    if not target_files:
+        return {
+            "ownership_rows": [],
+            "coupling_rows": [],
+            "stats": {
+                "window_days": window_days,
+                "commits_scanned": 0,
+                "files_seen": 0,
+                "ownership_rows": 0,
+                "coupling_rows": 0,
+            },
+            "warnings": ["no_target_files"],
+        }
+
+    from contextmine_core.twin import derive_arch_group
+
+    def _author_key(name: str, email: str) -> str:
+        candidate = (email or name or "unknown").strip().lower()
+        return candidate or "unknown"
+
+    def _canonical_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def _entity_for(path: str, level: str) -> str | None:
+        group = derive_arch_group(path, {})
+        if not group:
+            return None
+        if level == "container":
+            return f"container:{group.domain}/{group.container}"
+        if level == "component":
+            return f"component:{group.domain}/{group.container}/{group.component}"
+        return None
+
+    def _safe_ratio(numerator: float, denominator: float) -> float:
+        if denominator <= 0:
+            return 0.0
+        return numerator / denominator
+
+    def _pair_rows(
+        *,
+        entity_level: str,
+        pair_counts: dict[tuple[str, str], int],
+        change_counts: dict[str, int],
+        file_to_container: dict[str, str | None],
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for (source, target), co_change_count in sorted(
+            pair_counts.items(),
+            key=lambda item: (item[1], item[0][0], item[0][1]),
+            reverse=True,
+        ):
+            source_count = int(change_counts.get(source, 0))
+            target_count = int(change_counts.get(target, 0))
+            union = source_count + target_count - int(co_change_count)
+            jaccard = _safe_ratio(float(co_change_count), float(union))
+
+            cross_boundary = source != target
+            if entity_level == "file":
+                source_container = file_to_container.get(source)
+                target_container = file_to_container.get(target)
+                if source_container and target_container:
+                    cross_boundary = source_container != target_container
+
+            rows.append(
+                {
+                    "entity_level": entity_level,
+                    "source_key": (f"file:{source}" if entity_level == "file" else source),
+                    "target_key": (f"file:{target}" if entity_level == "file" else target),
+                    "co_change_count": int(co_change_count),
+                    "source_change_count": source_count,
+                    "target_change_count": target_count,
+                    "ratio_source_to_target": round(
+                        _safe_ratio(float(co_change_count), float(source_count)), 4
+                    ),
+                    "ratio_target_to_source": round(
+                        _safe_ratio(float(co_change_count), float(target_count)), 4
+                    ),
+                    "jaccard": round(jaccard, 4),
+                    "cross_boundary": bool(cross_boundary),
+                    "window_days": int(window_days),
+                }
+            )
+        return rows
+
+    since_dt = datetime.now(UTC) - timedelta(days=max(1, int(window_days)))
+
+    ownership_acc: dict[tuple[str, str], dict[str, object]] = {}
+    file_change_counts: dict[str, int] = defaultdict(int)
+    file_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    container_change_counts: dict[str, int] = defaultdict(int)
+    component_change_counts: dict[str, int] = defaultdict(int)
+    container_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
+    component_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    file_to_container: dict[str, str | None] = {}
+
+    commits_scanned = 0
+    try:
+        for commit in repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat()):
+            files = commit.stats.files or {}
+            touched = sorted(path for path in files if path in target_files)
+            if not touched:
+                continue
+
+            commits_scanned += 1
+            commit_dt = _canonical_utc(commit.authored_datetime)
+            author_label = (
+                commit.author.name or commit.author.email or "unknown"
+            ).strip() or "unknown"
+            author_key = _author_key(commit.author.name or "", commit.author.email or "")
+
+            touched_set = set(touched)
+            for path in touched_set:
+                file_change_counts[path] += 1
+                stats = files.get(path) or {}
+                additions = int(stats.get("insertions", 0) or 0)
+                deletions = int(stats.get("deletions", 0) or 0)
+                key = (path, author_key)
+                current = ownership_acc.get(key)
+                if current is None:
+                    current = {
+                        "node_natural_key": f"file:{path}",
+                        "author_key": author_key,
+                        "author_label": author_label,
+                        "additions": 0,
+                        "deletions": 0,
+                        "touches": 0,
+                        "last_touched_at": commit_dt,
+                        "window_days": int(window_days),
+                    }
+                    ownership_acc[key] = current
+
+                current["additions"] = int(current["additions"]) + additions
+                current["deletions"] = int(current["deletions"]) + deletions
+                current["touches"] = int(current["touches"]) + 1
+                last = current.get("last_touched_at")
+                if isinstance(last, datetime) and commit_dt > last:
+                    current["last_touched_at"] = commit_dt
+
+                container_key = _entity_for(path, "container")
+                if container_key:
+                    file_to_container[path] = container_key
+                else:
+                    file_to_container[path] = None
+
+            for source, target in combinations(touched, 2):
+                pair = tuple(sorted((source, target)))
+                file_pair_counts[pair] += 1
+
+            container_entities = sorted(
+                {
+                    value
+                    for value in (_entity_for(path, "container") for path in touched_set)
+                    if value
+                }
+            )
+            component_entities = sorted(
+                {
+                    value
+                    for value in (_entity_for(path, "component") for path in touched_set)
+                    if value
+                }
+            )
+
+            for container in container_entities:
+                container_change_counts[container] += 1
+            for component in component_entities:
+                component_change_counts[component] += 1
+
+            for source, target in combinations(container_entities, 2):
+                container_pair_counts[tuple(sorted((source, target)))] += 1
+            for source, target in combinations(component_entities, 2):
+                component_pair_counts[tuple(sorted((source, target)))] += 1
+    except Exception:
+        logger.warning("Failed to compute git evolution snapshots", exc_info=True)
+        return {
+            "ownership_rows": [],
+            "coupling_rows": [],
+            "stats": {
+                "window_days": int(window_days),
+                "commits_scanned": commits_scanned,
+                "files_seen": 0,
+                "ownership_rows": 0,
+                "coupling_rows": 0,
+            },
+            "warnings": ["git_history_unavailable"],
+        }
+
+    totals_by_file: dict[str, int] = defaultdict(int)
+    for (path, _author), row in ownership_acc.items():
+        totals_by_file[path] += int(row["additions"])
+
+    ownership_rows: list[dict[str, object]] = []
+    for (path, _author), row in ownership_acc.items():
+        total_additions = int(totals_by_file[path])
+        touches = int(row["touches"])
+        denominator = float(total_additions if total_additions > 0 else touches)
+        numerator = float(row["additions"] if total_additions > 0 else touches)
+        ownership_share = _safe_ratio(numerator, denominator)
+        ownership_rows.append(
+            {
+                **row,
+                "ownership_share": round(ownership_share, 4),
+            }
+        )
+
+    coupling_rows: list[dict[str, object]] = []
+    coupling_rows.extend(
+        _pair_rows(
+            entity_level="file",
+            pair_counts=file_pair_counts,
+            change_counts=file_change_counts,
+            file_to_container=file_to_container,
+        )
+    )
+    coupling_rows.extend(
+        _pair_rows(
+            entity_level="container",
+            pair_counts=container_pair_counts,
+            change_counts=container_change_counts,
+            file_to_container=file_to_container,
+        )
+    )
+    coupling_rows.extend(
+        _pair_rows(
+            entity_level="component",
+            pair_counts=component_pair_counts,
+            change_counts=component_change_counts,
+            file_to_container=file_to_container,
+        )
+    )
+
+    return {
+        "ownership_rows": ownership_rows,
+        "coupling_rows": coupling_rows,
+        "stats": {
+            "window_days": int(window_days),
+            "commits_scanned": commits_scanned,
+            "files_seen": len(file_change_counts),
+            "ownership_rows": len(ownership_rows),
+            "coupling_rows": len(coupling_rows),
+        },
+        "warnings": [],
+    }
 
 
 def read_file_content(repo_path: Path, file_path: str) -> str | None:
