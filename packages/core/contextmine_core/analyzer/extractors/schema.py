@@ -806,17 +806,16 @@ async def build_schema_graph(
             kind=KnowledgeNodeKind.DB_TABLE,
             natural_key=natural_key,
             name=table_name,
-            description=table.description,
             meta={
                 "column_count": len(table.columns),
                 "primary_keys": table.primary_keys,
+                "description": table.description,
             },
         )
         stmt = stmt.on_conflict_do_update(
             constraint="uq_knowledge_node_natural",
             set_={
                 "name": stmt.excluded.name,
-                "description": stmt.excluded.description,
                 "meta": stmt.excluded.meta,
             },
         ).returning(KnowledgeNode.id)
@@ -835,20 +834,19 @@ async def build_schema_graph(
                 kind=KnowledgeNodeKind.DB_COLUMN,
                 natural_key=col_natural_key,
                 name=col.name,
-                description=col.description,
                 meta={
                     "table": table_name,
                     "type": col.type_name,
                     "nullable": col.nullable,
                     "primary_key": col.primary_key,
                     "foreign_key": col.foreign_key,
+                    "description": col.description,
                 },
             )
             col_stmt = col_stmt.on_conflict_do_update(
                 constraint="uq_knowledge_node_natural",
                 set_={
                     "name": col_stmt.excluded.name,
-                    "description": col_stmt.excluded.description,
                     "meta": col_stmt.excluded.meta,
                 },
             ).returning(KnowledgeNode.id)

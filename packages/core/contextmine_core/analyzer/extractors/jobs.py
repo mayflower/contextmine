@@ -423,6 +423,7 @@ async def build_jobs_graph(
                 "container_image": job.container_image,
                 "trigger_count": len(job.triggers),
                 "step_count": len(job.steps),
+                "description": job.description,
             }
 
             if job.triggers:
@@ -440,14 +441,12 @@ async def build_jobs_graph(
                 kind=KnowledgeNodeKind.JOB,
                 natural_key=natural_key,
                 name=job.name,
-                description=job.description,
                 meta=meta,
             )
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_knowledge_node_natural",
                 set_={
                     "name": stmt.excluded.name,
-                    "description": stmt.excluded.description,
                     "meta": stmt.excluded.meta,
                 },
             ).returning(KnowledgeNode.id)
