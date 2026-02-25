@@ -19,7 +19,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from contextmine_core.llm.base import LLMProvider
+    from contextmine_core.research.llm.provider import LLMProvider
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -159,6 +159,8 @@ Content:
 ```
 
 Return empty lists if no database schema definitions are found."""
+
+SCHEMA_EXTRACTION_SYSTEM_PROMPT = "You are a database schema extraction specialist. Return only structured output based on the file content."
 
 
 def _is_code_or_schema_file(file_path: str) -> bool:
@@ -315,9 +317,11 @@ async def _extract_schema_from_single_file(
         )
 
         llm_result = await provider.generate_structured(
-            prompt=prompt,
+            system=SCHEMA_EXTRACTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
             output_schema=SchemaExtractionOutput,
             temperature=0.0,
+            max_tokens=3000,
         )
 
         result.framework = llm_result.framework

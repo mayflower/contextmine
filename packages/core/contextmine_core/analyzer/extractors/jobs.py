@@ -20,7 +20,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from contextmine_core.llm.base import LLMProvider
+    from contextmine_core.research.llm.provider import LLMProvider
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,8 @@ Content:
 ```
 
 Return an empty jobs list if no job/workflow definitions are found."""
+
+JOBS_EXTRACTION_SYSTEM_PROMPT = "You are a workflow extraction specialist. Return only structured output based on the file content."
 
 
 def _is_config_file(file_path: str) -> bool:
@@ -308,9 +310,11 @@ async def _extract_jobs_from_single_file(
         )
 
         llm_result = await provider.generate_structured(
-            prompt=prompt,
+            system=JOBS_EXTRACTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
             output_schema=JobsExtractionOutput,
             temperature=0.0,
+            max_tokens=3000,
         )
 
         # Convert to dataclass format

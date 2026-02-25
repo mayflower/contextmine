@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from contextmine_core.llm.base import LLMProvider
+    from contextmine_core.research.llm.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,8 @@ Files in this codebase:
 
 Return ONLY the file paths that likely contain schema definitions. Be inclusive - if uncertain, include the file."""
 
+TRIAGE_SYSTEM_PROMPT = "You are a precise codebase analyst. Return only structured results grounded in the provided file list."
+
 
 def _format_file_listing(files: list[tuple[str, str]], max_snippet_lines: int = 5) -> str:
     """Format file listing for triage prompt.
@@ -122,9 +124,11 @@ async def triage_files_for_jobs(
         prompt = JOBS_TRIAGE_PROMPT.format(file_listing=file_listing)
 
         result = await provider.generate_structured(
-            prompt=prompt,
+            system=TRIAGE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
             output_schema=FileTriageResult,
             temperature=0.0,
+            max_tokens=1500,
         )
 
         logger.debug(
@@ -168,9 +172,11 @@ async def triage_files_for_schema(
         prompt = SCHEMA_TRIAGE_PROMPT.format(file_listing=file_listing)
 
         result = await provider.generate_structured(
-            prompt=prompt,
+            system=TRIAGE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
             output_schema=FileTriageResult,
             temperature=0.0,
+            max_tokens=1500,
         )
 
         logger.debug(
