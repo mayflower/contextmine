@@ -659,6 +659,7 @@ async def build_knowledge_graph(
         from contextmine_core.analyzer.extractors.schema import (
             aggregate_schema_extractions,
             build_schema_graph,
+            extract_schema_from_file,
             extract_schema_from_files,
         )
         from contextmine_core.analyzer.extractors.schema import (
@@ -717,11 +718,38 @@ async def build_knowledge_graph(
                 logger.info("Extracted %d database tables", stats["kg_tables"])
             elif schema_candidates:
                 # Polyglot fallback (PHP/TS/SQL/etc.) when deterministic Alembic extraction is empty.
-                extractions = await extract_schema_from_files(
-                    files=schema_candidates[:250],
-                    provider=research_llm,
-                )
-                aggregated = aggregate_schema_extractions(extractions)
+                deterministic_extractions = []
+                for candidate_path, candidate_content in schema_candidates[:250]:
+                    if not candidate_path.lower().endswith((".sql", ".ddl")):
+                        continue
+                    try:
+                        extraction = await extract_schema_from_file(
+                            candidate_path,
+                            candidate_content,
+                            research_llm,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            "Deterministic SQL schema extraction failed for %s: %s",
+                            candidate_path,
+                            e,
+                        )
+                        continue
+                    if extraction.tables or extraction.foreign_keys:
+                        deterministic_extractions.append(extraction)
+
+                if deterministic_extractions:
+                    aggregated = aggregate_schema_extractions(deterministic_extractions)
+                else:
+                    try:
+                        extractions = await extract_schema_from_files(
+                            files=schema_candidates[:250],
+                            provider=research_llm,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Generic schema extraction failed: %s", e)
+                        extractions = []
+                    aggregated = aggregate_schema_extractions(extractions)
                 if aggregated.tables:
                     schema_stats = await build_schema_graph(session, collection_uuid, aggregated)
                     stats["kg_tables"] = schema_stats.get("table_nodes_created", 0)
