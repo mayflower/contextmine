@@ -656,8 +656,17 @@ async def build_knowledge_graph(
             build_erm_graph,
             save_erd_artifact,
         )
+        from contextmine_core.analyzer.extractors.schema import (
+            aggregate_schema_extractions,
+            build_schema_graph,
+            extract_schema_from_files,
+        )
+        from contextmine_core.analyzer.extractors.schema import (
+            save_erd_artifact as save_generic_erd_artifact,
+        )
 
         erm_extractor = ERMExtractor()
+        schema_candidates: list[tuple[str, str]] = []
 
         async with get_session() as session:
             result = await session.execute(
@@ -671,6 +680,26 @@ async def build_knowledge_graph(
                 if not content:
                     continue
                 file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                normalized_path = file_path.lower()
+                if normalized_path.endswith(
+                    (".sql", ".ddl", ".prisma", ".php", ".py", ".ts", ".js", ".java", ".rb")
+                ) and any(
+                    token in normalized_path
+                    for token in (
+                        "schema",
+                        "migration",
+                        "migrate",
+                        "database",
+                        "db",
+                        "sql",
+                        "doctrine",
+                        "entity",
+                        "model",
+                        "prisma",
+                    )
+                ):
+                    schema_candidates.append((file_path, content))
+
                 # Detect Alembic migrations
                 if "alembic/versions" in file_path and file_path.endswith(".py"):
                     try:
@@ -686,6 +715,22 @@ async def build_knowledge_graph(
                 await save_erd_artifact(session, collection_uuid, erm_extractor.schema)
                 await session.commit()
                 logger.info("Extracted %d database tables", stats["kg_tables"])
+            elif schema_candidates:
+                # Polyglot fallback (PHP/TS/SQL/etc.) when deterministic Alembic extraction is empty.
+                extractions = await extract_schema_from_files(
+                    files=schema_candidates[:250],
+                    provider=research_llm,
+                )
+                aggregated = aggregate_schema_extractions(extractions)
+                if aggregated.tables:
+                    schema_stats = await build_schema_graph(session, collection_uuid, aggregated)
+                    stats["kg_tables"] = schema_stats.get("table_nodes_created", 0)
+                    await save_generic_erd_artifact(session, collection_uuid, aggregated)
+                    await session.commit()
+                    logger.info(
+                        "Extracted %d database tables via generic schema extraction",
+                        stats["kg_tables"],
+                    )
 
     except Exception as e:
         logger.warning("Failed to extract ERM: %s", e)

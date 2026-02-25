@@ -424,3 +424,138 @@ class TestSCIPOccurrenceRelations:
         relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
 
         assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
+
+    def test_occurrence_relations_use_enclosing_range_when_definition_is_narrow(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-python"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "Python"
+        doc.relative_path = "pkg/service.py"
+
+        caller_symbol = "scip-python python demo 0.0.0 `pkg.service`/run()."
+        callee_symbol = "scip-python python demo 0.0.0 `pkg.service`/helper()."
+
+        caller = doc.symbols.add()
+        caller.symbol = caller_symbol
+        caller.kind = scip_pb2.SymbolInformation.Kind.Function
+        caller.display_name = "run"
+
+        callee = doc.symbols.add()
+        callee.symbol = callee_symbol
+        callee.kind = scip_pb2.SymbolInformation.Kind.Function
+        callee.display_name = "helper"
+
+        caller_def = doc.occurrences.add()
+        caller_def.symbol = caller_symbol
+        caller_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        caller_def.range.extend([0, 4, 0, 7])  # identifier-only
+        caller_def.enclosing_range.extend([0, 0, 3, 1])  # full function body
+
+        callee_def = doc.occurrences.add()
+        callee_def.symbol = callee_symbol
+        callee_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        callee_def.range.extend([5, 0, 7, 1])
+
+        call_ref = doc.occurrences.add()
+        call_ref.symbol = callee_symbol
+        call_ref.symbol_roles = scip_pb2.SymbolRole.ReadAccess
+        call_ref.syntax_kind = scip_pb2.SyntaxKind.UnspecifiedSyntaxKind
+        call_ref.range.extend([2, 8, 2, 14])
+        call_ref.enclosing_range.extend([0, 0, 3, 1])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
+
+    def test_occurrence_relations_fallback_to_module_for_global_imports(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-typescript"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "TypeScript"
+        doc.relative_path = "src/index.ts"
+
+        module_symbol = "scip-typescript typescript demo 0.0.0 src/index.ts/"
+        imported_symbol = "scip-typescript typescript demo 0.0.0 src/lib.ts/dep()."
+
+        module = doc.symbols.add()
+        module.symbol = module_symbol
+        module.kind = scip_pb2.SymbolInformation.Kind.Module
+        module.display_name = "index"
+
+        imported = doc.symbols.add()
+        imported.symbol = imported_symbol
+        imported.kind = scip_pb2.SymbolInformation.Kind.Function
+        imported.display_name = "dep"
+
+        module_def = doc.occurrences.add()
+        module_def.symbol = module_symbol
+        module_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        module_def.range.extend([0, 0, 0, 1])  # narrow/no enclosing range on purpose
+
+        imported_def = doc.occurrences.add()
+        imported_def.symbol = imported_symbol
+        imported_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        imported_def.range.extend([1, 0, 1, 3])
+
+        import_ref = doc.occurrences.add()
+        import_ref.symbol = imported_symbol
+        import_ref.symbol_roles = scip_pb2.SymbolRole.Import
+        import_ref.range.extend([6, 0, 6, 6])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (module_symbol, RelationKind.IMPORTS, imported_symbol) in relations
+
+    def test_range_nesting_recovers_contains_when_enclosing_symbol_missing(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-php"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "PHP"
+        doc.relative_path = "src/worker.php"
+
+        class_symbol = "scip-php php demo 0.0.0 src/worker.php/Worker#"
+        method_symbol = "scip-php php demo 0.0.0 src/worker.php/Worker#execute()."
+
+        class_info = doc.symbols.add()
+        class_info.symbol = class_symbol
+        class_info.kind = scip_pb2.SymbolInformation.Kind.Class
+        class_info.display_name = "Worker"
+
+        method_info = doc.symbols.add()
+        method_info.symbol = method_symbol
+        method_info.kind = scip_pb2.SymbolInformation.Kind.Method
+        method_info.display_name = "execute"
+
+        class_def = doc.occurrences.add()
+        class_def.symbol = class_symbol
+        class_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        class_def.range.extend([0, 0, 0, 6])
+        class_def.enclosing_range.extend([0, 0, 9, 1])
+
+        method_def = doc.occurrences.add()
+        method_def.symbol = method_symbol
+        method_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        method_def.range.extend([2, 4, 2, 11])
+        method_def.enclosing_range.extend([2, 4, 8, 1])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (class_symbol, RelationKind.CONTAINS, method_symbol) in relations

@@ -67,7 +67,16 @@ SCIP_ROLE_READ_ACCESS = 0x8
 # 6  = Identifier
 # 15 = IdentifierFunction
 # 16 = IdentifierFunctionDefinition
-SCIP_CALL_LIKE_SYNTAX_KINDS = {6, 15, 16}
+SCIP_CALL_LIKE_SYNTAX_KINDS = {0, 6, 15, 16}
+SCIP_CALL_TARGET_KINDS = {SymbolKind.FUNCTION, SymbolKind.METHOD}
+SCIP_CALLER_PREFERRED_KINDS = {SymbolKind.FUNCTION, SymbolKind.METHOD}
+SCIP_CALLER_ELIGIBLE_KINDS = {
+    SymbolKind.FUNCTION,
+    SymbolKind.METHOD,
+    SymbolKind.CLASS,
+    SymbolKind.MODULE,
+    SymbolKind.PROPERTY,
+}
 
 
 class SCIPProvider:
@@ -312,6 +321,49 @@ class SCIPProvider:
                 )
             )
 
+        # Fallback: infer containment by lexical range nesting within the same file.
+        # Some indexers omit enclosing_symbol metadata; range nesting recovers this signal.
+        symbols_by_file_objects: dict[str, list[Symbol]] = {}
+        for symbol in symbols:
+            if symbol.file_path == "<external>" or symbol.range.start_line <= 0:
+                continue
+            symbols_by_file_objects.setdefault(symbol.file_path, []).append(symbol)
+        for file_symbols in symbols_by_file_objects.values():
+            for child in file_symbols:
+                parent_candidates = [
+                    candidate
+                    for candidate in file_symbols
+                    if candidate.def_id != child.def_id
+                    and candidate.range != child.range
+                    and self._range_contains(candidate.range, child.range)
+                ]
+                if not parent_candidates:
+                    continue
+                parent_candidates.sort(
+                    key=lambda candidate: (
+                        0
+                        if candidate.kind
+                        in {
+                            SymbolKind.CLASS,
+                            SymbolKind.MODULE,
+                            SymbolKind.FUNCTION,
+                            SymbolKind.METHOD,
+                        }
+                        else 1,
+                        self._range_span(candidate.range),
+                    )
+                )
+                parent = parent_candidates[0]
+                _append_relation(
+                    Relation(
+                        src_def_id=parent.def_id,
+                        kind=RelationKind.CONTAINS,
+                        dst_def_id=child.def_id,
+                        resolved=True,
+                        meta={"source": "scip.range_nesting"},
+                    )
+                )
+
         # Derive reference/call/import relations from occurrence context.
         for (
             file_path,
@@ -370,7 +422,13 @@ class SCIPProvider:
         """Find the definition occurrence range for a symbol in a document."""
         for occ in doc.occurrences:
             if occ.symbol == symbol_str and (occ.symbol_roles & SCIP_ROLE_DEFINITION):
-                return self._parse_range(occ.range)
+                occ_range = self._parse_range(occ.range)
+                enclosing_range = self._parse_range(occ.enclosing_range)
+                if enclosing_range and (
+                    occ_range is None or self._range_contains(enclosing_range, occ_range)
+                ):
+                    return enclosing_range
+                return occ_range
         return None
 
     def _parse_range(self, range_list: list[int]) -> Range | None:
@@ -511,10 +569,18 @@ class SCIPProvider:
     ) -> RelationKind:
         if symbol_roles & SCIP_ROLE_IMPORT:
             return RelationKind.IMPORTS
+        target_is_callable = target_kind in SCIP_CALL_TARGET_KINDS
+        caller_is_callable = caller_kind in SCIP_CALLER_PREFERRED_KINDS
+        caller_is_eligible = caller_kind in SCIP_CALLER_ELIGIBLE_KINDS
+
+        if target_is_callable and syntax_kind in SCIP_CALL_LIKE_SYNTAX_KINDS:
+            return RelationKind.CALLS
+        if target_is_callable and caller_is_callable:
+            return RelationKind.CALLS
         if (
-            caller_kind in {SymbolKind.FUNCTION, SymbolKind.METHOD}
-            and target_kind in {SymbolKind.FUNCTION, SymbolKind.METHOD}
-            and syntax_kind in SCIP_CALL_LIKE_SYNTAX_KINDS
+            target_is_callable
+            and caller_is_eligible
+            and not (symbol_roles & SCIP_ROLE_WRITE_ACCESS)
         ):
             return RelationKind.CALLS
         return RelationKind.REFERENCES
@@ -540,7 +606,7 @@ class SCIPProvider:
             callable_exact = [
                 def_id
                 for def_id in exact_matches
-                if symbol_kinds.get(def_id) in {SymbolKind.FUNCTION, SymbolKind.METHOD}
+                if symbol_kinds.get(def_id) in SCIP_CALLER_PREFERRED_KINDS
             ]
             if callable_exact:
                 return callable_exact[0]
@@ -552,16 +618,26 @@ class SCIPProvider:
             for def_id, symbol_range in candidates
             if self._range_contains(symbol_range, occ_range)
         ]
-        if not containing:
-            return None
-
-        containing.sort(
-            key=lambda item: (
-                0 if symbol_kinds.get(item[0]) in {SymbolKind.FUNCTION, SymbolKind.METHOD} else 1,
-                self._range_span(item[1]),
+        if containing:
+            containing.sort(
+                key=lambda item: (
+                    0 if symbol_kinds.get(item[0]) in SCIP_CALLER_PREFERRED_KINDS else 1,
+                    self._range_span(item[1]),
+                )
             )
-        )
-        return containing[0][0]
+            return containing[0][0]
+
+        # Global-scope references/imports often have no enclosing callable.
+        module_candidates = [
+            (def_id, symbol_range)
+            for def_id, symbol_range in candidates
+            if symbol_kinds.get(def_id) == SymbolKind.MODULE
+        ]
+        if module_candidates:
+            module_candidates.sort(key=lambda item: self._range_span(item[1]))
+            return module_candidates[0][0]
+
+        return None
 
     def _range_contains(self, outer: Range, inner: Range) -> bool:
         outer_start = (outer.start_line, outer.start_col)
