@@ -1,6 +1,7 @@
 """GitHub repository sync service."""
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
 
@@ -83,6 +85,17 @@ MAX_FILE_SIZE = 1024 * 1024
 # Base path for cloned repos
 REPOS_BASE_PATH = Path("/data/repos")
 
+DEFAULT_SKIP_DIRS = {
+    "node_modules",
+    "vendor",
+    "dist",
+    "build",
+    "__pycache__",
+    ".git",
+    "venv",
+    ".venv",
+}
+
 
 @dataclass
 class SyncStats:
@@ -121,8 +134,58 @@ def is_eligible_file(file_path: Path, repo_root: Path) -> bool:
             return False
 
     # Skip common non-content directories
-    skip_dirs = {"node_modules", "vendor", "dist", "build", "__pycache__", ".git", "venv", ".venv"}
-    return not any(part in skip_dirs for part in file_path.parts)
+    if any(part in DEFAULT_SKIP_DIRS for part in file_path.parts):
+        return False
+
+    # Respect Composer custom vendor-dir (e.g. "src/libs" in phpmyfaq).
+    for vendor_dir in _composer_vendor_dirs(repo_root):
+        if _path_is_within(file_path, vendor_dir):
+            return False
+
+    return True
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+@lru_cache(maxsize=64)
+def _cached_composer_vendor_dirs(repo_root_str: str) -> tuple[str, ...]:
+    composer_json = Path(repo_root_str) / "composer.json"
+    if not composer_json.exists():
+        return ()
+
+    try:
+        payload = json.loads(composer_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+
+    config = payload.get("config") if isinstance(payload, dict) else None
+    if not isinstance(config, dict):
+        return ()
+
+    vendor_dir = str(config.get("vendor-dir") or "").strip()
+    if not vendor_dir:
+        return ()
+
+    normalized = vendor_dir.replace("\\", "/").strip("/")
+    if not normalized:
+        return ()
+    return (normalized,)
+
+
+def _composer_vendor_dirs(repo_root: Path) -> tuple[Path, ...]:
+    vendor_dir_strings = _cached_composer_vendor_dirs(str(repo_root.resolve()))
+    dirs: list[Path] = []
+    for raw in vendor_dir_strings:
+        candidate = Path(raw)
+        if candidate.parts:
+            dirs.append(candidate)
+    return tuple(dirs)
 
 
 def compute_content_hash(content: str) -> str:

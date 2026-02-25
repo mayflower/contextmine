@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from contextmine_worker.github_sync import clone_or_pull_repo, compute_git_evolution_snapshots
+from contextmine_worker.github_sync import (
+    clone_or_pull_repo,
+    compute_git_evolution_snapshots,
+    is_eligible_file,
+)
 from git import Repo
 
 
@@ -127,3 +131,21 @@ def test_compute_git_evolution_snapshots_marks_empty_windows(
     assert isinstance(stats, dict)
     assert int(stats.get("commits_considered", 0)) == 0
     assert int(stats.get("commits_scanned", 0)) == 0
+
+
+def test_is_eligible_file_skips_custom_composer_vendor_dir(tmp_path: Path) -> None:
+    composer_json = tmp_path / "composer.json"
+    composer_json.write_text(
+        '{"config":{"vendor-dir":"src/libs"}}',
+        encoding="utf-8",
+    )
+    lib_file = tmp_path / "src" / "libs" / "vendor_file.php"
+    lib_file.parent.mkdir(parents=True, exist_ok=True)
+    lib_file.write_text("<?php echo 'vendor';", encoding="utf-8")
+
+    app_file = tmp_path / "src" / "app" / "main.php"
+    app_file.parent.mkdir(parents=True, exist_ok=True)
+    app_file.write_text("<?php echo 'app';", encoding="utf-8")
+
+    assert not is_eligible_file(Path("src/libs/vendor_file.php"), tmp_path)
+    assert is_eligible_file(Path("src/app/main.php"), tmp_path)

@@ -111,7 +111,10 @@ def _is_ignored_repo_path(file_path: str) -> bool:
     """Return True when a repo-relative path belongs to generated/dependency dirs."""
     normalized = file_path.replace("\\", "/")
     parts = [part for part in normalized.split("/") if part]
-    return any(part in IGNORED_REPO_PATH_PARTS for part in parts)
+    if any(part in IGNORED_REPO_PATH_PARTS for part in parts):
+        return True
+    marker_path = f"/{normalized}/"
+    return "/src/libs/" in marker_path
 
 
 async def materialize_surface_catalog_for_source(
