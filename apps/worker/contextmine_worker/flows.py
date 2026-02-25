@@ -79,6 +79,7 @@ TAG_EMBEDDING_API = "embedding-api"
 TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
+KG_BUILD_TIMEOUT_SECONDS = 900
 IGNORED_REPO_PATH_PARTS = frozenset(
     {
         "node_modules",
@@ -2360,11 +2361,21 @@ async def sync_github_source(
     )
     changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
     try:
-        kg_stats = await build_knowledge_graph(
-            source_id=str(source.id),
-            collection_id=collection_id_str,
-            changed_doc_ids=changed_doc_ids,
+        kg_stats = await asyncio.wait_for(
+            build_knowledge_graph(
+                source_id=str(source.id),
+                collection_id=collection_id_str,
+                changed_doc_ids=changed_doc_ids,
+            ),
+            timeout=KG_BUILD_TIMEOUT_SECONDS,
         )
+    except TimeoutError:
+        logger.warning(
+            "Knowledge graph build timed out for source %s after %ss",
+            source.id,
+            KG_BUILD_TIMEOUT_SECONDS,
+        )
+        kg_stats = {"kg_errors": [f"pipeline: timeout_after_{KG_BUILD_TIMEOUT_SECONDS}s"]}
     except Exception as exc:  # noqa: BLE001
         logger.warning("Knowledge graph build failed for source %s: %s", source.id, exc)
         kg_errors = list((kg_stats or {}).get("kg_errors") or [])
