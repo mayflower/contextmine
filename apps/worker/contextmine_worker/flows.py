@@ -79,6 +79,18 @@ TAG_EMBEDDING_API = "embedding-api"
 TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
+IGNORED_REPO_PATH_PARTS = frozenset(
+    {
+        "node_modules",
+        "vendor",
+        "dist",
+        "build",
+        "__pycache__",
+        ".git",
+        "venv",
+        ".venv",
+    }
+)
 
 
 def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
@@ -93,6 +105,13 @@ def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
 def _uri_to_file_path(uri: str) -> str:
     """Normalize document URI to repo-relative file path."""
     return uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+
+
+def _is_ignored_repo_path(file_path: str) -> bool:
+    """Return True when a repo-relative path belongs to generated/dependency dirs."""
+    normalized = file_path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    return any(part in IGNORED_REPO_PATH_PARTS for part in parts)
 
 
 async def materialize_surface_catalog_for_source(
@@ -134,8 +153,10 @@ async def materialize_surface_catalog_for_source(
         for uri, content in docs:
             if not content:
                 continue
-            stats["surface_files_scanned"] += 1
             file_path = _uri_to_file_path(uri)
+            if _is_ignored_repo_path(file_path):
+                continue
+            stats["surface_files_scanned"] += 1
             try:
                 if extractor.add_file(file_path, content):
                     stats["surface_files_recognized"] += 1
@@ -626,6 +647,8 @@ async def build_knowledge_graph(
                         continue
                     # Extract file path from URI
                     file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                    if _is_ignored_repo_path(file_path):
+                        continue
                     # Process all files with supported Tree-sitter languages
                     if detect_language(file_path) is not None:
                         try:
@@ -681,6 +704,8 @@ async def build_knowledge_graph(
                 if not content:
                     continue
                 file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                if _is_ignored_repo_path(file_path):
+                    continue
                 normalized_path = file_path.lower()
                 if normalized_path.endswith(
                     (".sql", ".ddl", ".prisma", ".php", ".py", ".ts", ".js", ".java", ".rb")
@@ -785,6 +810,8 @@ async def build_knowledge_graph(
                 if not content:
                     continue
                 file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+                if _is_ignored_repo_path(file_path):
+                    continue
                 try:
                     surface_extractor.add_file(file_path, content)
                 except Exception as e:
