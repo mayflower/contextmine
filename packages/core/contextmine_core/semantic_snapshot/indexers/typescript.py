@@ -171,9 +171,11 @@ class TypescriptIndexerBackend(BaseIndexerBackend):
         cmd = [self.TOOL_NAME, "index"]
 
         # For JavaScript, force a project config that enables JS coverage.
+        # scip-typescript accepts project files as positional args (projects...),
+        # not via a dedicated --project flag.
         if target.language == Language.JAVASCRIPT:
             project_config = self._create_javascript_project_config(target.root_path)
-            cmd.extend(["--project", str(project_config)])
+            cmd.append(str(project_config))
             return cmd, project_config
 
         return cmd, None

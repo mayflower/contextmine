@@ -16,9 +16,9 @@ def test_build_command_for_javascript_uses_generated_project_config(tmp_path: Pa
     cmd, generated_project_config = backend._build_command(target, tmp_path / "index.scip")  # noqa: SLF001
 
     assert cmd[:2] == ["scip-typescript", "index"]
-    assert "--project" in cmd
     assert generated_project_config is not None
     assert generated_project_config.exists()
+    assert str(generated_project_config) in cmd
 
     payload = json.loads(generated_project_config.read_text(encoding="utf-8"))
     compiler_options = dict(payload.get("compilerOptions") or {})
