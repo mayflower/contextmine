@@ -1315,7 +1315,10 @@ async def _load_community_graph(
                 .scalars()
                 .all()
             )
-        return symbol_nodes, symbol_edges, "symbol"
+        # Only use symbol graph when it has real call edges.
+        # If symbols exist but calls are missing, fallback graph gives more useful processes.
+        if symbol_edges:
+            return symbol_nodes, symbol_edges, "symbol"
 
     nodes = (
         (
