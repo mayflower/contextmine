@@ -373,3 +373,54 @@ class TestSCIPSymbolInference:
         kind, name = provider._infer_kind_and_name_from_symbol("local 42")  # noqa: SLF001
         assert kind == SymbolKind.UNKNOWN
         assert name is None
+
+
+class TestSCIPOccurrenceRelations:
+    """Tests for occurrence-derived relation extraction from SCIP indexes."""
+
+    def test_occurrence_relations_include_calls(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-php"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "PHP"
+        doc.relative_path = "src/app.php"
+
+        caller_symbol = "scip-php php phpmyfaq 0.0.0 src/app.php/foo()."
+        callee_symbol = "scip-php php phpmyfaq 0.0.0 src/app.php/bar()."
+
+        caller = doc.symbols.add()
+        caller.symbol = caller_symbol
+        caller.kind = scip_pb2.SymbolInformation.Kind.Function
+        caller.display_name = "foo"
+
+        callee = doc.symbols.add()
+        callee.symbol = callee_symbol
+        callee.kind = scip_pb2.SymbolInformation.Kind.Function
+        callee.display_name = "bar"
+
+        caller_def = doc.occurrences.add()
+        caller_def.symbol = caller_symbol
+        caller_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        caller_def.range.extend([0, 0, 2, 1])
+
+        callee_def = doc.occurrences.add()
+        callee_def.symbol = callee_symbol
+        callee_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        callee_def.range.extend([4, 0, 5, 1])
+
+        call_ref = doc.occurrences.add()
+        call_ref.symbol = callee_symbol
+        call_ref.symbol_roles = scip_pb2.SymbolRole.ReadAccess
+        call_ref.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunction
+        call_ref.range.extend([1, 4, 1, 7])
+        call_ref.enclosing_range.extend([0, 0, 2, 1])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations

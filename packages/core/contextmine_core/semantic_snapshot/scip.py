@@ -63,6 +63,12 @@ SCIP_ROLE_IMPORT = 0x2
 SCIP_ROLE_WRITE_ACCESS = 0x4
 SCIP_ROLE_READ_ACCESS = 0x8
 
+# Function-like syntax kinds from scip.proto SyntaxKind enum.
+# 6  = Identifier
+# 15 = IdentifierFunction
+# 16 = IdentifierFunctionDefinition
+SCIP_CALL_LIKE_SYNTAX_KINDS = {6, 15, 16}
+
 
 class SCIPProvider:
     """Semantic snapshot provider using SCIP indexes.
@@ -113,9 +119,27 @@ class SCIPProvider:
         symbols: list[Symbol] = []
         occurrences: list[Occurrence] = []
         relations: list[Relation] = []
+        relation_keys: set[tuple[str, RelationKind, str]] = set()
+        symbol_kinds: dict[str, SymbolKind] = {}
+        symbols_by_file: dict[str, list[tuple[str, Range]]] = {}
+        occurrence_candidates: list[tuple[str, Range, str, int, int, list[int]]] = []
 
         # Track symbols we've seen for deduplication
         seen_symbols: set[str] = set()
+
+        def _remember_symbol(symbol: Symbol) -> None:
+            symbol_kinds[symbol.def_id] = symbol.kind
+            if symbol.file_path != "<external>" and symbol.range.start_line > 0:
+                symbols_by_file.setdefault(symbol.file_path, []).append(
+                    (symbol.def_id, symbol.range)
+                )
+
+        def _append_relation(relation: Relation) -> None:
+            key = (relation.src_def_id, relation.kind, relation.dst_def_id)
+            if relation.src_def_id == relation.dst_def_id or key in relation_keys:
+                return
+            relation_keys.add(key)
+            relations.append(relation)
 
         # Process metadata
         tool_name = index.metadata.tool_info.name if index.metadata.tool_info else "unknown"
@@ -169,11 +193,12 @@ class SCIPProvider:
                         container_def_id=sym_info.enclosing_symbol or None,
                     )
                     symbols.append(symbol)
+                    _remember_symbol(symbol)
 
                 # Process relationships
                 for rel in sym_info.relationships:
                     if rel.is_implementation:
-                        relations.append(
+                        _append_relation(
                             Relation(
                                 src_def_id=symbol_str,
                                 kind=RelationKind.IMPLEMENTS,
@@ -182,7 +207,7 @@ class SCIPProvider:
                             )
                         )
                     if rel.is_reference:
-                        relations.append(
+                        _append_relation(
                             Relation(
                                 src_def_id=symbol_str,
                                 kind=RelationKind.REFERENCES,
@@ -191,7 +216,7 @@ class SCIPProvider:
                             )
                         )
                     if rel.is_type_definition:
-                        relations.append(
+                        _append_relation(
                             Relation(
                                 src_def_id=symbol_str,
                                 kind=RelationKind.EXTENDS,
@@ -222,6 +247,18 @@ class SCIPProvider:
                         def_id=occ.symbol,
                     )
                 )
+
+                if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith("local "):
+                    occurrence_candidates.append(
+                        (
+                            file_path,
+                            occ_range,
+                            occ.symbol,
+                            int(occ.symbol_roles),
+                            int(occ.syntax_kind),
+                            list(occ.enclosing_range),
+                        )
+                    )
 
         # Process external symbols (symbols defined in external packages)
         for ext_sym in index.external_symbols:
@@ -255,6 +292,64 @@ class SCIPProvider:
                     range=Range(start_line=0, start_col=0, end_line=0, end_col=0),
                     name=name,
                     container_def_id=ext_sym.enclosing_symbol or None,
+                )
+            )
+            _remember_symbol(symbols[-1])
+
+        # Use explicit symbol container metadata to recover containment edges.
+        for symbol in symbols:
+            if not symbol.container_def_id:
+                continue
+            if symbol.container_def_id not in symbol_kinds:
+                continue
+            _append_relation(
+                Relation(
+                    src_def_id=symbol.container_def_id,
+                    kind=RelationKind.CONTAINS,
+                    dst_def_id=symbol.def_id,
+                    resolved=True,
+                    meta={"source": "scip.enclosing_symbol"},
+                )
+            )
+
+        # Derive reference/call/import relations from occurrence context.
+        for (
+            file_path,
+            occ_range,
+            target_def_id,
+            symbol_roles,
+            syntax_kind,
+            enclosing_range_raw,
+        ) in occurrence_candidates:
+            caller_def_id = self._find_enclosing_symbol_def_id(
+                file_path=file_path,
+                occ_range=occ_range,
+                enclosing_range_raw=enclosing_range_raw,
+                symbols_by_file=symbols_by_file,
+                symbol_kinds=symbol_kinds,
+            )
+            if not caller_def_id:
+                continue
+            if target_def_id not in symbol_kinds:
+                continue
+
+            relation_kind = self._relation_kind_from_occurrence(
+                symbol_roles=symbol_roles,
+                syntax_kind=syntax_kind,
+                caller_kind=symbol_kinds.get(caller_def_id),
+                target_kind=symbol_kinds.get(target_def_id),
+            )
+            _append_relation(
+                Relation(
+                    src_def_id=caller_def_id,
+                    kind=relation_kind,
+                    dst_def_id=target_def_id,
+                    resolved=True,
+                    meta={
+                        "source": "scip.occurrence",
+                        "syntax_kind": syntax_kind,
+                        "symbol_roles": symbol_roles,
+                    },
                 )
             )
 
@@ -405,6 +500,80 @@ class SCIPProvider:
         if not matches:
             return None
         return matches[-1]
+
+    def _relation_kind_from_occurrence(
+        self,
+        *,
+        symbol_roles: int,
+        syntax_kind: int,
+        caller_kind: SymbolKind | None,
+        target_kind: SymbolKind | None,
+    ) -> RelationKind:
+        if symbol_roles & SCIP_ROLE_IMPORT:
+            return RelationKind.IMPORTS
+        if (
+            caller_kind in {SymbolKind.FUNCTION, SymbolKind.METHOD}
+            and target_kind in {SymbolKind.FUNCTION, SymbolKind.METHOD}
+            and syntax_kind in SCIP_CALL_LIKE_SYNTAX_KINDS
+        ):
+            return RelationKind.CALLS
+        return RelationKind.REFERENCES
+
+    def _find_enclosing_symbol_def_id(
+        self,
+        *,
+        file_path: str,
+        occ_range: Range,
+        enclosing_range_raw: list[int],
+        symbols_by_file: dict[str, list[tuple[str, Range]]],
+        symbol_kinds: dict[str, SymbolKind],
+    ) -> str | None:
+        candidates = symbols_by_file.get(file_path, [])
+        if not candidates:
+            return None
+
+        enclosing_range = self._parse_range(enclosing_range_raw)
+        if enclosing_range:
+            exact_matches = [
+                def_id for def_id, symbol_range in candidates if symbol_range == enclosing_range
+            ]
+            callable_exact = [
+                def_id
+                for def_id in exact_matches
+                if symbol_kinds.get(def_id) in {SymbolKind.FUNCTION, SymbolKind.METHOD}
+            ]
+            if callable_exact:
+                return callable_exact[0]
+            if exact_matches:
+                return exact_matches[0]
+
+        containing = [
+            (def_id, symbol_range)
+            for def_id, symbol_range in candidates
+            if self._range_contains(symbol_range, occ_range)
+        ]
+        if not containing:
+            return None
+
+        containing.sort(
+            key=lambda item: (
+                0 if symbol_kinds.get(item[0]) in {SymbolKind.FUNCTION, SymbolKind.METHOD} else 1,
+                self._range_span(item[1]),
+            )
+        )
+        return containing[0][0]
+
+    def _range_contains(self, outer: Range, inner: Range) -> bool:
+        outer_start = (outer.start_line, outer.start_col)
+        outer_end = (outer.end_line, outer.end_col)
+        inner_start = (inner.start_line, inner.start_col)
+        inner_end = (inner.end_line, inner.end_col)
+        return outer_start <= inner_start and inner_end <= outer_end
+
+    def _range_span(self, range_obj: Range) -> int:
+        line_delta = max(0, range_obj.end_line - range_obj.start_line)
+        col_delta = max(0, range_obj.end_col - range_obj.start_col)
+        return line_delta * 1_000_000 + col_delta
 
 
 def build_snapshot_scip(scip_path: Path | str) -> Snapshot:
