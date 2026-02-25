@@ -913,6 +913,7 @@ async def build_twin_graph(
             stats["twin_nodes_upserted"] += int(nodes)
             stats["twin_edges_upserted"] += int(edges)
 
+        settings = get_settings()
         if file_metrics:
             requested_metric_paths = {
                 canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
@@ -945,13 +946,18 @@ async def build_twin_graph(
             stats["metrics_mapped_files"] = enriched
             stats["metrics_unmapped_sample"] = metrics_unmapped[:25]
             if enriched < requested_metric_files:
-                raise RuntimeError(
+                stats["metrics_gate"] = "fail"
+                gate_error = (
                     "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
                     f"(mapped={enriched}, metrics={requested_metric_files})"
                 )
+                if settings.metrics_strict_mode:
+                    raise RuntimeError(gate_error)
+                logger.warning("%s", gate_error)
+            else:
+                stats["metrics_gate"] = "pass"
             stats["twin_metric_nodes_enriched"] = enriched
             stats["twin_metric_nodes_requested"] = requested_metric_files
-            stats["metrics_gate"] = "pass"
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
         if evolution_payload:
@@ -982,7 +988,6 @@ async def build_twin_graph(
             session, collection_uuid
         )
 
-        settings = get_settings()
         if settings.arch_docs_enabled:
             try:
                 from dataclasses import asdict
