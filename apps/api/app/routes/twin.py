@@ -1275,6 +1275,190 @@ def _compute_symbol_communities(
     return node_to_community, communities
 
 
+async def _load_community_graph(
+    db: Any,
+    collection_id: uuid.UUID,
+) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], str]:
+    """Load preferred graph for community/process views.
+
+    Preference order:
+    1. SYMBOL nodes with SYMBOL_CALLS_SYMBOL edges
+    2. Fallback to all knowledge nodes/edges for collections without symbol graph
+    """
+    symbol_nodes = (
+        (
+            await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if symbol_nodes:
+        symbol_node_ids = {node.id for node in symbol_nodes}
+        symbol_edges: list[KnowledgeEdge] = []
+        if symbol_node_ids:
+            symbol_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_id,
+                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return symbol_nodes, symbol_edges, "symbol"
+
+    nodes = (
+        (
+            await db.execute(
+                select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    edges = (
+        (
+            await db.execute(
+                select(KnowledgeEdge).where(KnowledgeEdge.collection_id == collection_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return nodes, edges, "knowledge_fallback"
+
+
+async def _build_structural_community_points(
+    db: Any,
+    *,
+    collection_id: uuid.UUID,
+    include_node_kinds: set[KnowledgeNodeKind] | None,
+    exclude_node_kinds: set[KnowledgeNodeKind] | None,
+    include_edge_kinds: set[KnowledgeEdgeKind] | None,
+    page: int,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
+    if graph_source != "symbol":
+        warnings.append(
+            "No symbol call graph found. Using knowledge graph communities as fallback."
+        )
+
+    if include_node_kinds:
+        graph_nodes = [node for node in graph_nodes if node.kind in include_node_kinds]
+    if exclude_node_kinds:
+        graph_nodes = [node for node in graph_nodes if node.kind not in exclude_node_kinds]
+
+    node_ids = {node.id for node in graph_nodes}
+    if not node_ids:
+        return [], warnings
+
+    graph_edges = [
+        edge
+        for edge in graph_edges
+        if edge.source_node_id in node_ids and edge.target_node_id in node_ids
+    ]
+    if include_edge_kinds:
+        graph_edges = [edge for edge in graph_edges if edge.kind in include_edge_kinds]
+
+    node_to_community, communities = _compute_symbol_communities(graph_nodes, graph_edges)
+    node_by_id = {node.id: node for node in graph_nodes}
+
+    pair_weights: dict[tuple[str, str], float] = defaultdict(float)
+    for edge in graph_edges:
+        source_community = node_to_community.get(edge.source_node_id)
+        target_community = node_to_community.get(edge.target_node_id)
+        if not source_community or not target_community or source_community == target_community:
+            continue
+        pair = (
+            (source_community, target_community)
+            if source_community < target_community
+            else (target_community, source_community)
+        )
+        pair_weights[pair] += 1.0
+
+    ordered_communities = sorted(
+        communities.values(),
+        key=lambda item: (-int(item["size"]), str(item["label"])),
+    )
+    if page > 0 or limit > 0:
+        start = page * limit
+        end = start + limit
+        ordered_communities = ordered_communities[start:end]
+
+    point_ids = [str(item["id"]) for item in ordered_communities]
+    point_id_set = set(point_ids)
+    scoped_weights = {
+        pair: weight
+        for pair, weight in pair_weights.items()
+        if pair[0] in point_id_set and pair[1] in point_id_set
+    }
+    positions = _layout_code_structure_points(point_ids, scoped_weights)
+
+    points: list[dict[str, Any]] = []
+    for community in ordered_communities:
+        member_ids = list(community.get("member_node_ids", []))
+        member_nodes = [node_by_id[node_id] for node_id in member_ids if node_id in node_by_id]
+        profile = _community_profile(member_nodes)
+        dominant_domain = profile["dominant_domain"]
+        dominant_ratio = float(profile["dominant_ratio"])
+        misplaced_nodes: list[dict[str, Any]] = []
+        if dominant_domain and dominant_ratio >= 0.6:
+            for member in member_nodes:
+                member_domain = profile["node_domain_by_id"].get(member.id)
+                if member_domain and member_domain != dominant_domain:
+                    misplaced_nodes.append(
+                        {
+                            "id": str(member.id),
+                            "name": member.name,
+                            "kind": member.kind.value,
+                            "domain": member_domain,
+                        }
+                    )
+
+        x, y = positions.get(str(community["id"]), (0.0, 0.0))
+        points.append(
+            {
+                "id": str(community["id"]),
+                "label": str(community["label"]),
+                "x": x,
+                "y": y,
+                "member_count": int(community["size"]),
+                "cohesion": float(community["cohesion"]),
+                "top_kinds": profile["top_kinds"],
+                "domain_counts": profile["domain_counts"],
+                "dominant_domain": dominant_domain,
+                "dominant_ratio": dominant_ratio,
+                "summary": None,
+                "anchor_node_id": str(community["sample_nodes"][0]["id"])
+                if community.get("sample_nodes")
+                else "",
+                "sample_nodes": list(community.get("sample_nodes", [])),
+                "member_node_ids": [
+                    str(member_node_id) for member_node_id in community.get("member_node_ids", [])
+                ],
+                "vector": [],
+                "source_refs": profile["source_refs"],
+                "name_tokens": profile["name_tokens"],
+                "misplaced_nodes": misplaced_nodes,
+            }
+        )
+
+    _normalize_xy(points)
+    return points, warnings
+
+
 def _dedupe_traces(traces: list[list[uuid.UUID]]) -> list[list[uuid.UUID]]:
     ordered = sorted(
         traces,
@@ -3072,37 +3256,10 @@ async def graphrag_communities_view(
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
 
-        symbol_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        community_nodes, community_edges, _graph_source = await _load_community_graph(
+            db, collection_uuid
         )
-        symbol_node_ids = {node.id for node in symbol_nodes}
-        symbol_edges: list[KnowledgeEdge] = []
-        if symbol_node_ids:
-            symbol_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_uuid,
-                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-        _, communities = _compute_symbol_communities(symbol_nodes, symbol_edges)
+        _, communities = _compute_symbol_communities(community_nodes, community_edges)
         ordered = sorted(
             communities.values(), key=lambda item: (-int(item["size"]), str(item["label"]))
         )
@@ -3162,138 +3319,16 @@ async def semantic_map_view(
         warnings: list[str] = []
 
         if resolved_map_mode == "code_structure":
-            if (
-                (include_node_kinds and KnowledgeNodeKind.SYMBOL not in include_node_kinds)
-                or (exclude_node_kinds and KnowledgeNodeKind.SYMBOL in exclude_node_kinds)
-                or (
-                    include_edge_kinds
-                    and KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL not in include_edge_kinds
-                )
-            ):
-                points = []
-            else:
-                symbol_nodes = (
-                    (
-                        await db.execute(
-                            select(KnowledgeNode).where(
-                                KnowledgeNode.collection_id == collection_uuid,
-                                KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                symbol_node_ids = {node.id for node in symbol_nodes}
-                symbol_edges: list[KnowledgeEdge] = []
-                if symbol_node_ids:
-                    symbol_edges = (
-                        (
-                            await db.execute(
-                                select(KnowledgeEdge).where(
-                                    KnowledgeEdge.collection_id == collection_uuid,
-                                    KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                                    KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                                    KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                                )
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-
-                node_to_community, communities = _compute_symbol_communities(
-                    symbol_nodes, symbol_edges
-                )
-                node_by_id = {node.id: node for node in symbol_nodes}
-
-                pair_weights: dict[tuple[str, str], float] = defaultdict(float)
-                for edge in symbol_edges:
-                    source_community = node_to_community.get(edge.source_node_id)
-                    target_community = node_to_community.get(edge.target_node_id)
-                    if (
-                        not source_community
-                        or not target_community
-                        or source_community == target_community
-                    ):
-                        continue
-                    pair = (
-                        (source_community, target_community)
-                        if source_community < target_community
-                        else (target_community, source_community)
-                    )
-                    pair_weights[pair] += 1.0
-
-                ordered_communities = sorted(
-                    communities.values(),
-                    key=lambda item: (-int(item["size"]), str(item["label"])),
-                )
-                if page > 0 or limit > 0:
-                    start = page * limit
-                    end = start + limit
-                    ordered_communities = ordered_communities[start:end]
-
-                point_ids = [str(item["id"]) for item in ordered_communities]
-                point_id_set = set(point_ids)
-                scoped_weights = {
-                    pair: weight
-                    for pair, weight in pair_weights.items()
-                    if pair[0] in point_id_set and pair[1] in point_id_set
-                }
-                positions = _layout_code_structure_points(point_ids, scoped_weights)
-
-                for community in ordered_communities:
-                    member_ids = list(community.get("member_node_ids", []))
-                    member_nodes = [
-                        node_by_id[node_id] for node_id in member_ids if node_id in node_by_id
-                    ]
-                    profile = _community_profile(member_nodes)
-                    dominant_domain = profile["dominant_domain"]
-                    dominant_ratio = float(profile["dominant_ratio"])
-                    misplaced_nodes: list[dict[str, Any]] = []
-                    if dominant_domain and dominant_ratio >= 0.6:
-                        for member in member_nodes:
-                            member_domain = profile["node_domain_by_id"].get(member.id)
-                            if member_domain and member_domain != dominant_domain:
-                                misplaced_nodes.append(
-                                    {
-                                        "id": str(member.id),
-                                        "name": member.name,
-                                        "kind": member.kind.value,
-                                        "domain": member_domain,
-                                    }
-                                )
-
-                    x, y = positions.get(str(community["id"]), (0.0, 0.0))
-                    points.append(
-                        {
-                            "id": str(community["id"]),
-                            "label": str(community["label"]),
-                            "x": x,
-                            "y": y,
-                            "member_count": int(community["size"]),
-                            "cohesion": float(community["cohesion"]),
-                            "top_kinds": profile["top_kinds"],
-                            "domain_counts": profile["domain_counts"],
-                            "dominant_domain": dominant_domain,
-                            "dominant_ratio": dominant_ratio,
-                            "summary": None,
-                            "anchor_node_id": str(community["sample_nodes"][0]["id"])
-                            if community.get("sample_nodes")
-                            else "",
-                            "sample_nodes": list(community.get("sample_nodes", [])),
-                            "member_node_ids": [
-                                str(member_node_id)
-                                for member_node_id in community.get("member_node_ids", [])
-                            ],
-                            "vector": [],
-                            "source_refs": profile["source_refs"],
-                            "name_tokens": profile["name_tokens"],
-                            "misplaced_nodes": misplaced_nodes,
-                        }
-                    )
-
-                _normalize_xy(points)
+            points, structural_warnings = await _build_structural_community_points(
+                db,
+                collection_id=collection_uuid,
+                include_node_kinds=include_node_kinds,
+                exclude_node_kinds=exclude_node_kinds,
+                include_edge_kinds=include_edge_kinds,
+                page=page,
+                limit=limit,
+            )
+            warnings.extend(structural_warnings)
 
         else:
             if (
@@ -3434,6 +3469,20 @@ async def semantic_map_view(
                         warnings.append(
                             "No community embeddings found. Using fallback projection for semantic mode."
                         )
+                else:
+                    points, structural_warnings = await _build_structural_community_points(
+                        db,
+                        collection_id=collection_uuid,
+                        include_node_kinds=include_node_kinds,
+                        exclude_node_kinds=exclude_node_kinds,
+                        include_edge_kinds=include_edge_kinds,
+                        page=page,
+                        limit=limit,
+                    )
+                    warnings.append(
+                        "No semantic communities found. Falling back to structural communities."
+                    )
+                    warnings.extend(structural_warnings)
 
         signals = _build_semantic_map_signals(
             points,
@@ -3607,38 +3656,9 @@ async def graphrag_processes_view(
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
 
-        symbol_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        symbol_node_ids = {node.id for node in symbol_nodes}
-        symbol_edges: list[KnowledgeEdge] = []
-        if symbol_node_ids:
-            symbol_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_uuid,
-                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-        community_by_node_id, _ = _compute_symbol_communities(symbol_nodes, symbol_edges)
-        processes = _detect_processes(symbol_nodes, symbol_edges, community_by_node_id)
+        process_nodes, graph_edges, _graph_source = await _load_community_graph(db, collection_uuid)
+        community_by_node_id, _ = _compute_symbol_communities(process_nodes, graph_edges)
+        processes = _detect_processes(process_nodes, graph_edges, community_by_node_id)
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -3672,38 +3692,11 @@ async def graphrag_process_detail_view(
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
 
-        symbol_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        process_nodes, source_edges, _graph_source = await _load_community_graph(
+            db, collection_uuid
         )
-        symbol_node_ids = {node.id for node in symbol_nodes}
-        symbol_edges: list[KnowledgeEdge] = []
-        if symbol_node_ids:
-            symbol_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_uuid,
-                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-        community_by_node_id, _ = _compute_symbol_communities(symbol_nodes, symbol_edges)
-        processes = _detect_processes(symbol_nodes, symbol_edges, community_by_node_id)
+        community_by_node_id, _ = _compute_symbol_communities(process_nodes, source_edges)
+        processes = _detect_processes(process_nodes, source_edges, community_by_node_id)
         process = next((item for item in processes if item["id"] == process_id), None)
         if not process:
             raise HTTPException(status_code=404, detail="Process not found")
@@ -3724,7 +3717,7 @@ async def graphrag_process_detail_view(
         ]
         observed_edges = [
             edge
-            for edge in symbol_edges
+            for edge in source_edges
             if edge.source_node_id in step_node_set and edge.target_node_id in step_node_set
         ]
         observed_edge_ids = {

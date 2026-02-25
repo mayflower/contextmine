@@ -433,11 +433,15 @@ class TestTwinViewRoutes:
 
         symbols_result = MagicMock()
         symbols_result.scalars.return_value.all.return_value = []
-        edges_result = MagicMock()
-        edges_result.scalars.return_value.all.return_value = []
+        fallback_nodes_result = MagicMock()
+        fallback_nodes_result.scalars.return_value.all.return_value = []
+        fallback_edges_result = MagicMock()
+        fallback_edges_result.scalars.return_value.all.return_value = []
 
         fake_db = MagicMock()
-        fake_db.execute = AsyncMock(side_effect=[symbols_result, edges_result])
+        fake_db.execute = AsyncMock(
+            side_effect=[symbols_result, fallback_nodes_result, fallback_edges_result]
+        )
 
         class SessionContext:
             async def __aenter__(self):  # noqa: ANN001
