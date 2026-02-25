@@ -12,6 +12,7 @@ Uses LLM for semantic analysis - no framework-specific hardcoding.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -162,6 +163,202 @@ Return empty lists if no database schema definitions are found."""
 
 SCHEMA_EXTRACTION_SYSTEM_PROMPT = "You are a database schema extraction specialist. Return only structured output based on the file content."
 
+SQL_CREATE_TABLE_RE = re.compile(
+    r"create\s+table(?:\s+if\s+not\s+exists)?\s+([^\s(]+)\s*\((.*?)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+SQL_PRIMARY_KEY_RE = re.compile(r"primary\s+key\s*\(([^)]+)\)", re.IGNORECASE)
+SQL_FOREIGN_KEY_RE = re.compile(
+    r"foreign\s+key\s*\(([^)]+)\)\s*references\s+([^\s(]+)\s*\(([^)]+)\)",
+    re.IGNORECASE,
+)
+SQL_INLINE_REFERENCE_RE = re.compile(
+    r"references\s+([^\s(]+)\s*\(([^)]+)\)",
+    re.IGNORECASE,
+)
+
+
+def _strip_sql_identifier(raw: str) -> str:
+    token = raw.strip().strip(",")
+    if not token:
+        return token
+    parts = [part.strip().strip('`"[]') for part in token.split(".")]
+    return ".".join(part for part in parts if part)
+
+
+def _split_sql_items(body: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_single = False
+    in_double = False
+    in_backtick = False
+
+    for char in body:
+        if char == "'" and not in_double and not in_backtick:
+            in_single = not in_single
+        elif char == '"' and not in_single and not in_backtick:
+            in_double = not in_double
+        elif char == "`" and not in_single and not in_double:
+            in_backtick = not in_backtick
+        elif not in_single and not in_double and not in_backtick:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+
+        if char == "," and depth == 0 and not in_single and not in_double and not in_backtick:
+            item = "".join(current).strip()
+            if item:
+                items.append(item)
+            current = []
+            continue
+
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _normalize_sql_type(raw_type: str) -> str:
+    token = raw_type.strip().lower()
+    if not token:
+        return "unknown"
+    if token.startswith(("varchar", "char", "character varying")):
+        return "String"
+    if token.startswith("text"):
+        return "Text"
+    if token.startswith(("bigint", "bigserial")):
+        return "BigInteger"
+    if token.startswith(("smallint", "smallserial")):
+        return "SmallInteger"
+    if token.startswith(("int", "integer", "serial")):
+        return "Integer"
+    if token.startswith(("bool", "boolean")):
+        return "Boolean"
+    if token.startswith(("timestamp", "datetime")):
+        return "DateTime"
+    if token.startswith("date"):
+        return "Date"
+    if token.startswith("time"):
+        return "Time"
+    if token.startswith("uuid"):
+        return "UUID"
+    if token.startswith("json"):
+        return "JSON"
+    if token.startswith(("numeric", "decimal", "money")):
+        return "Numeric"
+    if token.startswith(("float", "double", "real")):
+        return "Float"
+    if token.startswith(("blob", "bytea", "binary", "varbinary")):
+        return "LargeBinary"
+    return raw_type.strip()[:64]
+
+
+def _extract_schema_from_sql_ddl(file_path: str, content: str) -> SchemaExtraction:
+    extraction = SchemaExtraction(file_path=file_path, framework="sql")
+    matches = list(SQL_CREATE_TABLE_RE.finditer(content))
+    if not matches:
+        return extraction
+
+    for match in matches:
+        table_name = _strip_sql_identifier(match.group(1))
+        if not table_name:
+            continue
+        table = TableDef(name=table_name)
+        body = match.group(2)
+        items = _split_sql_items(body)
+
+        for item in items:
+            line = item.strip()
+            if not line:
+                continue
+            line_upper = line.upper()
+
+            pk_match = SQL_PRIMARY_KEY_RE.search(line)
+            if pk_match:
+                pk_columns = [
+                    _strip_sql_identifier(col)
+                    for col in pk_match.group(1).split(",")
+                    if col.strip()
+                ]
+                for pk_col in pk_columns:
+                    if pk_col and pk_col not in table.primary_keys:
+                        table.primary_keys.append(pk_col)
+
+            fk_match = SQL_FOREIGN_KEY_RE.search(line)
+            if fk_match:
+                source_columns = [
+                    _strip_sql_identifier(col)
+                    for col in fk_match.group(1).split(",")
+                    if col.strip()
+                ]
+                target_table = _strip_sql_identifier(fk_match.group(2))
+                target_columns = [
+                    _strip_sql_identifier(col)
+                    for col in fk_match.group(3).split(",")
+                    if col.strip()
+                ]
+                if source_columns and target_table and target_columns:
+                    extraction.foreign_keys.append(
+                        ForeignKeyDef(
+                            name=None,
+                            source_table=table_name,
+                            source_columns=source_columns,
+                            target_table=target_table,
+                            target_columns=target_columns,
+                        )
+                    )
+
+            if line_upper.startswith(
+                (
+                    "CONSTRAINT ",
+                    "PRIMARY KEY",
+                    "FOREIGN KEY",
+                    "UNIQUE ",
+                    "KEY ",
+                    "INDEX ",
+                    "CHECK ",
+                )
+            ):
+                continue
+
+            parts = line.split(None, 2)
+            if len(parts) < 2:
+                continue
+            column_name = _strip_sql_identifier(parts[0])
+            raw_type = parts[1]
+            inline_fk = SQL_INLINE_REFERENCE_RE.search(line)
+            foreign_key = None
+            if inline_fk:
+                target_table = _strip_sql_identifier(inline_fk.group(1))
+                target_column = _strip_sql_identifier(inline_fk.group(2))
+                if target_table and target_column:
+                    foreign_key = f"{target_table}.{target_column}"
+
+            column = ColumnDef(
+                name=column_name,
+                type_name=_normalize_sql_type(raw_type),
+                nullable="NOT NULL" not in line_upper,
+                primary_key="PRIMARY KEY" in line_upper,
+                foreign_key=foreign_key,
+            )
+            table.columns.append(column)
+            if column.primary_key and column.name not in table.primary_keys:
+                table.primary_keys.append(column.name)
+
+        if table.primary_keys:
+            for col in table.columns:
+                if col.name in table.primary_keys:
+                    col.primary_key = True
+
+        if table.columns:
+            extraction.tables.append(table)
+
+    return extraction
+
 
 def _is_code_or_schema_file(file_path: str) -> bool:
     """Check if a file could contain schema definitions.
@@ -309,6 +506,12 @@ async def _extract_schema_from_single_file(
     # Skip binary or non-text content
     if "\x00" in content[:1000]:
         return result
+
+    path_lower = file_path.lower()
+    if path_lower.endswith((".sql", ".ddl")):
+        deterministic = _extract_schema_from_sql_ddl(file_path, content)
+        if deterministic.tables or deterministic.foreign_keys:
+            return deterministic
 
     try:
         prompt = SCHEMA_EXTRACTION_PROMPT.format(
