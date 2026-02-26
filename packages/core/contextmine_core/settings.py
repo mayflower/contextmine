@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     )
 
     # SCIP Polyglot Indexing Settings
+    sync_source_timeout_seconds: int = Field(
+        default=3600,
+        description="Timeout in seconds for one source sync run in the worker scheduler",
+    )
     scip_languages: str = Field(
         default="python,typescript,javascript,java,php",
         description="Comma-separated list of enabled languages for SCIP indexing",

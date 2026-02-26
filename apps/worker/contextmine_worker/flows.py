@@ -81,7 +81,6 @@ TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
 KG_BUILD_TIMEOUT_SECONDS = 900
-SYNC_SOURCE_TIMEOUT_SECONDS = 1800
 IGNORED_REPO_PATH_PARTS = frozenset(
     {
         "node_modules",
@@ -94,6 +93,11 @@ IGNORED_REPO_PATH_PARTS = frozenset(
         ".venv",
     }
 )
+
+
+def _sync_source_timeout_seconds() -> int:
+    configured = int(get_settings().sync_source_timeout_seconds)
+    return max(300, configured)
 
 
 def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
@@ -3577,11 +3581,10 @@ async def sync_due_sources() -> dict:
 
     results = []
     skipped = 0
+    timeout_seconds = _sync_source_timeout_seconds()
     for source in sources:
         try:
-            sync_run = await asyncio.wait_for(
-                sync_source(source), timeout=SYNC_SOURCE_TIMEOUT_SECONDS
-            )
+            sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
             if sync_run is None:
                 skipped += 1
                 continue
@@ -3593,9 +3596,7 @@ async def sync_due_sources() -> dict:
                 }
             )
         except TimeoutError:
-            reason = (
-                f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {SYNC_SOURCE_TIMEOUT_SECONDS}s in scheduler"
-            )
+            reason = f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {timeout_seconds}s in scheduler"
             recovered = await _fail_running_sync_runs_for_source(str(source.id), reason)
             results.append(
                 {
@@ -3647,8 +3648,9 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
     if not source.enabled:
         return {"error": f"Source {source_id} is disabled", "skipped": True}
 
+    timeout_seconds = _sync_source_timeout_seconds()
     try:
-        sync_run = await asyncio.wait_for(sync_source(source), timeout=SYNC_SOURCE_TIMEOUT_SECONDS)
+        sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
         if sync_run is None:
             return {"source_id": source_id, "skipped": True, "reason": "lock_not_acquired"}
 
@@ -3659,10 +3661,7 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
             "stats": sync_run.stats,
         }
     except TimeoutError:
-        reason = (
-            "AUTO_TIMEOUT_SYNC_SOURCE: exceeded "
-            f"{SYNC_SOURCE_TIMEOUT_SECONDS}s in sync_single_source"
-        )
+        reason = f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {timeout_seconds}s in sync_single_source"
         recovered = await _fail_running_sync_runs_for_source(source_id, reason)
         return {"source_id": source_id, "error": reason, "recovered_running_rows": recovered}
     except Exception as e:
