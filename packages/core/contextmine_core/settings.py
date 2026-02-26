@@ -159,6 +159,10 @@ class Settings(BaseSettings):
         default=3600,
         description="Timeout in seconds for one source sync run in the worker scheduler",
     )
+    knowledge_graph_build_timeout_seconds: int = Field(
+        default=3600,
+        description="Timeout in seconds for knowledge graph build in source sync",
+    )
     embedding_batch_timeout_seconds: int = Field(
         default=120,
         description="Timeout in seconds for a single embedding batch request",
