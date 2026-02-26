@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -29,6 +31,7 @@ from contextmine_core.models import (
 )
 from contextmine_core.treesitter.languages import TreeSitterLanguage, detect_language
 from contextmine_core.treesitter.manager import get_treesitter_manager
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 if TYPE_CHECKING:
@@ -72,6 +75,38 @@ JS_UI_LANGUAGES = {
     TreeSitterLanguage.TYPESCRIPT,
     TreeSitterLanguage.TSX,
 }
+UI_TEST_PATH_TOKENS = ("/__tests__/", "/tests/", "/test/", "/cypress/", "/playwright/")
+UI_TEST_FILE_MARKERS = (".test.", ".spec.", "_test.", "_spec.")
+UI_ROUTE_SEGMENT_HINTS = {
+    "admin",
+    "app",
+    "content",
+    "dashboard",
+    "page",
+    "pages",
+    "route",
+    "routes",
+    "screen",
+    "screens",
+    "settings",
+    "view",
+    "views",
+}
+UI_GENERIC_VIEW_STEMS = {
+    "api",
+    "client",
+    "config",
+    "configuration",
+    "constants",
+    "helper",
+    "helpers",
+    "service",
+    "services",
+    "types",
+    "util",
+    "utils",
+}
+UI_STRIP_ROUTE_SEGMENTS = {"pages", "page", "routes", "route", "views", "view", "screens", "screen"}
 
 
 @dataclass
@@ -82,6 +117,7 @@ class UIRouteDef:
     file_path: str
     line: int
     view_name_hint: str | None = None
+    inferred: bool = False
 
 
 @dataclass
@@ -96,6 +132,7 @@ class UIViewDef:
     endpoint_hints: list[str] = field(default_factory=list)
     navigation_targets: list[str] = field(default_factory=list)
     call_sites: list[dict[str, Any]] = field(default_factory=list)
+    inferred: bool = False
 
 
 @dataclass
@@ -109,10 +146,99 @@ class UIExtraction:
 
 def looks_like_ui_file(file_path: str) -> bool:
     """Best-effort UI-file detector."""
-    lower = file_path.lower()
-    if not lower.endswith(UI_FILE_SUFFIXES):
+    path = file_path.replace("\\", "/").lower()
+    if looks_like_ui_test_file(path):
         return False
-    return any(token in lower for token in ("/src/", "/ui/", "/pages/", "/app/", "/components/"))
+    if not path.endswith(UI_FILE_SUFFIXES):
+        return False
+    return any(
+        token in path for token in ("/src/", "/ui/", "/pages/", "/app/", "/components/", "/assets/")
+    )
+
+
+def looks_like_ui_test_file(file_path: str) -> bool:
+    """Return True when a file path resembles a UI test fixture."""
+    normalized = file_path.replace("\\", "/").lower()
+    if any(token in normalized for token in UI_TEST_PATH_TOKENS):
+        return True
+    return any(marker in normalized for marker in UI_TEST_FILE_MARKERS)
+
+
+def _to_pascal_case(raw: str) -> str:
+    tokens = [part for part in re.split(r"[^A-Za-z0-9]+", raw or "") if part]
+    if not tokens:
+        return ""
+    return "".join(token[:1].upper() + token[1:] for token in tokens)
+
+
+def _view_name_from_file_path(file_path: str) -> str | None:
+    path = PurePosixPath(file_path.replace("\\", "/"))
+    stem = path.stem
+    if stem.lower() in {"index", "main", "app"} and path.parent.name:
+        stem = path.parent.name
+    if stem.lower() in UI_GENERIC_VIEW_STEMS and path.parent.name:
+        stem = path.parent.name
+    candidate = _to_pascal_case(stem)
+    return candidate if is_pascal_case(candidate) else None
+
+
+def _looks_like_route_module(file_path: str) -> bool:
+    normalized = file_path.replace("\\", "/").lower()
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in UI_ROUTE_SEGMENT_HINTS for part in parts):
+        return True
+    return "/admin/assets/src/" in normalized
+
+
+def _route_path_from_file(file_path: str) -> str | None:
+    normalized = file_path.replace("\\", "/")
+    lower = normalized.lower()
+    base_prefix = ""
+    relative = ""
+    if "/admin/assets/src/" in lower:
+        split_idx = lower.index("/admin/assets/src/")
+        relative = normalized[split_idx + len("/admin/assets/src/") :]
+        base_prefix = "/admin"
+    elif "/assets/src/" in lower:
+        split_idx = lower.index("/assets/src/")
+        relative = normalized[split_idx + len("/assets/src/") :]
+        base_prefix = "/admin" if "/admin/" in lower[:split_idx] else ""
+    elif "/src/" in lower:
+        split_idx = lower.index("/src/")
+        relative = normalized[split_idx + len("/src/") :]
+    elif "/ui/" in lower:
+        split_idx = lower.index("/ui/")
+        relative = normalized[split_idx + len("/ui/") :]
+    else:
+        return None
+
+    relative_path = PurePosixPath(relative)
+    segments = [segment for segment in relative_path.parts if segment and segment != "."]
+    if not segments:
+        return base_prefix or "/"
+
+    if segments[-1].lower().endswith(UI_FILE_SUFFIXES):
+        file_stem = PurePosixPath(segments[-1]).stem
+        segments = segments[:-1] + [file_stem]
+
+    filtered: list[str] = []
+    for idx, segment in enumerate(segments):
+        token = segment.strip().lower()
+        if not token:
+            continue
+        if idx == 0 and token in UI_STRIP_ROUTE_SEGMENTS:
+            continue
+        if token in {"index", "."}:
+            continue
+        filtered.append(token)
+
+    if not filtered:
+        return base_prefix or "/"
+
+    route = "/".join(filtered)
+    if base_prefix:
+        route = f"{base_prefix.rstrip('/')}/{route}".rstrip("/")
+    return f"/{route.strip('/')}"
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -122,6 +248,9 @@ def _dedupe(values: list[str]) -> list[str]:
 def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
     """Extract routes, views, and UI composition hints from one file."""
     extraction = UIExtraction(file_path=file_path)
+    if looks_like_ui_test_file(file_path):
+        return extraction
+
     language = detect_language(file_path)
     if language not in JS_UI_LANGUAGES:
         return extraction
@@ -136,6 +265,18 @@ def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
     root = tree.root_node
     extraction.routes = _extract_routes(file_path, content, root)
     extraction.views = _extract_views(file_path, content, root)
+    if not extraction.views:
+        inferred = _infer_module_view(file_path, content, root)
+        if inferred is not None:
+            extraction.views = [inferred]
+
+    if not extraction.routes and extraction.views:
+        for view in extraction.views:
+            inferred_route = _infer_route_for_view(file_path, view)
+            if inferred_route is not None:
+                extraction.routes.append(inferred_route)
+                break
+
     return extraction
 
 
@@ -293,6 +434,54 @@ def _extract_views(file_path: str, content: str, root: Any) -> list[UIViewDef]:
     return list(views.values())
 
 
+def _infer_module_view(file_path: str, content: str, root: Any) -> UIViewDef | None:
+    view_name = _view_name_from_file_path(file_path)
+    if not view_name:
+        return None
+
+    components, symbol_hints, endpoint_hints, navigation_targets, call_sites = (
+        _collect_view_signals(
+            content,
+            root,
+            view_name,
+        )
+    )
+    if not (
+        endpoint_hints
+        or navigation_targets
+        or components
+        or (symbol_hints and _looks_like_route_module(file_path))
+    ):
+        return None
+
+    return UIViewDef(
+        name=view_name,
+        file_path=file_path,
+        line=1,
+        components=components[:40],
+        symbol_hints=symbol_hints[:40],
+        endpoint_hints=endpoint_hints[:20],
+        navigation_targets=navigation_targets[:20],
+        call_sites=call_sites[:120],
+        inferred=True,
+    )
+
+
+def _infer_route_for_view(file_path: str, view: UIViewDef) -> UIRouteDef | None:
+    if not _looks_like_route_module(file_path) and not view.navigation_targets:
+        return None
+    route_path = _route_path_from_file(file_path)
+    if not route_path:
+        return None
+    return UIRouteDef(
+        path=route_path,
+        file_path=file_path,
+        line=1,
+        view_name_hint=view.name,
+        inferred=True,
+    )
+
+
 def _collect_view_signals(
     content: str,
     root: Any,
@@ -312,8 +501,8 @@ def _collect_view_signals(
 
         if node.type != "call_expression":
             continue
-        _, base_name, method_name = _js_call_name(content, node)
-        callee = method_name or base_name
+        full_name, base_name, method_name = _js_call_name(content, node)
+        callee = full_name or method_name or base_name
         if callee:
             call_sites.append(
                 {
@@ -324,6 +513,8 @@ def _collect_view_signals(
             )
             if len(callee) >= 3:
                 symbol_hints.append(callee)
+            if method_name and method_name != callee and len(method_name) >= 3:
+                symbol_hints.append(method_name)
         endpoint = _endpoint_from_call(content, node, base_name=base_name, method_name=method_name)
         if endpoint:
             endpoint_hints.append(endpoint)
@@ -366,7 +557,7 @@ def _endpoint_from_call(
     base_name: str,
     method_name: str,
 ) -> str | None:
-    endpoint = _first_string_argument(content, call_node)
+    endpoint = _first_string_or_url_argument(content, call_node)
     if not endpoint:
         return None
 
@@ -404,6 +595,43 @@ def _first_string_argument(content: str, call_node: Any) -> str | None:
         return None
     for child in args.children:
         literal = _string_literal(content, child)
+        if literal:
+            return literal
+    return None
+
+
+def _first_string_or_url_argument(content: str, call_node: Any) -> str | None:
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for child in args.children:
+        literal = _string_literal(content, child)
+        if literal:
+            return literal
+        if child.type == "object":
+            url_literal = _object_field_string(
+                content, child, field_names={"url", "path", "endpoint"}
+            )
+            if url_literal:
+                return url_literal
+    return None
+
+
+def _object_field_string(
+    content: str,
+    object_node: Any,
+    *,
+    field_names: set[str],
+) -> str | None:
+    for pair in [child for child in object_node.children if child.type == "pair"]:
+        key_node = pair.child_by_field_name("key") or first_child(pair, "property_identifier")
+        key = unquote(node_text(content, key_node)).strip().lower()
+        if key not in field_names:
+            continue
+        value_node = pair.child_by_field_name("value")
+        if value_node is None:
+            continue
+        literal = _string_literal(content, value_node)
         if literal:
             return literal
     return None
@@ -542,6 +770,85 @@ async def _upsert_edge(
     return (await session.execute(stmt)).scalar_one()
 
 
+def _normalize_endpoint_path(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if "://" in raw:
+        _, _, remainder = raw.partition("://")
+        slash = remainder.find("/")
+        raw = remainder[slash:] if slash >= 0 else "/"
+    raw = raw.split("?", 1)[0].split("#", 1)[0].strip()
+    if not raw:
+        return None
+    if not raw.startswith("/"):
+        raw = f"/{raw}"
+    return "/" + "/".join(part for part in raw.split("/") if part)
+
+
+def _endpoint_path_from_name(name: str) -> tuple[str | None, str | None]:
+    value = (name or "").strip()
+    if not value:
+        return None, None
+    method = None
+    path = value
+    if " " in value:
+        first, remainder = value.split(" ", 1)
+        if first.strip().lower() in HTTP_METHOD_NAMES:
+            method = first.strip().lower()
+            path = remainder.strip()
+    return method, _normalize_endpoint_path(path)
+
+
+def _parse_endpoint_hint(hint: str) -> tuple[str | None, str | None]:
+    value = (hint or "").strip()
+    if not value:
+        return None, None
+    method = None
+    path = value
+    if " " in value:
+        first, remainder = value.split(" ", 1)
+        if first.strip().lower() in HTTP_METHOD_NAMES:
+            method = first.strip().lower()
+            path = remainder.strip()
+    return method, _normalize_endpoint_path(path)
+
+
+async def _build_endpoint_path_indexes(
+    session: AsyncSession,
+    *,
+    collection_id: UUID,
+) -> tuple[dict[str, set[UUID]], dict[tuple[str, str], set[UUID]]]:
+    endpoint_rows = (
+        (
+            await session.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind == KnowledgeNodeKind.API_ENDPOINT,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_path: dict[str, set[UUID]] = {}
+    by_method_path: dict[tuple[str, str], set[UUID]] = {}
+    for endpoint in endpoint_rows:
+        meta = endpoint.meta or {}
+        method = str(meta.get("method") or "").strip().lower() or None
+        path = _normalize_endpoint_path(str(meta.get("path") or ""))
+        if not path:
+            name_method, name_path = _endpoint_path_from_name(str(endpoint.name or ""))
+            method = method or name_method
+            path = name_path
+        if not path:
+            continue
+        by_path.setdefault(path, set()).add(endpoint.id)
+        if method:
+            by_method_path.setdefault((method, path), set()).add(endpoint.id)
+    return by_path, by_method_path
+
+
 async def build_ui_graph(
     session: AsyncSession,
     collection_id: UUID,
@@ -565,19 +872,25 @@ async def build_ui_graph(
         session=session,
         collection_id=collection_id,
     )
-
-    route_ids_by_path: dict[str, UUID] = {}
-    view_ids_by_name: dict[str, UUID] = {}
-    component_ids_by_name: dict[str, UUID] = {}
+    endpoint_path_index, endpoint_method_path_index = await _build_endpoint_path_indexes(
+        session,
+        collection_id=collection_id,
+    )
 
     for extraction in extractions:
+        route_ids_for_extraction: dict[str, UUID] = {}
+        view_ids_for_extraction: dict[str, UUID] = {}
         for route in extraction.routes:
             route_key = f"ui_route:{route.path}"
             route_meta = {
                 "file_path": route.file_path,
                 "path": route.path,
                 "view_name_hint": route.view_name_hint,
-                **_provenance(mode="deterministic", extractor="ui.v1", confidence=0.98),
+                **_provenance(
+                    mode="inferred" if route.inferred else "deterministic",
+                    extractor="ui.v1",
+                    confidence=0.79 if route.inferred else 0.98,
+                ),
             }
             route_id = await _upsert_node(
                 session,
@@ -603,7 +916,7 @@ async def build_ui_graph(
                 name=route.path,
                 meta=route_meta,
             )
-            route_ids_by_path[route.path] = route_id
+            route_ids_for_extraction[route.path] = route_id
             stats["ui_routes"] += 1
 
         for view in extraction.views:
@@ -615,7 +928,11 @@ async def build_ui_graph(
                 "endpoint_hints": view.endpoint_hints,
                 "navigation_targets": view.navigation_targets,
                 "call_sites": view.call_sites,
-                **_provenance(mode="deterministic", extractor="ui.v1", confidence=0.94),
+                **_provenance(
+                    mode="inferred" if view.inferred else "deterministic",
+                    extractor="ui.v1",
+                    confidence=0.8 if view.inferred else 0.94,
+                ),
             }
             view_id = await _upsert_node(
                 session,
@@ -641,7 +958,7 @@ async def build_ui_graph(
                 name=view.name,
                 meta=view_meta,
             )
-            view_ids_by_name[view.name] = view_id
+            view_ids_for_extraction[view.name] = view_id
             stats["ui_views"] += 1
 
             for component_name in view.components:
@@ -658,7 +975,6 @@ async def build_ui_graph(
                     name=component_name,
                     meta=component_meta,
                 )
-                component_ids_by_name[component_name] = component_id
                 stats["ui_components"] += 1
 
                 await _upsert_edge(
@@ -702,6 +1018,7 @@ async def build_ui_graph(
                 meta=view_meta,
             )
 
+            linked_endpoint_ids: set[UUID] = set()
             for ref in resolved_symbol_refs:
                 contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
                 contract_meta = {
@@ -741,23 +1058,79 @@ async def build_ui_graph(
                                 evidence_ids=[evidence_id],
                             ),
                         )
+                        linked_endpoint_ids.add(endpoint_id)
                         stats["contract_edges"] += 1
+
+            for endpoint_hint in view.endpoint_hints:
+                method_hint, path_hint = _parse_endpoint_hint(endpoint_hint)
+                if not path_hint:
+                    continue
+                endpoint_ids: set[UUID] = set(endpoint_path_index.get(path_hint, set()))
+                if method_hint:
+                    endpoint_ids.update(
+                        endpoint_method_path_index.get((method_hint, path_hint), set())
+                    )
+                endpoint_ids.difference_update(linked_endpoint_ids)
+                if not endpoint_ids:
+                    continue
+
+                method_token = method_hint or "any"
+                contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
+                contract_meta = {
+                    "source_view": view.name,
+                    "endpoint_hint": endpoint_hint,
+                    "endpoint_path": path_hint,
+                    "endpoint_method": method_hint,
+                    **_provenance(
+                        mode="inferred", extractor="ui.v1.endpoint_hint", confidence=0.83
+                    ),
+                }
+                contract_id = await _upsert_node(
+                    session,
+                    collection_id=collection_id,
+                    kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
+                    natural_key=contract_key,
+                    name=f"{view.name} endpoint contract",
+                    meta=contract_meta,
+                )
+                stats["interface_contracts"] += 1
+                for endpoint_id in endpoint_ids:
+                    await _upsert_edge(
+                        session,
+                        collection_id=collection_id,
+                        source_node_id=contract_id,
+                        target_node_id=endpoint_id,
+                        kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
+                        meta=_provenance(
+                            mode="inferred",
+                            extractor="ui.v1.endpoint_hint",
+                            confidence=0.82,
+                            evidence_ids=[evidence_id],
+                        ),
+                    )
+                    stats["contract_edges"] += 1
 
         if extraction.routes and extraction.views:
             default_view_name = extraction.views[0].name if len(extraction.views) == 1 else None
+            views_by_name = {view.name: view for view in extraction.views}
             for route in extraction.routes:
-                route_id = route_ids_by_path.get(route.path)
+                route_id = route_ids_for_extraction.get(route.path)
                 if not route_id:
                     continue
 
                 target_view_name = route.view_name_hint or default_view_name
                 target_view_id = (
-                    view_ids_by_name.get(target_view_name) if target_view_name else None
+                    view_ids_for_extraction.get(target_view_name) if target_view_name else None
                 )
                 if target_view_id is None:
                     continue
 
-                inferred = route.view_name_hint is None
+                target_view = views_by_name.get(target_view_name) if target_view_name else None
+                inferred = (
+                    route.inferred
+                    or route.view_name_hint is None
+                    or bool(target_view and target_view.inferred)
+                )
                 await _upsert_edge(
                     session,
                     collection_id=collection_id,
@@ -772,6 +1145,4 @@ async def build_ui_graph(
                 )
                 stats["ui_edges"] += 1
 
-    # Keep dictionaries available for synth layers in calling code if needed.
-    del component_ids_by_name
     return stats

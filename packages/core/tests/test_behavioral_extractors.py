@@ -52,6 +52,50 @@ export default function CheckoutPage() {
     assert extracted[0].routes[0].path == "/checkout"
 
 
+def test_extract_ui_from_files_skips_ui_test_files() -> None:
+    files = [
+        (
+            "phpmyfaq/admin/assets/src/api/media-browser.test.ts",
+            """
+describe("media browser", () => {
+  it("loads entries", async () => {
+    await api.get("/api/media")
+  })
+})
+""",
+        )
+    ]
+
+    extracted = extract_ui_from_files(files)
+    assert extracted == []
+
+
+def test_extract_ui_from_files_infers_view_and_route_for_non_jsx_module() -> None:
+    files = [
+        (
+            "phpmyfaq/admin/assets/src/content/categories.ts",
+            """
+export async function loadCategories() {
+  return api.get("/api/category")
+}
+
+export function openCreateCategory(router) {
+  router.push("/admin/content/categories/new")
+}
+""",
+        )
+    ]
+
+    extracted = extract_ui_from_files(files)
+    assert len(extracted) == 1
+    assert len(extracted[0].views) == 1
+    assert extracted[0].views[0].name == "Categories"
+    assert "/api/category" in extracted[0].views[0].endpoint_hints
+    assert extracted[0].routes
+    assert extracted[0].routes[0].path == "/admin/content/categories"
+    assert extracted[0].routes[0].view_name_hint == "Categories"
+
+
 def test_flow_synthesis_creates_flow_nodes() -> None:
     ui = extract_ui_from_files(
         [
