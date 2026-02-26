@@ -2050,23 +2050,23 @@ async def sync_github_source(
                 language: dict(counts) for language, counts in kind_totals.items()
             }
 
+        semantic_relation_kinds = {"calls", "references", "imports", "extends", "implements"}
+
         def _missing_relation_languages(
             indexed_files_by_language: dict[str, int],
             relation_kinds_by_language: dict[str, dict[str, int]],
         ) -> list[str]:
             missing: list[str] = []
-            php_indexed = int(indexed_files_by_language.get("php", 0) or 0)
-            if php_indexed <= 0:
-                return missing
-            php_kinds = relation_kinds_by_language.get("php") or {}
-            php_semantic_edges = (
-                int(php_kinds.get("calls", 0) or 0)
-                + int(php_kinds.get("references", 0) or 0)
-                + int(php_kinds.get("imports", 0) or 0)
-            )
-            if php_semantic_edges == 0:
-                missing.append("php")
-            return missing
+            for language, indexed_count in indexed_files_by_language.items():
+                if int(indexed_count or 0) <= 0:
+                    continue
+                relation_kinds = relation_kinds_by_language.get(language) or {}
+                semantic_edges = sum(
+                    int(relation_kinds.get(kind, 0) or 0) for kind in semantic_relation_kinds
+                )
+                if semantic_edges <= 0:
+                    missing.append(language)
+            return sorted(set(missing))
 
         async def _index_project_target(proj_dict: dict) -> bool:
             language = _normalize_language(proj_dict.get("language"))
@@ -2210,31 +2210,42 @@ async def sync_github_source(
                 relation_kinds_by_language,
             )
 
-            if "php" in missing_relation_languages:
-                relation_recovery_target = {
-                    "language": "php",
-                    "root_path": str(repo_path.resolve()),
-                    "metadata": {
-                        "recovery_pass": True,
-                        "relation_recovery": True,
-                        "force_install_deps": True,
-                    },
-                }
+            for language in list(missing_relation_languages):
+                candidates = [
+                    proj
+                    for proj in project_dicts
+                    if _normalize_language(proj.get("language")) == language
+                ]
+                relation_recovery_target = dict(candidates[0]) if candidates else {}
+                relation_recovery_target["language"] = language
+                relation_recovery_target["root_path"] = str(
+                    Path(str(relation_recovery_target.get("root_path", repo_path))).resolve()
+                )
+                relation_recovery_metadata = dict(relation_recovery_target.get("metadata") or {})
+                relation_recovery_metadata["recovery_pass"] = True
+                relation_recovery_metadata["relation_recovery"] = True
+                if language == "php":
+                    relation_recovery_metadata["force_install_deps"] = True
+                relation_recovery_target["metadata"] = relation_recovery_metadata
+
                 relation_recovery_key = _project_key_for(relation_recovery_target)
-                if relation_recovery_key not in attempted_targets:
-                    attempted_targets.add(relation_recovery_key)
-                    scip_stats["scip_relation_recovery_attempts"] += 1
-                    recovered = await _index_project_target(relation_recovery_target)
-                    if recovered:
-                        scip_stats["scip_relation_recovery_successes"] += 1
-                    indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
-                    relation_counts_by_language, relation_kinds_by_language = (
-                        _collect_relation_coverage_by_language(snapshot_dicts)
-                    )
-                    missing_relation_languages = _missing_relation_languages(
-                        indexed_files_by_language,
-                        relation_kinds_by_language,
-                    )
+                if relation_recovery_key in attempted_targets:
+                    continue
+
+                attempted_targets.add(relation_recovery_key)
+                scip_stats["scip_relation_recovery_attempts"] += 1
+                recovered = await _index_project_target(relation_recovery_target)
+                if recovered:
+                    scip_stats["scip_relation_recovery_successes"] += 1
+
+            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
+            relation_counts_by_language, relation_kinds_by_language = (
+                _collect_relation_coverage_by_language(snapshot_dicts)
+            )
+            missing_relation_languages = _missing_relation_languages(
+                indexed_files_by_language,
+                relation_kinds_by_language,
+            )
 
             missing_languages = sorted(
                 language
@@ -2309,6 +2320,11 @@ async def sync_github_source(
             f"(missing={','.join(missing_language_coverage)})"
         )
     missing_relation_coverage = list(scip_stats.get("scip_missing_relation_languages") or [])
+    if settings.scip_require_relation_coverage and missing_relation_coverage:
+        raise RuntimeError(
+            "SCIP_GATE_FAILED: relation_coverage_incomplete "
+            f"(missing_relations={','.join(missing_relation_coverage)})"
+        )
     if settings.scip_require_php_relation_coverage and "php" in missing_relation_coverage:
         raise RuntimeError(
             "SCIP_GATE_FAILED: relation_coverage_incomplete "

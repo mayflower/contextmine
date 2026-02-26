@@ -162,8 +162,6 @@ class SCIPProvider:
         # Process metadata
         tool_name = index.metadata.tool_info.name if index.metadata.tool_info else "unknown"
         tool_version = index.metadata.tool_info.version if index.metadata.tool_info else "unknown"
-        allow_contextual_caller_fallback = tool_name.strip().lower() == "scip-php"
-
         # Process each document
         for doc in index.documents:
             file_path = doc.relative_path
@@ -283,6 +281,33 @@ class SCIPProvider:
                     definition_occurrences_by_file.setdefault(file_path, []).append(
                         (occ.symbol, occ_range)
                     )
+                    if occ.symbol not in seen_symbols:
+                        seen_symbols.add(occ.symbol)
+                        inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(
+                            occ.symbol
+                        )
+                        kind = (
+                            inferred_kind
+                            if inferred_kind != SymbolKind.UNKNOWN
+                            else self._fallback_symbol_kind(occ.symbol)
+                        )
+                        if kind in SCIP_FALLBACK_SYMBOL_KINDS and kind != SymbolKind.PARAMETER:
+                            name = (
+                                inferred_name
+                                or self._extract_name_from_symbol(occ.symbol)
+                                or self._last_identifier(self._descriptor_tail(occ.symbol))
+                                or occ.symbol
+                            )
+                            symbol = Symbol(
+                                def_id=occ.symbol,
+                                kind=kind,
+                                file_path=file_path,
+                                range=self._parse_range(occ.enclosing_range) or occ_range,
+                                name=name,
+                                container_def_id=None,
+                            )
+                            symbols.append(symbol)
+                            _remember_symbol(symbol)
 
                 if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith("local "):
                     occurrence_candidates.append(
@@ -415,7 +440,7 @@ class SCIPProvider:
                 symbols_by_file=symbols_by_file,
                 symbol_kinds=symbol_kinds,
             )
-            if not caller_def_id and allow_contextual_caller_fallback:
+            if not caller_def_id and (not enclosing_range_raw or symbol_roles == 0):
                 caller_def_id = self._find_contextual_symbol_def_id(
                     file_path=file_path,
                     occ_range=occ_range,

@@ -653,6 +653,96 @@ class TestSCIPOccurrenceRelations:
 
         assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
 
+    def test_contextual_caller_fallback_applies_to_sparse_non_php_indexes(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-java"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "Java"
+        doc.relative_path = "src/Main.java"
+
+        caller_symbol = "scip-java java demo 0.0.0 src/Main.java/Main#run()."
+        callee_symbol = "scip-java java demo 0.0.0 src/Main.java/Main#helper()."
+
+        caller = doc.symbols.add()
+        caller.symbol = caller_symbol
+        caller.kind = scip_pb2.SymbolInformation.Kind.UnspecifiedKind
+
+        callee = doc.symbols.add()
+        callee.symbol = callee_symbol
+        callee.kind = scip_pb2.SymbolInformation.Kind.UnspecifiedKind
+
+        caller_def = doc.occurrences.add()
+        caller_def.symbol = caller_symbol
+        caller_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        caller_def.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunctionDefinition
+        caller_def.range.extend([10, 8, 10, 11])
+
+        callee_def = doc.occurrences.add()
+        callee_def.symbol = callee_symbol
+        callee_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        callee_def.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunctionDefinition
+        callee_def.range.extend([30, 8, 30, 14])
+
+        call_ref = doc.occurrences.add()
+        call_ref.symbol = callee_symbol
+        call_ref.symbol_roles = 0
+        call_ref.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunction
+        call_ref.range.extend([14, 12, 14, 18])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
+
+    def test_definition_occurrences_recover_symbols_when_doc_symbols_are_missing(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-python"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "Python"
+        doc.relative_path = "pkg/service.py"
+
+        caller_symbol = "scip-python python demo 0.0.0 `pkg.service`/run()."
+        callee_symbol = "scip-python python demo 0.0.0 `pkg.service`/helper()."
+
+        caller_def = doc.occurrences.add()
+        caller_def.symbol = caller_symbol
+        caller_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        caller_def.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunctionDefinition
+        caller_def.range.extend([0, 4, 0, 7])
+        caller_def.enclosing_range.extend([0, 0, 3, 1])
+
+        callee_def = doc.occurrences.add()
+        callee_def.symbol = callee_symbol
+        callee_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        callee_def.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunctionDefinition
+        callee_def.range.extend([5, 4, 5, 10])
+        callee_def.enclosing_range.extend([5, 0, 7, 1])
+
+        call_ref = doc.occurrences.add()
+        call_ref.symbol = callee_symbol
+        call_ref.symbol_roles = scip_pb2.SymbolRole.ReadAccess
+        call_ref.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunction
+        call_ref.range.extend([2, 8, 2, 14])
+        call_ref.enclosing_range.extend([0, 0, 3, 1])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        symbol_ids = {symbol.def_id for symbol in snapshot.symbols}
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert caller_symbol in symbol_ids
+        assert callee_symbol in symbol_ids
+        assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
+
     def test_unknown_kind_symbol_is_kept_with_fallback_kind(self) -> None:
         from contextmine_core.semantic_snapshot.proto import scip_pb2
 

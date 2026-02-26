@@ -228,6 +228,13 @@ class Settings(BaseSettings):
         default=True,
         description="Fail sync when any detected supported language has zero indexed files",
     )
+    scip_require_relation_coverage: bool = Field(
+        default=True,
+        description=(
+            "Fail sync when indexed languages have no semantic relations "
+            "(calls/references/imports/extends/implements)"
+        ),
+    )
     scip_require_php_relation_coverage: bool = Field(
         default=True,
         description=(

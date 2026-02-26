@@ -1302,7 +1302,7 @@ async def _load_community_graph(
 
     Preference order:
     1. Semantic/architecture node kinds with non-code edges
-    2. SYMBOL nodes with SYMBOL_CALLS_SYMBOL edges
+    2. SYMBOL nodes with semantic dependency edges (calls/references)
     3. Fallback to all knowledge nodes/edges
     """
     semantic_nodes = (
@@ -1359,7 +1359,12 @@ async def _load_community_graph(
                     await db.execute(
                         select(KnowledgeEdge).where(
                             KnowledgeEdge.collection_id == collection_id,
-                            KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdge.kind.in_(
+                                [
+                                    KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                                    KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+                                ]
+                            ),
                             KnowledgeEdge.source_node_id.in_(symbol_node_ids),
                             KnowledgeEdge.target_node_id.in_(symbol_node_ids),
                         )
@@ -1408,7 +1413,7 @@ async def _build_structural_community_points(
     graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
     if graph_source != "symbol":
         warnings.append(
-            "No symbol call graph found. Using knowledge graph communities as fallback."
+            "No symbol dependency graph found. Using knowledge graph communities as fallback."
         )
 
     if include_node_kinds:
@@ -2920,7 +2925,13 @@ async def deep_dive_view(
     edge_kinds: set[str] | None = None
     if mode == "symbol_callgraph":
         projection_enum = GraphProjection.CODE_SYMBOL
-        edge_kinds = {"symbol_calls_symbol"}
+        edge_kinds = {
+            "symbol_calls_symbol",
+            "symbol_references_symbol",
+            "symbol_imports_symbol",
+            "symbol_extends_symbol",
+            "symbol_implements_symbol",
+        }
     elif mode == "contains_hierarchy":
         projection_enum = GraphProjection.CODE_SYMBOL
         edge_kinds = {"symbol_contains_symbol"}
