@@ -80,6 +80,7 @@ TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
 KG_BUILD_TIMEOUT_SECONDS = 900
+SYNC_SOURCE_TIMEOUT_SECONDS = 1800
 IGNORED_REPO_PATH_PARTS = frozenset(
     {
         "node_modules",
@@ -3103,6 +3104,34 @@ async def sync_source(source: Source) -> SyncRun | None:
         return result.scalar_one()
 
 
+async def _fail_running_sync_runs_for_source(source_id: str, reason: str) -> int:
+    """Mark currently running sync rows for a source as failed."""
+    import uuid as uuid_module
+
+    source_uuid = uuid_module.UUID(source_id)
+    now = datetime.now(UTC)
+    async with get_session() as session:
+        running_rows = (
+            (
+                await session.execute(
+                    select(SyncRun).where(
+                        SyncRun.source_id == source_uuid,
+                        SyncRun.status == SyncRunStatus.RUNNING,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in running_rows:
+            row.status = SyncRunStatus.FAILED
+            row.finished_at = now
+            row.error = reason
+        if running_rows:
+            await session.commit()
+        return len(running_rows)
+
+
 async def _fail_coverage_ingest_job(
     job_id: str,
     *,
@@ -3394,7 +3423,9 @@ async def sync_due_sources() -> dict:
     skipped = 0
     for source in sources:
         try:
-            sync_run = await sync_source(source)
+            sync_run = await asyncio.wait_for(
+                sync_source(source), timeout=SYNC_SOURCE_TIMEOUT_SECONDS
+            )
             if sync_run is None:
                 skipped += 1
                 continue
@@ -3403,6 +3434,18 @@ async def sync_due_sources() -> dict:
                     "source_id": str(source.id),
                     "sync_run_id": str(sync_run.id),
                     "status": sync_run.status.value,
+                }
+            )
+        except TimeoutError:
+            reason = (
+                f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {SYNC_SOURCE_TIMEOUT_SECONDS}s in scheduler"
+            )
+            recovered = await _fail_running_sync_runs_for_source(str(source.id), reason)
+            results.append(
+                {
+                    "source_id": str(source.id),
+                    "error": reason,
+                    "recovered_running_rows": recovered,
                 }
             )
         except Exception as e:
@@ -3449,7 +3492,7 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
         return {"error": f"Source {source_id} is disabled", "skipped": True}
 
     try:
-        sync_run = await sync_source(source)
+        sync_run = await asyncio.wait_for(sync_source(source), timeout=SYNC_SOURCE_TIMEOUT_SECONDS)
         if sync_run is None:
             return {"source_id": source_id, "skipped": True, "reason": "lock_not_acquired"}
 
@@ -3459,6 +3502,13 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
             "status": sync_run.status.value,
             "stats": sync_run.stats,
         }
+    except TimeoutError:
+        reason = (
+            "AUTO_TIMEOUT_SYNC_SOURCE: exceeded "
+            f"{SYNC_SOURCE_TIMEOUT_SECONDS}s in sync_single_source"
+        )
+        recovered = await _fail_running_sync_runs_for_source(source_id, reason)
+        return {"source_id": source_id, "error": reason, "recovered_running_rows": recovered}
     except Exception as e:
         return {"source_id": source_id, "error": str(e)}
 
