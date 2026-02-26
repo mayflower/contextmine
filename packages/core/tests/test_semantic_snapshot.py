@@ -559,3 +559,78 @@ class TestSCIPOccurrenceRelations:
         relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
 
         assert (class_symbol, RelationKind.CONTAINS, method_symbol) in relations
+
+    def test_occurrence_call_detection_allows_unknown_target_kind(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-php"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "PHP"
+        doc.relative_path = "src/app.php"
+
+        caller_symbol = "scip-php php demo 0.0.0 src/app.php/run()."
+        callee_symbol = "scip-php php demo 0.0.0 src/app.php/UnknownTarget"
+
+        caller = doc.symbols.add()
+        caller.symbol = caller_symbol
+        caller.kind = scip_pb2.SymbolInformation.Kind.Function
+        caller.display_name = "run"
+
+        callee = doc.symbols.add()
+        callee.symbol = callee_symbol
+        callee.kind = scip_pb2.SymbolInformation.Kind.UnspecifiedKind
+        callee.display_name = "UnknownTarget"
+
+        caller_def = doc.occurrences.add()
+        caller_def.symbol = caller_symbol
+        caller_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        caller_def.range.extend([0, 0, 3, 1])
+
+        callee_def = doc.occurrences.add()
+        callee_def.symbol = callee_symbol
+        callee_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        callee_def.range.extend([5, 0, 5, 12])
+
+        call_ref = doc.occurrences.add()
+        call_ref.symbol = callee_symbol
+        call_ref.symbol_roles = scip_pb2.SymbolRole.ReadAccess
+        call_ref.syntax_kind = scip_pb2.SyntaxKind.IdentifierFunction
+        call_ref.range.extend([1, 4, 1, 16])
+        call_ref.enclosing_range.extend([0, 0, 3, 1])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        relations = {(rel.src_def_id, rel.kind, rel.dst_def_id) for rel in snapshot.relations}
+
+        assert (caller_symbol, RelationKind.CALLS, callee_symbol) in relations
+
+    def test_unknown_kind_symbol_is_kept_with_fallback_kind(self) -> None:
+        from contextmine_core.semantic_snapshot.proto import scip_pb2
+
+        provider = SCIPProvider("/nonexistent.scip")
+        index = scip_pb2.Index()
+        index.metadata.tool_info.name = "scip-php"
+        index.metadata.tool_info.version = "0.0.0"
+
+        doc = index.documents.add()
+        doc.language = "PHP"
+        doc.relative_path = "src/app.php"
+
+        unknown_symbol = "scip-php php demo 0.0.0 src/app.php/UnknownTarget"
+        symbol = doc.symbols.add()
+        symbol.symbol = unknown_symbol
+        symbol.kind = scip_pb2.SymbolInformation.Kind.UnspecifiedKind
+
+        symbol_def = doc.occurrences.add()
+        symbol_def.symbol = unknown_symbol
+        symbol_def.symbol_roles = scip_pb2.SymbolRole.Definition
+        symbol_def.range.extend([1, 0, 1, 12])
+
+        snapshot = provider._convert_index(index)  # noqa: SLF001
+        symbol_by_id = {item.def_id: item for item in snapshot.symbols}
+
+        assert unknown_symbol in symbol_by_id
+        assert symbol_by_id[unknown_symbol].kind == SymbolKind.MODULE

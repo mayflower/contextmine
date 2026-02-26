@@ -59,3 +59,27 @@ def test_should_install_deps_when_autoload_missing(tmp_path: Path) -> None:
     cfg = IndexConfig(install_deps_mode=InstallDepsMode.AUTO)
 
     assert backend._should_install_deps(target, cfg) is True
+
+
+def test_should_install_deps_when_forced_via_metadata(tmp_path: Path) -> None:
+    """Force flag should bypass AUTO heuristics and always install."""
+    project_root = tmp_path
+    (project_root / "composer.json").write_text(
+        '{"name":"acme/test","config":{"vendor-dir":"vendor"}}',
+        encoding="utf-8",
+    )
+    (project_root / "vendor").mkdir(parents=True)
+    (project_root / "vendor" / "autoload.php").write_text(
+        "<?php\n",
+        encoding="utf-8",
+    )
+
+    backend = PhpIndexerBackend()
+    target = ProjectTarget(
+        language=Language.PHP,
+        root_path=project_root,
+        metadata={"force_install_deps": True},
+    )
+    cfg = IndexConfig(install_deps_mode=InstallDepsMode.AUTO)
+
+    assert backend._should_install_deps(target, cfg) is True

@@ -209,6 +209,10 @@ class PhpIndexerBackend(BaseIndexerBackend):
 
     def _should_install_deps(self, target: ProjectTarget, cfg: IndexConfig) -> bool:
         """Check if dependencies should be installed."""
+        metadata = dict(target.metadata or {})
+        if bool(metadata.get("force_install_deps")):
+            return True
+
         if cfg.install_deps_mode == InstallDepsMode.NEVER:
             return False
 

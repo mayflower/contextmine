@@ -336,6 +336,7 @@ class TestSCIPSettings:
         assert hasattr(settings, "scip_node_memory_mb")
         assert hasattr(settings, "scip_best_effort")
         assert hasattr(settings, "scip_require_language_coverage")
+        assert hasattr(settings, "scip_require_php_relation_coverage")
 
     def test_settings_defaults(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test SCIP settings default values."""
@@ -351,6 +352,7 @@ class TestSCIPSettings:
             "SCIP_NODE_MEMORY_MB",
             "SCIP_BEST_EFFORT",
             "SCIP_REQUIRE_LANGUAGE_COVERAGE",
+            "SCIP_REQUIRE_PHP_RELATION_COVERAGE",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.chdir(tmp_path)
@@ -366,3 +368,4 @@ class TestSCIPSettings:
         assert settings.scip_node_memory_mb == 4096
         assert settings.scip_best_effort is True
         assert settings.scip_require_language_coverage is True
+        assert settings.scip_require_php_relation_coverage is True

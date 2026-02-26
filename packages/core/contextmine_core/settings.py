@@ -191,6 +191,13 @@ class Settings(BaseSettings):
         default=True,
         description="Fail sync when any detected supported language has zero indexed files",
     )
+    scip_require_php_relation_coverage: bool = Field(
+        default=True,
+        description=(
+            "Fail sync when PHP is indexed but semantic relations "
+            "(calls/references/imports) are missing"
+        ),
+    )
 
     # Real metrics pipeline settings
     metrics_strict_mode: bool = Field(

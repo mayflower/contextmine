@@ -77,6 +77,14 @@ SCIP_CALLER_ELIGIBLE_KINDS = {
     SymbolKind.MODULE,
     SymbolKind.PROPERTY,
 }
+SCIP_FALLBACK_SYMBOL_KINDS = {
+    SymbolKind.FUNCTION,
+    SymbolKind.METHOD,
+    SymbolKind.CLASS,
+    SymbolKind.INTERFACE,
+    SymbolKind.MODULE,
+    SymbolKind.PROPERTY,
+}
 
 
 class SCIPProvider:
@@ -184,13 +192,25 @@ class SCIPProvider:
                 )
 
                 # Keep only relevant symbols with a resolvable kind and name.
-                if kind == SymbolKind.UNKNOWN or not name:
+                # Some indexers emit unknown/blank symbol metadata; use best-effort
+                # normalization so the relation graph does not collapse.
+                if not name:
+                    name = (
+                        self._last_identifier(self._descriptor_tail(symbol_str))
+                        or self._extract_name_from_symbol(symbol_str)
+                        or symbol_str
+                    )
+                if kind == SymbolKind.UNKNOWN:
+                    kind = self._fallback_symbol_kind(symbol_str)
+                if kind not in SCIP_FALLBACK_SYMBOL_KINDS:
                     continue
                 if kind == SymbolKind.PARAMETER:
                     continue
 
                 # Find the definition occurrence for this symbol to get range
                 def_range = self._find_definition_range(doc, symbol_str)
+                if not def_range:
+                    def_range = self._find_any_symbol_range(doc, symbol_str)
 
                 if def_range:
                     symbol = Symbol(
@@ -286,7 +306,15 @@ class SCIPProvider:
                 ext_sym.display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
             )
 
-            if kind == SymbolKind.UNKNOWN or not name:
+            if not name:
+                name = (
+                    self._last_identifier(self._descriptor_tail(symbol_str))
+                    or self._extract_name_from_symbol(symbol_str)
+                    or symbol_str
+                )
+            if kind == SymbolKind.UNKNOWN:
+                kind = self._fallback_symbol_kind(symbol_str)
+            if kind not in SCIP_FALLBACK_SYMBOL_KINDS:
                 continue
             if kind == SymbolKind.PARAMETER:
                 continue
@@ -428,6 +456,19 @@ class SCIPProvider:
                     occ_range is None or self._range_contains(enclosing_range, occ_range)
                 ):
                     return enclosing_range
+                return occ_range
+        return None
+
+    def _find_any_symbol_range(self, doc: scip_pb2.Document, symbol_str: str) -> Range | None:
+        """Best-effort fallback when explicit definition range is missing."""
+        for occ in doc.occurrences:
+            if occ.symbol != symbol_str:
+                continue
+            enclosing_range = self._parse_range(occ.enclosing_range)
+            if enclosing_range:
+                return enclosing_range
+            occ_range = self._parse_range(occ.range)
+            if occ_range:
                 return occ_range
         return None
 
@@ -573,7 +614,11 @@ class SCIPProvider:
         caller_is_callable = caller_kind in SCIP_CALLER_PREFERRED_KINDS
         caller_is_eligible = caller_kind in SCIP_CALLER_ELIGIBLE_KINDS
 
-        if target_is_callable and syntax_kind in SCIP_CALL_LIKE_SYNTAX_KINDS:
+        if (
+            syntax_kind in SCIP_CALL_LIKE_SYNTAX_KINDS
+            and caller_is_eligible
+            and not (symbol_roles & SCIP_ROLE_WRITE_ACCESS)
+        ):
             return RelationKind.CALLS
         if target_is_callable and caller_is_callable:
             return RelationKind.CALLS
@@ -584,6 +629,22 @@ class SCIPProvider:
         ):
             return RelationKind.CALLS
         return RelationKind.REFERENCES
+
+    def _fallback_symbol_kind(self, symbol_str: str) -> SymbolKind:
+        """Infer a usable symbol kind when SCIP kind is unspecified."""
+        inferred_kind, _ = self._infer_kind_and_name_from_symbol(symbol_str)
+        if inferred_kind != SymbolKind.UNKNOWN:
+            return inferred_kind
+        descriptor = self._descriptor_tail(symbol_str)
+        if descriptor.endswith("()."):
+            return SymbolKind.FUNCTION
+        if descriptor.endswith("#"):
+            return SymbolKind.CLASS
+        if descriptor.endswith("."):
+            return SymbolKind.PROPERTY
+        if descriptor.endswith("/") or descriptor.endswith(":"):
+            return SymbolKind.MODULE
+        return SymbolKind.MODULE
 
     def _find_enclosing_symbol_def_id(
         self,
