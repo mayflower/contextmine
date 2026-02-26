@@ -358,8 +358,18 @@ def get_changed_files(
     return changed, deleted
 
 
-def compute_git_change_metrics(repo: Repo, target_files: set[str]) -> dict[str, dict[str, int]]:
+def compute_git_change_metrics(
+    repo: Repo,
+    target_files: set[str],
+    *,
+    since_days: int | None = None,
+) -> dict[str, dict[str, int]]:
     """Compute git-derived change frequency and churn for target files.
+
+    Args:
+        repo: Git repository
+        target_files: Repo-relative files to aggregate
+        since_days: Optional rolling window in days. If omitted, scans all history.
 
     Returns:
         Mapping of file path -> metrics:
@@ -377,7 +387,26 @@ def compute_git_change_metrics(repo: Repo, target_files: set[str]) -> dict[str, 
     }
 
     try:
-        for commit in repo.iter_commits("HEAD", no_merges=True):
+        commit_iter = None
+        since_dt: datetime | None = None
+        if since_days and int(since_days) > 0:
+            since_dt = datetime.now(UTC) - timedelta(days=int(since_days))
+            try:
+                commit_iter = repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat())
+            except Exception:  # noqa: BLE001
+                commit_iter = None
+        if commit_iter is None:
+            commit_iter = repo.iter_commits("HEAD", no_merges=True)
+
+        for commit in commit_iter:
+            if since_dt is not None:
+                commit_dt = commit.authored_datetime
+                if commit_dt.tzinfo is None:
+                    commit_dt = commit_dt.replace(tzinfo=UTC)
+                else:
+                    commit_dt = commit_dt.astimezone(UTC)
+                if commit_dt < since_dt:
+                    continue
             files = commit.stats.files or {}
             for file_path, file_stats in files.items():
                 if file_path not in metrics:

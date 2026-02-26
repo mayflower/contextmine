@@ -109,6 +109,47 @@ def _knowledge_graph_build_timeout_seconds() -> int:
     return max(120, configured)
 
 
+def _twin_graph_build_timeout_seconds() -> int:
+    configured = int(get_settings().twin_graph_build_timeout_seconds)
+    return max(120, configured)
+
+
+def _sync_blocking_step_timeout_seconds() -> int:
+    configured = int(get_settings().sync_blocking_step_timeout_seconds)
+    return max(30, configured)
+
+
+def _sync_document_step_timeout_seconds() -> int:
+    configured = int(get_settings().sync_document_step_timeout_seconds)
+    return max(10, configured)
+
+
+def _sync_documents_per_run_limit() -> int:
+    configured = int(get_settings().sync_documents_per_run_limit)
+    return max(0, configured)
+
+
+def _joern_parse_timeout_seconds() -> int:
+    configured = int(get_settings().joern_parse_timeout_seconds)
+    return max(30, configured)
+
+
+async def _run_blocking_with_timeout(
+    step_name: str,
+    timeout_seconds: int,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(func, *args, **kwargs),
+            timeout=max(1, int(timeout_seconds)),
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(f"STEP_TIMEOUT: {step_name} exceeded {int(timeout_seconds)}s") from exc
+
+
 def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
     if task.cancelled():
         logger.warning("Behavioral layer background extraction task was cancelled.")
@@ -1715,8 +1756,15 @@ async def sync_github_source(
 
     # Clone or pull (deploy key takes priority over token)
     clone_url = f"https://github.com/{owner}/{repo}.git"
-    git_repo = clone_or_pull_repo(
-        repo_path, clone_url, branch, token=token, ssh_private_key=deploy_key
+    git_repo = await _run_blocking_with_timeout(
+        "git_clone_or_pull",
+        _sync_blocking_step_timeout_seconds(),
+        clone_or_pull_repo,
+        repo_path,
+        clone_url,
+        branch,
+        token=token,
+        ssh_private_key=deploy_key,
     )
 
     # Get current commit SHA
@@ -1775,16 +1823,40 @@ async def sync_github_source(
         "--output",
         str(cpg_path),
     ]
-    parse_result = subprocess.run(parse_command, check=False, capture_output=True, text=True)
-    if parse_result.returncode != 0:
-        raise RuntimeError(
-            "JOERN_PARSE_FAILED: "
-            f"binary={settings.joern_parse_binary} "
-            f"code={parse_result.returncode} "
-            f"stderr={parse_result.stderr.strip()}"
+    joern_ok = False
+    joern_error = ""
+    joern_parse_timeout = _joern_parse_timeout_seconds()
+    try:
+        parse_result = await _run_blocking_with_timeout(
+            "joern_parse",
+            joern_parse_timeout,
+            subprocess.run,
+            parse_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=joern_parse_timeout,
         )
-    if not cpg_path.exists():
-        raise RuntimeError(f"JOERN_PARSE_FAILED: expected CPG artifact missing at {cpg_path}")
+        if parse_result.returncode != 0:
+            raise RuntimeError(
+                "JOERN_PARSE_FAILED: "
+                f"binary={settings.joern_parse_binary} "
+                f"code={parse_result.returncode} "
+                f"stderr={parse_result.stderr.strip()}"
+            )
+        if not cpg_path.exists():
+            raise RuntimeError(f"JOERN_PARSE_FAILED: expected CPG artifact missing at {cpg_path}")
+        joern_ok = True
+    except Exception as exc:  # noqa: BLE001
+        joern_error = str(exc)
+        if settings.joern_required_for_sync:
+            raise RuntimeError(f"JOERN_PARSE_FAILED: {joern_error}") from exc
+        logger.warning(
+            "Joern CPG generation failed for %s/%s in advisory mode: %s",
+            owner,
+            repo,
+            joern_error,
+        )
 
     async with get_session() as session:
         from contextmine_core.models import TwinSourceVersion
@@ -1795,9 +1867,9 @@ async def sync_github_source(
             )
         ).scalar_one_or_none()
         if twin_source_version:
-            twin_source_version.joern_status = "ready"
+            twin_source_version.joern_status = "ready" if joern_ok else "failed"
             twin_source_version.joern_project = f"{owner}/{repo}"
-            twin_source_version.joern_cpg_path = str(cpg_path)
+            twin_source_version.joern_cpg_path = str(cpg_path) if joern_ok else None
             twin_source_version.joern_server_url = settings.joern_server_url
         await record_twin_event(
             session,
@@ -1805,10 +1877,15 @@ async def sync_github_source(
             scenario_id=None,
             source_id=source.id,
             source_version_id=source_version_id,
-            event_type="joern_cpg_generated",
-            status="ready",
-            payload={"cpg_path": str(cpg_path)},
-            idempotency_key=f"joern_cpg:{source.id}:{new_sha}",
+            event_type="joern_cpg_generated" if joern_ok else "joern_cpg_failed",
+            status="ready" if joern_ok else "failed",
+            payload={"cpg_path": str(cpg_path)} if joern_ok else {"error": joern_error},
+            idempotency_key=(
+                f"joern_cpg:{source.id}:{new_sha}"
+                if joern_ok
+                else f"joern_cpg_failed:{source.id}:{new_sha}"
+            ),
+            error=None if joern_ok else joern_error,
         )
         await session.commit()
 
@@ -2244,14 +2321,29 @@ async def sync_github_source(
     if snapshot_dicts and project_dicts:
         from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
 
-        bundles = run_polyglot_metrics_pipeline(
-            repo_root=repo_path,
-            project_dicts=project_dicts,
-            snapshot_dicts=snapshot_dicts,
-            strict_mode=settings.metrics_strict_mode,
-            metrics_languages=settings.metrics_languages,
-        )
-        file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles)]
+        evolution_window_days = int(settings.twin_evolution_window_days)
+        step_timeout_seconds = _sync_blocking_step_timeout_seconds()
+        scip_stats["evolution_window_days"] = evolution_window_days
+        try:
+            bundles = await _run_blocking_with_timeout(
+                "metrics_pipeline",
+                step_timeout_seconds,
+                run_polyglot_metrics_pipeline,
+                repo_root=repo_path,
+                project_dicts=project_dicts,
+                snapshot_dicts=snapshot_dicts,
+                strict_mode=settings.metrics_strict_mode,
+                metrics_languages=settings.metrics_languages,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Structural metrics pipeline failed for source %s: %s", source.id, exc)
+            scip_stats["scip_degraded"] = True
+            scip_stats["scip_detection_warnings"] = list(
+                scip_stats.get("scip_detection_warnings") or []
+            ) + [f"metrics_pipeline_exception:{exc}"]
+            bundles = []
+
+        file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles or [])]
         scip_stats["structural_metric_files"] = len(file_metric_dicts)
         if file_metric_dicts:
             target_files = {
@@ -2259,7 +2351,25 @@ async def sync_github_source(
                 for metric in file_metric_dicts
                 if str(metric.get("file_path", "")).strip()
             }
-            git_metrics_by_file = compute_git_change_metrics(git_repo, target_files)
+            try:
+                git_metrics_by_file = await _run_blocking_with_timeout(
+                    "git_change_metrics",
+                    step_timeout_seconds,
+                    compute_git_change_metrics,
+                    git_repo,
+                    target_files,
+                    since_days=evolution_window_days,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Git change metrics failed for source %s: %s", source.id, exc)
+                scip_stats["scip_degraded"] = True
+                scip_stats["scip_detection_warnings"] = list(
+                    scip_stats.get("scip_detection_warnings") or []
+                ) + [f"git_change_metrics_exception:{exc}"]
+                git_metrics_by_file = {
+                    path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
+                    for path in target_files
+                }
             files_with_history = 0
             total_change_frequency = 0.0
             total_churn = 0.0
@@ -2280,14 +2390,14 @@ async def sync_github_source(
                 sources = dict(metric.get("sources") or {})
                 sources["change_frequency"] = {
                     "provider": "git",
-                    "window": "all_history",
+                    "window": f"{evolution_window_days}d",
                     "no_merges": True,
                     "renames_followed": False,
                     "unit": "commits",
                 }
                 sources["churn"] = {
                     "provider": "git",
-                    "window": "all_history",
+                    "window": f"{evolution_window_days}d",
                     "unit": "lines_changed",
                     "formula": "insertions+deletions",
                 }
@@ -2299,14 +2409,35 @@ async def sync_github_source(
             scip_stats["git_metric_files_with_history"] = files_with_history
             scip_stats["git_metric_total_change_frequency"] = total_change_frequency
             scip_stats["git_metric_total_churn"] = total_churn
-            evolution_window_days = int(settings.twin_evolution_window_days)
-            evolution_payload = compute_git_evolution_snapshots(
-                git_repo,
-                target_files,
-                window_days=evolution_window_days,
-            )
+            try:
+                evolution_payload = await _run_blocking_with_timeout(
+                    "git_evolution_snapshots",
+                    step_timeout_seconds,
+                    compute_git_evolution_snapshots,
+                    git_repo,
+                    target_files,
+                    window_days=evolution_window_days,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Git evolution snapshots failed for source %s: %s", source.id, exc)
+                scip_stats["scip_degraded"] = True
+                scip_stats["scip_detection_warnings"] = list(
+                    scip_stats.get("scip_detection_warnings") or []
+                ) + [f"git_evolution_snapshots_exception:{exc}"]
+                evolution_payload = {
+                    "ownership_rows": [],
+                    "coupling_rows": [],
+                    "stats": {
+                        "window_days": evolution_window_days,
+                        "commits_scanned": 0,
+                        "commits_considered": 0,
+                        "files_seen": 0,
+                        "ownership_rows": 0,
+                        "coupling_rows": 0,
+                    },
+                    "warnings": [f"git_evolution_snapshots_exception:{exc}"],
+                }
             evolution_stats = dict(evolution_payload.get("stats") or {})
-            scip_stats["evolution_window_days"] = evolution_window_days
             scip_stats["evolution_commits_scanned"] = int(evolution_stats.get("commits_scanned", 0))
             scip_stats["evolution_commits_considered"] = int(
                 evolution_stats.get("commits_considered", 0)
@@ -2460,13 +2591,40 @@ async def sync_github_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
+    total_docs_candidate = len(docs_to_chunk)
+    docs_deferred = 0
+    docs_limit = _sync_documents_per_run_limit()
+    if docs_limit and total_docs_candidate > docs_limit:
+        docs_to_chunk = docs_to_chunk[:docs_limit]
+        docs_deferred = total_docs_candidate - len(docs_to_chunk)
+
     total_docs = len(docs_to_chunk)
+    per_doc_timeout_seconds = _sync_document_step_timeout_seconds()
+    docs_processing_failures = 0
+    docs_processing_timeouts = 0
+    docs_processing_error_samples: list[str] = []
+
+    def _record_doc_error(value: str) -> None:
+        if len(docs_processing_error_samples) < 100:
+            docs_processing_error_samples.append(value)
+
+    if docs_deferred > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id,
+            progress=49,
+            description=(
+                f"Deferring {docs_deferred} documents to later runs (limit={docs_limit} docs/run)."
+            ),
+        )
+
     if total_docs > 0:
         await update_progress_artifact(  # type: ignore[misc]
             progress_id,
             progress=50,
             description=f"Chunking and embedding {total_docs} documents...",
         )
+
+    import uuid as uuid_module
 
     for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
         # Update progress every 5 documents or on last document
@@ -2478,23 +2636,55 @@ async def sync_github_source(
                 description=f"Processing document {i + 1}/{total_docs}...",
             )
 
-        chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
+        try:
+            chunk_stats = await asyncio.wait_for(
+                maintain_chunks_for_document(doc_id, content, file_path),
+                timeout=per_doc_timeout_seconds,
+            )
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:chunk_timeout")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:chunk_error:{exc}")
+            continue
+
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
 
         # Extract symbols for code files (using tree-sitter)
-        import uuid as uuid_module
-
-        async with get_session() as session:
-            sym_created, sym_deleted = await maintain_symbols_for_document(
-                session, uuid_module.UUID(doc_id)
-            )
-            total_symbols_created += sym_created
-            total_symbols_deleted += sym_deleted
-            await session.commit()
+        try:
+            async with get_session() as session:
+                sym_created, sym_deleted = await asyncio.wait_for(
+                    maintain_symbols_for_document(session, uuid_module.UUID(doc_id)),
+                    timeout=per_doc_timeout_seconds,
+                )
+                total_symbols_created += sym_created
+                total_symbols_deleted += sym_deleted
+                await session.commit()
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            _record_doc_error(f"{doc_id}:symbol_timeout")
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:symbol_error:{exc}")
 
         # Embed new/updated chunks (using collection's embedding config)
-        embed_stats = await embed_document(doc_id, collection_id_str)
+        try:
+            embed_stats = await asyncio.wait_for(
+                embed_document(doc_id, collection_id_str),
+                timeout=per_doc_timeout_seconds,
+            )
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            _record_doc_error(f"{doc_id}:embed_timeout")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:embed_error:{exc}")
+            continue
         total_chunks_embedded += embed_stats["chunks_embedded"]
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
@@ -2534,9 +2724,12 @@ async def sync_github_source(
         progress_id, progress=95, description="Materializing interface/spec surfaces..."
     )
     try:
-        surface_stats = await materialize_surface_catalog_for_source(
-            source_id=str(source.id),
-            collection_id=collection_id_str,
+        surface_stats = await asyncio.wait_for(
+            materialize_surface_catalog_for_source(
+                source_id=str(source.id),
+                collection_id=collection_id_str,
+            ),
+            timeout=_sync_blocking_step_timeout_seconds(),
         )
     except Exception as exc:
         logger.warning("Surface materialization failed for source %s: %s", source.id, exc)
@@ -2546,14 +2739,23 @@ async def sync_github_source(
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building digital twin..."
     )
-    twin_stats = await build_twin_graph(
-        str(source.id),
-        collection_id_str,
-        snapshot_dicts=snapshot_dicts,
-        changed_doc_ids=changed_doc_ids,
-        file_metrics=file_metric_dicts,
-        evolution_payload=evolution_payload,
-    )
+    twin_timeout_seconds = _twin_graph_build_timeout_seconds()
+    try:
+        twin_stats = await asyncio.wait_for(
+            build_twin_graph(
+                str(source.id),
+                collection_id_str,
+                snapshot_dicts=snapshot_dicts,
+                changed_doc_ids=changed_doc_ids,
+                file_metrics=file_metric_dicts,
+                evolution_payload=evolution_payload,
+            ),
+            timeout=twin_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"TWIN_BUILD_TIMEOUT: source={source.id} timeout={twin_timeout_seconds}s"
+        ) from exc
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -2589,6 +2791,13 @@ async def sync_github_source(
                     "sync_run_id": str(sync_run.id),
                     "surface_extract": surface_stats,
                     "knowledge_extract": kg_stats,
+                    "docs_chunk_queue_total": int(total_docs_candidate),
+                    "docs_chunk_deferred": int(docs_deferred),
+                    "docs_processing_failures": int(docs_processing_failures),
+                    "docs_processing_timeouts": int(docs_processing_timeouts),
+                    "docs_processing_error_samples": list(docs_processing_error_samples)[:25],
+                    "joern_status": "ready" if joern_ok else "failed",
+                    "joern_error": joern_error if not joern_ok else "",
                     "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
                     "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
                     "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
@@ -2705,6 +2914,11 @@ async def sync_github_source(
             "docs_updated": stats.docs_updated,
             "docs_deleted": stats.docs_deleted,
             "docs_unchunked_recovered": len(unchunked_docs),
+            "docs_chunk_queue_total": total_docs_candidate,
+            "docs_chunk_deferred": docs_deferred,
+            "docs_processing_failures": docs_processing_failures,
+            "docs_processing_timeouts": docs_processing_timeouts,
+            "docs_processing_error_samples": list(docs_processing_error_samples)[:25],
             "chunks_created": total_chunks_created,
             "chunks_deleted": total_chunks_deleted,
             "chunks_embedded": total_chunks_embedded,
@@ -2787,7 +3001,9 @@ async def sync_github_source(
             "fitness_findings_by_type": twin_stats.get("fitness_findings_by_type", {}),
             "fitness_findings_warnings": twin_stats.get("fitness_findings_warnings", []),
             "source_version_id": str(source_version_id) if source_version_id else None,
-            "joern_cpg_path": str(cpg_path),
+            "joern_status": "ready" if joern_ok else "failed",
+            "joern_error": joern_error if not joern_ok else "",
+            "joern_cpg_path": str(cpg_path) if joern_ok else None,
             "joern_server_url": settings.joern_server_url,
             # Knowledge Graph extraction stats
             "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
@@ -2992,7 +3208,32 @@ async def sync_web_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
+    total_docs_candidate = len(docs_to_chunk)
+    docs_deferred = 0
+    docs_limit = _sync_documents_per_run_limit()
+    if docs_limit and total_docs_candidate > docs_limit:
+        docs_to_chunk = docs_to_chunk[:docs_limit]
+        docs_deferred = total_docs_candidate - len(docs_to_chunk)
+
     total_docs = len(docs_to_chunk)
+    per_doc_timeout_seconds = _sync_document_step_timeout_seconds()
+    docs_processing_failures = 0
+    docs_processing_timeouts = 0
+    docs_processing_error_samples: list[str] = []
+
+    def _record_doc_error(value: str) -> None:
+        if len(docs_processing_error_samples) < 100:
+            docs_processing_error_samples.append(value)
+
+    if docs_deferred > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id,
+            progress=49,
+            description=(
+                f"Deferring {docs_deferred} documents to later runs (limit={docs_limit} docs/run)."
+            ),
+        )
+
     if total_docs > 0:
         await update_progress_artifact(  # type: ignore[misc]
             progress_id,
@@ -3012,21 +3253,55 @@ async def sync_web_source(
                 description=f"Processing document {i + 1}/{total_docs}...",
             )
 
-        chunk_stats = await maintain_chunks_for_document(doc_id, content, file_path)
+        try:
+            chunk_stats = await asyncio.wait_for(
+                maintain_chunks_for_document(doc_id, content, file_path),
+                timeout=per_doc_timeout_seconds,
+            )
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:chunk_timeout")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:chunk_error:{exc}")
+            continue
+
         total_chunks_created += chunk_stats["chunks_created"]
         total_chunks_deleted += chunk_stats["chunks_deleted"]
 
         # Extract symbols for code files (using tree-sitter)
-        async with get_session() as session:
-            sym_created, sym_deleted = await maintain_symbols_for_document(
-                session, uuid_module.UUID(doc_id)
-            )
-            total_symbols_created += sym_created
-            total_symbols_deleted += sym_deleted
-            await session.commit()
+        try:
+            async with get_session() as session:
+                sym_created, sym_deleted = await asyncio.wait_for(
+                    maintain_symbols_for_document(session, uuid_module.UUID(doc_id)),
+                    timeout=per_doc_timeout_seconds,
+                )
+                total_symbols_created += sym_created
+                total_symbols_deleted += sym_deleted
+                await session.commit()
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            _record_doc_error(f"{doc_id}:symbol_timeout")
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:symbol_error:{exc}")
 
         # Embed new/updated chunks (using collection's embedding config)
-        embed_stats = await embed_document(doc_id, collection_id_str)
+        try:
+            embed_stats = await asyncio.wait_for(
+                embed_document(doc_id, collection_id_str),
+                timeout=per_doc_timeout_seconds,
+            )
+        except TimeoutError:
+            docs_processing_timeouts += 1
+            _record_doc_error(f"{doc_id}:embed_timeout")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            docs_processing_failures += 1
+            _record_doc_error(f"{doc_id}:embed_error:{exc}")
+            continue
         total_chunks_embedded += embed_stats["chunks_embedded"]
         total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
         total_tokens_used += embed_stats["tokens_used"]
@@ -3037,9 +3312,12 @@ async def sync_web_source(
         progress_id, progress=95, description="Materializing interface/spec surfaces..."
     )
     try:
-        surface_stats = await materialize_surface_catalog_for_source(
-            source_id=str(source.id),
-            collection_id=collection_id_str,
+        surface_stats = await asyncio.wait_for(
+            materialize_surface_catalog_for_source(
+                source_id=str(source.id),
+                collection_id=collection_id_str,
+            ),
+            timeout=_sync_blocking_step_timeout_seconds(),
         )
     except Exception as exc:
         logger.warning("Surface materialization failed for source %s: %s", source.id, exc)
@@ -3050,12 +3328,21 @@ async def sync_web_source(
         progress_id, progress=96, description="Building digital twin..."
     )
     changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
-    twin_stats = await build_twin_graph(
-        str(source.id),
-        collection_id_str,
-        snapshot_dicts=[],
-        changed_doc_ids=changed_doc_ids,
-    )
+    twin_timeout_seconds = _twin_graph_build_timeout_seconds()
+    try:
+        twin_stats = await asyncio.wait_for(
+            build_twin_graph(
+                str(source.id),
+                collection_id_str,
+                snapshot_dicts=[],
+                changed_doc_ids=changed_doc_ids,
+            ),
+            timeout=twin_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"TWIN_BUILD_TIMEOUT: source={source.id} timeout={twin_timeout_seconds}s"
+        ) from exc
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -3072,6 +3359,11 @@ async def sync_web_source(
             "docs_updated": stats.docs_updated,
             "docs_deleted": stats.docs_deleted,
             "docs_unchunked_recovered": len(unchunked_docs),
+            "docs_chunk_queue_total": total_docs_candidate,
+            "docs_chunk_deferred": docs_deferred,
+            "docs_processing_failures": docs_processing_failures,
+            "docs_processing_timeouts": docs_processing_timeouts,
+            "docs_processing_error_samples": list(docs_processing_error_samples)[:25],
             "chunks_created": total_chunks_created,
             "chunks_deleted": total_chunks_deleted,
             "chunks_embedded": total_chunks_embedded,

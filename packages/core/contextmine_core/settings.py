@@ -159,9 +159,34 @@ class Settings(BaseSettings):
         default=3600,
         description="Timeout in seconds for one source sync run in the worker scheduler",
     )
+    sync_blocking_step_timeout_seconds: int = Field(
+        default=900,
+        description=(
+            "Timeout in seconds for blocking sync steps (git pull, metrics pipeline, "
+            "evolution snapshots) executed in worker thread pool"
+        ),
+    )
+    sync_document_step_timeout_seconds: int = Field(
+        default=120,
+        description=(
+            "Timeout in seconds per document processing step (chunking, symbol extraction, "
+            "embedding) to avoid single-document stalls"
+        ),
+    )
+    sync_documents_per_run_limit: int = Field(
+        default=400,
+        description=(
+            "Maximum documents to process per sync run (0 = unlimited). Remaining docs are "
+            "recovered automatically in subsequent runs."
+        ),
+    )
     knowledge_graph_build_timeout_seconds: int = Field(
         default=3600,
         description="Timeout in seconds for knowledge graph build in source sync",
+    )
+    twin_graph_build_timeout_seconds: int = Field(
+        default=1200,
+        description="Timeout in seconds for digital twin graph build step",
     )
     embedding_batch_timeout_seconds: int = Field(
         default=120,
@@ -279,6 +304,14 @@ class Settings(BaseSettings):
     joern_query_timeout_seconds: int = Field(
         default=120,
         description="Timeout for Joern query execution in seconds",
+    )
+    joern_parse_timeout_seconds: int = Field(
+        default=900,
+        description="Timeout for Joern CPG parse execution in seconds",
+    )
+    joern_required_for_sync: bool = Field(
+        default=False,
+        description="Require Joern CPG generation for sync success (false = advisory)",
     )
     joern_parse_binary: str = Field(
         default="joern-parse",
