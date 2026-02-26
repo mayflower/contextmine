@@ -197,6 +197,8 @@ class TestTwinViewRoutes:
         symbol_node.natural_key = "symbol:src/billing/invoice.py:create_invoice"
         symbol_node.meta = {"file_path": "src/billing/invoice.py"}
 
+        semantic_nodes_result = MagicMock()
+        semantic_nodes_result.scalars.return_value.all.return_value = []
         symbol_nodes_result = MagicMock()
         symbol_nodes_result.scalars.return_value.all.return_value = [symbol_node]
         symbol_edges_result = MagicMock()
@@ -209,6 +211,7 @@ class TestTwinViewRoutes:
         fake_db = MagicMock()
         fake_db.execute = AsyncMock(
             side_effect=[
+                semantic_nodes_result,
                 symbol_nodes_result,
                 symbol_edges_result,
                 fallback_nodes_result,
@@ -442,6 +445,8 @@ class TestTwinViewRoutes:
             }
         ]
 
+        semantic_nodes_result = MagicMock()
+        semantic_nodes_result.scalars.return_value.all.return_value = []
         symbols_result = MagicMock()
         symbols_result.scalars.return_value.all.return_value = []
         fallback_nodes_result = MagicMock()
@@ -451,7 +456,12 @@ class TestTwinViewRoutes:
 
         fake_db = MagicMock()
         fake_db.execute = AsyncMock(
-            side_effect=[symbols_result, fallback_nodes_result, fallback_edges_result]
+            side_effect=[
+                semantic_nodes_result,
+                symbols_result,
+                fallback_nodes_result,
+                fallback_edges_result,
+            ]
         )
 
         class SessionContext:

@@ -1275,6 +1275,25 @@ def _compute_symbol_communities(
     return node_to_community, communities
 
 
+GRAPHRAG_CODE_NOISE_NODE_KINDS: set[KnowledgeNodeKind] = {
+    KnowledgeNodeKind.FILE,
+    KnowledgeNodeKind.SYMBOL,
+}
+GRAPHRAG_CODE_NOISE_EDGE_KINDS: set[KnowledgeEdgeKind] = {
+    KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+    KnowledgeEdgeKind.SYMBOL_CONTAINS_SYMBOL,
+    KnowledgeEdgeKind.FILE_IMPORTS_FILE,
+    KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+    KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+}
+GRAPHRAG_SEMANTIC_NODE_KINDS: set[KnowledgeNodeKind] = {
+    kind for kind in KnowledgeNodeKind if kind not in GRAPHRAG_CODE_NOISE_NODE_KINDS
+}
+GRAPHRAG_SEMANTIC_EDGE_KINDS: set[KnowledgeEdgeKind] = {
+    kind for kind in KnowledgeEdgeKind if kind not in GRAPHRAG_CODE_NOISE_EDGE_KINDS
+}
+
+
 async def _load_community_graph(
     db: Any,
     collection_id: uuid.UUID,
@@ -1282,9 +1301,43 @@ async def _load_community_graph(
     """Load preferred graph for community/process views.
 
     Preference order:
-    1. SYMBOL nodes with SYMBOL_CALLS_SYMBOL edges
-    2. Fallback to all knowledge nodes/edges for collections without symbol graph
+    1. Semantic/architecture node kinds with non-code edges
+    2. SYMBOL nodes with SYMBOL_CALLS_SYMBOL edges
+    3. Fallback to all knowledge nodes/edges
     """
+    semantic_nodes = (
+        (
+            await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind.in_(GRAPHRAG_SEMANTIC_NODE_KINDS),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if semantic_nodes:
+        semantic_node_ids = {node.id for node in semantic_nodes}
+        semantic_edges: list[KnowledgeEdge] = []
+        if semantic_node_ids:
+            semantic_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_id,
+                            KnowledgeEdge.kind.in_(GRAPHRAG_SEMANTIC_EDGE_KINDS),
+                            KnowledgeEdge.source_node_id.in_(semantic_node_ids),
+                            KnowledgeEdge.target_node_id.in_(semantic_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        if semantic_edges:
+            return semantic_nodes, semantic_edges, "semantic"
+
     symbol_nodes = (
         (
             await db.execute(
@@ -3097,6 +3150,10 @@ async def graphrag_view(
     include_node_kinds = _parse_knowledge_node_kinds(include_kinds)
     exclude_node_kinds = _parse_knowledge_node_kinds(exclude_kinds)
     include_edge_kinds = _parse_knowledge_edge_kinds(edge_kinds)
+    if include_node_kinds is None and exclude_node_kinds is None:
+        exclude_node_kinds = set(GRAPHRAG_CODE_NOISE_NODE_KINDS)
+    if include_edge_kinds is None:
+        include_edge_kinds = set(GRAPHRAG_SEMANTIC_EDGE_KINDS)
     resolved_community_mode = _parse_graphrag_community_mode(community_mode)
     resolved_community_id = community_id.strip() if community_id and community_id.strip() else None
 
@@ -3107,37 +3164,11 @@ async def graphrag_view(
         community_by_node_id: dict[uuid.UUID, str] = {}
         communities: dict[str, dict[str, Any]] = {}
         if resolved_community_mode != "none" or resolved_community_id:
-            symbol_nodes = (
-                (
-                    await db.execute(
-                        select(KnowledgeNode).where(
-                            KnowledgeNode.collection_id == collection_uuid,
-                            KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
+            community_nodes, community_edges, _graph_source = await _load_community_graph(
+                db, collection_uuid
             )
-            symbol_node_ids = {node.id for node in symbol_nodes}
-            symbol_edges: list[KnowledgeEdge] = []
-            if symbol_node_ids:
-                symbol_edges = (
-                    (
-                        await db.execute(
-                            select(KnowledgeEdge).where(
-                                KnowledgeEdge.collection_id == collection_uuid,
-                                KnowledgeEdge.kind == KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                                KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                                KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
             community_by_node_id, communities = _compute_symbol_communities(
-                symbol_nodes, symbol_edges
+                community_nodes, community_edges
             )
 
         if resolved_community_id and resolved_community_id not in communities:
@@ -3204,7 +3235,7 @@ async def graphrag_view(
 
         status = {"status": "ready", "reason": "ok"}
         if total_nodes == 0:
-            status = {"status": "unavailable", "reason": "no_knowledge_graph"}
+            status = {"status": "unavailable", "reason": "no_graphrag_semantic_graph"}
 
         return {
             "collection_id": str(collection_uuid),
