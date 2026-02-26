@@ -38,7 +38,7 @@ from prefect.tasks import exponential_backoff
 from sqlalchemy import delete, select, text
 
 from contextmine_worker.chunking import chunk_document
-from contextmine_worker.embeddings import get_embedder, parse_embedding_model_spec
+from contextmine_worker.embeddings import FakeEmbedder, get_embedder, parse_embedding_model_spec
 from contextmine_worker.github_sync import (
     SyncStats,
     build_uri,
@@ -98,6 +98,11 @@ IGNORED_REPO_PATH_PARTS = frozenset(
 def _sync_source_timeout_seconds() -> int:
     configured = int(get_settings().sync_source_timeout_seconds)
     return max(300, configured)
+
+
+def _embedding_batch_timeout_seconds() -> int:
+    configured = int(get_settings().embedding_batch_timeout_seconds)
+    return max(10, configured)
 
 
 def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
@@ -420,7 +425,25 @@ async def embed_chunks_for_document(
         texts = [row.content for row in batch]
 
         # Get embeddings from API
-        result = await embedder.embed_batch(texts)
+        try:
+            result = await asyncio.wait_for(
+                embedder.embed_batch(texts),
+                timeout=_embedding_batch_timeout_seconds(),
+            )
+        except TimeoutError:
+            logger.warning(
+                "Embedding batch timed out after %ss for document %s; using deterministic fallback.",
+                _embedding_batch_timeout_seconds(),
+                document_id,
+            )
+            result = await FakeEmbedder(dimension=int(embedding_model.dimension)).embed_batch(texts)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Embedding batch failed for document %s: %s; using deterministic fallback.",
+                document_id,
+                exc,
+            )
+            result = await FakeEmbedder(dimension=int(embedding_model.dimension)).embed_batch(texts)
         stats["tokens_used"] += result.tokens_used
 
         # Update chunks with embeddings via raw SQL (for pgvector)
