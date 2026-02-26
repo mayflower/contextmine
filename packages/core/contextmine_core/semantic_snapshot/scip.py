@@ -139,6 +139,7 @@ class SCIPProvider:
         relation_keys: set[tuple[str, RelationKind, str]] = set()
         symbol_kinds: dict[str, SymbolKind] = {}
         symbols_by_file: dict[str, list[tuple[str, Range]]] = {}
+        definition_occurrences_by_file: dict[str, list[tuple[str, Range]]] = {}
         occurrence_candidates: list[tuple[str, Range, str, int, int, list[int]]] = []
 
         # Track symbols we've seen for deduplication
@@ -161,6 +162,7 @@ class SCIPProvider:
         # Process metadata
         tool_name = index.metadata.tool_info.name if index.metadata.tool_info else "unknown"
         tool_version = index.metadata.tool_info.version if index.metadata.tool_info else "unknown"
+        allow_contextual_caller_fallback = tool_name.strip().lower() == "scip-php"
 
         # Process each document
         for doc in index.documents:
@@ -276,6 +278,11 @@ class SCIPProvider:
                         def_id=occ.symbol,
                     )
                 )
+
+                if role == OccurrenceRole.DEFINITION and not occ.symbol.startswith("local "):
+                    definition_occurrences_by_file.setdefault(file_path, []).append(
+                        (occ.symbol, occ_range)
+                    )
 
                 if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith("local "):
                     occurrence_candidates.append(
@@ -408,6 +415,14 @@ class SCIPProvider:
                 symbols_by_file=symbols_by_file,
                 symbol_kinds=symbol_kinds,
             )
+            if not caller_def_id and allow_contextual_caller_fallback:
+                caller_def_id = self._find_contextual_symbol_def_id(
+                    file_path=file_path,
+                    occ_range=occ_range,
+                    definition_occurrences_by_file=definition_occurrences_by_file,
+                    symbols_by_file=symbols_by_file,
+                    symbol_kinds=symbol_kinds,
+                )
             if not caller_def_id:
                 continue
             if target_def_id not in symbol_kinds:
@@ -699,6 +714,71 @@ class SCIPProvider:
             return module_candidates[0][0]
 
         return None
+
+    def _find_contextual_symbol_def_id(
+        self,
+        *,
+        file_path: str,
+        occ_range: Range,
+        definition_occurrences_by_file: dict[str, list[tuple[str, Range]]],
+        symbols_by_file: dict[str, list[tuple[str, Range]]],
+        symbol_kinds: dict[str, SymbolKind],
+    ) -> str | None:
+        """Best-effort caller inference for sparse SCIP emitters (notably scip-php).
+
+        When symbol roles and enclosing ranges are missing, prefer the nearest preceding
+        callable definition in the same file. This recovers relation coverage for indexers
+        that emit identifier-level ranges only.
+        """
+        candidates = definition_occurrences_by_file.get(file_path) or symbols_by_file.get(file_path)
+        if not candidates:
+            return None
+
+        scoped_candidates: list[tuple[str, Range, SymbolKind]] = []
+        for def_id, symbol_range in candidates:
+            kind = symbol_kinds.get(def_id)
+            if kind is None or kind == SymbolKind.PARAMETER:
+                continue
+            if kind not in SCIP_CALLER_ELIGIBLE_KINDS and kind not in {
+                SymbolKind.CLASS,
+                SymbolKind.MODULE,
+            }:
+                continue
+            scoped_candidates.append((def_id, symbol_range, kind))
+
+        if not scoped_candidates:
+            return None
+
+        scoped_candidates.sort(
+            key=lambda item: (
+                item[1].start_line,
+                item[1].start_col,
+                self._range_span(item[1]),
+            )
+        )
+        occ_start = (occ_range.start_line, occ_range.start_col)
+        preceding = [
+            item
+            for item in scoped_candidates
+            if (item[1].start_line, item[1].start_col) <= occ_start
+        ]
+        if preceding:
+            callable_preceding = [
+                item for item in preceding if item[2] in SCIP_CALLER_PREFERRED_KINDS
+            ]
+            if callable_preceding:
+                return callable_preceding[-1][0]
+            return preceding[-1][0]
+
+        module_candidates = [item for item in scoped_candidates if item[2] == SymbolKind.MODULE]
+        if module_candidates:
+            return module_candidates[0][0]
+
+        class_candidates = [item for item in scoped_candidates if item[2] == SymbolKind.CLASS]
+        if class_candidates:
+            return class_candidates[0][0]
+
+        return scoped_candidates[0][0]
 
     def _range_contains(self, outer: Range, inner: Range) -> bool:
         outer_start = (outer.start_line, outer.start_col)
