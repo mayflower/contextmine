@@ -1301,43 +1301,10 @@ async def _load_community_graph(
     """Load preferred graph for community/process views.
 
     Preference order:
-    1. Semantic/architecture node kinds with non-code edges
-    2. SYMBOL nodes with semantic dependency edges (calls/references)
+    1. SYMBOL nodes with semantic dependency edges (calls/references)
+    2. Semantic/architecture node kinds with non-code edges
     3. Fallback to all knowledge nodes/edges
     """
-    semantic_nodes = (
-        (
-            await db.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id == collection_id,
-                    KnowledgeNode.kind.in_(GRAPHRAG_SEMANTIC_NODE_KINDS),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if semantic_nodes:
-        semantic_node_ids = {node.id for node in semantic_nodes}
-        semantic_edges: list[KnowledgeEdge] = []
-        if semantic_node_ids:
-            semantic_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_id,
-                            KnowledgeEdge.kind.in_(GRAPHRAG_SEMANTIC_EDGE_KINDS),
-                            KnowledgeEdge.source_node_id.in_(semantic_node_ids),
-                            KnowledgeEdge.target_node_id.in_(semantic_node_ids),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        if semantic_edges:
-            return semantic_nodes, semantic_edges, "semantic"
-
     symbol_nodes = (
         (
             await db.execute(
@@ -1373,10 +1340,41 @@ async def _load_community_graph(
                 .scalars()
                 .all()
             )
-        # Only use symbol graph when it has real call edges.
-        # If symbols exist but calls are missing, fallback graph gives more useful processes.
         if symbol_edges:
             return symbol_nodes, symbol_edges, "symbol"
+
+    semantic_nodes = (
+        (
+            await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind.in_(GRAPHRAG_SEMANTIC_NODE_KINDS),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if semantic_nodes:
+        semantic_node_ids = {node.id for node in semantic_nodes}
+        semantic_edges: list[KnowledgeEdge] = []
+        if semantic_node_ids:
+            semantic_edges = (
+                (
+                    await db.execute(
+                        select(KnowledgeEdge).where(
+                            KnowledgeEdge.collection_id == collection_id,
+                            KnowledgeEdge.kind.in_(GRAPHRAG_SEMANTIC_EDGE_KINDS),
+                            KnowledgeEdge.source_node_id.in_(semantic_node_ids),
+                            KnowledgeEdge.target_node_id.in_(semantic_node_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        if semantic_edges:
+            return semantic_nodes, semantic_edges, "semantic"
 
     nodes = (
         (
@@ -1411,7 +1409,7 @@ async def _build_structural_community_points(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
-    if graph_source != "symbol":
+    if graph_source == "knowledge_fallback":
         warnings.append(
             "No symbol dependency graph found. Using knowledge graph communities as fallback."
         )
