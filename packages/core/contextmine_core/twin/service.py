@@ -26,7 +26,9 @@ from contextmine_core.models import (
     ArchitectureIntentStatus,
     IntentRiskLevel,
     KnowledgeEdge,
+    KnowledgeEdgeKind,
     KnowledgeNode,
+    KnowledgeNodeKind,
     MetricSnapshot,
     TwinEdge,
     TwinEdgeLayer,
@@ -390,6 +392,8 @@ async def ingest_snapshot_into_as_is(
 
     file_node_ids: dict[str, UUID] = {}
     symbol_node_ids: dict[str, UUID] = {}
+    knowledge_file_node_ids: dict[str, UUID] = {}
+    knowledge_symbol_node_ids: dict[str, UUID] = {}
 
     node_count = 0
     edge_count = 0
@@ -415,6 +419,21 @@ async def ingest_snapshot_into_as_is(
         )
         file_node_ids[canonical_file_path] = file_node_id
         file_node_ids[file_info.path] = file_node_id
+        knowledge_file_node_id = await _upsert_knowledge_node(
+            session=session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.FILE,
+            natural_key=file_key,
+            name=canonical_file_path,
+            meta={
+                "file_path": canonical_file_path,
+                "language": file_info.language,
+                "source_id": str(source_id) if source_id else None,
+                **(snapshot.meta or {}),
+            },
+        )
+        knowledge_file_node_ids[canonical_file_path] = knowledge_file_node_id
+        knowledge_file_node_ids[file_info.path] = knowledge_file_node_id
         node_count += 1
 
     for symbol in snapshot.symbols:
@@ -436,6 +455,19 @@ async def ingest_snapshot_into_as_is(
             },
             provenance_node_id=None,
         )
+        knowledge_symbol_node_ids[symbol.def_id] = await _upsert_knowledge_node(
+            session=session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.SYMBOL,
+            natural_key=symbol_key,
+            name=symbol.name or symbol.def_id,
+            meta={
+                "file_path": canonical_symbol_path or symbol.file_path,
+                "def_id": symbol.def_id,
+                "symbol_kind": symbol.kind.value,
+                "range": symbol.range.to_dict(),
+            },
+        )
         node_count += 1
 
         file_node_id = file_node_ids.get(canonical_symbol_path or symbol.file_path)
@@ -449,6 +481,19 @@ async def ingest_snapshot_into_as_is(
                 {},
             )
             edge_count += 1
+        knowledge_file_node_id = knowledge_file_node_ids.get(
+            canonical_symbol_path or symbol.file_path
+        )
+        knowledge_symbol_node_id = knowledge_symbol_node_ids.get(symbol.def_id)
+        if knowledge_file_node_id and knowledge_symbol_node_id:
+            await _upsert_knowledge_edge(
+                session=session,
+                collection_id=collection_id,
+                source_node_id=knowledge_file_node_id,
+                target_node_id=knowledge_symbol_node_id,
+                kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+                meta={},
+            )
 
     for relation in snapshot.relations:
         src = symbol_node_ids.get(relation.src_def_id)
@@ -466,6 +511,21 @@ async def ingest_snapshot_into_as_is(
             {"resolved": relation.resolved, "weight": relation.weight, **(relation.meta or {})},
         )
         edge_count += 1
+        knowledge_src = knowledge_symbol_node_ids.get(relation.src_def_id)
+        knowledge_dst = knowledge_symbol_node_ids.get(relation.dst_def_id)
+        if knowledge_src and knowledge_dst:
+            await _upsert_knowledge_edge(
+                session=session,
+                collection_id=collection_id,
+                source_node_id=knowledge_src,
+                target_node_id=knowledge_dst,
+                kind=_relation_to_knowledge_edge_kind(relation.kind),
+                meta={
+                    "resolved": relation.resolved,
+                    "weight": relation.weight,
+                    **(relation.meta or {}),
+                },
+            )
 
     scenario.version += 1
     scenario.updated_at = datetime.now(UTC)
@@ -483,6 +543,67 @@ def _relation_to_edge_kind(kind: RelationKind) -> str:
         RelationKind.IMPORTS: "symbol_imports_symbol",
     }
     return mapping.get(kind, "symbol_references_symbol")
+
+
+def _relation_to_knowledge_edge_kind(kind: RelationKind) -> KnowledgeEdgeKind:
+    mapping = {
+        RelationKind.CONTAINS: KnowledgeEdgeKind.SYMBOL_CONTAINS_SYMBOL,
+        RelationKind.CALLS: KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+        RelationKind.REFERENCES: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+        RelationKind.IMPORTS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+        RelationKind.EXTENDS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+        RelationKind.IMPLEMENTS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+    }
+    return mapping.get(kind, KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL)
+
+
+async def _upsert_knowledge_node(
+    session: AsyncSession,
+    collection_id: UUID,
+    kind: KnowledgeNodeKind,
+    natural_key: str,
+    name: str,
+    meta: dict[str, Any],
+) -> UUID:
+    stmt = pg_insert(KnowledgeNode).values(
+        collection_id=collection_id,
+        kind=kind,
+        natural_key=natural_key,
+        name=name,
+        meta=meta,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_knowledge_node_natural",
+        set_={
+            "name": stmt.excluded.name,
+            "meta": stmt.excluded.meta,
+        },
+    ).returning(KnowledgeNode.id)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _upsert_knowledge_edge(
+    session: AsyncSession,
+    collection_id: UUID,
+    source_node_id: UUID,
+    target_node_id: UUID,
+    kind: KnowledgeEdgeKind,
+    meta: dict[str, Any],
+) -> UUID:
+    stmt = pg_insert(KnowledgeEdge).values(
+        collection_id=collection_id,
+        source_node_id=source_node_id,
+        target_node_id=target_node_id,
+        kind=kind,
+        meta=meta,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_knowledge_edge_unique",
+        set_={
+            "meta": stmt.excluded.meta,
+        },
+    ).returning(KnowledgeEdge.id)
+    return (await session.execute(stmt)).scalar_one()
 
 
 async def submit_intent(
