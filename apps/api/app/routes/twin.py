@@ -2941,19 +2941,69 @@ async def deep_dive_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
-        graph = await get_scenario_graph(
-            db,
-            scenario.id,
-            layer_enum,
-            page,
-            limit,
-            projection=projection_enum,
-            entity_level=entity_level
-            or ("file" if projection_enum == GraphProjection.CODE_FILE else "symbol"),
-            include_kinds=_parse_kind_filter(include_kinds),
-            exclude_kinds=_parse_kind_filter(exclude_kinds),
-            include_edge_kinds=edge_kinds,
-        )
+        if mode == "symbol_callgraph":
+            full_graph = await get_full_scenario_graph(
+                db,
+                scenario.id,
+                layer_enum,
+                projection=projection_enum,
+                entity_level=entity_level or "symbol",
+                include_kinds=_parse_kind_filter(include_kinds),
+                exclude_kinds=_parse_kind_filter(exclude_kinds),
+                include_edge_kinds=edge_kinds,
+            )
+            all_edges = list(full_graph["edges"])
+            connected_node_ids = {str(edge.get("source_node_id")) for edge in all_edges} | {
+                str(edge.get("target_node_id")) for edge in all_edges
+            }
+            connected_nodes = [
+                node for node in full_graph["nodes"] if str(node.get("id")) in connected_node_ids
+            ]
+            degree_by_node_id: dict[str, int] = defaultdict(int)
+            for edge in all_edges:
+                degree_by_node_id[str(edge.get("source_node_id"))] += 1
+                degree_by_node_id[str(edge.get("target_node_id"))] += 1
+            connected_nodes.sort(
+                key=lambda node: (
+                    -degree_by_node_id.get(str(node.get("id")), 0),
+                    str(node.get("natural_key") or node.get("id")),
+                )
+            )
+            start = page * limit
+            end = start + limit
+            page_nodes = connected_nodes[start:end]
+            page_ids = {str(node.get("id")) for node in page_nodes}
+            page_edges = [
+                edge
+                for edge in all_edges
+                if str(edge.get("source_node_id")) in page_ids
+                and str(edge.get("target_node_id")) in page_ids
+            ]
+            graph = {
+                "nodes": page_nodes,
+                "edges": page_edges,
+                "page": page,
+                "limit": limit,
+                "total_nodes": len(connected_nodes),
+                "projection": full_graph["projection"],
+                "entity_level": full_graph["entity_level"],
+                "grouping_strategy": full_graph["grouping_strategy"],
+                "excluded_kinds": full_graph["excluded_kinds"],
+            }
+        else:
+            graph = await get_scenario_graph(
+                db,
+                scenario.id,
+                layer_enum,
+                page,
+                limit,
+                projection=projection_enum,
+                entity_level=entity_level
+                or ("file" if projection_enum == GraphProjection.CODE_FILE else "symbol"),
+                include_kinds=_parse_kind_filter(include_kinds),
+                exclude_kinds=_parse_kind_filter(exclude_kinds),
+                include_edge_kinds=edge_kinds,
+            )
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
