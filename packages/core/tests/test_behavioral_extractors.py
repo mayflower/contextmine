@@ -96,6 +96,46 @@ export function openCreateCategory(router) {
     assert extracted[0].routes[0].view_name_hint == "Categories"
 
 
+def test_extract_ui_from_files_detects_php_routes_and_templates() -> None:
+    files = [
+        (
+            "phpmyfaq/routes/web.php",
+            """
+<?php
+Route::get('/faq', function () {
+    return view('faq.index');
+});
+""",
+        ),
+        (
+            "phpmyfaq/templates/faq/index.html.twig",
+            """
+<div>
+  <x-question-card />
+  <form action="/api/faq/search" method="post"></form>
+  <a href="/faq/categories">Browse categories</a>
+</div>
+""",
+        ),
+    ]
+
+    extracted = extract_ui_from_files(files)
+    assert len(extracted) == 2
+    route_file = next(item for item in extracted if item.file_path.endswith("routes/web.php"))
+    template_file = next(
+        item for item in extracted if item.file_path.endswith("templates/faq/index.html.twig")
+    )
+
+    assert route_file.routes
+    assert route_file.routes[0].path == "/faq"
+    assert route_file.routes[0].view_name_hint == "Faq"
+
+    assert template_file.views
+    assert template_file.views[0].name == "Faq"
+    assert "/api/faq/search" in template_file.views[0].endpoint_hints
+    assert "/faq/categories" in template_file.views[0].navigation_targets
+
+
 def test_flow_synthesis_creates_flow_nodes() -> None:
     ui = extract_ui_from_files(
         [

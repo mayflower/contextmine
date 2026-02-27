@@ -57,15 +57,67 @@ def _provenance(
     }
 
 
-UI_FILE_SUFFIXES = (
-    ".tsx",
-    ".jsx",
-    ".vue",
-    ".svelte",
+JS_UI_FILE_SUFFIXES = (".tsx", ".jsx", ".vue", ".svelte", ".ts", ".js")
+UI_TEMPLATE_FILE_SUFFIXES = (
     ".html",
-    ".ts",
-    ".js",
+    ".htm",
+    ".twig",
+    ".phtml",
+    ".blade.php",
+    ".erb",
+    ".haml",
+    ".jinja",
+    ".jinja2",
+    ".mustache",
+    ".hbs",
+    ".ejs",
+    ".liquid",
+    ".gohtml",
 )
+UI_ROUTE_FILE_SUFFIXES = (
+    ".php",
+    ".py",
+    ".rb",
+    ".go",
+    ".java",
+    ".kt",
+    ".kts",
+    ".cs",
+    ".js",
+    ".ts",
+)
+UI_JS_PATH_HINTS = ("/src/", "/ui/", "/pages/", "/app/", "/components/", "/assets/")
+UI_TEMPLATE_PATH_HINTS = (
+    "/templates/",
+    "/template/",
+    "/views/",
+    "/view/",
+    "/resources/views/",
+    "/frontend/",
+    "/front/",
+    "/theme/",
+    "/themes/",
+    "/web/",
+    "/public/",
+)
+UI_ROUTE_PATH_HINTS = (
+    "/routes/",
+    "/route/",
+    "/router/",
+    "/controllers/",
+    "/controller/",
+    "/routing/",
+    "/urls.py",
+)
+UI_ROUTE_FILE_BASENAMES = {
+    "routes.php",
+    "web.php",
+    "urls.py",
+    "routes.rb",
+    "router.go",
+    "routes.ts",
+    "routes.js",
+}
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 HTTP_CLIENT_NAMES = {"axios", "client", "api", "http", "request", "agent"}
 ROUTER_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
@@ -107,6 +159,34 @@ UI_GENERIC_VIEW_STEMS = {
     "utils",
 }
 UI_STRIP_ROUTE_SEGMENTS = {"pages", "page", "routes", "route", "views", "view", "screens", "screen"}
+UI_ROUTE_EXCLUDE_PREFIXES = ("/api", "/graphql", "/rpc", "/internal", "/v1", "/v2")
+UI_RENDER_CALL_PATTERN = re.compile(
+    r"(?i)(?:\bview|render(?:_template|Template)?|template|TemplateResponse)\s*\(\s*['\"](?P<name>[^'\"]+)['\"]"
+)
+UI_ROUTE_PATTERNS = (
+    re.compile(
+        r"(?i)\bRoute::(?:get|post|put|patch|delete|match|any)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+    ),
+    re.compile(
+        r"(?i)\b(?:\$[A-Za-z_][\w]*|app|router|route)\s*->\s*(?:get|post|put|patch|delete|match|any|map)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+    ),
+    re.compile(r"(?i)#\[\s*Route\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)@Route\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)\b(?:path|re_path)\s*\(\s*r?['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)\b(?:get|post|put|patch|delete)\s+['\"](?P<path>/[^'\"]+)['\"]"),
+)
+UI_ENDPOINT_HINT_PATTERNS = (
+    re.compile(
+        r"(?i)\b(?:fetch|axios\.(?:get|post|put|patch|delete)|api\.(?:get|post|put|patch|delete)|client\.(?:get|post|put|patch|delete))\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+    ),
+    re.compile(r"(?i)\baction\s*=\s*['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)\bdata-(?:url|endpoint)\s*=\s*['\"](?P<path>[^'\"]+)['\"]"),
+)
+UI_NAVIGATION_HINT_PATTERN = re.compile(r"(?i)\bhref\s*=\s*['\"](?P<path>[^'\"]+)['\"]")
+UI_COMPONENT_TAG_PATTERN = re.compile(r"<(?P<tag>[A-Za-z][A-Za-z0-9:_-]{2,})\b")
+UI_SYMBOL_HINT_PATTERN = re.compile(
+    r"\b(?P<symbol>[A-Z][A-Za-z0-9_]+Controller::[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*(?:Service|Controller|Handler|Action)\b)"
+)
 
 
 @dataclass
@@ -147,13 +227,18 @@ class UIExtraction:
 def looks_like_ui_file(file_path: str) -> bool:
     """Best-effort UI-file detector."""
     path = file_path.replace("\\", "/").lower()
+    basename = PurePosixPath(path).name
     if looks_like_ui_test_file(path):
         return False
-    if not path.endswith(UI_FILE_SUFFIXES):
-        return False
-    return any(
-        token in path for token in ("/src/", "/ui/", "/pages/", "/app/", "/components/", "/assets/")
-    )
+    if path.endswith(JS_UI_FILE_SUFFIXES):
+        return any(token in path for token in UI_JS_PATH_HINTS)
+    if path.endswith(UI_TEMPLATE_FILE_SUFFIXES):
+        return any(token in path for token in UI_TEMPLATE_PATH_HINTS + UI_JS_PATH_HINTS)
+    if path.endswith(UI_ROUTE_FILE_SUFFIXES):
+        return basename in UI_ROUTE_FILE_BASENAMES or any(
+            token in path for token in UI_ROUTE_PATH_HINTS
+        )
+    return False
 
 
 def looks_like_ui_test_file(file_path: str) -> bool:
@@ -174,6 +259,16 @@ def _to_pascal_case(raw: str) -> str:
 def _view_name_from_file_path(file_path: str) -> str | None:
     path = PurePosixPath(file_path.replace("\\", "/"))
     stem = path.stem
+    while True:
+        normalized = re.sub(
+            r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$",
+            "",
+            stem,
+            flags=re.IGNORECASE,
+        )
+        if normalized == stem:
+            break
+        stem = normalized
     if stem.lower() in {"index", "main", "app"} and path.parent.name:
         stem = path.parent.name
     if stem.lower() in UI_GENERIC_VIEW_STEMS and path.parent.name:
@@ -217,7 +312,11 @@ def _route_path_from_file(file_path: str) -> str | None:
     if not segments:
         return base_prefix or "/"
 
-    if segments[-1].lower().endswith(UI_FILE_SUFFIXES):
+    if (
+        segments[-1]
+        .lower()
+        .endswith(JS_UI_FILE_SUFFIXES + UI_TEMPLATE_FILE_SUFFIXES + UI_ROUTE_FILE_SUFFIXES)
+    ):
         file_stem = PurePosixPath(segments[-1]).stem
         segments = segments[:-1] + [file_stem]
 
@@ -245,6 +344,187 @@ def _dedupe(values: list[str]) -> list[str]:
     return list(dict.fromkeys(v.strip() for v in values if v and v.strip()))
 
 
+def _line_number_for_offset(content: str, offset: int) -> int:
+    return max(1, content.count("\n", 0, max(0, offset)) + 1)
+
+
+def _normalize_ui_route_path(raw: str) -> str | None:
+    candidate = (raw or "").strip()
+    if not candidate:
+        return None
+    if "://" in candidate:
+        return None
+    candidate = candidate.split("?", 1)[0].split("#", 1)[0]
+    candidate = candidate.strip().strip("^$").strip()
+    if not candidate:
+        return None
+    if "<" in candidate and ">" in candidate:
+        candidate = re.sub(r"<[^>]+>", ":param", candidate)
+    if "{" in candidate and "}" in candidate:
+        candidate = re.sub(r"\{[^}]+\}", ":param", candidate)
+    if not candidate.startswith("/"):
+        candidate = f"/{candidate}"
+    normalized = "/" + "/".join(part for part in candidate.split("/") if part)
+    if not normalized:
+        return "/"
+    lower = normalized.lower()
+    if any(
+        lower == prefix or lower.startswith(f"{prefix}/") for prefix in UI_ROUTE_EXCLUDE_PREFIXES
+    ):
+        return None
+    return normalized
+
+
+def _normalize_view_hint(raw: str) -> str | None:
+    candidate = (raw or "").strip()
+    if not candidate:
+        return None
+    candidate = candidate.split("::", 1)[-1]
+    candidate = candidate.replace(".", "/").replace(":", "/")
+    parts = [part for part in re.split(r"[/\\]+", candidate) if part]
+    if not parts:
+        return None
+    tail = parts[-1]
+    if tail.lower() in {"index", "main", "default"} and len(parts) > 1:
+        tail = parts[-2]
+    tail = re.sub(r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$", "", tail)
+    value = _to_pascal_case(tail)
+    return value if is_pascal_case(value) else None
+
+
+def _is_template_like_file(file_path: str) -> bool:
+    normalized = file_path.replace("\\", "/").lower()
+    return normalized.endswith(UI_TEMPLATE_FILE_SUFFIXES) and any(
+        token in normalized for token in UI_TEMPLATE_PATH_HINTS + UI_JS_PATH_HINTS
+    )
+
+
+def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
+    extraction = UIExtraction(file_path=file_path)
+    routes: list[UIRouteDef] = []
+    route_keys: set[tuple[str, int, str | None]] = set()
+
+    for pattern in UI_ROUTE_PATTERNS:
+        for match in pattern.finditer(content):
+            raw_path = match.groupdict().get("path") or ""
+            path = _normalize_ui_route_path(raw_path)
+            if not path:
+                continue
+            window = content[match.end() : match.end() + 600]
+            render_match = UI_RENDER_CALL_PATTERN.search(window)
+            view_hint = (
+                _normalize_view_hint(render_match.groupdict().get("name") or "")
+                if render_match
+                else None
+            )
+            line = _line_number_for_offset(content, match.start())
+            key = (path, line, view_hint)
+            if key in route_keys:
+                continue
+            route_keys.add(key)
+            routes.append(
+                UIRouteDef(path=path, file_path=file_path, line=line, view_name_hint=view_hint)
+            )
+
+    if not routes and _looks_like_route_module(file_path):
+        inferred_route = _route_path_from_file(file_path)
+        normalized_route = _normalize_ui_route_path(inferred_route or "")
+        if normalized_route:
+            routes.append(
+                UIRouteDef(
+                    path=normalized_route,
+                    file_path=file_path,
+                    line=1,
+                    view_name_hint=_view_name_from_file_path(file_path),
+                    inferred=True,
+                )
+            )
+
+    view_candidates: dict[str, UIViewDef] = {}
+    template_like = _is_template_like_file(file_path)
+
+    if template_like:
+        name = _view_name_from_file_path(file_path)
+        if name:
+            view_candidates[name] = UIViewDef(
+                name=name,
+                file_path=file_path,
+                line=1,
+                inferred=True,
+            )
+
+    for render_match in UI_RENDER_CALL_PATTERN.finditer(content):
+        view_name = _normalize_view_hint(render_match.groupdict().get("name") or "")
+        if not view_name:
+            continue
+        if view_name not in view_candidates:
+            view_candidates[view_name] = UIViewDef(
+                name=view_name,
+                file_path=file_path,
+                line=_line_number_for_offset(content, render_match.start()),
+                inferred=True,
+            )
+
+    components: list[str] = []
+    symbol_hints: list[str] = []
+    endpoint_hints: list[str] = []
+    navigation_targets: list[str] = []
+
+    for tag_match in UI_COMPONENT_TAG_PATTERN.finditer(content):
+        tag = tag_match.groupdict().get("tag") or ""
+        if ":" in tag:
+            tag = tag.split(":", 1)[1]
+        if "-" in tag:
+            components.append(_to_pascal_case(tag))
+        elif is_pascal_case(tag):
+            components.append(tag)
+
+    for symbol_match in UI_SYMBOL_HINT_PATTERN.finditer(content):
+        symbol_hints.append(symbol_match.groupdict().get("symbol") or "")
+
+    for pattern in UI_ENDPOINT_HINT_PATTERNS:
+        for endpoint_match in pattern.finditer(content):
+            hint = _normalize_endpoint_path(endpoint_match.groupdict().get("path") or "")
+            if hint:
+                endpoint_hints.append(hint)
+
+    for navigation_match in UI_NAVIGATION_HINT_PATTERN.finditer(content):
+        nav = _normalize_endpoint_path(navigation_match.groupdict().get("path") or "")
+        if not nav:
+            continue
+        if any(nav.startswith(prefix) for prefix in UI_ROUTE_EXCLUDE_PREFIXES):
+            endpoint_hints.append(nav)
+        else:
+            navigation_targets.append(nav)
+
+    if not view_candidates and routes:
+        hinted_names = [route.view_name_hint for route in routes if route.view_name_hint]
+        if len(hinted_names) == 1:
+            only_name = hinted_names[0]
+            if only_name:
+                view_candidates[only_name] = UIViewDef(
+                    name=only_name,
+                    file_path=file_path,
+                    line=1,
+                    inferred=True,
+                )
+
+    if view_candidates:
+        deduped_components = _dedupe(components)[:40]
+        deduped_symbols = _dedupe(symbol_hints)[:40]
+        deduped_endpoints = _dedupe(endpoint_hints)[:20]
+        deduped_navigation = _dedupe(navigation_targets)[:20]
+        for view in view_candidates.values():
+            view.components = deduped_components
+            view.symbol_hints = deduped_symbols
+            view.endpoint_hints = deduped_endpoints
+            view.navigation_targets = deduped_navigation
+
+    extraction.routes = routes
+    extraction.views = list(view_candidates.values())
+    return extraction
+
+
 def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
     """Extract routes, views, and UI composition hints from one file."""
     extraction = UIExtraction(file_path=file_path)
@@ -253,7 +533,7 @@ def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
 
     language = detect_language(file_path)
     if language not in JS_UI_LANGUAGES:
-        return extraction
+        return _extract_ui_heuristic(file_path, content)
 
     manager = get_treesitter_manager()
     try:
@@ -276,6 +556,9 @@ def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
             if inferred_route is not None:
                 extraction.routes.append(inferred_route)
                 break
+
+    if not extraction.routes and not extraction.views:
+        return _extract_ui_heuristic(file_path, content)
 
     return extraction
 
