@@ -200,11 +200,21 @@ def test_checkout():
 
 
 def test_flow_synthesis_truncates_oversized_step_names() -> None:
-    long_hint = "fetch(`${window.location.pathname}/api/content/comments`, { method: 'DELETE' }).catch(" * 20
+    long_hint = (
+        "fetch(`${window.location.pathname}/api/content/comments`, { method: 'DELETE' }).catch("
+        * 20
+    )
     ui = [
         UIExtraction(
             file_path="phpmyfaq/admin/assets/src/content/comments.ts",
-            routes=[UIRouteDef(path="/admin/content/comments", file_path="x.ts", line=1, view_name_hint="Comments")],
+            routes=[
+                UIRouteDef(
+                    path="/admin/content/comments",
+                    file_path="x.ts",
+                    line=1,
+                    view_name_hint="Comments",
+                )
+            ],
             views=[
                 UIViewDef(
                     name="Comments",

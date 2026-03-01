@@ -149,9 +149,7 @@ def synthesize_user_flows(
     for route, symbol_hints in sorted(route_to_symbol_hints.items()):
         deduped_hints = list(
             dict.fromkeys(
-                token
-                for token in (_sanitize_flow_token(hint) for hint in symbol_hints)
-                if token
+                token for token in (_sanitize_flow_token(hint) for hint in symbol_hints) if token
             )
         )
         deduped_navigation = list(
