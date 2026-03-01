@@ -1,6 +1,11 @@
 from contextmine_core.analyzer.extractors.flows import synthesize_user_flows
 from contextmine_core.analyzer.extractors.tests import extract_tests_from_files
-from contextmine_core.analyzer.extractors.ui import extract_ui_from_files
+from contextmine_core.analyzer.extractors.ui import (
+    UIExtraction,
+    UIRouteDef,
+    UIViewDef,
+    extract_ui_from_files,
+)
 from contextmine_core.twin.projections import (
     build_test_matrix_projection,
     build_ui_map_projection,
@@ -192,6 +197,30 @@ def test_checkout():
     synthesis = synthesize_user_flows(ui, tests)
     assert synthesis.flows
     assert synthesis.flows[0].steps
+
+
+def test_flow_synthesis_truncates_oversized_step_names() -> None:
+    long_hint = "fetch(`${window.location.pathname}/api/content/comments`, { method: 'DELETE' }).catch(" * 20
+    ui = [
+        UIExtraction(
+            file_path="phpmyfaq/admin/assets/src/content/comments.ts",
+            routes=[UIRouteDef(path="/admin/content/comments", file_path="x.ts", line=1, view_name_hint="Comments")],
+            views=[
+                UIViewDef(
+                    name="Comments",
+                    file_path="x.ts",
+                    line=1,
+                    symbol_hints=[long_hint],
+                    navigation_targets=[long_hint],
+                )
+            ],
+        )
+    ]
+
+    synthesis = synthesize_user_flows(ui, [])
+    assert synthesis.flows
+    assert synthesis.flows[0].steps
+    assert all(len(step.name) <= 480 for step in synthesis.flows[0].steps)
 
 
 def test_behavioral_projections_and_readiness() -> None:

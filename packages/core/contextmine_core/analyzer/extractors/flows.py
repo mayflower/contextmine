@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -45,6 +46,35 @@ def _provenance(
             "evidence_ids": list(dict.fromkeys(evidence_ids or [])),
         }
     }
+
+
+MAX_FLOW_TOKEN_LEN = 160
+MAX_FLOW_STEP_NAME_LEN = 480
+
+
+def _sanitize_flow_token(raw: str) -> str:
+    token = " ".join((raw or "").split()).strip()
+    if not token:
+        return ""
+    if len(token) <= MAX_FLOW_TOKEN_LEN:
+        return token
+
+    # Prefer an identifier-like symbol over full call-site payloads.
+    ident = re.search(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,3}", token)
+    if ident:
+        token = ident.group(0)
+
+    if len(token) > MAX_FLOW_TOKEN_LEN:
+        token = f"{token[: MAX_FLOW_TOKEN_LEN - 3]}..."
+    return token
+
+
+def _sanitize_step_name(prefix: str, raw: str) -> str:
+    token = _sanitize_flow_token(raw) or "step"
+    name = f"{prefix} {token}"
+    if len(name) > MAX_FLOW_STEP_NAME_LEN:
+        name = f"{name[: MAX_FLOW_STEP_NAME_LEN - 3]}..."
+    return name
 
 
 @dataclass
@@ -117,8 +147,23 @@ def synthesize_user_flows(
 
     synthesis = FlowSynthesis()
     for route, symbol_hints in sorted(route_to_symbol_hints.items()):
-        deduped_hints = list(dict.fromkeys(symbol_hints))
-        deduped_navigation = list(dict.fromkeys(route_to_navigation_hints.get(route, [])))
+        deduped_hints = list(
+            dict.fromkeys(
+                token
+                for token in (_sanitize_flow_token(hint) for hint in symbol_hints)
+                if token
+            )
+        )
+        deduped_navigation = list(
+            dict.fromkeys(
+                token
+                for token in (
+                    _sanitize_flow_token(target)
+                    for target in route_to_navigation_hints.get(route, [])
+                )
+                if token
+            )
+        )
         flow_name = f"Flow {route}"
         flow = UserFlowDef(
             name=flow_name,
@@ -138,7 +183,7 @@ def synthesize_user_flows(
         for symbol in deduped_hints:
             flow.steps.append(
                 FlowStepDef(
-                    name=f"Invoke {symbol}",
+                    name=_sanitize_step_name("Invoke", symbol),
                     order=next_order,
                     endpoint_path=None,
                     symbol_hints=[symbol],
@@ -151,7 +196,7 @@ def synthesize_user_flows(
         for target in deduped_navigation:
             flow.steps.append(
                 FlowStepDef(
-                    name=f"Navigate to {target}",
+                    name=_sanitize_step_name("Navigate to", target),
                     order=next_order,
                     endpoint_path=None,
                     natural_key=f"flow_step:{flow.natural_key}:{next_order}:{_hash(target)}",
