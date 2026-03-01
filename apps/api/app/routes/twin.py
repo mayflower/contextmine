@@ -4166,12 +4166,13 @@ async def city_view(
             else None
         )
 
+        cc_projection = GraphProjection.ARCHITECTURE
         cc_entity_level = "container"
         cc_json_payload = json.loads(
             await export_codecharta_json(
                 db,
                 scenario.id,
-                projection=GraphProjection.ARCHITECTURE,
+                projection=cc_projection,
                 entity_level=cc_entity_level,
             )
         )
@@ -4183,8 +4184,20 @@ async def city_view(
                 await export_codecharta_json(
                     db,
                     scenario.id,
-                    projection=GraphProjection.ARCHITECTURE,
+                    projection=cc_projection,
                     entity_level=cc_entity_level,
+                )
+            )
+        # Final fallback for repos that still collapse into one architecture bucket.
+        if len(cc_json_payload.get("nodes") or []) <= 1:
+            cc_projection = GraphProjection.CODE_FILE
+            cc_entity_level = None
+            cc_json_payload = json.loads(
+                await export_codecharta_json(
+                    db,
+                    scenario.id,
+                    projection=cc_projection,
+                    entity_level=None,
                 )
             )
 
@@ -4208,6 +4221,7 @@ async def city_view(
                 "churn_avg": churn_avg,
             },
             "metrics_status": metrics_status,
+            "cc_projection": cc_projection.value,
             "cc_entity_level": cc_entity_level,
             "hotspots": [
                 {
