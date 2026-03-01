@@ -4166,14 +4166,27 @@ async def city_view(
             else None
         )
 
+        cc_entity_level = "container"
         cc_json_payload = json.loads(
             await export_codecharta_json(
                 db,
                 scenario.id,
                 projection=GraphProjection.ARCHITECTURE,
-                entity_level="container",
+                entity_level=cc_entity_level,
             )
         )
+        # Monolith-heavy repositories often collapse to a single container node.
+        # In that case, component-level projection is more informative for the city view.
+        if len(cc_json_payload.get("nodes") or []) <= 1:
+            cc_entity_level = "component"
+            cc_json_payload = json.loads(
+                await export_codecharta_json(
+                    db,
+                    scenario.id,
+                    projection=GraphProjection.ARCHITECTURE,
+                    entity_level=cc_entity_level,
+                )
+            )
 
         return {
             "collection_id": str(collection_uuid),
@@ -4195,6 +4208,7 @@ async def city_view(
                 "churn_avg": churn_avg,
             },
             "metrics_status": metrics_status,
+            "cc_entity_level": cc_entity_level,
             "hotspots": [
                 {
                     "node_natural_key": metric.node_natural_key,
