@@ -201,12 +201,11 @@ class TestTwinViewRoutes:
         semantic_nodes_result.scalars.return_value.all.return_value = []
         symbol_nodes_result = MagicMock()
         symbol_nodes_result.scalars.return_value.all.return_value = [symbol_node]
+        symbol_edge = MagicMock()
+        symbol_edge.source_node_id = symbol_node.id
+        symbol_edge.target_node_id = symbol_node.id
         symbol_edges_result = MagicMock()
-        symbol_edges_result.scalars.return_value.all.return_value = []
-        fallback_nodes_result = MagicMock()
-        fallback_nodes_result.scalars.return_value.all.return_value = [symbol_node]
-        fallback_edges_result = MagicMock()
-        fallback_edges_result.scalars.return_value.all.return_value = []
+        symbol_edges_result.scalars.return_value.all.return_value = [symbol_edge]
 
         fake_db = MagicMock()
         fake_db.execute = AsyncMock(
@@ -214,8 +213,6 @@ class TestTwinViewRoutes:
                 semantic_nodes_result,
                 symbol_nodes_result,
                 symbol_edges_result,
-                fallback_nodes_result,
-                fallback_edges_result,
             ]
         )
 
@@ -303,9 +300,13 @@ class TestTwinViewRoutes:
         nodes_result.scalars.return_value.all.return_value = [node]
         edges_result = MagicMock()
         edges_result.scalars.return_value.all.return_value = []
+        recovered_edges_result = MagicMock()
+        recovered_edges_result.scalars.return_value.all.return_value = []
 
         fake_db = MagicMock()
-        fake_db.execute = AsyncMock(side_effect=[total_result, nodes_result, edges_result])
+        fake_db.execute = AsyncMock(
+            side_effect=[total_result, nodes_result, edges_result, recovered_edges_result]
+        )
 
         class SessionContext:
             async def __aenter__(self):  # noqa: ANN001
@@ -445,10 +446,12 @@ class TestTwinViewRoutes:
             }
         ]
 
+        symbol_nodes_result = MagicMock()
+        symbol_nodes_result.scalars.return_value.all.return_value = []
         semantic_nodes_result = MagicMock()
         semantic_nodes_result.scalars.return_value.all.return_value = []
-        symbols_result = MagicMock()
-        symbols_result.scalars.return_value.all.return_value = []
+        recovery_edges_result = MagicMock()
+        recovery_edges_result.scalars.return_value.all.return_value = []
         fallback_nodes_result = MagicMock()
         fallback_nodes_result.scalars.return_value.all.return_value = []
         fallback_edges_result = MagicMock()
@@ -457,8 +460,9 @@ class TestTwinViewRoutes:
         fake_db = MagicMock()
         fake_db.execute = AsyncMock(
             side_effect=[
+                symbol_nodes_result,
                 semantic_nodes_result,
-                symbols_result,
+                recovery_edges_result,
                 fallback_nodes_result,
                 fallback_edges_result,
             ]
@@ -480,6 +484,194 @@ class TestTwinViewRoutes:
         payload = response.json()
         assert payload["total"] == 1
         assert payload["items"][0]["id"] == "proc_1"
+
+    @patch("app.routes.twin._load_knowledge_graph_projection", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_full_scenario_graph", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_ui_map_recovers_from_knowledge_graph_when_scenario_is_empty(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_get_full_graph: Any,
+        mock_load_knowledge_projection: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+
+        mock_get_full_graph.return_value = {
+            "nodes": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "natural_key": "symbol:foo",
+                    "kind": "symbol",
+                    "name": "Foo",
+                    "meta": {},
+                }
+            ],
+            "edges": [],
+        }
+        route_id = str(uuid.uuid4())
+        view_id = str(uuid.uuid4())
+        endpoint_id = str(uuid.uuid4())
+        mock_load_knowledge_projection.return_value = (
+            [
+                {
+                    "id": route_id,
+                    "natural_key": "ui_route:/faq",
+                    "kind": "ui_route",
+                    "name": "/faq",
+                    "meta": {},
+                },
+                {
+                    "id": view_id,
+                    "natural_key": "ui_view:faq",
+                    "kind": "ui_view",
+                    "name": "FAQ",
+                    "meta": {},
+                },
+                {
+                    "id": endpoint_id,
+                    "natural_key": "endpoint:get:/api/faq",
+                    "kind": "api_endpoint",
+                    "name": "GET /api/faq",
+                    "meta": {},
+                },
+            ],
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "source_node_id": route_id,
+                    "target_node_id": view_id,
+                    "kind": "ui_route_renders_view",
+                    "meta": {},
+                }
+            ],
+        )
+
+        fake_db = MagicMock()
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(f"/api/twin/collections/{collection_id}/views/ui-map")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["graph_source"] == "knowledge_recovery"
+        assert payload["summary"]["routes"] == 1
+        assert payload["summary"]["trace_edges"] == 1
+
+    @patch("app.routes.twin._load_knowledge_graph_projection", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_full_scenario_graph", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_user_flows_recovers_from_knowledge_graph_when_scenario_is_empty(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_get_full_graph: Any,
+        mock_load_knowledge_projection: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = str(uuid.uuid4())
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "AS-IS"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+
+        mock_get_full_graph.return_value = {"nodes": [], "edges": []}
+        flow_id = str(uuid.uuid4())
+        step_id = str(uuid.uuid4())
+        endpoint_id = str(uuid.uuid4())
+        mock_load_knowledge_projection.return_value = (
+            [
+                {
+                    "id": flow_id,
+                    "natural_key": "user_flow:faq.search",
+                    "kind": "user_flow",
+                    "name": "Search FAQ",
+                    "meta": {"route_path": "/faq"},
+                },
+                {
+                    "id": step_id,
+                    "natural_key": "flow_step:faq.search:1",
+                    "kind": "flow_step",
+                    "name": "Submit search",
+                    "meta": {"order": 1},
+                },
+                {
+                    "id": endpoint_id,
+                    "natural_key": "endpoint:get:/api/faq/search",
+                    "kind": "api_endpoint",
+                    "name": "GET /api/faq/search",
+                    "meta": {},
+                },
+            ],
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "source_node_id": flow_id,
+                    "target_node_id": step_id,
+                    "kind": "user_flow_has_step",
+                    "meta": {},
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "source_node_id": step_id,
+                    "target_node_id": endpoint_id,
+                    "kind": "flow_step_calls_endpoint",
+                    "meta": {},
+                },
+            ],
+        )
+
+        fake_db = MagicMock()
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(f"/api/twin/collections/{collection_id}/views/user-flows")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["graph_source"] == "knowledge_recovery"
+        assert payload["summary"]["user_flows"] == 1
+        assert payload["summary"]["flow_steps"] == 1
 
     @patch("app.routes.twin.get_session")
     async def test_topology_invalid_layer_rejected(

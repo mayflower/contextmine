@@ -1136,6 +1136,55 @@ def _paginate_graph(
     }
 
 
+async def _load_knowledge_graph_projection(
+    db: Any,
+    *,
+    collection_id: uuid.UUID,
+    include_node_kinds: set[KnowledgeNodeKind] | None = None,
+    include_edge_kinds: set[KnowledgeEdgeKind] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load a filtered knowledge-graph slice shaped like a graph projection payload."""
+    node_stmt = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_id)
+    if include_node_kinds:
+        node_stmt = node_stmt.where(KnowledgeNode.kind.in_(include_node_kinds))
+    nodes = ((await db.execute(node_stmt)).scalars().all()) or []
+    if not nodes:
+        return [], []
+
+    node_ids = {node.id for node in nodes}
+    edge_stmt = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id == collection_id,
+        KnowledgeEdge.source_node_id.in_(node_ids),
+        KnowledgeEdge.target_node_id.in_(node_ids),
+    )
+    if include_edge_kinds:
+        edge_stmt = edge_stmt.where(KnowledgeEdge.kind.in_(include_edge_kinds))
+    edges = ((await db.execute(edge_stmt)).scalars().all()) or []
+
+    return (
+        [
+            {
+                "id": str(node.id),
+                "natural_key": node.natural_key,
+                "kind": node.kind.value,
+                "name": node.name,
+                "meta": node.meta or {},
+            }
+            for node in nodes
+        ],
+        [
+            {
+                "id": str(edge.id),
+                "source_node_id": str(edge.source_node_id),
+                "target_node_id": str(edge.target_node_id),
+                "kind": edge.kind.value,
+                "meta": edge.meta or {},
+            }
+            for edge in edges
+        ],
+    )
+
+
 def _safe_meta(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -1292,6 +1341,50 @@ GRAPHRAG_SEMANTIC_NODE_KINDS: set[KnowledgeNodeKind] = {
 GRAPHRAG_SEMANTIC_EDGE_KINDS: set[KnowledgeEdgeKind] = {
     kind for kind in KnowledgeEdgeKind if kind not in GRAPHRAG_CODE_NOISE_EDGE_KINDS
 }
+GRAPHRAG_RECOVERY_EDGE_KINDS: set[KnowledgeEdgeKind] = {
+    KnowledgeEdgeKind.SEMANTIC_RELATIONSHIP,
+    KnowledgeEdgeKind.FILE_MENTIONS_ENTITY,
+    KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+    KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+    KnowledgeEdgeKind.FILE_IMPORTS_FILE,
+    KnowledgeEdgeKind.UI_ROUTE_RENDERS_VIEW,
+    KnowledgeEdgeKind.UI_VIEW_COMPOSES_COMPONENT,
+    KnowledgeEdgeKind.USER_FLOW_HAS_STEP,
+    KnowledgeEdgeKind.FLOW_STEP_CALLS_ENDPOINT,
+    KnowledgeEdgeKind.TEST_CASE_VERIFIES_FLOW,
+    KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
+    KnowledgeEdgeKind.TABLE_HAS_COLUMN,
+    KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN,
+    KnowledgeEdgeKind.SYSTEM_EXPOSES_ENDPOINT,
+    KnowledgeEdgeKind.ENDPOINT_USES_SCHEMA,
+    KnowledgeEdgeKind.RPC_USES_MESSAGE,
+    KnowledgeEdgeKind.JOB_DEPENDS_ON,
+    KnowledgeEdgeKind.BELONGS_TO_CONTEXT,
+    KnowledgeEdgeKind.DOCUMENTED_BY,
+}
+UI_MAP_RECOVERY_NODE_KINDS: set[KnowledgeNodeKind] = {
+    KnowledgeNodeKind.UI_ROUTE,
+    KnowledgeNodeKind.UI_VIEW,
+    KnowledgeNodeKind.UI_COMPONENT,
+    KnowledgeNodeKind.INTERFACE_CONTRACT,
+    KnowledgeNodeKind.API_ENDPOINT,
+}
+UI_MAP_RECOVERY_EDGE_KINDS: set[KnowledgeEdgeKind] = {
+    KnowledgeEdgeKind.UI_ROUTE_RENDERS_VIEW,
+    KnowledgeEdgeKind.UI_VIEW_COMPOSES_COMPONENT,
+    KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
+}
+USER_FLOWS_RECOVERY_NODE_KINDS: set[KnowledgeNodeKind] = {
+    KnowledgeNodeKind.USER_FLOW,
+    KnowledgeNodeKind.FLOW_STEP,
+    KnowledgeNodeKind.API_ENDPOINT,
+    KnowledgeNodeKind.TEST_CASE,
+}
+USER_FLOWS_RECOVERY_EDGE_KINDS: set[KnowledgeEdgeKind] = {
+    KnowledgeEdgeKind.USER_FLOW_HAS_STEP,
+    KnowledgeEdgeKind.FLOW_STEP_CALLS_ENDPOINT,
+    KnowledgeEdgeKind.TEST_CASE_VERIFIES_FLOW,
+}
 
 
 async def _load_community_graph(
@@ -1303,7 +1396,8 @@ async def _load_community_graph(
     Preference order:
     1. SYMBOL nodes with semantic dependency edges (calls/references)
     2. Semantic/architecture node kinds with non-code edges
-    3. Fallback to all knowledge nodes/edges
+    3. Connectivity recovery graph (domain/UI/flow/test/code links)
+    4. Fallback to all knowledge nodes/edges
     """
     symbol_nodes = (
         (
@@ -1376,6 +1470,46 @@ async def _load_community_graph(
         if semantic_edges:
             return semantic_nodes, semantic_edges, "semantic"
 
+    recovery_edges = (
+        (
+            await db.execute(
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.kind.in_(GRAPHRAG_RECOVERY_EDGE_KINDS),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if recovery_edges:
+        recovery_node_ids = {edge.source_node_id for edge in recovery_edges} | {
+            edge.target_node_id for edge in recovery_edges
+        }
+        recovery_nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.collection_id == collection_id,
+                        KnowledgeNode.id.in_(recovery_node_ids),
+                        KnowledgeNode.kind != KnowledgeNodeKind.FILE,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if recovery_nodes:
+            recovery_node_set = {node.id for node in recovery_nodes}
+            recovery_edges = [
+                edge
+                for edge in recovery_edges
+                if edge.source_node_id in recovery_node_set
+                and edge.target_node_id in recovery_node_set
+            ]
+            if recovery_edges:
+                return recovery_nodes, recovery_edges, "connectivity_recovery"
+
     nodes = (
         (
             await db.execute(
@@ -1409,6 +1543,10 @@ async def _build_structural_community_points(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
+    if graph_source == "connectivity_recovery":
+        warnings.append(
+            "Recovered community graph from architecture/UI/flow links because symbol graph was sparse."
+        )
     if graph_source == "knowledge_fallback":
         warnings.append(
             "No symbol dependency graph found. Using knowledge graph communities as fallback."
@@ -3035,7 +3173,24 @@ async def ui_map_view(
             layer=None,
             projection=GraphProjection.CODE_SYMBOL,
         )
+        graph_source = "scenario"
         projection = build_ui_map_projection(full_graph["nodes"], full_graph["edges"])
+        if projection["summary"]["routes"] == 0 and projection["summary"]["views"] == 0:
+            recovery_nodes, recovery_edges = await _load_knowledge_graph_projection(
+                db,
+                collection_id=collection_uuid,
+                include_node_kinds=UI_MAP_RECOVERY_NODE_KINDS,
+                include_edge_kinds=UI_MAP_RECOVERY_EDGE_KINDS,
+            )
+            recovered_projection = build_ui_map_projection(recovery_nodes, recovery_edges)
+            if (
+                recovered_projection["summary"]["routes"] > 0
+                or recovered_projection["summary"]["views"] > 0
+                or recovered_projection["summary"]["trace_edges"] > 0
+            ):
+                projection = recovered_projection
+                graph_source = "knowledge_recovery"
+
         graph = _paginate_graph(
             projection["graph"]["nodes"],
             projection["graph"]["edges"],
@@ -3043,6 +3198,10 @@ async def ui_map_view(
             limit=limit,
         )
         warnings: list[str] = []
+        if graph_source == "knowledge_recovery":
+            warnings.append(
+                "UI map recovered from knowledge graph while scenario graph catches up."
+            )
         if projection["summary"]["routes"] == 0:
             warnings.append("No UI route nodes found. UI extraction may still be pending.")
         return {
@@ -3050,6 +3209,7 @@ async def ui_map_view(
             "scenario": _serialize_scenario(scenario),
             "projection": "ui_map",
             "entity_level": "ui",
+            "graph_source": graph_source,
             "summary": projection["summary"],
             "warnings": warnings,
             "graph": graph,
@@ -3116,7 +3276,23 @@ async def user_flows_view(
             layer=None,
             projection=GraphProjection.CODE_SYMBOL,
         )
+        graph_source = "scenario"
         projection = build_user_flows_projection(full_graph["nodes"], full_graph["edges"])
+        if projection["summary"]["user_flows"] == 0 and projection["summary"]["flow_steps"] == 0:
+            recovery_nodes, recovery_edges = await _load_knowledge_graph_projection(
+                db,
+                collection_id=collection_uuid,
+                include_node_kinds=USER_FLOWS_RECOVERY_NODE_KINDS,
+                include_edge_kinds=USER_FLOWS_RECOVERY_EDGE_KINDS,
+            )
+            recovered_projection = build_user_flows_projection(recovery_nodes, recovery_edges)
+            if (
+                recovered_projection["summary"]["user_flows"] > 0
+                or recovered_projection["summary"]["flow_steps"] > 0
+            ):
+                projection = recovered_projection
+                graph_source = "knowledge_recovery"
+
         graph = _paginate_graph(
             projection["graph"]["nodes"],
             projection["graph"]["edges"],
@@ -3124,6 +3300,10 @@ async def user_flows_view(
             limit=limit,
         )
         warnings: list[str] = []
+        if graph_source == "knowledge_recovery":
+            warnings.append(
+                "User-flow graph recovered from knowledge graph while scenario graph catches up."
+            )
         if projection["summary"]["user_flows"] == 0:
             warnings.append("No USER_FLOW nodes found. Flow synthesis may still be pending.")
         return {
@@ -3131,6 +3311,7 @@ async def user_flows_view(
             "scenario": _serialize_scenario(scenario),
             "projection": "user_flows",
             "entity_level": "user_flow",
+            "graph_source": graph_source,
             "summary": projection["summary"],
             "flows": projection["flows"],
             "warnings": warnings,
@@ -3209,6 +3390,7 @@ async def graphrag_view(
     include_node_kinds = _parse_knowledge_node_kinds(include_kinds)
     exclude_node_kinds = _parse_knowledge_node_kinds(exclude_kinds)
     include_edge_kinds = _parse_knowledge_edge_kinds(edge_kinds)
+    edge_kinds_requested = bool(edge_kinds and edge_kinds.strip())
     if include_node_kinds is None and exclude_node_kinds is None:
         exclude_node_kinds = set(GRAPHRAG_CODE_NOISE_NODE_KINDS)
     if include_edge_kinds is None:
@@ -3282,6 +3464,7 @@ async def graphrag_view(
         page_node_ids = {node.id for node in paged_nodes}
 
         edges: list[KnowledgeEdge] = []
+        warnings: list[str] = []
         if page_node_ids:
             edge_query = select(KnowledgeEdge).where(
                 KnowledgeEdge.collection_id == collection_uuid,
@@ -3291,10 +3474,32 @@ async def graphrag_view(
             if include_edge_kinds:
                 edge_query = edge_query.where(KnowledgeEdge.kind.in_(include_edge_kinds))
             edges = (await db.execute(edge_query.order_by(KnowledgeEdge.kind))).scalars().all()
+            if not edges and total_nodes > 0 and not edge_kinds_requested:
+                recovery_edge_kinds = set(include_edge_kinds) | GRAPHRAG_RECOVERY_EDGE_KINDS
+                recovered_edge_query = select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_uuid,
+                    KnowledgeEdge.source_node_id.in_(page_node_ids),
+                    KnowledgeEdge.target_node_id.in_(page_node_ids),
+                    KnowledgeEdge.kind.in_(recovery_edge_kinds),
+                )
+                edges = (
+                    (await db.execute(recovered_edge_query.order_by(KnowledgeEdge.kind)))
+                    .scalars()
+                    .all()
+                )
+                if edges:
+                    warnings.append(
+                        "Graph recovered by widening edge scope to architecture/UI/flow/code links."
+                    )
 
         status = {"status": "ready", "reason": "ok"}
         if total_nodes == 0:
             status = {"status": "unavailable", "reason": "no_graphrag_semantic_graph"}
+        elif page_node_ids and not edges:
+            status = {"status": "ready", "reason": "degraded_no_edges"}
+            warnings.append(
+                "Selected page has no connected edges. Try another page or include explicit edge_kinds."
+            )
 
         return {
             "collection_id": str(collection_uuid),
@@ -3304,6 +3509,7 @@ async def graphrag_view(
             "community_mode": resolved_community_mode,
             "community_id": resolved_community_id,
             "status": status,
+            "warnings": warnings,
             "graph": {
                 "nodes": [
                     _serialize_graphrag_node(
