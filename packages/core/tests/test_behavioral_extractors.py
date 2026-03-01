@@ -136,6 +136,32 @@ Route::get('/faq', function () {
     assert "/faq/categories" in template_file.views[0].navigation_targets
 
 
+def test_extract_ui_from_files_detects_symfony_attribute_routes() -> None:
+    files = [
+        (
+            "phpmyfaq/src/phpMyFAQ/Controller/Frontend/StartpageController.php",
+            """
+<?php
+#[Route(path: '/', name: 'public.index', methods: ['GET'])]
+final class StartpageController
+{
+    public function __invoke(): Response
+    {
+        return $this->render('startpage.twig');
+    }
+}
+""",
+        )
+    ]
+
+    extracted = extract_ui_from_files(files)
+    assert len(extracted) == 1
+    assert extracted[0].routes
+    assert extracted[0].routes[0].path == "/"
+    assert extracted[0].views
+    assert extracted[0].views[0].name == "Startpage"
+
+
 def test_flow_synthesis_creates_flow_nodes() -> None:
     ui = extract_ui_from_files(
         [

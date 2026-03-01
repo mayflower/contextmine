@@ -170,8 +170,8 @@ UI_ROUTE_PATTERNS = (
     re.compile(
         r"(?i)\b(?:\$[A-Za-z_][\w]*|app|router|route)\s*->\s*(?:get|post|put|patch|delete|match|any|map)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
     ),
-    re.compile(r"(?i)#\[\s*Route\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"),
-    re.compile(r"(?i)@Route\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)#\[\s*Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
+    re.compile(r"(?i)@Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
     re.compile(r"(?i)\b(?:path|re_path)\s*\(\s*r?['\"](?P<path>[^'\"]+)['\"]"),
     re.compile(r"(?i)\b(?:get|post|put|patch|delete)\s+['\"](?P<path>/[^'\"]+)['\"]"),
 )
@@ -380,6 +380,12 @@ def _normalize_view_hint(raw: str) -> str | None:
     if not candidate:
         return None
     candidate = candidate.split("::", 1)[-1]
+    candidate = re.sub(
+        r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
     candidate = candidate.replace(".", "/").replace(":", "/")
     parts = [part for part in re.split(r"[/\\]+", candidate) if part]
     if not parts:
