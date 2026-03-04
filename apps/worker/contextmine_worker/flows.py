@@ -929,7 +929,6 @@ async def build_knowledge_graph(
             # Extract semantic entities from documents
             # Uses embedding similarity for cross-language entity resolution
             extraction_batch = await extract_from_documents(
-                session=session,
                 collection_id=collection_uuid,
                 llm_provider=llm_provider,
                 embedder=embedder,
@@ -1692,12 +1691,21 @@ async def get_github_token_for_source(source_id: str, collection_id: str) -> str
 
         # Get OAuth token for owner
         result = await session.execute(
-            select(OAuthToken).where(
+            select(OAuthToken)
+            .where(
                 OAuthToken.user_id == owner_id,
                 OAuthToken.provider == "github",
             )
+            .order_by(OAuthToken.created_at.desc())
         )
-        token_record = result.scalar_one_or_none()
+        token_rows = result.scalars().all()
+        token_record = token_rows[0] if token_rows else None
+        if len(token_rows) > 1:
+            logger.warning(
+                "Found %d GitHub OAuth tokens for user %s; using most recent token.",
+                len(token_rows),
+                owner_id,
+            )
         if not token_record:
             return None
 
@@ -3625,6 +3633,11 @@ async def sync_source(source: Source) -> SyncRun | None:
             await sync_web_source(source, sync_run, run_started_at)
 
     except Exception as e:
+        error_message = str(e).strip() or repr(e)
+        if error_message == repr(e):
+            logger.exception("Source sync failed without explicit message for source %s", source.id)
+        else:
+            logger.exception("Source sync failed for source %s: %s", source.id, error_message)
         # Mark run as failed
         async with get_session() as session:
             from contextmine_core.models import TwinSourceVersion
@@ -3634,7 +3647,7 @@ async def sync_source(source: Source) -> SyncRun | None:
             db_run = result.scalar_one()
             db_run.status = SyncRunStatus.FAILED
             db_run.finished_at = datetime.now(UTC)
-            db_run.error = str(e)
+            db_run.error = error_message
 
             failed_source_version = (
                 await session.execute(
@@ -3650,9 +3663,9 @@ async def sync_source(source: Source) -> SyncRun | None:
             if failed_source_version:
                 failure_stats: dict[str, object] = {
                     "sync_run_id": str(sync_run.id),
-                    "error": str(e),
+                    "error": error_message,
                 }
-                error_text = str(e)
+                error_text = error_message
                 if "METRICS_GATE_FAILED" in error_text:
                     failure_stats["metrics_gate"] = "fail"
                     if "(mapped=" in error_text and ", metrics=" in error_text:
@@ -3701,7 +3714,7 @@ async def sync_source(source: Source) -> SyncRun | None:
                     status="failed",
                     payload={"sync_run_id": str(sync_run.id)},
                     idempotency_key=f"materialization_failed:{source.id}:{sync_run.id}",
-                    error=str(e),
+                    error=error_message,
                 )
 
             # Still update source timestamps

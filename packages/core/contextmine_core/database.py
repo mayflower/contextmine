@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from contextmine_core.settings import get_settings
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -31,10 +32,23 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         if not settings.database_url:
             raise RuntimeError("DATABASE_URL environment variable is not set")
+        url = make_url(settings.database_url)
+        engine_kwargs: dict[str, object] = {
+            "echo": settings.debug,
+            "pool_pre_ping": True,
+        }
+        # SQLite uses dedicated pool classes that don't accept pool tuning kwargs.
+        if not url.drivername.startswith("sqlite"):
+            engine_kwargs.update(
+                {
+                    "pool_size": max(1, int(settings.database_pool_size)),
+                    "max_overflow": max(0, int(settings.database_max_overflow)),
+                    "pool_timeout": max(5, int(settings.database_pool_timeout_seconds)),
+                }
+            )
         _engine = create_async_engine(
             settings.database_url,
-            echo=settings.debug,
-            pool_pre_ping=True,
+            **engine_kwargs,
         )
 
         # Auto-instrument SQLAlchemy if OTEL is enabled

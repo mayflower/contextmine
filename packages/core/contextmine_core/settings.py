@@ -20,6 +20,18 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str | None = None
+    database_pool_size: int = Field(
+        default=20,
+        description="SQLAlchemy connection pool size for non-SQLite databases",
+    )
+    database_max_overflow: int = Field(
+        default=40,
+        description="Additional overflow connections allowed beyond pool size",
+    )
+    database_pool_timeout_seconds: int = Field(
+        default=120,
+        description="Seconds to wait for a DB connection before raising PoolTimeout",
+    )
 
     # GitHub OAuth
     github_client_id: str | None = None

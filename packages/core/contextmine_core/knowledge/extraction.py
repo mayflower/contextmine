@@ -285,7 +285,6 @@ async def extract_relationships_from_chunk(
 
 
 async def extract_from_documents(
-    session: AsyncSession,
     collection_id: UUID,
     llm_provider: LLMProvider,
     embedder: Any,
@@ -301,7 +300,6 @@ async def extract_from_documents(
     4. Cross-document relationship inference (co-occurrence)
 
     Args:
-        session: Database session
         collection_id: Collection to process
         llm_provider: LLM provider for extraction
         embedder: Embedding provider for semantic entity resolution. REQUIRED.
@@ -323,37 +321,39 @@ async def extract_from_documents(
             "languages, naming conventions, and synonyms."
         )
 
+    from contextmine_core import get_session
     from contextmine_core.models import Document, Source
     from sqlalchemy import select
 
     batch = ExtractionBatch()
 
-    # Get documents via source (collection_id is on Source, not Document)
-    stmt = (
-        select(Document)
-        .join(Source, Document.source_id == Source.id)
-        .where(
-            Source.collection_id == collection_id,
-            Document.content_markdown.isnot(None),
+    # Load documents in a short-lived read session so LLM extraction does not hold
+    # a long-running DB transaction open.
+    async with get_session() as session:
+        stmt = (
+            select(Document.id, Document.uri, Document.content_markdown)
+            .join(Source, Document.source_id == Source.id)
+            .where(
+                Source.collection_id == collection_id,
+                Document.content_markdown.isnot(None),
+            )
+            .limit(max_chunks)
         )
-        .limit(max_chunks)
-    )
-
-    result = await session.execute(stmt)
-    documents = result.scalars().all()
+        result = await session.execute(stmt)
+        documents = result.all()
 
     all_entities: list[ExtractedEntity] = []
 
-    for doc in documents:
-        if not doc.content_markdown:
+    for _doc_id, doc_uri_raw, content_markdown in documents:
+        if not content_markdown:
             continue
 
-        doc_uri = doc.uri or str(doc.id)
+        doc_uri = doc_uri_raw or str(_doc_id)
 
         # Extract entities from this document
         entities = await extract_entities_from_chunk(
             llm_provider=llm_provider,
-            code=doc.content_markdown,
+            code=content_markdown,
             file_path=doc_uri,
         )
 
@@ -371,7 +371,7 @@ async def extract_from_documents(
             relationships = await extract_relationships_from_chunk(
                 llm_provider=llm_provider,
                 entities=entities,
-                code=doc.content_markdown,
+                code=content_markdown,
             )
 
             for rel in relationships:
