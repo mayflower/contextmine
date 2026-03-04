@@ -171,13 +171,24 @@ async def seed_scenario_from_knowledge_graph(
     created_nodes = 0
 
     for node in node_rows:
+        natural_key = node.natural_key
+        node_name = node.name
+        node_meta = dict(node.meta or {})
+        if node.kind == KnowledgeNodeKind.FILE:
+            canonical_file_path = canonicalize_repo_relative_path(
+                str(node_meta.get("file_path") or "").strip()
+            )
+            if canonical_file_path:
+                natural_key = f"file:{canonical_file_path}"
+                node_name = canonical_file_path
+                node_meta["file_path"] = canonical_file_path
         twin_node_id = await _upsert_twin_node(
             session=session,
             scenario_id=scenario_id,
-            natural_key=node.natural_key,
+            natural_key=natural_key,
             kind=node.kind.value,
-            name=node.name,
-            meta=node.meta or {},
+            name=node_name,
+            meta=node_meta,
             provenance_node_id=node.id,
         )
         node_map[node.id] = twin_node_id
