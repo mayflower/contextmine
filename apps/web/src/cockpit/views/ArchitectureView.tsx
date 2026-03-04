@@ -24,6 +24,14 @@ interface ArchitectureViewProps {
     drift: string
     erm: string
   }
+  actions: {
+    reindexState: CockpitLoadState
+    reindexMessage: string
+    regenerateState: CockpitLoadState
+    regenerateMessage: string
+  }
+  onReindex: () => Promise<boolean>
+  onRegenerateArc42: () => Promise<boolean>
   onRetry: () => void
 }
 
@@ -59,6 +67,12 @@ function driftTone(delta: Arc42DriftDelta): 'positive' | 'negative' | 'warning' 
     return 'warning'
   }
   return 'neutral'
+}
+
+function toChipState(state: CockpitLoadState): 'loading' | 'ready' | 'error' {
+  if (state === 'loading') return 'loading'
+  if (state === 'error') return 'error'
+  return 'ready'
 }
 
 function groupPortsByContainer(items: PortAdapterItem[], direction: 'inbound' | 'outbound') {
@@ -104,6 +118,9 @@ export default function ArchitectureView({
   drift,
   erm,
   panelErrors,
+  actions,
+  onReindex,
+  onRegenerateArc42,
   onRetry,
 }: ArchitectureViewProps) {
   const [activeTab, setActiveTab] = useState<'arc42' | 'ports' | 'erd' | 'drift'>('arc42')
@@ -152,6 +169,7 @@ export default function ArchitectureView({
     ]
     return Array.from(new Set(items.filter(Boolean)))
   }, [arc42, portsAdapters, drift, erm])
+  const actionsBusy = actions.reindexState === 'loading' || actions.regenerateState === 'loading'
 
   useEffect(() => {
     mermaidLib.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' })
@@ -207,6 +225,38 @@ export default function ArchitectureView({
         <p className="muted">
           arc42 + Ports/Adapters + ERM/ERD + Drift report ({drift?.summary.total ?? 0} deltas)
         </p>
+      </div>
+
+      <div className="cockpit2-architecture-actions">
+        <div className="actions">
+          <button
+            type="button"
+            onClick={() => void onReindex()}
+            disabled={actionsBusy}
+          >
+            {actions.reindexState === 'loading' ? 'Reindexing...' : 'Daten neu indizieren'}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void onRegenerateArc42()}
+            disabled={actionsBusy}
+          >
+            {actions.regenerateState === 'loading' ? 'Generating arc42...' : 'arc42 neu generieren'}
+          </button>
+        </div>
+        <div className="cockpit2-chip-row" aria-live="polite">
+          {actions.reindexMessage ? (
+            <span className={`cockpit2-chip state-${toChipState(actions.reindexState)}`}>
+              Reindex: {actions.reindexMessage}
+            </span>
+          ) : null}
+          {actions.regenerateMessage ? (
+            <span className={`cockpit2-chip state-${toChipState(actions.regenerateState)}`}>
+              arc42: {actions.regenerateMessage}
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div className="cockpit2-arch-kpis">

@@ -250,6 +250,16 @@
   color: #334155;
 }
 
+.cockpit2-command-actions button:disabled,
+.cockpit2-graph-toolbar button:disabled,
+.cockpit2-export-toolbar button:disabled,
+.cockpit2-empty button:disabled,
+.cockpit2-alert button:disabled,
+.cockpit2-panel .actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .cockpit2-tabs {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
@@ -479,6 +489,12 @@
 
 .cockpit2-architecture-panel {
   gap: 14px;
+}
+
+.cockpit2-architecture-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .cockpit2-arch-kpis {

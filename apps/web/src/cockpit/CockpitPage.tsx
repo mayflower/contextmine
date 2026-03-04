@@ -264,6 +264,7 @@ export default function CockpitPage({
     arc42Drift,
     erm,
     architecturePanelErrors,
+    architectureActions,
     activeState,
     activeError,
     activeUpdatedAt,
@@ -313,6 +314,8 @@ export default function CockpitPage({
     rebuildReadiness,
     traceGraphRagPath,
     loadGraphRagProcessDetail,
+    triggerCollectionReindex,
+    regenerateArc42,
     generateExport,
     refreshActiveView,
   } = useCockpitData({
@@ -841,6 +844,9 @@ export default function CockpitPage({
           drift={arc42Drift}
           erm={erm}
           panelErrors={architecturePanelErrors}
+          actions={architectureActions}
+          onReindex={triggerCollectionReindex}
+          onRegenerateArc42={regenerateArc42}
           onRetry={refreshActiveView}
         />
       ) : null}

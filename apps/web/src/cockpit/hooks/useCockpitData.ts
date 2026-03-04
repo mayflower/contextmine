@@ -47,6 +47,12 @@ import type {
 type DataStates = Record<CockpitView, CockpitLoadState>
 type DataErrors = Record<CockpitView, string>
 type DataUpdated = Partial<Record<CockpitView, string>>
+type ArchitectureActionState = {
+  reindexState: CockpitLoadState
+  reindexMessage: string
+  regenerateState: CockpitLoadState
+  regenerateMessage: string
+}
 
 const DEFAULT_GRAPH: TwinGraphResponse = {
   nodes: [],
@@ -88,6 +94,13 @@ const DEFAULT_ERRORS: DataErrors = {
   user_flows: '',
   rebuild_readiness: '',
   exports: '',
+}
+
+const DEFAULT_ARCHITECTURE_ACTION_STATE: ArchitectureActionState = {
+  reindexState: 'idle',
+  reindexMessage: '',
+  regenerateState: 'idle',
+  regenerateMessage: '',
 }
 
 interface UseCockpitDataArgs {
@@ -163,6 +176,9 @@ export function useCockpitData({
     drift: '',
     erm: '',
   })
+  const [architectureActions, setArchitectureActions] = useState<ArchitectureActionState>(
+    DEFAULT_ARCHITECTURE_ACTION_STATE,
+  )
   const [states, setStates] = useState<DataStates>(DEFAULT_STATES)
   const [errors, setErrors] = useState<DataErrors>(DEFAULT_ERRORS)
   const [updatedAt, setUpdatedAt] = useState<DataUpdated>({})
@@ -240,6 +256,26 @@ export function useCockpitData({
   const refreshActiveView = useCallback(() => {
     setRefreshNonce((prev) => prev + 1)
   }, [])
+
+  const parseApiErrorMessage = useCallback(
+    async (response: Response, fallback: string): Promise<string> => {
+      try {
+        const payload = await response.json()
+        const detail = payload?.detail
+        if (typeof detail === 'string' && detail.trim()) {
+          return detail
+        }
+      } catch {
+        // Ignore parse errors and use fallback.
+      }
+      return `${fallback} (${response.status})`
+    },
+    [],
+  )
+
+  useEffect(() => {
+    setArchitectureActions(DEFAULT_ARCHITECTURE_ACTION_STATE)
+  }, [selection.collectionId, selection.scenarioId])
 
   useEffect(() => {
     if (!selection.collectionId) {
@@ -1235,6 +1271,123 @@ export function useCockpitData({
     }
   }, [selection, selectedNodeId, deepDiveMode])
 
+  const triggerCollectionReindex = useCallback(async () => {
+    const collectionId = selection.collectionId
+    if (!collectionId) {
+      setArchitectureActions((prev) => ({
+        ...prev,
+        reindexState: 'error',
+        reindexMessage: 'Select a project before starting reindexing.',
+      }))
+      return false
+    }
+
+    setArchitectureActions((prev) => ({
+      ...prev,
+      reindexState: 'loading',
+      reindexMessage: 'Reindexing started...',
+    }))
+
+    try {
+      const response = await fetch(`/api/twin/collections/${collectionId}/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ force: true }),
+      })
+      if (!response.ok) {
+        const detail = await parseApiErrorMessage(response, 'Could not start reindexing')
+        throw new Error(detail)
+      }
+
+      const payload = await response.json()
+      const created = Number(payload?.created || 0)
+      const skipped = Number(payload?.skipped || 0)
+      const message =
+        created > 0
+          ? `Reindexing queued for ${created} source(s).`
+          : skipped > 0
+            ? `No new source revisions queued (${skipped} unchanged).`
+            : 'Reindexing request accepted.'
+      setArchitectureActions((prev) => ({
+        ...prev,
+        reindexState: 'ready',
+        reindexMessage: message,
+      }))
+      refreshActiveView()
+      return true
+    } catch (error) {
+      setArchitectureActions((prev) => ({
+        ...prev,
+        reindexState: 'error',
+        reindexMessage: error instanceof Error ? error.message : 'Could not start reindexing.',
+      }))
+      return false
+    }
+  }, [parseApiErrorMessage, refreshActiveView, selection.collectionId])
+
+  const regenerateArc42 = useCallback(async () => {
+    const { collectionId, scenarioId } = selection
+    if (!collectionId || !scenarioId) {
+      setArchitectureActions((prev) => ({
+        ...prev,
+        regenerateState: 'error',
+        regenerateMessage: 'Select project and scenario before regenerating arc42.',
+      }))
+      return false
+    }
+
+    setArchitectureActions((prev) => ({
+      ...prev,
+      regenerateState: 'loading',
+      regenerateMessage: 'Generating arc42...',
+    }))
+
+    try {
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        regenerate: 'true',
+      })
+      const section = architectureSection.trim()
+      if (section) {
+        query.set('section', section)
+      }
+      const response = await fetch(
+        `/api/twin/collections/${collectionId}/views/arc42?${query.toString()}`,
+        {
+          credentials: 'include',
+        },
+      )
+      if (!response.ok) {
+        const detail = await parseApiErrorMessage(response, 'Could not regenerate arc42')
+        throw new Error(detail)
+      }
+      const payload: Arc42ViewPayload = await response.json()
+      setArc42(payload)
+      setArchitecturePanelErrors((prev) => ({ ...prev, arc42: '' }))
+      setArchitectureActions((prev) => ({
+        ...prev,
+        regenerateState: 'ready',
+        regenerateMessage: 'arc42 regenerated successfully.',
+      }))
+      refreshActiveView()
+      return true
+    } catch (error) {
+      setArchitectureActions((prev) => ({
+        ...prev,
+        regenerateState: 'error',
+        regenerateMessage: error instanceof Error ? error.message : 'Could not regenerate arc42.',
+      }))
+      return false
+    }
+  }, [
+    architectureSection,
+    parseApiErrorMessage,
+    refreshActiveView,
+    selection.collectionId,
+    selection.scenarioId,
+  ])
+
   const generateExport = useCallback(async () => {
     const scenarioId = selection.scenarioId
     if (!scenarioId) {
@@ -1408,6 +1561,7 @@ export function useCockpitData({
     arc42Drift,
     erm,
     architecturePanelErrors,
+    architectureActions,
     states,
     errors,
     activeState,
@@ -1462,6 +1616,8 @@ export function useCockpitData({
     rebuildReadiness,
     traceGraphRagPath,
     loadGraphRagProcessDetail,
+    triggerCollectionReindex,
+    regenerateArc42,
     generateExport,
     refreshActiveView,
   }
