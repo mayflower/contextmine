@@ -145,8 +145,7 @@ export default function CockpitCommandBar({
     activeView === 'topology' ||
     activeView === 'deep_dive' ||
     activeView === 'ui_map' ||
-    activeView === 'test_matrix' ||
-    activeView === 'user_flows'
+    activeView === 'test_matrix'
   const showFilter = activeView === 'overview'
   const showC4Controls = activeView === 'c4_diff'
   const showArchitectureControls = activeView === 'architecture'
@@ -158,8 +157,7 @@ export default function CockpitCommandBar({
     activeView === 'graphrag' ||
     activeView === 'semantic_map' ||
     activeView === 'ui_map' ||
-    activeView === 'test_matrix' ||
-    activeView === 'user_flows'
+    activeView === 'test_matrix'
   const advancedFilterCount = useMemo(() => {
     let count = 0
     if (includeKinds.length > 0) count += 1

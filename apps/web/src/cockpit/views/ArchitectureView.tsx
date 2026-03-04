@@ -106,6 +106,7 @@ export default function ArchitectureView({
   panelErrors,
   onRetry,
 }: ArchitectureViewProps) {
+  const [activeTab, setActiveTab] = useState<'arc42' | 'ports' | 'erd' | 'drift'>('arc42')
   const sectionEntries = useMemo(
     () => Object.entries(arc42?.arc42.sections || {}),
     [arc42],
@@ -227,8 +228,48 @@ export default function ArchitectureView({
         </div>
       </div>
 
+      <div className="cockpit2-tabs" role="tablist" aria-label="Architecture sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'arc42'}
+          className={`cockpit2-tab ${activeTab === 'arc42' ? 'active' : ''}`}
+          onClick={() => setActiveTab('arc42')}
+        >
+          arc42
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'ports'}
+          className={`cockpit2-tab ${activeTab === 'ports' ? 'active' : ''}`}
+          onClick={() => setActiveTab('ports')}
+        >
+          Ports/Adapters
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'erd'}
+          className={`cockpit2-tab ${activeTab === 'erd' ? 'active' : ''}`}
+          onClick={() => setActiveTab('erd')}
+        >
+          ERD
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'drift'}
+          className={`cockpit2-tab ${activeTab === 'drift' ? 'active' : ''}`}
+          onClick={() => setActiveTab('drift')}
+        >
+          Drift
+        </button>
+      </div>
+
       <div className="cockpit2-architecture-grid">
-        <article className="cockpit2-architecture-card">
+        {activeTab === 'arc42' ? (
+          <article className="cockpit2-architecture-card">
           <div className="cockpit2-panel-header-row">
             <h4>arc42 sections</h4>
             <p className="muted">Generated: {arc42?.arc42.generated_at ? new Date(arc42.arc42.generated_at).toLocaleString() : 'n/a'}</p>
@@ -268,9 +309,11 @@ export default function ArchitectureView({
               </div>
             </div>
           )}
-        </article>
+          </article>
+        ) : null}
 
-        <article className="cockpit2-architecture-card">
+        {activeTab === 'ports' ? (
+          <article className="cockpit2-architecture-card">
           <div className="cockpit2-panel-header-row">
             <h4>Ports & adapters map</h4>
             <p className="muted">Confidence-backed ownership map</p>
@@ -353,9 +396,11 @@ export default function ArchitectureView({
               <p>Surface extraction may still be incomplete for this scenario.</p>
             </div>
           )}
-        </article>
+          </article>
+        ) : null}
 
-        <article className="cockpit2-architecture-card">
+        {activeTab === 'erd' ? (
+          <article className="cockpit2-architecture-card">
           <div className="cockpit2-panel-header-row">
             <h4>ERM data model</h4>
             <p className="muted">
@@ -410,10 +455,12 @@ export default function ArchitectureView({
               <p>Schema extraction may still be running for this collection.</p>
             </div>
           )}
-        </article>
+          </article>
+        ) : null}
       </div>
 
-      <article className="cockpit2-architecture-card">
+      {activeTab === 'drift' ? (
+        <article className="cockpit2-architecture-card">
         <div className="cockpit2-panel-header-row">
           <h4>Advisory drift report</h4>
           <p className="muted">
@@ -447,7 +494,8 @@ export default function ArchitectureView({
             <p>Compared scenario snapshots are stable for the extracted architecture facts.</p>
           </div>
         )}
-      </article>
+        </article>
+      ) : null}
 
       {warnings.length > 0 ? (
         <article className="cockpit2-architecture-card">

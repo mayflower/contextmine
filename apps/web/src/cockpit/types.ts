@@ -858,9 +858,8 @@ export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
   { key: 'evolution', label: 'Evolution' },
   { key: 'graphrag', label: 'GraphRAG' },
   { key: 'semantic_map', label: 'Semantic Map' },
-  { key: 'ui_map', label: 'UI Map' },
+  { key: 'ui_map', label: 'UI & Flows' },
   { key: 'test_matrix', label: 'Test Matrix' },
-  { key: 'user_flows', label: 'User Flows' },
   { key: 'rebuild_readiness', label: 'Rebuild Readiness' },
   { key: 'exports', label: 'Exports' },
 ]

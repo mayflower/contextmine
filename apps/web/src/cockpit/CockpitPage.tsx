@@ -154,6 +154,7 @@ export default function CockpitPage({
   const [driftBaselineScenarioId, setDriftBaselineScenarioId] = useState('')
   const [graphRagCommunityMode, setGraphRagCommunityMode] = useState<GraphRagCommunityMode>('color')
   const [graphRagCommunityId, setGraphRagCommunityId] = useState('')
+  const [behaviorGraphMode, setBehaviorGraphMode] = useState<'ui_map' | 'user_flows'>('ui_map')
   const [semanticMapMode, setSemanticMapMode] = useState<SemanticMapMode>('code_structure')
   const [semanticMapShowDiffOverlay, setSemanticMapShowDiffOverlay] = useState(true)
   const [semanticMapDiffMinDrift, setSemanticMapDiffMinDrift] = useState(0.6)
@@ -316,6 +317,7 @@ export default function CockpitPage({
     refreshActiveView,
   } = useCockpitData({
     selection,
+    behaviorGraphMode,
     topologyLimit: topologyDensity,
     deepDiveLimit: deepDiveDensity,
     deepDiveMode,
@@ -375,8 +377,7 @@ export default function CockpitPage({
       selection.view === 'topology' ||
       selection.view === 'deep_dive' ||
       selection.view === 'ui_map' ||
-      selection.view === 'test_matrix' ||
-      selection.view === 'user_flows'
+      selection.view === 'test_matrix'
     if (!isGraphView) {
       return
     }
@@ -406,6 +407,14 @@ export default function CockpitPage({
   const handleOpenTopologyFromOverview = () => {
     setLayer('code_controlflow')
     setView('topology')
+  }
+
+  const handleOpenCityFromOverview = () => {
+    setView('city')
+  }
+
+  const handleOpenOverviewFromCity = () => {
+    setView('overview')
   }
 
   const handleSelectHotspot = (nodeNaturalKey: string) => {
@@ -731,6 +740,7 @@ export default function CockpitPage({
           filter={hotspotFilter}
           onRetry={refreshActiveView}
           onOpenTopology={handleOpenTopologyFromOverview}
+          onOpenCity={handleOpenCityFromOverview}
           onSelectHotspot={handleSelectHotspot}
         />
       ) : null}
@@ -845,6 +855,7 @@ export default function CockpitPage({
           onProjectionChange={setCityProjection}
           onEntityLevelChange={setCityEntityLevel}
           onReload={refreshActiveView}
+          onOpenOverview={handleOpenOverviewFromCity}
         />
       ) : null}
 
@@ -931,7 +942,28 @@ export default function CockpitPage({
       {selection.view === 'ui_map' ? (
         <section className="cockpit2-workspace">
           <div className="cockpit2-main">
-            {uiMapSummary ? (
+            <div className="cockpit2-tabs" role="tablist" aria-label="UI and flow modes">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={behaviorGraphMode === 'ui_map'}
+                className={`cockpit2-tab ${behaviorGraphMode === 'ui_map' ? 'active' : ''}`}
+                onClick={() => setBehaviorGraphMode('ui_map')}
+              >
+                UI Map
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={behaviorGraphMode === 'user_flows'}
+                className={`cockpit2-tab ${behaviorGraphMode === 'user_flows' ? 'active' : ''}`}
+                onClick={() => setBehaviorGraphMode('user_flows')}
+              >
+                User Flows
+              </button>
+            </div>
+
+            {behaviorGraphMode === 'ui_map' && uiMapSummary ? (
               <div className="cockpit2-arch-kpis">
                 <div>
                   <strong>{uiMapSummary.routes}</strong>
@@ -951,46 +983,8 @@ export default function CockpitPage({
                 </div>
               </div>
             ) : null}
-            <TopologyView
-              graph={filteredGraph}
-              state={activeState}
-              error={activeError}
-              layer={selection.layer}
-              density={topologyDensity}
-              layoutEngine={topologyLayoutEngine}
-              elkEnabled={cockpitFlags.elkLayout}
-              overlay={overlayData}
-              selectedNodeId={resolvedNodeId}
-              onDensityChange={setTopologyDensity}
-              onLayoutEngineChange={setTopologyLayoutEngine}
-              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-              onSelectNodeId={handleSelectNodeId}
-              onLayoutCompleted={(engine, durationMs, nodeCount) => {
-                getFaro()?.api.pushEvent('cockpit_layout_completed', {
-                  engine,
-                  duration_ms: String(Math.round(durationMs)),
-                  node_count: String(nodeCount),
-                })
-              }}
-              onRetry={refreshActiveView}
-            />
-          </div>
-        </section>
-      ) : null}
 
-      {selection.view === 'test_matrix' ? (
-        <TestMatrixView
-          state={activeState}
-          error={activeError}
-          payload={testMatrix}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'user_flows' ? (
-        <section className="cockpit2-workspace">
-          <div className="cockpit2-main">
-            {userFlows ? (
+            {behaviorGraphMode === 'user_flows' && userFlows ? (
               <div className="cockpit2-arch-kpis">
                 <div>
                   <strong>{userFlows.summary.user_flows}</strong>
@@ -1033,8 +1027,41 @@ export default function CockpitPage({
               }}
               onRetry={refreshActiveView}
             />
+            {behaviorGraphMode === 'user_flows' && userFlows && userFlows.flows.length > 0 ? (
+              <div className="cockpit2-table-wrap">
+                <table className="cockpit2-table">
+                  <thead>
+                    <tr>
+                      <th>Flow</th>
+                      <th>Route</th>
+                      <th>Steps</th>
+                      <th>Verified by tests</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {userFlows.flows.slice(0, 12).map((flow) => (
+                      <tr key={flow.flow_id}>
+                        <td>{flow.flow_name}</td>
+                        <td>{flow.route_path || '—'}</td>
+                        <td>{flow.steps.length}</td>
+                        <td>{flow.verified_by_tests.slice(0, 3).join(', ') || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </div>
         </section>
+      ) : null}
+
+      {selection.view === 'test_matrix' ? (
+        <TestMatrixView
+          state={activeState}
+          error={activeError}
+          payload={testMatrix}
+          onRetry={refreshActiveView}
+        />
       ) : null}
 
       {selection.view === 'rebuild_readiness' ? (

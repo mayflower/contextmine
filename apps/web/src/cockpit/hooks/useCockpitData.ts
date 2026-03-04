@@ -92,6 +92,7 @@ const DEFAULT_ERRORS: DataErrors = {
 
 interface UseCockpitDataArgs {
   selection: CockpitSelection
+  behaviorGraphMode: 'ui_map' | 'user_flows'
   topologyLimit: number
   deepDiveLimit: number
   deepDiveMode: DeepDiveMode
@@ -121,6 +122,7 @@ function topologyEntityLevel(layer: CockpitLayer): 'domain' | 'container' | 'com
 
 export function useCockpitData({
   selection,
+  behaviorGraphMode,
   topologyLimit,
   deepDiveLimit,
   deepDiveMode,
@@ -209,6 +211,8 @@ export function useCockpitData({
   const [graphRagProcessDetailState, setGraphRagProcessDetailState] = useState<CockpitLoadState>('idle')
   const [graphRagProcessDetailError, setGraphRagProcessDetailError] = useState('')
   const [uiMapSummary, setUiMapSummary] = useState<UIMapPayload['summary'] | null>(null)
+  const [uiMapGraph, setUiMapGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
+  const [userFlowsGraph, setUserFlowsGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
   const [semanticMap, setSemanticMap] = useState<SemanticMapPayload | null>(null)
   const [semanticMapComparison, setSemanticMapComparison] = useState<SemanticMapPayload | null>(null)
   const [testMatrix, setTestMatrix] = useState<TestMatrixPayload | null>(null)
@@ -390,9 +394,91 @@ export function useCockpitData({
           return
         }
 
-        if (view === 'ui_map' || view === 'test_matrix' || view === 'user_flows') {
-          const endpoint =
-            view === 'ui_map' ? 'ui-map' : view === 'test_matrix' ? 'test-matrix' : 'user-flows'
+        if (view === 'ui_map') {
+          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+          const query = new URLSearchParams({
+            scenario_id: scenarioId,
+            limit: String(limit),
+            page: String(graphPaging.page),
+          })
+
+          const loadPayload = async <T>(endpoint: 'ui-map' | 'user-flows'): Promise<T> => {
+            const response = await fetch(
+              `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
+              {
+                credentials: 'include',
+                signal: controller.signal,
+              },
+            )
+            if (!response.ok) {
+              throw new Error(`Could not load ${endpoint} (${response.status})`)
+            }
+            return (await response.json()) as T
+          }
+
+          const [uiResult, flowsResult] = await Promise.allSettled([
+            loadPayload<UIMapPayload>('ui-map'),
+            loadPayload<UserFlowsPayload>('user-flows'),
+          ])
+
+          let successCount = 0
+          const errors: string[] = []
+          let nextUiGraph = DEFAULT_GRAPH
+          let nextFlowsGraph = DEFAULT_GRAPH
+
+          if (uiResult.status === 'fulfilled') {
+            setUiMapSummary(uiResult.value.summary)
+            nextUiGraph = {
+              ...(uiResult.value.graph || DEFAULT_GRAPH),
+              projection: 'code_symbol',
+              entity_level: uiResult.value.entity_level,
+            }
+            setUiMapGraph(nextUiGraph)
+            successCount += 1
+          } else {
+            setUiMapSummary(null)
+            setUiMapGraph(DEFAULT_GRAPH)
+            errors.push(uiResult.reason instanceof Error ? uiResult.reason.message : 'Could not load ui-map')
+          }
+
+          if (flowsResult.status === 'fulfilled') {
+            setUserFlows(flowsResult.value)
+            nextFlowsGraph = {
+              ...(flowsResult.value.graph || DEFAULT_GRAPH),
+              projection: 'code_symbol',
+              entity_level: flowsResult.value.entity_level,
+            }
+            setUserFlowsGraph(nextFlowsGraph)
+            successCount += 1
+          } else {
+            setUserFlows(null)
+            setUserFlowsGraph(DEFAULT_GRAPH)
+            errors.push(
+              flowsResult.reason instanceof Error
+                ? flowsResult.reason.message
+                : 'Could not load user-flows',
+            )
+          }
+
+          const selectedGraph = nextUiGraph.total_nodes > 0 ? nextUiGraph : nextFlowsGraph
+          setGraph(selectedGraph)
+
+          if (errors.length > 0) {
+            setViewError('ui_map', errors.join(' • '))
+          } else {
+            setViewError('ui_map', '')
+          }
+
+          if (successCount > 0) {
+            setViewState('ui_map', 'ready')
+            markUpdated('ui_map')
+          } else {
+            setViewState('ui_map', 'error')
+          }
+          return
+        }
+
+        if (view === 'test_matrix') {
           const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
           const query = new URLSearchParams({
             scenario_id: scenarioId,
@@ -400,42 +486,24 @@ export function useCockpitData({
             page: String(graphPaging.page),
           })
           const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
+            `/api/twin/collections/${collectionId}/views/test-matrix?${query.toString()}`,
             {
               credentials: 'include',
               signal: controller.signal,
             },
           )
           if (!response.ok) {
-            throw new Error(`Could not load ${endpoint} (${response.status})`)
+            throw new Error(`Could not load test-matrix (${response.status})`)
           }
-          if (view === 'ui_map') {
-            const payload: UIMapPayload = await response.json()
-            setUiMapSummary(payload.summary)
-            setGraph({
-              ...(payload.graph || DEFAULT_GRAPH),
-              projection: 'code_symbol',
-              entity_level: payload.entity_level,
-            })
-          } else if (view === 'test_matrix') {
-            const payload: TestMatrixPayload = await response.json()
-            setTestMatrix(payload)
-            setGraph({
-              ...(payload.graph || DEFAULT_GRAPH),
-              projection: 'code_symbol',
-              entity_level: payload.entity_level,
-            })
-          } else {
-            const payload: UserFlowsPayload = await response.json()
-            setUserFlows(payload)
-            setGraph({
-              ...(payload.graph || DEFAULT_GRAPH),
-              projection: 'code_symbol',
-              entity_level: payload.entity_level,
-            })
-          }
-          setViewState(view, 'ready')
-          markUpdated(view)
+          const payload: TestMatrixPayload = await response.json()
+          setTestMatrix(payload)
+          setGraph({
+            ...(payload.graph || DEFAULT_GRAPH),
+            projection: 'code_symbol',
+            entity_level: payload.entity_level,
+          })
+          setViewState('test_matrix', 'ready')
+          markUpdated('test_matrix')
           return
         }
 
@@ -506,38 +574,7 @@ export function useCockpitData({
             setSemanticMapComparison(null)
           }
 
-          const graphQuery = new URLSearchParams({
-            scenario_id: scenarioId,
-            community_mode: 'color',
-            limit: String(limit),
-            page: String(graphPaging.page),
-          })
-          if (graphFilters.includeKinds.length > 0) {
-            graphQuery.set('include_kinds', graphFilters.includeKinds.join(','))
-          }
-          if (graphFilters.excludeKinds.length > 0) {
-            graphQuery.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-          }
-          if (graphFilters.edgeKinds.length > 0) {
-            graphQuery.set('edge_kinds', graphFilters.edgeKinds.join(','))
-          }
-
-          const graphResponse = await fetch(
-            `/api/twin/collections/${collectionId}/views/graphrag?${graphQuery.toString()}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!graphResponse.ok) {
-            throw new Error(`Could not load semantic map graph (${graphResponse.status})`)
-          }
-          const graphPayload: GraphRagPayload = await graphResponse.json()
-          setGraph({
-            ...(graphPayload.graph || DEFAULT_GRAPH),
-            projection: graphPayload.projection,
-            entity_level: graphPayload.entity_level,
-          })
+          setGraph(DEFAULT_GRAPH)
 
           setViewState('semantic_map', 'ready')
           markUpdated('semantic_map')
@@ -980,12 +1017,94 @@ export function useCockpitData({
     semanticMapThresholdsByMode.semantic.semantic_duplication_min_similarity,
     semanticMapThresholdsByMode.semantic.semantic_duplication_max_source_overlap,
     semanticMapThresholdsByMode.semantic.misplaced_min_dominant_ratio,
+    semanticMapThresholdsByMode,
     cityProjection,
     cityEntityLevel,
     refreshNonce,
     markUpdated,
     setViewError,
     setViewState,
+  ])
+
+  useEffect(() => {
+    if (selection.view !== 'ui_map') {
+      return
+    }
+    const preferred =
+      behaviorGraphMode === 'user_flows'
+        ? userFlowsGraph.total_nodes > 0
+          ? userFlowsGraph
+          : uiMapGraph
+        : uiMapGraph.total_nodes > 0
+          ? uiMapGraph
+          : userFlowsGraph
+    setGraph(preferred)
+  }, [selection.view, behaviorGraphMode, uiMapGraph, userFlowsGraph])
+
+  useEffect(() => {
+    const { collectionId, scenarioId, view } = selection
+    if (!collectionId || !scenarioId || view !== 'semantic_map' || !selectedNodeId) {
+      return
+    }
+
+    const controller = new AbortController()
+    const run = async () => {
+      try {
+        const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+        const query = new URLSearchParams({
+          scenario_id: scenarioId,
+          community_mode: 'color',
+          limit: String(limit),
+          page: String(graphPaging.page),
+        })
+        if (graphFilters.includeKinds.length > 0) {
+          query.set('include_kinds', graphFilters.includeKinds.join(','))
+        }
+        if (graphFilters.excludeKinds.length > 0) {
+          query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+        }
+        if (graphFilters.edgeKinds.length > 0) {
+          query.set('edge_kinds', graphFilters.edgeKinds.join(','))
+        }
+
+        const response = await fetch(
+          `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
+          {
+            credentials: 'include',
+            signal: controller.signal,
+          },
+        )
+        if (!response.ok) {
+          return
+        }
+        const payload: GraphRagPayload = await response.json()
+        if (controller.signal.aborted) {
+          return
+        }
+        setGraph({
+          ...(payload.graph || DEFAULT_GRAPH),
+          projection: payload.projection,
+          entity_level: payload.entity_level,
+        })
+      } catch {
+        // Keep semantic map usable even if optional graph context cannot be loaded.
+      }
+    }
+
+    run()
+    return () => {
+      controller.abort()
+    }
+  }, [
+    selection,
+    selectedNodeId,
+    graphFilters.includeKinds,
+    graphFilters.excludeKinds,
+    graphFilters.edgeKinds,
+    graphPaging.limit,
+    graphPaging.page,
+    topologyLimit,
+    refreshNonce,
   ])
 
   useEffect(() => {
@@ -1334,6 +1453,8 @@ export function useCockpitData({
     graphRagProcessDetailState,
     graphRagProcessDetailError,
     uiMapSummary,
+    uiMapGraph,
+    userFlowsGraph,
     semanticMap,
     semanticMapComparison,
     testMatrix,

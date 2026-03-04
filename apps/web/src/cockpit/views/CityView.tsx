@@ -13,6 +13,7 @@ interface CityViewProps {
   onProjectionChange: (projection: CityProjection) => void
   onEntityLevelChange: (entityLevel: CityEntityLevel) => void
   onReload: () => void
+  onOpenOverview: () => void
 }
 
 export default function CityView({
@@ -24,6 +25,7 @@ export default function CityView({
   onProjectionChange,
   onEntityLevelChange,
   onReload,
+  onOpenOverview,
 }: CityViewProps) {
   return (
     <section className="cockpit2-panel cockpit2-city-panel" id="cockpit-panel-city" role="tabpanel">
@@ -57,6 +59,9 @@ export default function CityView({
         </label>
         <button type="button" onClick={onReload} disabled={state === 'loading'}>
           {state === 'loading' ? 'Loading…' : 'Reload map'}
+        </button>
+        <button type="button" className="secondary" onClick={onOpenOverview}>
+          Open Overview
         </button>
       </div>
 

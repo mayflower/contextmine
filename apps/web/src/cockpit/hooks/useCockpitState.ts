@@ -28,7 +28,6 @@ const VALID_VIEWS: CockpitView[] = [
   'semantic_map',
   'ui_map',
   'test_matrix',
-  'user_flows',
   'rebuild_readiness',
   'exports',
 ]
@@ -54,6 +53,7 @@ function parseInitialSelection(): CockpitSelection {
   const params = new URLSearchParams(window.location.search)
   const rawLayer = params.get('layer')
   const rawView = params.get('view')
+  const normalizedRawView = rawView === 'user_flows' ? 'ui_map' : rawView
 
   return {
     collectionId: params.get('collection') ?? '',
@@ -61,7 +61,9 @@ function parseInitialSelection(): CockpitSelection {
     layer: VALID_LAYERS.includes(rawLayer as CockpitLayer)
       ? (rawLayer as CockpitLayer)
       : DEFAULT_LAYER,
-    view: VALID_VIEWS.includes(rawView as CockpitView) ? (rawView as CockpitView) : DEFAULT_VIEW,
+    view: VALID_VIEWS.includes(normalizedRawView as CockpitView)
+      ? (normalizedRawView as CockpitView)
+      : DEFAULT_VIEW,
   }
 }
 
@@ -286,7 +288,7 @@ export function useCockpitState() {
 
   const setView = useCallback(
     (view: CockpitView) => {
-      updateSelection({ view })
+      updateSelection({ view: view === 'user_flows' ? 'ui_map' : view })
       setSelectedNodeId('')
       setGraphPage(DEFAULT_PAGE)
     },

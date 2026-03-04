@@ -12,6 +12,7 @@ interface OverviewViewProps {
   filter: string
   onRetry: () => void
   onOpenTopology: () => void
+  onOpenCity: () => void
   onSelectHotspot: (nodeNaturalKey: string) => void
 }
 
@@ -73,6 +74,7 @@ export default function OverviewView({
   filter,
   onRetry,
   onOpenTopology,
+  onOpenCity,
   onSelectHotspot,
 }: OverviewViewProps) {
   const [sortKey, setSortKey] = useState<SortKey>('complexity')
@@ -139,16 +141,9 @@ export default function OverviewView({
         <article className="cockpit2-panel">
           <h3>System health summary</h3>
           {metricsUnavailable ? (
-            <>
-              <p className="muted">
-                {metricsUnavailableMessage(unavailableReason)}
-              </p>
-              <div className="actions">
-                <button type="button" className="secondary" onClick={onOpenTopology}>
-                  Open Topology (Code / Controlflow)
-                </button>
-              </div>
-            </>
+            <p className="muted">
+              {metricsUnavailableMessage(unavailableReason)}
+            </p>
           ) : null}
           <div className="cockpit2-kpis">
             <div>
@@ -175,6 +170,14 @@ export default function OverviewView({
               <strong>{formatMetricValue(city?.summary.churn_avg)}</strong>
               <span>Average churn</span>
             </div>
+          </div>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={onOpenTopology}>
+              Open Topology (Code / Controlflow)
+            </button>
+            <button type="button" className="secondary" onClick={onOpenCity}>
+              Open City Map
+            </button>
           </div>
         </article>
 
