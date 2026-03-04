@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import uuid
 from collections import defaultdict, deque
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Literal
 
 from contextmine_core import Collection, CollectionMember, get_settings
 from contextmine_core import get_session as get_db_session
 from contextmine_core.architecture import (
     SECTION_TITLES,
+    ClaudeAgentSdkUnavailableError,
     build_architecture_facts,
     compute_arc42_drift,
-    generate_arc42_from_facts,
+    generate_arc42_with_claude_sdk,
     normalize_arc42_section_key,
 )
 from contextmine_core.architecture_intents import ArchitectureIntentV1
@@ -388,6 +391,65 @@ def _serialize_arc42_document(document) -> dict[str, Any]:
         "confidence_summary": document.confidence_summary,
         "section_coverage": document.section_coverage,
     }
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _select_arc42_section(document, section_key: str | None):
+    if not section_key:
+        return document
+
+    selected_sections = {section_key: document.sections.get(section_key, "")}
+    markdown = (
+        f"# {document.title}\n\n"
+        f"## {SECTION_TITLES[section_key]}\n"
+        f"{selected_sections.get(section_key, '')}\n"
+    )
+    return type(document)(
+        collection_id=document.collection_id,
+        scenario_id=document.scenario_id,
+        scenario_name=document.scenario_name,
+        title=document.title,
+        generated_at=document.generated_at,
+        sections=selected_sections,
+        markdown=markdown,
+        warnings=document.warnings,
+        confidence_summary=document.confidence_summary,
+        section_coverage={section_key: bool(selected_sections.get(section_key, "").strip())},
+    )
+
+
+async def _resolve_arc42_repo_checkout(db, *, collection_id: uuid.UUID) -> tuple[Source, Path]:
+    source = (
+        await db.execute(
+            select(Source)
+            .where(
+                Source.collection_id == collection_id,
+                Source.type == SourceType.GITHUB,
+                Source.enabled.is_(True),
+            )
+            .order_by(Source.last_run_at.desc(), Source.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not source:
+        raise HTTPException(
+            status_code=409,
+            detail="No enabled GitHub source found for arc42 agent generation.",
+        )
+
+    repo_path = Path(get_settings().repos_root) / str(source.id)
+    if not repo_path.exists() or not repo_path.is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Local repository checkout missing. Run sync first, then trigger "
+                "arc42 generation with `?regenerate=true`."
+            ),
+        )
+    return source, repo_path
 
 
 def _serialize_port_adapter_fact(fact) -> dict[str, Any]:
@@ -2648,13 +2710,39 @@ async def arc42_view(
                     "warnings": stored_meta.get("warnings", []),
                 }
 
-        bundle = await _build_arch_bundle(db, collection_id=collection_uuid, scenario=scenario)
-        full_document = generate_arc42_from_facts(bundle, scenario, options={})
-        selected_document = (
-            generate_arc42_from_facts(bundle, scenario, options={"section": section_key})
-            if section_key
-            else full_document
-        )
+        if not regenerate:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "arc42 artifact not generated yet. Trigger explicit generation with "
+                    "`?regenerate=true`."
+                ),
+            )
+
+        _source, repo_path = await _resolve_arc42_repo_checkout(db, collection_id=collection_uuid)
+        settings = get_settings()
+        try:
+            full_document, sdk_meta = await generate_arc42_with_claude_sdk(
+                collection_id=collection_uuid,
+                scenario_id=scenario.id,
+                scenario_name=scenario.name,
+                repo_path=repo_path,
+                section=section_key,
+                model=settings.arch_docs_agent_sdk_model,
+                max_turns=int(settings.arch_docs_agent_sdk_max_turns),
+                permission_mode=settings.arch_docs_agent_sdk_permission_mode,
+            )
+        except ClaudeAgentSdkUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502, detail=f"Claude SDK arc42 generation failed: {exc}"
+            ) from exc
+
+        selected_document = _select_arc42_section(full_document, section_key)
+        content_hash = _sha256_text(full_document.markdown)
 
         artifact = await _upsert_artifact(
             db,
@@ -2665,11 +2753,13 @@ async def arc42_view(
             meta={
                 "scenario_id": str(scenario.id),
                 "generated_at": full_document.generated_at.isoformat(),
-                "facts_hash": bundle.facts_hash(),
+                "facts_hash": content_hash,
                 "confidence_summary": full_document.confidence_summary,
                 "section_coverage": full_document.section_coverage,
                 "warnings": full_document.warnings,
                 "sections": full_document.sections,
+                "generation_engine": "claude_agent_sdk",
+                "sdk": sdk_meta,
             },
         )
         await db.commit()
@@ -2685,10 +2775,10 @@ async def arc42_view(
             },
             "section": section_key,
             "arc42": _serialize_arc42_document(selected_document),
-            "facts_hash": bundle.facts_hash(),
-            "facts_count": len(bundle.facts),
-            "ports_adapters_count": len(bundle.ports_adapters),
-            "warnings": sorted(set([*bundle.warnings, *full_document.warnings])),
+            "facts_hash": content_hash,
+            "facts_count": 0,
+            "ports_adapters_count": 0,
+            "warnings": list(full_document.warnings),
         }
 
 

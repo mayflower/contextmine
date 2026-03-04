@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from contextmine_core import (
@@ -10,11 +11,16 @@ from contextmine_core import (
     CollectionVisibility,
     Document,
     Source,
+    SourceType,
     Symbol,
     SymbolEdge,
     get_settings,
 )
 from contextmine_core import get_session as get_db_session
+from contextmine_core.architecture import (
+    ClaudeAgentSdkUnavailableError,
+    generate_arc42_with_claude_sdk,
+)
 from contextmine_core.context import assemble_context
 from contextmine_core.embeddings import FakeEmbedder, get_embedder, parse_embedding_model_spec
 from contextmine_core.search import hybrid_search
@@ -62,6 +68,37 @@ async def _resolve_collection_access(
     if not has_access:
         return None, "Access denied to this collection."
     return collection, None
+
+
+def _sha256_text(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+async def _resolve_arc42_repo_checkout(db, *, collection_id: uuid.UUID) -> tuple[Source, Path]:
+    source = (
+        await db.execute(
+            select(Source)
+            .where(
+                Source.collection_id == collection_id,
+                Source.type == SourceType.GITHUB,
+                Source.enabled.is_(True),
+            )
+            .order_by(Source.last_run_at.desc(), Source.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not source:
+        raise RuntimeError("No enabled GitHub source found for arc42 agent generation.")
+
+    repo_path = Path(get_settings().repos_root) / str(source.id)
+    if not repo_path.exists() or not repo_path.is_dir():
+        raise RuntimeError(
+            "Local repository checkout missing. Run a sync first, then call get_arc42 with "
+            "regenerate=true."
+        )
+    return source, repo_path
 
 
 def _parse_csv_list(value: str | None) -> list[str] | None:
@@ -2185,12 +2222,7 @@ async def mcp_get_arc42(
 ) -> str:
     """Generate/read arc42 document for a collection scenario."""
     try:
-        from contextmine_core.architecture import (
-            SECTION_TITLES,
-            build_architecture_facts,
-            generate_arc42_from_facts,
-            normalize_arc42_section_key,
-        )
+        from contextmine_core.architecture import SECTION_TITLES, normalize_arc42_section_key
         from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
         from contextmine_core.twin import get_or_create_as_is_scenario
 
@@ -2287,39 +2319,53 @@ async def mcp_get_arc42(
                 }
                 return json.dumps(payload, indent=2)
 
-            llm_provider = None
-            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
-                try:
-                    from contextmine_core.research.llm import get_llm_provider
+            if not regenerate:
+                return (
+                    "# Error\n\n"
+                    "arc42 artifact not generated yet. Trigger explicit generation with "
+                    "`regenerate=true`."
+                )
 
-                    llm_provider = get_llm_provider(settings.default_llm_provider)
-                except Exception:
-                    llm_provider = None
+            _source, repo_path = await _resolve_arc42_repo_checkout(db, collection_id=collection.id)
+            try:
+                full_doc, sdk_meta = await generate_arc42_with_claude_sdk(
+                    collection_id=collection.id,
+                    scenario_id=scenario.id,
+                    scenario_name=scenario.name,
+                    repo_path=repo_path,
+                    section=section_key,
+                    model=settings.arch_docs_agent_sdk_model,
+                    max_turns=int(settings.arch_docs_agent_sdk_max_turns),
+                    permission_mode=settings.arch_docs_agent_sdk_permission_mode,
+                )
+            except ClaudeAgentSdkUnavailableError as exc:
+                return f"# Error\n\n{exc}"
 
-            facts = await build_architecture_facts(
-                db,
-                collection_id=collection.id,
-                scenario_id=scenario.id,
-                enable_llm_enrich=settings.arch_docs_llm_enrich,
-                llm_provider=llm_provider,
-            )
-            full_doc = generate_arc42_from_facts(facts, scenario, options={})
-            selected_doc = (
-                generate_arc42_from_facts(facts, scenario, options={"section": section_key})
-                if section_key
-                else full_doc
-            )
+            if section_key:
+                selected_sections = {section_key: full_doc.sections.get(section_key, "")}
+                selected_markdown = (
+                    f"# {full_doc.title}\n\n"
+                    f"## {SECTION_TITLES.get(section_key, section_key)}\n"
+                    f"{selected_sections.get(section_key, '')}\n"
+                )
+            else:
+                selected_sections = full_doc.sections
+                selected_markdown = full_doc.markdown
+
+            content_hash = _sha256_text(full_doc.markdown)
 
             if existing:
                 existing.content = full_doc.markdown
                 existing.meta = {
                     "scenario_id": str(scenario.id),
                     "generated_at": full_doc.generated_at.isoformat(),
-                    "facts_hash": facts.facts_hash(),
+                    "facts_hash": content_hash,
                     "confidence_summary": full_doc.confidence_summary,
                     "section_coverage": full_doc.section_coverage,
                     "warnings": full_doc.warnings,
                     "sections": full_doc.sections,
+                    "generation_engine": "claude_agent_sdk",
+                    "sdk": sdk_meta,
                 }
                 artifact = existing
             else:
@@ -2331,11 +2377,13 @@ async def mcp_get_arc42(
                     meta={
                         "scenario_id": str(scenario.id),
                         "generated_at": full_doc.generated_at.isoformat(),
-                        "facts_hash": facts.facts_hash(),
+                        "facts_hash": content_hash,
                         "confidence_summary": full_doc.confidence_summary,
                         "section_coverage": full_doc.section_coverage,
                         "warnings": full_doc.warnings,
                         "sections": full_doc.sections,
+                        "generation_engine": "claude_agent_sdk",
+                        "sdk": sdk_meta,
                     },
                 )
                 db.add(artifact)
@@ -2347,10 +2395,10 @@ async def mcp_get_arc42(
                 "artifact_id": str(artifact.id),
                 "section": section_key,
                 "cached": False,
-                "facts_hash": facts.facts_hash(),
-                "warnings": sorted(set([*facts.warnings, *full_doc.warnings])),
-                "sections": selected_doc.sections,
-                "markdown": selected_doc.markdown,
+                "facts_hash": content_hash,
+                "warnings": list(full_doc.warnings),
+                "sections": selected_sections,
+                "markdown": selected_markdown,
             }
             return json.dumps(payload, indent=2)
     except Exception as e:

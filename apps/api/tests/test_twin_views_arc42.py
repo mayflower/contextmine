@@ -31,20 +31,20 @@ class TestTwinArc42Views:
         assert "Invalid arc42 section" in response.json()["detail"]
 
     @patch("app.routes.twin._upsert_artifact", new_callable=AsyncMock)
-    @patch("app.routes.twin.generate_arc42_from_facts")
-    @patch("app.routes.twin._build_arch_bundle", new_callable=AsyncMock)
+    @patch("app.routes.twin.generate_arc42_with_claude_sdk", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_arc42_repo_checkout", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
     @patch("app.routes.twin.get_session")
-    async def test_arc42_view_returns_generated_document(
+    async def test_arc42_view_returns_generated_document_on_explicit_trigger(
         self,
         mock_get_session: Any,
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
-        mock_build_arch_bundle: Any,
-        mock_generate_arc42: Any,
+        mock_resolve_repo_checkout: Any,
+        mock_generate_arc42_sdk: Any,
         mock_upsert_artifact: Any,
         client: AsyncClient,
     ) -> None:
@@ -61,15 +61,9 @@ class TestTwinArc42Views:
         scenario.base_scenario_id = None
         mock_resolve_view_scenario.return_value = scenario
 
-        bundle = ArchitectureFactsBundle(
-            collection_id=collection_id,
-            scenario_id=scenario_id,
-            scenario_name="AS-IS",
-            facts=[],
-            ports_adapters=[],
-            warnings=[],
-        )
-        mock_build_arch_bundle.return_value = bundle
+        source = MagicMock()
+        source.id = uuid.uuid4()
+        mock_resolve_repo_checkout.return_value = (source, MagicMock())
 
         document = Arc42Document(
             collection_id=collection_id,
@@ -77,13 +71,26 @@ class TestTwinArc42Views:
             scenario_name="AS-IS",
             title="arc42 - AS-IS",
             generated_at=datetime.now(UTC),
-            sections={"1_introduction_and_goals": "Intro"},
+            sections={
+                "1_introduction_and_goals": "Intro",
+                "2_constraints": "",
+                "3_system_scope_and_context": "",
+                "4_solution_strategy": "",
+                "5_building_block_view": "",
+                "6_runtime_view": "",
+                "7_deployment_view": "",
+                "8_crosscutting_concepts": "",
+                "9_architecture_decisions": "",
+                "10_quality_requirements": "",
+                "11_risks_and_technical_debt": "",
+                "12_glossary": "",
+            },
             markdown="# arc42 - AS-IS\n",
             warnings=[],
             confidence_summary={"total": 0},
-            section_coverage={"1_introduction_and_goals": True},
+            section_coverage={"1_introduction_and_goals": True, "2_constraints": False},
         )
-        mock_generate_arc42.return_value = document
+        mock_generate_arc42_sdk.return_value = (document, {"engine": "claude_agent_sdk"})
 
         artifact = MagicMock()
         artifact.id = uuid.uuid4()
@@ -107,12 +114,64 @@ class TestTwinArc42Views:
 
         mock_db_session_factory.return_value = SessionContext()
 
-        response = await client.get(f"/api/twin/collections/{collection_id}/views/arc42")
+        response = await client.get(
+            f"/api/twin/collections/{collection_id}/views/arc42?regenerate=true"
+        )
         assert response.status_code == 200
         payload = response.json()
         assert payload["artifact"]["kind"] == "arc42"
         assert payload["arc42"]["title"] == "arc42 - AS-IS"
         assert payload["facts_count"] == 0
+
+    @patch("app.routes.twin._resolve_arc42_repo_checkout", new_callable=AsyncMock)
+    @patch("app.routes.twin.generate_arc42_with_claude_sdk", new_callable=AsyncMock)
+    @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
+    @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
+    @patch("app.routes.twin.get_db_session")
+    @patch("app.routes.twin.get_session")
+    async def test_arc42_view_requires_explicit_trigger_when_no_artifact(
+        self,
+        mock_get_session: Any,
+        mock_db_session_factory: Any,
+        _mock_ensure_member: Any,
+        mock_resolve_view_scenario: Any,
+        mock_generate_arc42_sdk: Any,
+        mock_resolve_repo_checkout: Any,
+        client: AsyncClient,
+    ) -> None:
+        collection_id = uuid.uuid4()
+        scenario_id = uuid.uuid4()
+        mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        scenario = MagicMock()
+        scenario.id = scenario_id
+        scenario.collection_id = collection_id
+        scenario.name = "AS-IS"
+        scenario.version = 3
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = None
+
+        fake_db = MagicMock()
+        fake_db.execute = AsyncMock(return_value=query_result)
+
+        class SessionContext:
+            async def __aenter__(self):  # noqa: ANN001
+                return fake_db
+
+            async def __aexit__(self, _exc_type, _exc, _tb):  # noqa: ANN001
+                return False
+
+        mock_db_session_factory.return_value = SessionContext()
+
+        response = await client.get(f"/api/twin/collections/{collection_id}/views/arc42")
+        assert response.status_code == 409
+        assert "regenerate=true" in response.json()["detail"]
+        mock_generate_arc42_sdk.assert_not_awaited()
+        mock_resolve_repo_checkout.assert_not_awaited()
 
     @patch("app.routes.twin._resolve_baseline_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._build_arch_bundle", new_callable=AsyncMock)

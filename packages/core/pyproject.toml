@@ -20,6 +20,7 @@ dependencies = [
     "langchain-anthropic>=1.0.0",
     "langchain-openai>=1.0.0",
     "langgraph>=1.0.0",
+    "claude-code-sdk>=0.0.20",
     # SCIP protobuf parsing for code intelligence
     "protobuf>=4.25.0",
     "lizard>=1.17.10",

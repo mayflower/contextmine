@@ -284,6 +284,25 @@ class Settings(BaseSettings):
         default=True,
         description="Enable advisory architecture drift report generation",
     )
+    arch_docs_agent_sdk_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        description="Claude model used by arc42 agent-sdk generation",
+    )
+    arch_docs_agent_sdk_max_turns: int = Field(
+        default=50,
+        description="Maximum turns for arc42 agent-sdk generation",
+    )
+    arch_docs_agent_sdk_permission_mode: str = Field(
+        default="bypassPermissions",
+        description="Permission mode for arc42 agent-sdk generation",
+    )
+    arch_docs_generate_on_sync: bool = Field(
+        default=False,
+        description=(
+            "Generate/update arc42 artifacts during sync runs. Disabled by default so "
+            "arc42 extraction runs only on explicit trigger."
+        ),
+    )
     twin_evolution_view_enabled: bool = Field(
         default=True,
         description="Enable evolution cockpit view endpoints (investment, ownership, coupling, fitness)",

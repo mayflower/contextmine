@@ -122,7 +122,13 @@ Best-effort views:
 Query parameters:
 1. `scenario_id` (optional)
 2. `section` (optional, e.g. `5`, `quality`, `deployment`)
-3. `regenerate` (optional, default `false`)
+3. `regenerate` (optional, default `false`) - explicit generation trigger
+
+Behavior:
+1. `regenerate=false` reads only cached artifact content.
+2. If no cached artifact exists and `regenerate=false`, endpoint returns `409`.
+3. `regenerate=true` explicitly runs arc42 extraction via Claude Agent SDK and updates the artifact.
+4. Sync runs do not auto-generate arc42 unless `ARCH_DOCS_GENERATE_ON_SYNC=true`.
 
 Response shape:
 

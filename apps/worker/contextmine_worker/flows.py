@@ -1179,7 +1179,7 @@ async def build_twin_graph(
             session, collection_uuid
         )
 
-        if settings.arch_docs_enabled:
+        if settings.arch_docs_enabled and settings.arch_docs_generate_on_sync:
             try:
                 from dataclasses import asdict
 
@@ -1285,6 +1285,8 @@ async def build_twin_graph(
             except Exception as exc:
                 logger.warning("Architecture docs generation failed (advisory): %s", exc)
                 stats["arch_docs_error"] = str(exc)
+        elif settings.arch_docs_enabled:
+            stats["arch_docs_sync_generation"] = "skipped_requires_explicit_trigger"
 
         # Keep AGE in sync as a mandatory M1 requirement.
         await sync_scenario_to_age(session, as_is.id)

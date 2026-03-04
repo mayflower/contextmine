@@ -1,5 +1,9 @@
 """Architecture facts, arc42 generation, and drift reporting."""
 
+from .agent_sdk import (
+    ClaudeAgentSdkUnavailableError,
+    generate_arc42_with_claude_sdk,
+)
 from .arc42 import SECTION_TITLES, generate_arc42_from_facts, normalize_arc42_section_key
 from .drift import compute_arc42_drift
 from .facts import build_architecture_facts
@@ -16,6 +20,7 @@ from .schemas import (
 
 __all__ = [
     "SECTION_TITLES",
+    "ClaudeAgentSdkUnavailableError",
     "Arc42Document",
     "Arc42DriftReport",
     "ArchitectureFact",
@@ -26,6 +31,7 @@ __all__ = [
     "build_architecture_facts",
     "compute_arc42_drift",
     "generate_arc42_from_facts",
+    "generate_arc42_with_claude_sdk",
     "normalize_arc42_section_key",
     "summarize_confidence",
 ]
