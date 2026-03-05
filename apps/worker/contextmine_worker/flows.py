@@ -96,7 +96,8 @@ IGNORED_REPO_PATH_PARTS = frozenset(
 
 def _sync_source_timeout_seconds() -> int:
     configured = int(get_settings().sync_source_timeout_seconds)
-    return max(300, configured)
+    # 0 disables the outer flow timeout and relies on step-level guards.
+    return max(0, configured)
 
 
 def _embedding_batch_timeout_seconds() -> int:
@@ -947,7 +948,9 @@ async def build_knowledge_graph(
                 await session.commit()
 
                 stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
-                stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
+                stats["kg_semantic_relationships"] = extraction_stats.get(
+                    "relationships_created", 0
+                )
                 logger.info(
                     "Extracted %d semantic entities, %d relationships",
                     stats["kg_semantic_entities"],
@@ -4059,7 +4062,10 @@ async def sync_due_sources() -> dict:
     timeout_seconds = _sync_source_timeout_seconds()
     for source in sources:
         try:
-            sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
+            if timeout_seconds > 0:
+                sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
+            else:
+                sync_run = await sync_source(source)
             if sync_run is None:
                 skipped += 1
                 continue
@@ -4125,7 +4131,10 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
 
     timeout_seconds = _sync_source_timeout_seconds()
     try:
-        sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
+        if timeout_seconds > 0:
+            sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
+        else:
+            sync_run = await sync_source(source)
         if sync_run is None:
             return {"source_id": source_id, "skipped": True, "reason": "lock_not_acquired"}
 

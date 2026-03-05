@@ -237,8 +237,8 @@ config:
     budgetSteps: "10"
   # -- Worker sync scheduler settings
   sync:
-    # -- Maximum duration for one source sync run (seconds)
-    sourceTimeoutSeconds: "14400"
+    # -- Maximum duration for one source sync run (seconds, 0 disables outer timeout)
+    sourceTimeoutSeconds: "0"
   # -- SCIP Polyglot Indexing settings
   scip:
     # -- Comma-separated list of enabled languages
