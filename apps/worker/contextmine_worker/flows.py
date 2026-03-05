@@ -2717,8 +2717,6 @@ async def sync_github_source(
     total_docs_candidate = len(docs_to_chunk)
     docs_deferred = 0
     docs_limit = _sync_documents_per_run_limit()
-    if old_sha is None:
-        docs_limit = 0
     if docs_limit and total_docs_candidate > docs_limit:
         docs_to_chunk = docs_to_chunk[:docs_limit]
         docs_deferred = total_docs_candidate - len(docs_to_chunk)
