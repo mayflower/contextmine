@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections import defaultdict
@@ -108,6 +109,14 @@ class SyncStats:
     docs_created: int = 0
     docs_updated: int = 0
     docs_deleted: int = 0
+
+
+@dataclass
+class _GitCommitTouch:
+    authored_at: datetime
+    author_name: str
+    author_email: str
+    files: dict[str, tuple[int, int]]
 
 
 def is_eligible_file(file_path: Path, repo_root: Path) -> bool:
@@ -386,6 +395,18 @@ def compute_git_change_metrics(
         for path in target_files
     }
 
+    fast_path = _load_git_numstat_commits(repo, target_files, since_days=since_days)
+    if fast_path is not None:
+        commits, _fallback_used = fast_path
+        for commit in commits:
+            for file_path, (insertions, deletions) in commit.files.items():
+                entry = metrics[file_path]
+                entry["change_frequency"] += 1
+                entry["insertions"] += int(insertions)
+                entry["deletions"] += int(deletions)
+                entry["churn"] += int(insertions) + int(deletions)
+        return metrics
+
     try:
         commit_iter = None
         since_dt: datetime | None = None
@@ -567,83 +588,164 @@ def compute_git_evolution_snapshots(
             return []
 
     try:
-        window_commits = _iter_window_commits()
-        commits_considered = len(window_commits)
-        for commit in window_commits:
-            files = commit.stats.files or {}
-            touched = sorted(path for path in files if path in target_files)
-            if not touched:
-                continue
+        fast_path = _load_git_numstat_commits(repo, target_files, since_days=window_days)
+        if fast_path is not None:
+            window_commits, fallback_used = fast_path
+            if fallback_used:
+                warnings.append("git_since_filter_fallback_used")
+            commits_considered = len(window_commits)
+            for commit in window_commits:
+                touched = sorted(commit.files.keys())
+                if not touched:
+                    continue
 
-            commits_scanned += 1
-            commit_dt = _canonical_utc(commit.authored_datetime)
-            author_label = (
-                commit.author.name or commit.author.email or "unknown"
-            ).strip() or "unknown"
-            author_key = _author_key(commit.author.name or "", commit.author.email or "")
+                commits_scanned += 1
+                commit_dt = _canonical_utc(commit.authored_at)
+                author_label = (commit.author_name or commit.author_email or "unknown").strip()
+                if not author_label:
+                    author_label = "unknown"
+                author_key = _author_key(commit.author_name or "", commit.author_email or "")
 
-            touched_set = set(touched)
-            for path in touched_set:
-                file_change_counts[path] += 1
-                stats = files.get(path) or {}
-                additions = int(stats.get("insertions", 0) or 0)
-                deletions = int(stats.get("deletions", 0) or 0)
-                key = (path, author_key)
-                current = ownership_acc.get(key)
-                if current is None:
-                    current = {
-                        "node_natural_key": f"file:{path}",
-                        "author_key": author_key,
-                        "author_label": author_label,
-                        "additions": 0,
-                        "deletions": 0,
-                        "touches": 0,
-                        "last_touched_at": commit_dt,
-                        "window_days": int(window_days),
+                touched_set = set(touched)
+                for path in touched_set:
+                    file_change_counts[path] += 1
+                    insertions, deletions = commit.files.get(path, (0, 0))
+                    additions = int(insertions or 0)
+                    deletions = int(deletions or 0)
+                    key = (path, author_key)
+                    current = ownership_acc.get(key)
+                    if current is None:
+                        current = {
+                            "node_natural_key": f"file:{path}",
+                            "author_key": author_key,
+                            "author_label": author_label,
+                            "additions": 0,
+                            "deletions": 0,
+                            "touches": 0,
+                            "last_touched_at": commit_dt,
+                            "window_days": int(window_days),
+                        }
+                        ownership_acc[key] = current
+
+                    current["additions"] = int(current["additions"]) + additions
+                    current["deletions"] = int(current["deletions"]) + deletions
+                    current["touches"] = int(current["touches"]) + 1
+                    last = current.get("last_touched_at")
+                    if isinstance(last, datetime) and commit_dt > last:
+                        current["last_touched_at"] = commit_dt
+
+                    container_key = _entity_for(path, "container")
+                    if container_key:
+                        file_to_container[path] = container_key
+                    else:
+                        file_to_container[path] = None
+
+                for source, target in combinations(touched, 2):
+                    pair = tuple(sorted((source, target)))
+                    file_pair_counts[pair] += 1
+
+                container_entities = sorted(
+                    {
+                        value
+                        for value in (_entity_for(path, "container") for path in touched_set)
+                        if value
                     }
-                    ownership_acc[key] = current
+                )
+                component_entities = sorted(
+                    {
+                        value
+                        for value in (_entity_for(path, "component") for path in touched_set)
+                        if value
+                    }
+                )
 
-                current["additions"] = int(current["additions"]) + additions
-                current["deletions"] = int(current["deletions"]) + deletions
-                current["touches"] = int(current["touches"]) + 1
-                last = current.get("last_touched_at")
-                if isinstance(last, datetime) and commit_dt > last:
-                    current["last_touched_at"] = commit_dt
+                for container in container_entities:
+                    container_change_counts[container] += 1
+                for component in component_entities:
+                    component_change_counts[component] += 1
 
-                container_key = _entity_for(path, "container")
-                if container_key:
-                    file_to_container[path] = container_key
-                else:
-                    file_to_container[path] = None
+                for source, target in combinations(container_entities, 2):
+                    container_pair_counts[tuple(sorted((source, target)))] += 1
+                for source, target in combinations(component_entities, 2):
+                    component_pair_counts[tuple(sorted((source, target)))] += 1
+        else:
+            window_commits = _iter_window_commits()
+            commits_considered = len(window_commits)
+            for commit in window_commits:
+                files = commit.stats.files or {}
+                touched = sorted(path for path in files if path in target_files)
+                if not touched:
+                    continue
 
-            for source, target in combinations(touched, 2):
-                pair = tuple(sorted((source, target)))
-                file_pair_counts[pair] += 1
+                commits_scanned += 1
+                commit_dt = _canonical_utc(commit.authored_datetime)
+                author_label = (
+                    commit.author.name or commit.author.email or "unknown"
+                ).strip() or "unknown"
+                author_key = _author_key(commit.author.name or "", commit.author.email or "")
 
-            container_entities = sorted(
-                {
-                    value
-                    for value in (_entity_for(path, "container") for path in touched_set)
-                    if value
-                }
-            )
-            component_entities = sorted(
-                {
-                    value
-                    for value in (_entity_for(path, "component") for path in touched_set)
-                    if value
-                }
-            )
+                touched_set = set(touched)
+                for path in touched_set:
+                    file_change_counts[path] += 1
+                    stats = files.get(path) or {}
+                    additions = int(stats.get("insertions", 0) or 0)
+                    deletions = int(stats.get("deletions", 0) or 0)
+                    key = (path, author_key)
+                    current = ownership_acc.get(key)
+                    if current is None:
+                        current = {
+                            "node_natural_key": f"file:{path}",
+                            "author_key": author_key,
+                            "author_label": author_label,
+                            "additions": 0,
+                            "deletions": 0,
+                            "touches": 0,
+                            "last_touched_at": commit_dt,
+                            "window_days": int(window_days),
+                        }
+                        ownership_acc[key] = current
 
-            for container in container_entities:
-                container_change_counts[container] += 1
-            for component in component_entities:
-                component_change_counts[component] += 1
+                    current["additions"] = int(current["additions"]) + additions
+                    current["deletions"] = int(current["deletions"]) + deletions
+                    current["touches"] = int(current["touches"]) + 1
+                    last = current.get("last_touched_at")
+                    if isinstance(last, datetime) and commit_dt > last:
+                        current["last_touched_at"] = commit_dt
 
-            for source, target in combinations(container_entities, 2):
-                container_pair_counts[tuple(sorted((source, target)))] += 1
-            for source, target in combinations(component_entities, 2):
-                component_pair_counts[tuple(sorted((source, target)))] += 1
+                    container_key = _entity_for(path, "container")
+                    if container_key:
+                        file_to_container[path] = container_key
+                    else:
+                        file_to_container[path] = None
+
+                for source, target in combinations(touched, 2):
+                    pair = tuple(sorted((source, target)))
+                    file_pair_counts[pair] += 1
+
+                container_entities = sorted(
+                    {
+                        value
+                        for value in (_entity_for(path, "container") for path in touched_set)
+                        if value
+                    }
+                )
+                component_entities = sorted(
+                    {
+                        value
+                        for value in (_entity_for(path, "component") for path in touched_set)
+                        if value
+                    }
+                )
+
+                for container in container_entities:
+                    container_change_counts[container] += 1
+                for component in component_entities:
+                    component_change_counts[component] += 1
+
+                for source, target in combinations(container_entities, 2):
+                    container_pair_counts[tuple(sorted((source, target)))] += 1
+                for source, target in combinations(component_entities, 2):
+                    component_pair_counts[tuple(sorted((source, target)))] += 1
     except Exception:
         logger.warning("Failed to compute git evolution snapshots", exc_info=True)
         return {
@@ -720,6 +822,146 @@ def compute_git_evolution_snapshots(
         },
         "warnings": warnings,
     }
+
+
+def _load_git_numstat_commits(
+    repo: Repo,
+    target_files: set[str],
+    *,
+    since_days: int | None = None,
+) -> tuple[list[_GitCommitTouch], bool] | None:
+    """Return git commit/file stats parsed from one `git log --numstat` stream.
+
+    Returns `None` when the fast path cannot be used (caller should fall back).
+    """
+    if not target_files:
+        return [], False
+
+    git_cmd = getattr(repo, "git", None)
+    git_log = getattr(git_cmd, "log", None)
+    if not callable(git_log):
+        return None
+
+    since_dt: datetime | None = None
+    if since_days and int(since_days) > 0:
+        since_dt = datetime.now(UTC) - timedelta(days=int(since_days))
+
+    def _run_log(include_since: bool) -> str:
+        args = [
+            "--no-merges",
+            "--numstat",
+            "--date=unix",
+            "--format=__CM__%at%x09%an%x09%ae",
+        ]
+        if include_since and since_dt is not None:
+            args.append(f"--since={since_dt.isoformat()}")
+        args.append("HEAD")
+        return str(git_log(*args))
+
+    try:
+        raw = _run_log(include_since=True)
+    except Exception:
+        return None
+
+    commits = _parse_git_numstat_output(raw, target_files, since_dt=since_dt)
+    fallback_used = False
+    if since_dt is not None and not commits:
+        try:
+            fallback_raw = _run_log(include_since=False)
+            commits = _parse_git_numstat_output(fallback_raw, target_files, since_dt=since_dt)
+            if commits:
+                fallback_used = True
+        except Exception:
+            pass
+    return commits, fallback_used
+
+
+def _parse_git_numstat_output(
+    raw_output: str,
+    target_files: set[str],
+    *,
+    since_dt: datetime | None,
+) -> list[_GitCommitTouch]:
+    commits: list[_GitCommitTouch] = []
+    current: _GitCommitTouch | None = None
+    skip_current = False
+
+    for raw_line in raw_output.splitlines():
+        line = raw_line.strip("\n")
+        if not line:
+            continue
+
+        if line.startswith("__CM__"):
+            if current is not None and current.files:
+                commits.append(current)
+
+            payload = line.removeprefix("__CM__")
+            parts = payload.split("\t", 2)
+            if len(parts) != 3:
+                current = None
+                skip_current = True
+                continue
+
+            epoch_raw, author_name, author_email = parts
+            try:
+                authored_at = datetime.fromtimestamp(int(epoch_raw), tz=UTC)
+            except Exception:
+                authored_at = datetime.now(UTC)
+
+            skip_current = since_dt is not None and authored_at < since_dt
+            if skip_current:
+                current = None
+                continue
+
+            current = _GitCommitTouch(
+                authored_at=authored_at,
+                author_name=author_name,
+                author_email=author_email,
+                files={},
+            )
+            continue
+
+        if skip_current or current is None:
+            continue
+
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+
+        insertions_raw, deletions_raw, raw_path = parts
+        insertions = int(insertions_raw) if insertions_raw.isdigit() else 0
+        deletions = int(deletions_raw) if deletions_raw.isdigit() else 0
+        variants = _numstat_path_variants(raw_path)
+
+        matched_path = next((path for path in variants if path in target_files), None)
+        if not matched_path:
+            continue
+
+        previous = current.files.get(matched_path, (0, 0))
+        current.files[matched_path] = (
+            int(previous[0]) + insertions,
+            int(previous[1]) + deletions,
+        )
+
+    if current is not None and current.files:
+        commits.append(current)
+
+    return commits
+
+
+def _numstat_path_variants(raw_path: str) -> list[str]:
+    normalized = raw_path.strip()
+    if " => " not in normalized:
+        return [normalized]
+
+    # Git rename format with brace expansion, e.g. src/{old => new}/file.php
+    brace_match = re.match(r"^(.*)\{(.+?) => (.+?)\}(.*)$", normalized)
+    if brace_match:
+        prefix, old_mid, new_mid, suffix = brace_match.groups()
+        return [f"{prefix}{new_mid}{suffix}", f"{prefix}{old_mid}{suffix}"]
+
+    left, right = normalized.split(" => ", 1)
+    return [right.strip(), left.strip(), normalized]
 
 
 def read_file_content(repo_path: Path, file_path: str) -> str | None:

@@ -86,6 +86,10 @@ def test_compute_git_evolution_snapshots_falls_back_when_since_filter_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _create_repo_with_commit(tmp_path)
+    monkeypatch.setattr(
+        "contextmine_worker.github_sync._load_git_numstat_commits",
+        lambda *_args, **_kwargs: None,
+    )
     original_iter_commits = repo.iter_commits
 
     def _iter_commits(*args: object, **kwargs: object):
@@ -114,6 +118,10 @@ def test_compute_git_evolution_snapshots_marks_empty_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _create_repo_with_commit(tmp_path)
+    monkeypatch.setattr(
+        "contextmine_worker.github_sync._load_git_numstat_commits",
+        lambda *_args, **_kwargs: None,
+    )
 
     def _iter_commits(*args: object, **kwargs: object):
         return []
