@@ -925,31 +925,34 @@ async def build_knowledge_graph(
             persist_semantic_entities,
         )
 
-        async with get_session() as session:
-            # Extract semantic entities from documents
-            # Uses embedding similarity for cross-language entity resolution
-            extraction_batch = await extract_from_documents(
-                collection_id=collection_uuid,
-                llm_provider=llm_provider,
-                embedder=embedder,
-                max_chunks=50,  # Limit for cost control
-            )
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+            logger.info("No changed documents - skipping semantic entity extraction")
+        else:
+            async with get_session() as session:
+                # Extract semantic entities from documents
+                # Uses embedding similarity for cross-language entity resolution
+                extraction_batch = await extract_from_documents(
+                    collection_id=collection_uuid,
+                    llm_provider=llm_provider,
+                    embedder=embedder,
+                    max_chunks=50,  # Limit for cost control
+                )
 
-            # Persist to knowledge graph
-            extraction_stats = await persist_semantic_entities(
-                session=session,
-                collection_id=collection_uuid,
-                batch=extraction_batch,
-            )
-            await session.commit()
+                # Persist to knowledge graph
+                extraction_stats = await persist_semantic_entities(
+                    session=session,
+                    collection_id=collection_uuid,
+                    batch=extraction_batch,
+                )
+                await session.commit()
 
-            stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
-            stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
-            logger.info(
-                "Extracted %d semantic entities, %d relationships",
-                stats["kg_semantic_entities"],
-                stats["kg_semantic_relationships"],
-            )
+                stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
+                stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
+                logger.info(
+                    "Extracted %d semantic entities, %d relationships",
+                    stats["kg_semantic_entities"],
+                    stats["kg_semantic_relationships"],
+                )
 
     except Exception as e:
         logger.warning("Failed to extract semantic entities: %s", e)
@@ -987,22 +990,25 @@ async def build_knowledge_graph(
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries
 
-        async with get_session() as session:
-            summary_stats = await generate_community_summaries(
-                session,
-                collection_uuid,
-                provider=research_llm,
-                embed_provider=embedder,
-            )
-            await session.commit()
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+            logger.info("No changed documents - skipping community summary regeneration")
+        else:
+            async with get_session() as session:
+                summary_stats = await generate_community_summaries(
+                    session,
+                    collection_uuid,
+                    provider=research_llm,
+                    embed_provider=embedder,
+                )
+                await session.commit()
 
-            stats["kg_summaries_created"] = summary_stats.communities_summarized
-            stats["kg_embeddings_created"] = summary_stats.embeddings_created
-            logger.info(
-                "Generated %d community summaries, %d embeddings",
-                stats["kg_summaries_created"],
-                stats["kg_embeddings_created"],
-            )
+                stats["kg_summaries_created"] = summary_stats.communities_summarized
+                stats["kg_embeddings_created"] = summary_stats.embeddings_created
+                logger.info(
+                    "Generated %d community summaries, %d embeddings",
+                    stats["kg_summaries_created"],
+                    stats["kg_embeddings_created"],
+                )
 
     except Exception as e:
         logger.warning("Failed to generate community summaries: %s", e)
