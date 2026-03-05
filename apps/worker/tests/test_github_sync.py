@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from contextmine_worker.github_sync import (
+    _load_git_numstat_commits,
     clone_or_pull_repo,
     compute_git_evolution_snapshots,
     is_eligible_file,
@@ -139,6 +140,73 @@ def test_compute_git_evolution_snapshots_marks_empty_windows(
     assert isinstance(stats, dict)
     assert int(stats.get("commits_considered", 0)) == 0
     assert int(stats.get("commits_scanned", 0)) == 0
+
+
+def test_compute_git_evolution_snapshots_caps_pairing_for_large_commits(tmp_path: Path) -> None:
+    repo = Repo.init(tmp_path)
+    with repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
+
+    target_files: set[str] = set()
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    for idx in range(6):
+        file_path = src_dir / f"f{idx}.py"
+        file_path.write_text(f"print('{idx}')\n", encoding="utf-8")
+        target_files.add(f"src/f{idx}.py")
+    repo.index.add(sorted(target_files))
+    repo.index.commit("touch many files")
+
+    payload = compute_git_evolution_snapshots(
+        repo,
+        target_files,
+        window_days=365,
+        max_files_per_commit=3,
+    )
+
+    warnings = payload["warnings"]
+    assert isinstance(warnings, list)
+    assert any(
+        str(item).startswith("temporal_coupling_pairing_capped:") for item in warnings
+    ), warnings
+
+    stats = payload["stats"]
+    assert isinstance(stats, dict)
+    assert int(stats.get("max_files_per_commit", 0)) == 3
+    assert int(stats.get("pairing_truncated_commits", 0)) == 1
+    assert int(stats.get("ownership_rows", 0)) == 6
+
+    file_rows = [
+        row
+        for row in payload["coupling_rows"]
+        if isinstance(row, dict) and row.get("entity_level") == "file"
+    ]
+    assert len(file_rows) == 3
+
+
+def test_load_git_numstat_commits_uses_pathspec_filters() -> None:
+    class _DummyGit:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        def log(self, *args: object) -> str:
+            self.calls.append(args)
+            return ""
+
+    class _DummyRepo:
+        def __init__(self) -> None:
+            self.git = _DummyGit()
+
+    repo = _DummyRepo()
+    result = _load_git_numstat_commits(repo, {"src/a.py", "src/b.py"}, since_days=7)
+
+    assert result == ([], False)
+    assert repo.git.calls
+    first_call = repo.git.calls[0]
+    assert "--" in first_call
+    assert "src/a.py" in first_call
+    assert "src/b.py" in first_call
 
 
 def test_is_eligible_file_skips_custom_composer_vendor_dir(tmp_path: Path) -> None:

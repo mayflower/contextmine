@@ -130,6 +130,11 @@ def _sync_documents_per_run_limit() -> int:
     return max(0, configured)
 
 
+def _sync_temporal_coupling_max_files_per_commit() -> int:
+    configured = int(get_settings().sync_temporal_coupling_max_files_per_commit)
+    return max(0, configured)
+
+
 def _joern_parse_timeout_seconds() -> int:
     configured = int(get_settings().joern_parse_timeout_seconds)
     return max(30, configured)
@@ -2542,6 +2547,7 @@ async def sync_github_source(
             scip_stats["git_metric_total_change_frequency"] = total_change_frequency
             scip_stats["git_metric_total_churn"] = total_churn
             try:
+                temporal_pair_cap = _sync_temporal_coupling_max_files_per_commit()
                 evolution_payload = await _run_blocking_with_timeout(
                     "git_evolution_snapshots",
                     step_timeout_seconds,
@@ -2549,6 +2555,7 @@ async def sync_github_source(
                     git_repo,
                     target_files,
                     window_days=evolution_window_days,
+                    max_files_per_commit=temporal_pair_cap,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Git evolution snapshots failed for source %s: %s", source.id, exc)
@@ -2561,6 +2568,8 @@ async def sync_github_source(
                     "coupling_rows": [],
                     "stats": {
                         "window_days": evolution_window_days,
+                        "max_files_per_commit": _sync_temporal_coupling_max_files_per_commit(),
+                        "pairing_truncated_commits": 0,
                         "commits_scanned": 0,
                         "commits_considered": 0,
                         "files_seen": 0,

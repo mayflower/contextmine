@@ -195,6 +195,13 @@ class Settings(BaseSettings):
             "recovered automatically in subsequent runs."
         ),
     )
+    sync_temporal_coupling_max_files_per_commit: int = Field(
+        default=200,
+        description=(
+            "Maximum files per commit considered for temporal-coupling pair generation "
+            "(0 = unlimited)."
+        ),
+    )
     knowledge_graph_build_timeout_seconds: int = Field(
         default=3600,
         description="Timeout in seconds for knowledge graph build in source sync",

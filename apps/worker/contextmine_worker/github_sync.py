@@ -456,6 +456,7 @@ def compute_git_evolution_snapshots(
     target_files: set[str],
     *,
     window_days: int,
+    max_files_per_commit: int = 200,
 ) -> dict[str, object]:
     """Compute ownership and temporal coupling snapshots from git history.
 
@@ -500,6 +501,35 @@ def compute_git_evolution_snapshots(
         if denominator <= 0:
             return 0.0
         return numerator / denominator
+
+    def _coerce_pairing_churn(file_stats: object) -> int:
+        if isinstance(file_stats, tuple):
+            insertions = int(file_stats[0] or 0) if len(file_stats) > 0 else 0
+            deletions = int(file_stats[1] or 0) if len(file_stats) > 1 else 0
+            return insertions + deletions
+        if isinstance(file_stats, dict):
+            insertions = int(file_stats.get("insertions", 0) or 0)
+            deletions = int(file_stats.get("deletions", 0) or 0)
+            return insertions + deletions
+        return 0
+
+    def _limit_paths_for_pairing(
+        paths: list[str],
+        *,
+        file_stats_by_path: dict[str, object],
+    ) -> tuple[list[str], bool]:
+        if max_files_per_commit <= 0 or len(paths) <= max_files_per_commit:
+            return paths, False
+
+        ranked = sorted(
+            paths,
+            key=lambda path: (
+                _coerce_pairing_churn(file_stats_by_path.get(path)),
+                path,
+            ),
+            reverse=True,
+        )
+        return sorted(ranked[:max_files_per_commit]), True
 
     def _pair_rows(
         *,
@@ -563,6 +593,7 @@ def compute_git_evolution_snapshots(
     warnings: list[str] = []
     commits_scanned = 0
     commits_considered = 0
+    pairing_truncated_commits = 0
 
     def _iter_window_commits() -> list:
         """Collect commits in the requested window with a robust fallback path."""
@@ -640,21 +671,29 @@ def compute_git_evolution_snapshots(
                     else:
                         file_to_container[path] = None
 
-                for source, target in combinations(touched, 2):
+                pairing_paths, pairing_truncated = _limit_paths_for_pairing(
+                    touched,
+                    file_stats_by_path={path: stats for path, stats in commit.files.items()},
+                )
+                if pairing_truncated:
+                    pairing_truncated_commits += 1
+
+                for source, target in combinations(pairing_paths, 2):
                     pair = tuple(sorted((source, target)))
                     file_pair_counts[pair] += 1
 
+                pairing_set = set(pairing_paths)
                 container_entities = sorted(
                     {
                         value
-                        for value in (_entity_for(path, "container") for path in touched_set)
+                        for value in (_entity_for(path, "container") for path in pairing_set)
                         if value
                     }
                 )
                 component_entities = sorted(
                     {
                         value
-                        for value in (_entity_for(path, "component") for path in touched_set)
+                        for value in (_entity_for(path, "component") for path in pairing_set)
                         if value
                     }
                 )
@@ -718,21 +757,29 @@ def compute_git_evolution_snapshots(
                     else:
                         file_to_container[path] = None
 
-                for source, target in combinations(touched, 2):
+                pairing_paths, pairing_truncated = _limit_paths_for_pairing(
+                    touched,
+                    file_stats_by_path={path: stats for path, stats in files.items()},
+                )
+                if pairing_truncated:
+                    pairing_truncated_commits += 1
+
+                for source, target in combinations(pairing_paths, 2):
                     pair = tuple(sorted((source, target)))
                     file_pair_counts[pair] += 1
 
+                pairing_set = set(pairing_paths)
                 container_entities = sorted(
                     {
                         value
-                        for value in (_entity_for(path, "container") for path in touched_set)
+                        for value in (_entity_for(path, "container") for path in pairing_set)
                         if value
                     }
                 )
                 component_entities = sorted(
                     {
                         value
-                        for value in (_entity_for(path, "component") for path in touched_set)
+                        for value in (_entity_for(path, "component") for path in pairing_set)
                         if value
                     }
                 )
@@ -808,12 +855,16 @@ def compute_git_evolution_snapshots(
 
     if commits_considered == 0:
         warnings.append("no_commits_in_window")
+    if pairing_truncated_commits > 0:
+        warnings.append(f"temporal_coupling_pairing_capped:{pairing_truncated_commits}")
 
     return {
         "ownership_rows": ownership_rows,
         "coupling_rows": coupling_rows,
         "stats": {
             "window_days": int(window_days),
+            "max_files_per_commit": int(max_files_per_commit),
+            "pairing_truncated_commits": int(pairing_truncated_commits),
             "commits_scanned": commits_scanned,
             "commits_considered": commits_considered,
             "files_seen": len(file_change_counts),
@@ -846,6 +897,8 @@ def _load_git_numstat_commits(
     if since_days and int(since_days) > 0:
         since_dt = datetime.now(UTC) - timedelta(days=int(since_days))
 
+    pathspec = sorted(path for path in target_files if path)
+
     def _run_log(include_since: bool) -> str:
         args = [
             "--no-merges",
@@ -856,6 +909,12 @@ def _load_git_numstat_commits(
         if include_since and since_dt is not None:
             args.append(f"--since={since_dt.isoformat()}")
         args.append("HEAD")
+        if pathspec:
+            try:
+                return str(git_log(*args, "--", *pathspec))
+            except Exception:
+                # Fallback to unfiltered history when pathspec exceeds backend limits.
+                pass
         return str(git_log(*args))
 
     try:
