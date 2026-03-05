@@ -39,6 +39,7 @@ data:
   RESEARCH_MODEL: {{ .Values.config.research.model | quote }}
   RESEARCH_MAX_TOKENS: {{ .Values.config.research.maxTokens | quote }}
   RESEARCH_BUDGET_STEPS: {{ .Values.config.research.budgetSteps | quote }}
+  SYNC_SOURCE_TIMEOUT_SECONDS: {{ dig "config" "sync" "sourceTimeoutSeconds" "14400" .Values | quote }}
 
   # SCIP Polyglot Indexing settings
   SCIP_LANGUAGES: {{ .Values.config.scip.languages | quote }}

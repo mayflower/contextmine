@@ -235,6 +235,10 @@ config:
     model: "claude-sonnet-4-5-20250929"
     maxTokens: "4096"
     budgetSteps: "10"
+  # -- Worker sync scheduler settings
+  sync:
+    # -- Maximum duration for one source sync run (seconds)
+    sourceTimeoutSeconds: "14400"
   # -- SCIP Polyglot Indexing settings
   scip:
     # -- Comma-separated list of enabled languages

@@ -168,7 +168,7 @@ class Settings(BaseSettings):
 
     # SCIP Polyglot Indexing Settings
     sync_source_timeout_seconds: int = Field(
-        default=3600,
+        default=14400,
         description="Timeout in seconds for one source sync run in the worker scheduler",
     )
     sync_blocking_step_timeout_seconds: int = Field(
