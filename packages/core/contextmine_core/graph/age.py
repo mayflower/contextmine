@@ -9,6 +9,7 @@ and $$-delimited Cypher text.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from uuid import UUID
 
 from contextmine_core.models import TwinEdge, TwinNode
@@ -22,6 +23,8 @@ _MUTATING_PATTERNS = re.compile(
 
 # Graph names are strictly alphanumeric + underscore (from UUID hex)
 _SAFE_NAME = re.compile(r"^[a-z0-9_]+$")
+_NODE_BATCH_SIZE = 800
+_EDGE_BATCH_SIZE = 600
 
 
 def scenario_graph_name(scenario_id: UUID) -> str:
@@ -81,34 +84,56 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
     # Clear existing graph data
     await conn.exec_driver_sql(_age_cypher_sql(graph_name, "MATCH (n) DETACH DELETE n"))
 
-    # Load nodes
+    # Load nodes in batches to avoid one SQL round-trip per vertex.
     nodes = (
         (await session.execute(select(TwinNode).where(TwinNode.scenario_id == scenario_id)))
         .scalars()
         .all()
     )
-    for node in nodes:
+    for batch in _chunked(nodes, _NODE_BATCH_SIZE):
+        payload = ",".join(
+            (
+                "{"
+                f"id: '{_esc(str(node.id))}', "
+                f"natural_key: '{_esc(node.natural_key)}', "
+                f"kind: '{_esc(node.kind)}', "
+                f"name: '{_esc(node.name)}'"
+                "}"
+            )
+            for node in batch
+        )
         cypher = (
+            f"UNWIND [{payload}] AS row "
             "CREATE (n:Node {"
-            f"id: '{_esc(str(node.id))}', "
-            f"natural_key: '{_esc(node.natural_key)}', "
-            f"kind: '{_esc(node.kind)}', "
-            f"name: '{_esc(node.name)}'"
+            "id: row.id, "
+            "natural_key: row.natural_key, "
+            "kind: row.kind, "
+            "name: row.name"
             "})"
         )
         await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
 
-    # Load edges
+    # Load edges in batches to avoid one SQL round-trip per relationship.
     edges = (
         (await session.execute(select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)))
         .scalars()
         .all()
     )
-    for edge in edges:
+    for batch in _chunked(edges, _EDGE_BATCH_SIZE):
+        payload = ",".join(
+            (
+                "{"
+                f"source_id: '{_esc(str(edge.source_node_id))}', "
+                f"target_id: '{_esc(str(edge.target_node_id))}', "
+                f"kind: '{_esc(edge.kind)}'"
+                "}"
+            )
+            for edge in batch
+        )
         cypher = (
-            f"MATCH (s:Node {{id: '{_esc(str(edge.source_node_id))}'}}), "
-            f"(t:Node {{id: '{_esc(str(edge.target_node_id))}'}}) "
-            f"CREATE (s)-[r:REL {{kind: '{_esc(edge.kind)}'}}]->(t)"
+            f"UNWIND [{payload}] AS row "
+            "MATCH (s:Node {id: row.source_id}), (t:Node {id: row.target_id}) "
+            "CREATE (s)-[r:REL {kind: row.kind}]->(t)"
         )
         await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
 
@@ -132,3 +157,8 @@ async def run_read_only_cypher(
 
 def _esc(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _chunked[T](values: list[T], size: int) -> Iterable[list[T]]:
+    for i in range(0, len(values), size):
+        yield values[i : i + size]

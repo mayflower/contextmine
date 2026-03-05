@@ -197,7 +197,7 @@ class Settings(BaseSettings):
         description="Timeout in seconds for knowledge graph build in source sync",
     )
     twin_graph_build_timeout_seconds: int = Field(
-        default=1200,
+        default=3600,
         description="Timeout in seconds for digital twin graph build step",
     )
     embedding_batch_timeout_seconds: int = Field(
