@@ -434,7 +434,7 @@ async def _resolve_entities_with_embeddings(
 
     Args:
         entities: Raw extracted entities
-        embedder: Embedding provider with embed_texts() method
+        embedder: Embedding provider with ``embed_batch()`` or ``embed_texts()``
         similarity_threshold: Cosine similarity threshold for merging (0.85 = very similar)
 
     Returns:
@@ -448,8 +448,19 @@ async def _resolve_entities_with_embeddings(
     # Create embedding text for each entity (name + description for context)
     embed_texts = [f"{e.name}: {e.description}" for e in entities]
 
-    # Get embeddings
-    embeddings = await embedder.embed_texts(embed_texts)
+    # Get embeddings (prefer modern embed_batch contract, keep legacy fallback)
+    if hasattr(embedder, "embed_batch"):
+        batch = await embedder.embed_batch(embed_texts)
+        embeddings = list(getattr(batch, "embeddings", []) or [])
+    elif hasattr(embedder, "embed_texts"):
+        embeddings = list(await embedder.embed_texts(embed_texts))
+    else:
+        raise ValueError(
+            "embedder must implement embed_batch(texts) or embed_texts(texts) for entity resolution"
+        )
+
+    if not embeddings:
+        raise ValueError("embedder returned no embeddings for entity resolution")
     embeddings_array = np.array(embeddings)
 
     # Normalize for cosine similarity

@@ -53,6 +53,16 @@ class Embedder(ABC):
         """
         pass
 
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Compatibility helper returning plain embedding vectors.
+
+        Some call sites in the knowledge extraction pipeline still use the
+        older ``embed_texts`` shape. Keep this thin adapter so all embedders
+        remain interoperable while the pipeline migrates to ``embed_batch``.
+        """
+        result = await self.embed_batch(texts)
+        return result.embeddings
+
 
 class FakeEmbedder(Embedder):
     """Fake embedder for testing that produces deterministic vectors.
