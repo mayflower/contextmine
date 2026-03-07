@@ -30,7 +30,7 @@ agents:
     enabled: true
     triggers:
       - type: nightly
-        cron: "0 4 * * 1"  # Monday 4am UTC
+        cron: "0 4 * * *"  # Daily 4am UTC
     priority: 3
     policy:
       mode: pr
@@ -45,6 +45,14 @@ agents:
           - "**/*_test.py"
           - "**/tests/**"
     params:
+      documentation_framework: diataxis
+      output_format: markdown
+      diagram_format: mermaid
+      ensure_mkdocs_techdocs: true
+      ensure_catalog_techdocs_annotation: true
+      generation_mode: bootstrap_or_update
+      bootstrap_when_missing: true
+      incremental_update_when_existing: true
       formats:
         - markdown
       update_readme: true
