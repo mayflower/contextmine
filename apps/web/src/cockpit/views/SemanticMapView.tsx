@@ -312,7 +312,7 @@ export default function SemanticMapView({
 
       <div className="cockpit2-graph-toolbar">
         <label>
-          Mode
+          Mode{' '}
           <select value={mode} onChange={(event) => onModeChange(event.target.value as SemanticMapMode)}>
             <option value="code_structure">Code structure</option>
             <option value="semantic">Semantic</option>
@@ -349,7 +349,6 @@ export default function SemanticMapView({
             <svg
               className="cockpit2-semantic-canvas"
               viewBox="0 0 980 560"
-              role="img"
               aria-label="Semantic map scatter plot"
             >
               {plotPoints.map((point) => {

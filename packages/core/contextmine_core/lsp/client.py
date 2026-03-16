@@ -187,7 +187,7 @@ class LspClient:
         file_path: str,
         line: int,
         column: int,
-        include_declaration: bool = True,
+        _include_declaration: bool = True,
     ) -> list[Location]:
         """Get all references to symbol at position.
 
@@ -195,7 +195,7 @@ class LspClient:
             file_path: Path to the source file
             line: Line number (1-indexed)
             column: Column number (0-indexed)
-            include_declaration: Whether to include the declaration
+            _include_declaration: Whether to include the declaration
 
         Returns:
             List of reference locations
@@ -450,15 +450,15 @@ class MockLspClient:
         """Set mock hover response."""
         self._hovers[(file_path, line, column)] = info
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # must be async to match LspClient interface
         """Mock start."""
         self._started = True
 
-    async def stop(self) -> None:
+    async def stop(self) -> None:  # must be async to match LspClient interface
         """Mock stop."""
         self._started = False
 
-    async def get_definition(
+    async def get_definition(  # must be async to match LspClient interface
         self,
         file_path: str,
         line: int,
@@ -467,17 +467,17 @@ class MockLspClient:
         """Get mock definition."""
         return self._definitions.get((file_path, line, column), [])
 
-    async def get_references(
+    async def get_references(  # must be async to match LspClient interface
         self,
         file_path: str,
         line: int,
         column: int,
-        include_declaration: bool = True,
+        _include_declaration: bool = True,
     ) -> list[Location]:
         """Get mock references."""
         return self._references.get((file_path, line, column), [])
 
-    async def get_hover(
+    async def get_hover(  # must be async to match LspClient interface
         self,
         file_path: str,
         line: int,
@@ -486,9 +486,9 @@ class MockLspClient:
         """Get mock hover."""
         return self._hovers.get((file_path, line, column))
 
-    async def get_document_symbols(
+    async def get_document_symbols(  # must be async to match LspClient interface
         self,
-        file_path: str,
+        _file_path: str,
     ) -> list[dict[str, Any]]:
         """Get mock document symbols."""
         return []

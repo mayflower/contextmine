@@ -52,6 +52,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
+_FILE_PREFIX = "file:"
+
 
 def _compute_crap_score(
     complexity: float | None,
@@ -756,7 +758,7 @@ async def execute_intent(
         raise
 
 
-async def _record_intent_run(
+async def _record_intent_run(  # async for caller consistency (awaited in async context)
     session: AsyncSession,
     intent_id: UUID,
     scenario_version_before: int,
@@ -971,7 +973,6 @@ async def get_full_scenario_graph(
     )
 
     grouping_strategy = "heuristic"
-    effective_entity_level = entity_level
     effective_excluded_kinds = sorted(exclude_kinds_norm or set())
 
     if projection == GraphProjection.ARCHITECTURE:
@@ -1182,14 +1183,14 @@ async def apply_coverage_metrics_to_scenario(
     for node in nodes:
         if node.kind != "file":
             continue
-        if not node.natural_key.startswith("file:"):
+        if not node.natural_key.startswith(_FILE_PREFIX):
             continue
 
         meta = dict(node.meta or {})
         if str(meta.get("source_id") or "") != source_id_str:
             continue
 
-        natural_path = node.natural_key.removeprefix("file:")
+        natural_path = node.natural_key.removeprefix(_FILE_PREFIX)
         canonical_path = canonicalize_repo_relative_path(natural_path)
         coverage_key = canonical_path if canonical_path in coverage_map else natural_path
         if coverage_key not in coverage_map:
@@ -1273,7 +1274,7 @@ async def repair_twin_file_path_canonicalization(
     changed_collections: set[UUID] = set()
 
     for node in legacy_nodes:
-        legacy_path = node.natural_key.removeprefix("file:")
+        legacy_path = node.natural_key.removeprefix(_FILE_PREFIX)
         canonical_path = canonicalize_repo_relative_path(legacy_path)
         if not canonical_path:
             continue

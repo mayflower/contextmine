@@ -92,6 +92,7 @@ class PythonIndexerBackend(BaseIndexerBackend):
                 logs_path=logs_path,
             )
         except CommandNotFoundError:
+            # Re-raise so callers can distinguish missing tool from indexing failure
             raise
 
         duration = time.monotonic() - start_time

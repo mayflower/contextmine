@@ -117,7 +117,7 @@ def init_telemetry(
     return True
 
 
-async def shutdown_telemetry() -> None:
+async def shutdown_telemetry() -> None:  # async for FastAPI lifespan compatibility
     """Gracefully shutdown telemetry exporters.
 
     This flushes any pending telemetry data before the application exits.

@@ -66,7 +66,7 @@ class ClaudeSDKSessionManager:
                 cwd=str(repo_path.resolve()),
                 model=model,
                 max_turns=max(1, int(max_turns)),
-                permission_mode=permission_mode,  # type: ignore[arg-type]
+                permission_mode=permission_mode,
             )
             entry = _ClientEntry(client=RawClaudeSDKClient(options=options), lock=asyncio.Lock())
             self._entries[key] = entry
@@ -238,7 +238,7 @@ async def generate_arc42_with_claude_sdk(
             value = incoming_sections.get(key)
             sections[key] = str(value).strip() if isinstance(value, str) else ""
     else:
-        sections = {key: "" for key in SECTION_TITLES}
+        sections = dict.fromkeys(SECTION_TITLES, "")
 
     title = (
         str(payload.get("title") or f"arc42 - {scenario_name}").strip()

@@ -78,7 +78,7 @@ export default function CityView({
         </div>
       ) : null}
 
-      {embedUrl ? (
+      {embedUrl && (
         <div className="cockpit2-city-frame-wrap">
           <iframe
             title="CodeCharta city view"
@@ -86,12 +86,13 @@ export default function CityView({
             className="cockpit2-city-frame"
           />
         </div>
-      ) : state !== 'loading' ? (
+      )}
+      {!embedUrl && state !== 'loading' && (
         <div className="cockpit2-empty">
           <h3>No city view available yet</h3>
           <p>Generate the map from the selected scenario.</p>
         </div>
-      ) : null}
+      )}
     </section>
   )
 }

@@ -78,15 +78,12 @@ export default function TopologyView({
   const [layoutStatus, setLayoutStatus] = useState<'idle' | 'coarse' | 'refined'>('idle')
   const [layoutPositions, setLayoutPositions] = useState<Record<string, { x: number; y: number }>>({})
 
-  const columns = density === 800 ? 4 : density === 1200 ? 6 : 9
-  const preferredEngine: LayoutEngine =
-    graph.projection === 'architecture'
-      ? graph.nodes.length < 100
-        ? 'grid'
-        : elkEnabled
-          ? layoutEngine
-          : 'grid'
-      : 'grid'
+  const densityToColumns: Record<number, number> = { 800: 4, 1200: 6 }
+  const columns = densityToColumns[density] ?? 9
+  let preferredEngine: LayoutEngine = 'grid'
+  if (graph.projection === 'architecture' && graph.nodes.length >= 100 && elkEnabled) {
+    preferredEngine = layoutEngine
+  }
 
   useEffect(() => {
     if (graph.nodes.length === 0) {
@@ -255,7 +252,7 @@ export default function TopologyView({
 
           {elkEnabled ? (
             <label>
-              Layout
+              Layout{' '}
               <select value={layoutEngine} onChange={(event) => onLayoutEngineChange(event.target.value as LayoutEngine)}>
                 <option value="grid">Grid</option>
                 <option value="elk_layered">ELK layered</option>
@@ -269,7 +266,7 @@ export default function TopologyView({
               type="checkbox"
               checked={showMiniMap}
               onChange={(event) => setShowMiniMap(event.target.checked)}
-            />
+            />{' '}
             Show mini map
           </label>
         </div>

@@ -21,6 +21,10 @@ from contextmine_core.semantic_snapshot.models import Language, ProjectTarget
 
 logger = logging.getLogger(__name__)
 
+# Marker file names referenced in multiple detection paths.
+_COMPOSER_JSON = "composer.json"
+_TSCONFIG_JSON = "tsconfig.json"
+
 # Production thresholds for medium/large repositories.
 MIN_CODE_LINES = 300
 MIN_FILE_COUNT = 8
@@ -298,7 +302,7 @@ def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
             continue
 
         file_names = {child.name for child in children if child.is_file()}
-        if "composer.json" in file_names:
+        if _COMPOSER_JSON in file_names:
             for vendor_dir in _composer_vendor_dirs(current):
                 vendor_path = (current / vendor_dir).resolve()
                 if vendor_path.exists() and vendor_path.is_dir():
@@ -316,7 +320,7 @@ def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
 
 def _composer_vendor_dirs(project_root: Path) -> set[Path]:
     """Resolve Composer vendor directories declared in composer.json."""
-    composer_json = project_root / "composer.json"
+    composer_json = project_root / _COMPOSER_JSON
     try:
         payload = json.loads(composer_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -347,16 +351,16 @@ def _directory_matches_language_markers(file_names: set[str], language: Language
             for name in {"pyproject.toml", "setup.cfg", "setup.py", "requirements.txt"}
         )
     if language == Language.TYPESCRIPT:
-        return "tsconfig.json" in file_names
+        return _TSCONFIG_JSON in file_names
     if language == Language.JAVASCRIPT:
-        return "package.json" in file_names and "tsconfig.json" not in file_names
+        return "package.json" in file_names and _TSCONFIG_JSON not in file_names
     if language == Language.JAVA:
         return any(
             name in file_names
             for name in {"pom.xml", "build.gradle", "build.gradle.kts", "build.sbt"}
         )
     if language == Language.PHP:
-        return "composer.json" in file_names
+        return _COMPOSER_JSON in file_names
     return False
 
 
@@ -379,7 +383,7 @@ def _language_marker_metadata(root: Path, language: Language) -> dict[str, objec
             package_manager = "bun"
 
         return {
-            "has_tsconfig": (root / "tsconfig.json").exists(),
+            "has_tsconfig": (root / _TSCONFIG_JSON).exists(),
             "package_manager": package_manager,
         }
 
@@ -408,7 +412,7 @@ def _language_marker_metadata(root: Path, language: Language) -> dict[str, objec
 
     if language == Language.PHP:
         return {
-            "has_composer_json": (root / "composer.json").exists(),
+            "has_composer_json": (root / _COMPOSER_JSON).exists(),
             "has_composer_lock": (root / "composer.lock").exists(),
         }
 

@@ -1925,3 +1925,58 @@ class TwinTemporalCouplingSnapshot(Base):
     )
 
     scenario: Mapped["TwinScenario"] = relationship()
+
+
+# -----------------------------------------------------------------------------
+# GUI Discovery / Digital Twin Tables
+# -----------------------------------------------------------------------------
+
+
+class GUIScreen(Base):
+    """A captured GUI screen state from discovery."""
+
+    __tablename__ = "gui_screens"
+    __table_args__ = (
+        UniqueConstraint("source_id", "state_hash", name="uq_gui_screen_source_state"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    url_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    screenshot_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    source: Mapped["Source"] = relationship()
+    elements: Mapped[list["GUIElement"]] = relationship(
+        back_populates="screen", cascade="all, delete-orphan"
+    )
+
+
+class GUIElement(Base):
+    """An interactive element on a GUI screen."""
+
+    __tablename__ = "gui_elements"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    screen_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("gui_screens.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    bounding_box: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    screen: Mapped["GUIScreen"] = relationship(back_populates="elements")

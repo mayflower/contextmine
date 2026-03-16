@@ -59,7 +59,7 @@ def _extract_token_variants(value: str) -> set[str]:
     variants: set[str] = set()
     if base:
         variants.add(base)
-    compact = re.sub(r"[^a-zA-Z0-9_]", "", raw).lower()
+    compact = re.sub(r"\W", "", raw).lower()
     if compact:
         variants.add(compact)
     snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw).lower()
@@ -555,7 +555,7 @@ class SymbolTraceResolver:
         self._joern_client = client
         self._joern_ready = True
 
-    async def _find_knowledge_symbol_by_location(
+    async def _find_knowledge_symbol_by_location(  # async for caller consistency (awaited)
         self,
         *,
         file_path: str,

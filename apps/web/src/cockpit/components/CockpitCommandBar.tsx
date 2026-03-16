@@ -168,6 +168,162 @@ export default function CockpitCommandBar({
     return count
   }, [edgeKinds.length, excludeKinds.length, hideIsolated, includeKinds.length, overlayMode])
 
+  const primarySlotControl = (() => {
+    if (showLayer) {
+      return (
+        <label>
+          <span>Layer</span>
+          <select value={layer} onChange={(event) => onLayerChange(event.target.value as CockpitLayer)}>
+            {COCKPIT_LAYERS.map((entry) => (
+              <option key={entry.key} value={entry.key}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )
+    }
+    if (showArchitectureControls) {
+      return (
+        <label>
+          <span>arc42 section</span>
+          <select
+            value={architectureSection}
+            onChange={(event) => onArchitectureSectionChange(event.target.value)}
+          >
+            <option value="">All sections</option>
+            <option value="3">3 System context</option>
+            <option value="5">5 Building blocks</option>
+            <option value="6">6 Runtime</option>
+            <option value="7">7 Deployment</option>
+            <option value="10">10 Quality requirements</option>
+            <option value="11">11 Risks and debt</option>
+          </select>
+        </label>
+      )
+    }
+    if (showC4Controls) {
+      return (
+        <label>
+          <span>C4 view</span>
+          <select value={c4View} onChange={(event) => onC4ViewChange(event.target.value as C4ViewMode)}>
+            <option value="container">Container</option>
+            <option value="component">Component</option>
+            <option value="code">Code</option>
+            <option value="context">Context</option>
+            <option value="deployment">Deployment</option>
+          </select>
+        </label>
+      )
+    }
+    if (showSemanticMapControls) {
+      return (
+        <label>
+          <span>Map mode</span>
+          <select
+            value={semanticMapMode}
+            onChange={(event) => onSemanticMapModeChange(event.target.value as SemanticMapMode)}
+          >
+            <option value="code_structure">Code structure</option>
+            <option value="semantic">Semantic</option>
+          </select>
+        </label>
+      )
+    }
+    if (showGraphRagControls) {
+      return (
+        <label>
+          <span>Community mode</span>
+          <select
+            value={graphRagCommunityMode}
+            onChange={(event) => onGraphRagCommunityModeChange(event.target.value as GraphRagCommunityMode)}
+          >
+            <option value="none">None</option>
+            <option value="color">Color</option>
+            <option value="focus">Focus</option>
+          </select>
+        </label>
+      )
+    }
+    return <div className="cockpit2-command-placeholder" />
+  })()
+
+  const secondarySlotControl = (() => {
+    if (showFilter) {
+      return (
+        <label>
+          <span>Hotspot filter</span>
+          <input
+            type="search"
+            placeholder="Filter nodes..."
+            value={hotspotFilter}
+            onChange={(event) => onFilterChange(event.target.value)}
+          />
+        </label>
+      )
+    }
+    if (showArchitectureControls) {
+      return (
+        <label>
+          <span>Ports direction</span>
+          <select
+            value={portsDirection}
+            onChange={(event) => onPortsDirectionChange(event.target.value as 'all' | 'inbound' | 'outbound')}
+          >
+            <option value="all">All</option>
+            <option value="inbound">Inbound</option>
+            <option value="outbound">Outbound</option>
+          </select>
+        </label>
+      )
+    }
+    if (showGraphControls) {
+      return (
+        <label>
+          <span>Graph search</span>
+          <input
+            type="search"
+            placeholder="name, kind, path..."
+            value={graphQuery}
+            onChange={(event) => onGraphQueryChange(event.target.value)}
+          />
+        </label>
+      )
+    }
+    if (showC4Controls) {
+      return (
+        <label>
+          <span>C4 scope</span>
+          <input
+            type="search"
+            placeholder="container/component/file..."
+            value={c4Scope}
+            onChange={(event) => onC4ScopeChange(event.target.value)}
+          />
+        </label>
+      )
+    }
+    if (showGraphRagControls) {
+      return (
+        <label>
+          <span>Community filter</span>
+          <select
+            value={graphRagCommunityId}
+            onChange={(event) => onGraphRagCommunityIdChange(event.target.value)}
+          >
+            <option value="">All communities</option>
+            {graphRagCommunities.map((community) => (
+              <option key={community.id} value={community.id}>
+                {community.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )
+    }
+    return <div className="cockpit2-command-placeholder" />
+  })()
+
   return (
     <section className="cockpit2-commandbar" aria-label="Cockpit controls">
       <div className="cockpit2-command-grid">
@@ -195,131 +351,9 @@ export default function CockpitCommandBar({
           </select>
         </label>
 
-        {showLayer ? (
-          <label>
-            <span>Layer</span>
-            <select value={layer} onChange={(event) => onLayerChange(event.target.value as CockpitLayer)}>
-              {COCKPIT_LAYERS.map((entry) => (
-                <option key={entry.key} value={entry.key}>
-                  {entry.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : showArchitectureControls ? (
-          <label>
-            <span>arc42 section</span>
-            <select
-              value={architectureSection}
-              onChange={(event) => onArchitectureSectionChange(event.target.value)}
-            >
-              <option value="">All sections</option>
-              <option value="3">3 System context</option>
-              <option value="5">5 Building blocks</option>
-              <option value="6">6 Runtime</option>
-              <option value="7">7 Deployment</option>
-              <option value="10">10 Quality requirements</option>
-              <option value="11">11 Risks and debt</option>
-            </select>
-          </label>
-        ) : showC4Controls ? (
-          <label>
-            <span>C4 view</span>
-            <select value={c4View} onChange={(event) => onC4ViewChange(event.target.value as C4ViewMode)}>
-              <option value="container">Container</option>
-              <option value="component">Component</option>
-              <option value="code">Code</option>
-              <option value="context">Context</option>
-              <option value="deployment">Deployment</option>
-            </select>
-          </label>
-        ) : showSemanticMapControls ? (
-          <label>
-            <span>Map mode</span>
-            <select
-              value={semanticMapMode}
-              onChange={(event) => onSemanticMapModeChange(event.target.value as SemanticMapMode)}
-            >
-              <option value="code_structure">Code structure</option>
-              <option value="semantic">Semantic</option>
-            </select>
-          </label>
-        ) : showGraphRagControls ? (
-          <label>
-            <span>Community mode</span>
-            <select
-              value={graphRagCommunityMode}
-              onChange={(event) => onGraphRagCommunityModeChange(event.target.value as GraphRagCommunityMode)}
-            >
-              <option value="none">None</option>
-              <option value="color">Color</option>
-              <option value="focus">Focus</option>
-            </select>
-          </label>
-        ) : (
-          <div className="cockpit2-command-placeholder" />
-        )}
+        {primarySlotControl}
 
-        {showFilter ? (
-          <label>
-            <span>Hotspot filter</span>
-            <input
-              type="search"
-              placeholder="Filter nodes..."
-              value={hotspotFilter}
-              onChange={(event) => onFilterChange(event.target.value)}
-            />
-          </label>
-        ) : showArchitectureControls ? (
-          <label>
-            <span>Ports direction</span>
-            <select
-              value={portsDirection}
-              onChange={(event) => onPortsDirectionChange(event.target.value as 'all' | 'inbound' | 'outbound')}
-            >
-              <option value="all">All</option>
-              <option value="inbound">Inbound</option>
-              <option value="outbound">Outbound</option>
-            </select>
-          </label>
-        ) : showGraphControls ? (
-          <label>
-            <span>Graph search</span>
-            <input
-              type="search"
-              placeholder="name, kind, path..."
-              value={graphQuery}
-              onChange={(event) => onGraphQueryChange(event.target.value)}
-            />
-          </label>
-        ) : showC4Controls ? (
-          <label>
-            <span>C4 scope</span>
-            <input
-              type="search"
-              placeholder="container/component/file..."
-              value={c4Scope}
-              onChange={(event) => onC4ScopeChange(event.target.value)}
-            />
-          </label>
-        ) : showGraphRagControls ? (
-          <label>
-            <span>Community filter</span>
-            <select
-              value={graphRagCommunityId}
-              onChange={(event) => onGraphRagCommunityIdChange(event.target.value)}
-            >
-              <option value="">All communities</option>
-              {graphRagCommunities.map((community) => (
-                <option key={community.id} value={community.id}>
-                  {community.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <div className="cockpit2-command-placeholder" />
-        )}
+        {secondarySlotControl}
       </div>
 
       {showArchitectureControls ? (

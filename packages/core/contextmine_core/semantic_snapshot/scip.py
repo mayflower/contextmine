@@ -77,6 +77,8 @@ SCIP_CALLER_ELIGIBLE_KINDS = {
     SymbolKind.MODULE,
     SymbolKind.PROPERTY,
 }
+_EXTERNAL_FILE_PATH = "<external>"
+
 SCIP_FALLBACK_SYMBOL_KINDS = {
     SymbolKind.FUNCTION,
     SymbolKind.METHOD,
@@ -147,7 +149,7 @@ class SCIPProvider:
 
         def _remember_symbol(symbol: Symbol) -> None:
             symbol_kinds[symbol.def_id] = symbol.kind
-            if symbol.file_path != "<external>" and symbol.range.start_line > 0:
+            if symbol.file_path != _EXTERNAL_FILE_PATH and symbol.range.start_line > 0:
                 symbols_by_file.setdefault(symbol.file_path, []).append(
                     (symbol.def_id, symbol.range)
                 )
@@ -357,7 +359,7 @@ class SCIPProvider:
                 Symbol(
                     def_id=symbol_str,
                     kind=kind,
-                    file_path="<external>",
+                    file_path=_EXTERNAL_FILE_PATH,
                     range=Range(start_line=0, start_col=0, end_line=0, end_col=0),
                     name=name,
                     container_def_id=ext_sym.enclosing_symbol or None,
@@ -385,7 +387,7 @@ class SCIPProvider:
         # Some indexers omit enclosing_symbol metadata; range nesting recovers this signal.
         symbols_by_file_objects: dict[str, list[Symbol]] = {}
         for symbol in symbols:
-            if symbol.file_path == "<external>" or symbol.range.start_line <= 0:
+            if symbol.file_path == _EXTERNAL_FILE_PATH or symbol.range.start_line <= 0:
                 continue
             symbols_by_file_objects.setdefault(symbol.file_path, []).append(symbol)
         for file_symbols in symbols_by_file_objects.values():
@@ -567,7 +569,7 @@ class SCIPProvider:
         descriptors = " ".join(parts[4:]) if len(parts) > 4 else ""
 
         # Match name followed by descriptor suffix.
-        matches = re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)[/#.\[\]():!]", descriptors)
+        matches = re.findall(r"([a-zA-Z_]\w*)[/#.\[\]():!]", descriptors)
         if matches:
             return matches[-1]
 
@@ -635,7 +637,7 @@ class SCIPProvider:
         """Extract the trailing identifier token from descriptor text."""
         # Strip backticks used by scip-python module names.
         cleaned = raw.replace("`", "")
-        matches = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", cleaned)
+        matches = re.findall(r"[a-zA-Z_]\w*", cleaned)
         if not matches:
             return None
         return matches[-1]

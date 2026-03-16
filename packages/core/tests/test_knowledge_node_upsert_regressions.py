@@ -50,7 +50,7 @@ class _FakeSession:
     async def flush(self) -> None:
         for obj in self.added:
             if hasattr(obj, "id") and getattr(obj, "id", None) is None:
-                obj.id = uuid.uuid4()  # type: ignore[attr-defined]
+                obj.id = uuid.uuid4()
 
 
 @pytest.mark.anyio

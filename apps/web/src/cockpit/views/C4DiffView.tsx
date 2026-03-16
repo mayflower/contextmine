@@ -177,7 +177,7 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
           {showSource ? 'Show rendered' : 'Show source'}
         </button>
         <label>
-          Zoom
+          Zoom{' '}
           <input
             type="range"
             min={0.5}
@@ -231,17 +231,17 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
             )}
           </article>
         </div>
-      ) : showSource || !cockpitFlags.c4RenderedDiff ? (
-        <article className="cockpit2-panel">
-          <pre>{transformed.asIs}</pre>
-        </article>
       ) : (
         <article className="cockpit2-panel">
-          <div
-            ref={leftRef}
-            className="cockpit2-mermaid-pane"
-            style={{ '--cockpit-diagram-zoom': String(zoom) } as CSSProperties}
-          />
+          {showSource || !cockpitFlags.c4RenderedDiff ? (
+            <pre>{transformed.asIs}</pre>
+          ) : (
+            <div
+              ref={leftRef}
+              className="cockpit2-mermaid-pane"
+              style={{ '--cockpit-diagram-zoom': String(zoom) } as CSSProperties}
+            />
+          )}
         </article>
       )}
     </section>

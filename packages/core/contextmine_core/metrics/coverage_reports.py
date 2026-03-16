@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +26,7 @@ class CoverageAggregate:
 
     sum_coverage: float = 0.0
     sample_count: int = 0
-    reports: set[str] = None
-
-    def __post_init__(self) -> None:
-        if self.reports is None:
-            self.reports = set()
+    reports: set[str] = field(default_factory=set)
 
     def add(self, coverage: float, report: Path) -> None:
         clamped = max(0.0, min(100.0, float(coverage)))
@@ -141,7 +137,7 @@ def parse_cobertura_xml(
         if not file_path:
             continue
 
-        line_nodes = [node for node in _iter_nodes(class_node, "line")]
+        line_nodes = list(_iter_nodes(class_node, "line"))
         covered = 0
         total = 0
         for line_node in line_nodes:
@@ -243,7 +239,7 @@ def parse_clover_xml(
 
         covered = 0
         total = 0
-        line_nodes = [node for node in _iter_nodes(file_node, "line")]
+        line_nodes = list(_iter_nodes(file_node, "line"))
         for line_node in line_nodes:
             count_raw = line_node.attrib.get("count")
             if count_raw is None:

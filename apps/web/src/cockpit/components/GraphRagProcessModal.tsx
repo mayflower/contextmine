@@ -82,7 +82,7 @@ export default function GraphRagProcessModal({
   }, [detail.process.id, mermaidCode])
 
   return (
-    <div className="cockpit2-modal-backdrop" role="dialog" aria-modal="true" aria-label="Process flow">
+    <dialog className="cockpit2-modal-backdrop" open aria-modal="true" aria-label="Process flow">
       <section className="cockpit2-modal">
         <header className="cockpit2-panel-header-row">
           <h3>{detail.process.label}</h3>
@@ -128,6 +128,6 @@ export default function GraphRagProcessModal({
           ))}
         </div>
       </section>
-    </div>
+    </dialog>
   )
 }

@@ -238,7 +238,7 @@ async def build_surface_graph(
             evidence_id = await _create_evidence(session, node_id, spec.file_path)
             stats["evidence_created"] += 1
             if evidence_id:
-                endpoint_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+                endpoint_meta["provenance"]["evidence_ids"] = [evidence_id]
             stmt = pg_insert(KnowledgeNode).values(
                 collection_id=collection_id,
                 kind=KnowledgeNodeKind.API_ENDPOINT,

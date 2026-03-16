@@ -94,11 +94,13 @@ export default function NodeInspector({
 
       <details open>
         <summary>Neighborhood (1 hop)</summary>
-        {neighborhoodState === 'loading' ? (
+        {neighborhoodState === 'loading' && (
           <p className="muted">Loading neighborhood…</p>
-        ) : neighborhoodState === 'error' ? (
+        )}
+        {neighborhoodState === 'error' && (
           <p className="muted">{neighborhoodError}</p>
-        ) : (
+        )}
+        {neighborhoodState !== 'loading' && neighborhoodState !== 'error' && (
           <p className="muted">
             Nodes: {neighborhood.nodes.length} • Edges: {neighborhood.edges.length}
           </p>

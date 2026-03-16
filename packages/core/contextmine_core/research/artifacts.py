@@ -370,7 +370,7 @@ class FileArtifactStore(ArtifactStore):
         evicted = 0
 
         with self._lock:
-            for run_dir in list(self._artifact_dir.iterdir()):
+            for run_dir in self._artifact_dir.iterdir():
                 if not run_dir.is_dir():
                     continue
                 meta_path = run_dir / "meta.json"

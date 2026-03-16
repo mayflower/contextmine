@@ -1095,9 +1095,9 @@ export default function CockpitPage({
       ) : null}
 
       {toast ? (
-        <div className={`cockpit2-toast ${toast.kind}`} role="status" aria-live="polite">
+        <output className={`cockpit2-toast ${toast.kind}`} aria-live="polite">
           {toast.message}
-        </div>
+        </output>
       ) : null}
     </section>
   )

@@ -328,7 +328,7 @@ def get_llm_provider(
         chat_model = ChatAnthropic(
             model_name=selected_model,
             api_key=resolved_key,  # ty: ignore[unknown-argument]
-            timeout=timeout,  # ty: ignore[unknown-argument]
+            timeout=timeout,
             max_retries=max_retries,
         )
         return LangChainProvider(
@@ -349,7 +349,7 @@ def get_llm_provider(
         chat_model = ChatOpenAI(
             model_name=selected_model,
             api_key=resolved_key,  # ty: ignore[unknown-argument]
-            request_timeout=timeout,  # ty: ignore[unknown-argument]
+            request_timeout=timeout,
             max_retries=max_retries,
         )
         return LangChainProvider(

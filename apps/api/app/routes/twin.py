@@ -912,7 +912,7 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(left[index] * right[index] for index in range(dim))
     left_norm = math.sqrt(sum(value * value for value in left[:dim]))
     right_norm = math.sqrt(sum(value * value for value in right[:dim]))
-    if left_norm == 0.0 or right_norm == 0.0:
+    if left_norm < 1e-12 or right_norm < 1e-12:
         return 0.0
     return dot / (left_norm * right_norm)
 
@@ -3146,7 +3146,6 @@ async def deep_dive_view(
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
     layer_enum = _parse_layer(layer)
-    projection_enum = _parse_projection(projection)
 
     edge_kinds: set[str] | None = None
     if mode == "symbol_callgraph":
@@ -3676,6 +3675,14 @@ async def graphrag_communities_view(
         }
 
 
+def _default_dup_min_sim(map_mode: str) -> float:
+    return 0.86 if map_mode == "semantic" else 0.35
+
+
+def _default_dup_max_overlap(map_mode: str) -> float:
+    return 0.30 if map_mode == "semantic" else 0.35
+
+
 @router.get("/collections/{collection_id}/views/semantic-map")
 async def semantic_map_view(
     request: Request,
@@ -3928,13 +3935,13 @@ async def semantic_map_view(
                 "semantic_duplication_min_similarity": round(
                     float(semantic_duplication_min_similarity)
                     if semantic_duplication_min_similarity is not None
-                    else (0.86 if resolved_map_mode == "semantic" else 0.35),
+                    else _default_dup_min_sim(resolved_map_mode),
                     4,
                 ),
                 "semantic_duplication_max_source_overlap": round(
                     float(semantic_duplication_max_source_overlap)
                     if semantic_duplication_max_source_overlap is not None
-                    else (0.30 if resolved_map_mode == "semantic" else 0.35),
+                    else _default_dup_max_overlap(resolved_map_mode),
                     4,
                 ),
                 "misplaced_min_dominant_ratio": round(float(misplaced_min_dominant_ratio), 4),
@@ -4723,7 +4730,7 @@ async def mermaid_view(
                 "to_be": to_be.content,
                 "as_is_warnings": as_is.warnings,
                 "to_be_warnings": to_be.warnings,
-                "warnings": sorted(set([*as_is.warnings, *to_be.warnings])),
+                "warnings": sorted({*as_is.warnings, *to_be.warnings}),
             }
 
         result = await export_mermaid_c4_result(

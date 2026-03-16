@@ -1717,7 +1717,7 @@ class ResearchAgent:
                 return "verify"
             return "continue"
 
-        def after_tools(state: AgentState) -> str:
+        def after_tools(_state: AgentState) -> str:
             """Route after tool execution."""
             if run_holder.get("pending_answer"):
                 return "verify"

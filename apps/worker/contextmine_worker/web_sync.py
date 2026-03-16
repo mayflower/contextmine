@@ -22,6 +22,9 @@ MAX_PAGE_SIZE = 5 * 1024 * 1024
 DEFAULT_DELAY_MS = 500  # 500ms between requests
 DEFAULT_MAX_PAGES = 100
 
+# Default user agent string sent with crawl requests
+DEFAULT_USER_AGENT = "ContextMine-Spider/0.1"
+
 
 @dataclass
 class WebPage:
@@ -118,7 +121,7 @@ def extract_markdown_with_trafilatura(html: str) -> str | None:
 def _crawl_python(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
-    user_agent: str = "ContextMine-Spider/0.1",
+    user_agent: str = DEFAULT_USER_AGENT,
     delay_ms: int = DEFAULT_DELAY_MS,
     start_url: str | None = None,
 ) -> list[WebPage]:

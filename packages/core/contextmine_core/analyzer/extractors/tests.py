@@ -401,7 +401,7 @@ def _extract_js_tests(
                 visit(child, suite_stack)
             return
 
-        full_name, base_name, method_name = _js_call_name(content, node)
+        _, base_name, method_name = _js_call_name(content, node)
         call_name = method_name or base_name
         lower_call = call_name.lower()
 
@@ -750,7 +750,7 @@ async def build_tests_graph(
             suite_ids[suite.name] = suite_id
             stats["test_suites"] += 1
 
-            node_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            node_meta["provenance"]["evidence_ids"] = [evidence_id]
             await _upsert_node(
                 session,
                 collection_id=collection_id,
@@ -786,7 +786,7 @@ async def build_tests_graph(
             fixture_ids[fixture.name] = fixture_id
             stats["test_fixtures"] += 1
 
-            node_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            node_meta["provenance"]["evidence_ids"] = [evidence_id]
             await _upsert_node(
                 session,
                 collection_id=collection_id,
@@ -831,7 +831,7 @@ async def build_tests_graph(
             )
             stats["test_cases"] += 1
 
-            node_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            node_meta["provenance"]["evidence_ids"] = [evidence_id]
             await _upsert_node(
                 session,
                 collection_id=collection_id,

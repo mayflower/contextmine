@@ -234,7 +234,7 @@ export default function DeepDiveView({
         </button>
 
         <label>
-          Mode
+          Mode{' '}
           <select value={mode} onChange={(event) => onModeChange(event.target.value as DeepDiveMode)}>
             <option value="file_dependency">File dependency</option>
             <option value="symbol_callgraph">Symbol callgraph</option>

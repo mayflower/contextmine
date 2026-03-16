@@ -1829,6 +1829,14 @@ async def list_findings(
     }
 
 
+def _sarif_level(severity: str | None) -> str:
+    if severity in {"critical", "high"}:
+        return "error"
+    if severity == "medium":
+        return "warning"
+    return "note"
+
+
 def findings_to_sarif(
     *,
     collection_id: UUID,
@@ -1849,13 +1857,7 @@ def findings_to_sarif(
         results.append(
             {
                 "ruleId": rule_id,
-                "level": (
-                    "error"
-                    if item.get("severity") in {"critical", "high"}
-                    else "warning"
-                    if item.get("severity") == "medium"
-                    else "note"
-                ),
+                "level": _sarif_level(item.get("severity")),
                 "message": {"text": str(item.get("message") or "")},
                 "locations": [
                     {

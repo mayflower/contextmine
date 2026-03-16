@@ -392,19 +392,17 @@ export function useCockpitData({
           if (view === 'topology') {
             query.set('projection', 'architecture')
             query.set('entity_level', topologyEntityLevel(layer))
+          } else if (deepDiveMode === 'file_dependency') {
+            query.set('projection', 'code_file')
+            query.set('entity_level', 'file')
+          } else if (deepDiveMode === 'symbol_callgraph') {
+            query.set('projection', 'code_symbol')
+            query.set('entity_level', 'symbol')
+            query.set('mode', 'symbol_callgraph')
           } else {
-            if (deepDiveMode === 'file_dependency') {
-              query.set('projection', 'code_file')
-              query.set('entity_level', 'file')
-            } else if (deepDiveMode === 'symbol_callgraph') {
-              query.set('projection', 'code_symbol')
-              query.set('entity_level', 'symbol')
-              query.set('mode', 'symbol_callgraph')
-            } else {
-              query.set('projection', 'code_symbol')
-              query.set('entity_level', 'symbol')
-              query.set('mode', 'contains_hierarchy')
-            }
+            query.set('projection', 'code_symbol')
+            query.set('entity_level', 'symbol')
+            query.set('mode', 'contains_hierarchy')
           }
 
           const response = await fetch(
@@ -635,6 +633,17 @@ export function useCockpitData({
           return
         }
 
+        const loadPayload = async <T>(url: string, label: string): Promise<T> => {
+          const response = await fetch(url, {
+            credentials: 'include',
+            signal: controller.signal,
+          })
+          if (!response.ok) {
+            throw new Error(`Could not load ${label} (${response.status})`)
+          }
+          return (await response.json()) as T
+        }
+
         if (view === 'architecture') {
           const section = architectureSection.trim()
           const normalizedContainer = portsContainer.trim()
@@ -654,17 +663,6 @@ export function useCockpitData({
           const driftQuery = new URLSearchParams({ scenario_id: scenarioId })
           if (baselineScenarioId) {
             driftQuery.set('baseline_scenario_id', baselineScenarioId)
-          }
-
-          const loadPayload = async <T>(url: string, label: string): Promise<T> => {
-            const response = await fetch(url, {
-              credentials: 'include',
-              signal: controller.signal,
-            })
-            if (!response.ok) {
-              throw new Error(`Could not load ${label} (${response.status})`)
-            }
-            return (await response.json()) as T
           }
 
           const [arc42Result, portsResult, driftResult, ermResult] = await Promise.allSettled([
@@ -744,17 +742,6 @@ export function useCockpitData({
         }
 
         if (view === 'evolution') {
-          const loadPayload = async <T>(url: string, label: string): Promise<T> => {
-            const response = await fetch(url, {
-              credentials: 'include',
-              signal: controller.signal,
-            })
-            if (!response.ok) {
-              throw new Error(`Could not load ${label} (${response.status})`)
-            }
-            return (await response.json()) as T
-          }
-
           const [investmentResult, knowledgeResult, couplingResult, fitnessResult] =
             await Promise.allSettled([
               loadPayload<InvestmentUtilizationPayload>(
@@ -1066,14 +1053,12 @@ export function useCockpitData({
     if (selection.view !== 'ui_map') {
       return
     }
-    const preferred =
-      behaviorGraphMode === 'user_flows'
-        ? userFlowsGraph.total_nodes > 0
-          ? userFlowsGraph
-          : uiMapGraph
-        : uiMapGraph.total_nodes > 0
-          ? uiMapGraph
-          : userFlowsGraph
+    let preferred: TwinGraphResponse
+    if (behaviorGraphMode === 'user_flows') {
+      preferred = userFlowsGraph.total_nodes > 0 ? userFlowsGraph : uiMapGraph
+    } else {
+      preferred = uiMapGraph.total_nodes > 0 ? uiMapGraph : userFlowsGraph
+    }
     setGraph(preferred)
   }, [selection.view, behaviorGraphMode, uiMapGraph, userFlowsGraph])
 
@@ -1236,12 +1221,14 @@ export function useCockpitData({
       setNeighborhoodState('loading')
       setNeighborhoodError('')
       try {
-        const projection =
-          view === 'topology'
-            ? 'architecture'
-            : deepDiveMode === 'file_dependency'
-              ? 'code_file'
-              : 'code_symbol'
+        let projection: string
+        if (view === 'topology') {
+          projection = 'architecture'
+        } else if (deepDiveMode === 'file_dependency') {
+          projection = 'code_file'
+        } else {
+          projection = 'code_symbol'
+        }
         const response = await fetch(
           `/api/twin/scenarios/${scenarioId}/graph/neighborhood?node_id=${encodeURIComponent(selectedNodeId)}&projection=${projection}&hops=1&limit=200`,
           {
@@ -1303,12 +1290,14 @@ export function useCockpitData({
       const payload = await response.json()
       const created = Number(payload?.created || 0)
       const skipped = Number(payload?.skipped || 0)
-      const message =
-        created > 0
-          ? `Reindexing queued for ${created} source(s).`
-          : skipped > 0
-            ? `No new source revisions queued (${skipped} unchanged).`
-            : 'Reindexing request accepted.'
+      let message: string
+      if (created > 0) {
+        message = `Reindexing queued for ${created} source(s).`
+      } else if (skipped > 0) {
+        message = `No new source revisions queued (${skipped} unchanged).`
+      } else {
+        message = 'Reindexing request accepted.'
+      }
       setArchitectureActions((prev) => ({
         ...prev,
         reindexState: 'ready',
@@ -1400,6 +1389,15 @@ export function useCockpitData({
     setViewState('exports', 'loading')
 
     try {
+      let entityLevel: string
+      if (exportProjection === 'architecture') {
+        entityLevel = topologyEntityLevel(selection.layer)
+      } else if (exportProjection === 'code_file') {
+        entityLevel = 'file'
+      } else {
+        entityLevel = 'symbol'
+      }
+
       const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1407,12 +1405,7 @@ export function useCockpitData({
         body: JSON.stringify({
           format: exportFormat,
           projection: exportProjection,
-          entity_level:
-            exportProjection === 'architecture'
-              ? topologyEntityLevel(selection.layer)
-              : exportProjection === 'code_file'
-                ? 'file'
-                : 'symbol',
+          entity_level: entityLevel,
         }),
       })
 

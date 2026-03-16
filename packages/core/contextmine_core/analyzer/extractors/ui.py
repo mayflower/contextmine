@@ -160,6 +160,14 @@ UI_GENERIC_VIEW_STEMS = {
 }
 UI_STRIP_ROUTE_SEGMENTS = {"pages", "page", "routes", "route", "views", "view", "screens", "screen"}
 UI_ROUTE_EXCLUDE_PREFIXES = ("/api", "/graphql", "/rpc", "/internal", "/v1", "/v2")
+_TEMPLATE_EXT_RE = re.compile(
+    r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$",
+    re.IGNORECASE,
+)
+_PATH_SRC = "/src/"
+_PATH_ADMIN_ASSETS_SRC = "/admin/assets/src/"
+_PATH_ASSETS_SRC = "/assets/src/"
+_EXTRACTOR_UI_V1 = "ui.v1"
 UI_RENDER_CALL_PATTERN = re.compile(
     r"(?i)(?:\bview|render(?:_template|Template)?|template|TemplateResponse)\s*\(\s*['\"](?P<name>[^'\"]+)['\"]"
 )
@@ -168,7 +176,7 @@ UI_ROUTE_PATTERNS = (
         r"(?i)\bRoute::(?:get|post|put|patch|delete|match|any)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
     ),
     re.compile(
-        r"(?i)\b(?:\$[A-Za-z_][\w]*|app|router|route)\s*->\s*(?:get|post|put|patch|delete|match|any|map)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+        r"(?i)\b(?:\$[a-z_]\w*|app|router|route)\s*->\s*(?:get|post|put|patch|delete|match|any|map)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
     ),
     re.compile(r"(?i)#\[\s*Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
     re.compile(r"(?i)@Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
@@ -177,7 +185,7 @@ UI_ROUTE_PATTERNS = (
 )
 UI_ENDPOINT_HINT_PATTERNS = (
     re.compile(
-        r"(?i)\b(?:fetch|axios\.(?:get|post|put|patch|delete)|api\.(?:get|post|put|patch|delete)|client\.(?:get|post|put|patch|delete))\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+        r"(?i)\b(?:fetch|(?:axios|api|client)\.(?:get|post|put|patch|delete))\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
     ),
     re.compile(r"(?i)\baction\s*=\s*['\"](?P<path>[^'\"]+)['\"]"),
     re.compile(r"(?i)\bdata-(?:url|endpoint)\s*=\s*['\"](?P<path>[^'\"]+)['\"]"),
@@ -260,12 +268,7 @@ def _view_name_from_file_path(file_path: str) -> str | None:
     path = PurePosixPath(file_path.replace("\\", "/"))
     stem = path.stem
     while True:
-        normalized = re.sub(
-            r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$",
-            "",
-            stem,
-            flags=re.IGNORECASE,
-        )
+        normalized = _TEMPLATE_EXT_RE.sub("", stem)
         if normalized == stem:
             break
         stem = normalized
@@ -282,7 +285,7 @@ def _looks_like_route_module(file_path: str) -> bool:
     parts = [part for part in normalized.split("/") if part]
     if any(part in UI_ROUTE_SEGMENT_HINTS for part in parts):
         return True
-    return "/admin/assets/src/" in normalized
+    return _PATH_ADMIN_ASSETS_SRC in normalized
 
 
 def _route_path_from_file(file_path: str) -> str | None:
@@ -290,17 +293,17 @@ def _route_path_from_file(file_path: str) -> str | None:
     lower = normalized.lower()
     base_prefix = ""
     relative = ""
-    if "/admin/assets/src/" in lower:
-        split_idx = lower.index("/admin/assets/src/")
-        relative = normalized[split_idx + len("/admin/assets/src/") :]
+    if _PATH_ADMIN_ASSETS_SRC in lower:
+        split_idx = lower.index(_PATH_ADMIN_ASSETS_SRC)
+        relative = normalized[split_idx + len(_PATH_ADMIN_ASSETS_SRC) :]
         base_prefix = "/admin"
-    elif "/assets/src/" in lower:
-        split_idx = lower.index("/assets/src/")
-        relative = normalized[split_idx + len("/assets/src/") :]
+    elif _PATH_ASSETS_SRC in lower:
+        split_idx = lower.index(_PATH_ASSETS_SRC)
+        relative = normalized[split_idx + len(_PATH_ASSETS_SRC) :]
         base_prefix = "/admin" if "/admin/" in lower[:split_idx] else ""
-    elif "/src/" in lower:
-        split_idx = lower.index("/src/")
-        relative = normalized[split_idx + len("/src/") :]
+    elif _PATH_SRC in lower:
+        split_idx = lower.index(_PATH_SRC)
+        relative = normalized[split_idx + len(_PATH_SRC) :]
     elif "/ui/" in lower:
         split_idx = lower.index("/ui/")
         relative = normalized[split_idx + len("/ui/") :]
@@ -380,12 +383,7 @@ def _normalize_view_hint(raw: str) -> str | None:
     if not candidate:
         return None
     candidate = candidate.split("::", 1)[-1]
-    candidate = re.sub(
-        r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$",
-        "",
-        candidate,
-        flags=re.IGNORECASE,
-    )
+    candidate = _TEMPLATE_EXT_RE.sub("", candidate)
     candidate = candidate.replace(".", "/").replace(":", "/")
     parts = [part for part in re.split(r"[/\\]+", candidate) if part]
     if not parts:
@@ -393,7 +391,7 @@ def _normalize_view_hint(raw: str) -> str | None:
     tail = parts[-1]
     if tail.lower() in {"index", "main", "default"} and len(parts) > 1:
         tail = parts[-2]
-    tail = re.sub(r"\.(html|twig|blade|php|phtml|erb|haml|jinja2?|mustache|hbs|ejs)$", "", tail)
+    tail = _TEMPLATE_EXT_RE.sub("", tail)
     value = _to_pascal_case(tail)
     return value if is_pascal_case(value) else None
 
@@ -1177,7 +1175,7 @@ async def build_ui_graph(
                 "view_name_hint": route.view_name_hint,
                 **_provenance(
                     mode="inferred" if route.inferred else "deterministic",
-                    extractor="ui.v1",
+                    extractor=_EXTRACTOR_UI_V1,
                     confidence=0.79 if route.inferred else 0.98,
                 ),
             }
@@ -1196,7 +1194,7 @@ async def build_ui_graph(
                 line=route.line,
                 snippet=f"route {route.path}",
             )
-            route_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            route_meta["provenance"]["evidence_ids"] = [evidence_id]
             await _upsert_node(
                 session,
                 collection_id=collection_id,
@@ -1219,7 +1217,7 @@ async def build_ui_graph(
                 "call_sites": view.call_sites,
                 **_provenance(
                     mode="inferred" if view.inferred else "deterministic",
-                    extractor="ui.v1",
+                    extractor=_EXTRACTOR_UI_V1,
                     confidence=0.8 if view.inferred else 0.94,
                 ),
             }
@@ -1238,7 +1236,7 @@ async def build_ui_graph(
                 line=view.line,
                 snippet=f"view {view.name}",
             )
-            view_meta["provenance"]["evidence_ids"] = [evidence_id]  # type: ignore[index]
+            view_meta["provenance"]["evidence_ids"] = [evidence_id]
             await _upsert_node(
                 session,
                 collection_id=collection_id,
@@ -1254,7 +1252,9 @@ async def build_ui_graph(
                 component_key = f"ui_component:{view.file_path}:{component_name}"
                 component_meta = {
                     "file_path": view.file_path,
-                    **_provenance(mode="deterministic", extractor="ui.v1", confidence=0.88),
+                    **_provenance(
+                        mode="deterministic", extractor=_EXTRACTOR_UI_V1, confidence=0.88
+                    ),
                 }
                 component_id = await _upsert_node(
                     session,
@@ -1274,7 +1274,7 @@ async def build_ui_graph(
                     kind=KnowledgeEdgeKind.UI_VIEW_COMPOSES_COMPONENT,
                     meta=_provenance(
                         mode="deterministic",
-                        extractor="ui.v1",
+                        extractor=_EXTRACTOR_UI_V1,
                         confidence=0.88,
                         evidence_ids=[evidence_id],
                     ),
@@ -1317,7 +1317,7 @@ async def build_ui_graph(
                     "resolution_engine": ref.engine,
                     **_provenance(
                         mode="deterministic" if ref.engine.startswith("scip") else "inferred",
-                        extractor=f"ui.v1.{ref.engine}",
+                        extractor=f"{_EXTRACTOR_UI_V1}.{ref.engine}",
                         confidence=ref.confidence,
                     ),
                 }
@@ -1342,7 +1342,7 @@ async def build_ui_graph(
                             kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
                             meta=_provenance(
                                 mode="inferred",
-                                extractor=f"ui.v1.endpoint.{ref.engine}",
+                                extractor=f"{_EXTRACTOR_UI_V1}.endpoint.{ref.engine}",
                                 confidence=max(0.66, ref.confidence - 0.08),
                                 evidence_ids=[evidence_id],
                             ),
@@ -1371,7 +1371,9 @@ async def build_ui_graph(
                     "endpoint_path": path_hint,
                     "endpoint_method": method_hint,
                     **_provenance(
-                        mode="inferred", extractor="ui.v1.endpoint_hint", confidence=0.83
+                        mode="inferred",
+                        extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
+                        confidence=0.83,
                     ),
                 }
                 contract_id = await _upsert_node(
@@ -1392,7 +1394,7 @@ async def build_ui_graph(
                         kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
                         meta=_provenance(
                             mode="inferred",
-                            extractor="ui.v1.endpoint_hint",
+                            extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
                             confidence=0.82,
                             evidence_ids=[evidence_id],
                         ),
@@ -1428,7 +1430,7 @@ async def build_ui_graph(
                     kind=KnowledgeEdgeKind.UI_ROUTE_RENDERS_VIEW,
                     meta=_provenance(
                         mode="inferred" if inferred else "deterministic",
-                        extractor="ui.v1",
+                        extractor=_EXTRACTOR_UI_V1,
                         confidence=0.78 if inferred else 0.94,
                     ),
                 )

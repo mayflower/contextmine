@@ -167,9 +167,9 @@ def test_compute_git_evolution_snapshots_caps_pairing_for_large_commits(tmp_path
 
     warnings = payload["warnings"]
     assert isinstance(warnings, list)
-    assert any(
-        str(item).startswith("temporal_coupling_pairing_capped:") for item in warnings
-    ), warnings
+    assert any(str(item).startswith("temporal_coupling_pairing_capped:") for item in warnings), (
+        warnings
+    )
 
     stats = payload["stats"]
     assert isinstance(stats, dict)
@@ -179,7 +179,7 @@ def test_compute_git_evolution_snapshots_caps_pairing_for_large_commits(tmp_path
 
     file_rows = [
         row
-        for row in payload["coupling_rows"]
+        for row in payload["coupling_rows"]  # ty: ignore[not-iterable]
         if isinstance(row, dict) and row.get("entity_level") == "file"
     ]
     assert len(file_rows) == 3

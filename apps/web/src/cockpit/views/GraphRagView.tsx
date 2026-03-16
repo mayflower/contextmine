@@ -397,8 +397,8 @@ export default function GraphRagView({
     const cross = processes.filter((process) => process.process_type === 'cross_community')
     const intra = processes.filter((process) => process.process_type === 'intra_community')
     return {
-      cross: cross.sort((a, b) => b.step_count - a.step_count),
-      intra: intra.sort((a, b) => b.step_count - a.step_count),
+      cross: [...cross].sort((a, b) => b.step_count - a.step_count),
+      intra: [...intra].sort((a, b) => b.step_count - a.step_count),
     }
   }, [processes])
 
@@ -523,15 +523,15 @@ export default function GraphRagView({
         </div>
         <div className="cockpit2-graph-toolbar">
           <label>
-            From
+            From{' '}
             <input value={pathFrom} onChange={(event) => setPathFrom(event.target.value)} />
           </label>
           <label>
-            To
+            To{' '}
             <input value={pathTo} onChange={(event) => setPathTo(event.target.value)} />
           </label>
           <label>
-            Max hops
+            Max hops{' '}
             <input
               type="number"
               min={1}

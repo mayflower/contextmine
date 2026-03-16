@@ -673,7 +673,7 @@ def compute_git_evolution_snapshots(
 
                 pairing_paths, pairing_truncated = _limit_paths_for_pairing(
                     touched,
-                    file_stats_by_path={path: stats for path, stats in commit.files.items()},
+                    file_stats_by_path=dict(commit.files.items()),
                 )
                 if pairing_truncated:
                     pairing_truncated_commits += 1
@@ -759,7 +759,7 @@ def compute_git_evolution_snapshots(
 
                 pairing_paths, pairing_truncated = _limit_paths_for_pairing(
                     touched,
-                    file_stats_by_path={path: stats for path, stats in files.items()},
+                    file_stats_by_path=dict(files.items()),
                 )
                 if pairing_truncated:
                     pairing_truncated_commits += 1

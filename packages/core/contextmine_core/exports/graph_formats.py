@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def export_cx2_from_graph(scenario_id: UUID, graph: dict) -> str:
+def export_cx2_from_graph(_scenario_id: UUID, graph: dict) -> str:
     """Export already projected graph payload as Cytoscape CX2-like JSON."""
     payload = {
         "CXVersion": "2.0",

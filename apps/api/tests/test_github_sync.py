@@ -143,7 +143,7 @@ class TestGitChangeMetrics:
                 assert no_merges is True
                 return [FakeCommit()]
 
-        metrics = compute_git_change_metrics(FakeRepo(), {"a.py"})  # type: ignore[arg-type]
+        metrics = compute_git_change_metrics(FakeRepo(), {"a.py"})
         assert metrics["a.py"]["change_frequency"] == 1
         assert metrics["a.py"]["churn"] == 1
 
@@ -152,7 +152,7 @@ class TestGitChangeMetrics:
             def iter_commits(self, *_args, **_kwargs):
                 raise RuntimeError("boom")
 
-        metrics = compute_git_change_metrics(BrokenRepo(), {"a.py", "b.py"})  # type: ignore[arg-type]
+        metrics = compute_git_change_metrics(BrokenRepo(), {"a.py", "b.py"})
         assert metrics["a.py"] == {
             "change_frequency": 0,
             "insertions": 0,

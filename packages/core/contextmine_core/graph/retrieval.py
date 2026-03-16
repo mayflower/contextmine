@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from contextmine_core.graph.store import CodeGraph, EdgeType, SymbolNode
 
 if TYPE_CHECKING:
-    pass
+    pass  # Reserved for future type-only imports
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def pack_subgraph(
     Returns:
         List of PackedNode with reasons, ordered by relevance
     """
-    candidates = node_ids if node_ids else set(n.id for n in graph.get_all_nodes())
+    candidates = node_ids if node_ids else {n.id for n in graph.get_all_nodes()}
 
     scored: list[PackedNode] = []
 

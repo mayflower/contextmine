@@ -67,6 +67,7 @@ async def run_worker() -> None:
         await asyncio.gather(scheduler_task, stop_event.wait(), return_exceptions=True)
     except asyncio.CancelledError:
         logger.info("Worker cancelled")
+        raise
     finally:
         logger.info("Worker shutdown complete")
 

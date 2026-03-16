@@ -27,7 +27,7 @@ from contextmine_core.lsp.languages import (
 )
 
 if TYPE_CHECKING:
-    pass
+    pass  # Reserved for future type-only imports
 
 logger = logging.getLogger(__name__)
 

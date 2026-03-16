@@ -531,7 +531,7 @@ def _merge_entity_groups(groups: dict[int, list[ExtractedEntity]]) -> list[Seman
         type_counts: dict[str, int] = {}
         for t in types:
             type_counts[t] = type_counts.get(t, 0) + 1
-        best_type = max(type_counts.keys(), key=lambda t: type_counts[t])
+        best_type = max(type_counts.keys(), key=lambda t, type_counts=type_counts: type_counts[t])
 
         # Merge descriptions - take the longest (most detailed)
         merged_desc = descriptions[0] if descriptions else ""

@@ -256,7 +256,7 @@ class GraphBuilder:
         self,
         file_path: str,
         line: int,
-        column: int = 0,
+        _column: int = 0,
     ) -> str | None:
         """Resolve symbol ID at a location.
 

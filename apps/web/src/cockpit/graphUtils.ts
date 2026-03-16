@@ -44,8 +44,8 @@ export function filterGraph(graph: TwinGraphResponse, filters: GraphFilters): Tw
 }
 
 export function graphKinds(graph: TwinGraphResponse): { nodeKinds: string[]; edgeKinds: string[] } {
-  const nodeKinds = [...new Set(graph.nodes.map((node) => node.kind))].sort()
-  const edgeKinds = [...new Set(graph.edges.map((edge) => edge.kind))].sort()
+  const nodeKinds = [...new Set(graph.nodes.map((node) => node.kind))].sort((a, b) => a.localeCompare(b))
+  const edgeKinds = [...new Set(graph.edges.map((edge) => edge.kind))].sort((a, b) => a.localeCompare(b))
   return { nodeKinds, edgeKinds }
 }
 

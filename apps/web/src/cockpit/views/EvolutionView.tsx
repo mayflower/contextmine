@@ -155,7 +155,7 @@ export default function EvolutionView({
             </div>
           ) : (
             <div className="cockpit2-evolution-scatter-wrap">
-              <svg viewBox="0 0 900 320" className="cockpit2-evolution-scatter" role="img" aria-label="Investment utilization chart">
+              <svg viewBox="0 0 900 320" className="cockpit2-evolution-scatter" aria-label="Investment utilization chart">
                 <rect x="40" y="20" width="820" height="260" fill="#ffffff" stroke="#e5e7eb" />
                 <line x1="450" y1="20" x2="450" y2="280" stroke="#d1d5db" strokeDasharray="4 4" />
                 <line x1="40" y1="150" x2="860" y2="150" stroke="#d1d5db" strokeDasharray="4 4" />

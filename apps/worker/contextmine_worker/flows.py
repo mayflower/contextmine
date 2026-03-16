@@ -80,6 +80,7 @@ TAG_EMBEDDING_API = "embedding-api"
 TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
+_FILE_NODE_PREFIX = "file:"
 IGNORED_REPO_PATH_PARTS = frozenset(
     {
         "node_modules",
@@ -1138,9 +1139,9 @@ async def build_twin_graph(
                 .all()
             )
             available_paths = {
-                canonicalize_repo_relative_path(str(node_key).removeprefix("file:"))
+                canonicalize_repo_relative_path(str(node_key).removeprefix(_FILE_NODE_PREFIX))
                 for node_key in available_nodes
-                if str(node_key).startswith("file:")
+                if str(node_key).startswith(_FILE_NODE_PREFIX)
             }
             metrics_unmapped = sorted(
                 path for path in requested_metric_paths if path not in available_paths
@@ -2093,11 +2094,11 @@ async def sync_github_source(
                 if not isinstance(raw_path, Path):
                     try:
                         raw_path = Path(str(raw_path))
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001  # nosec B112
                         continue
                 try:
                     repo_relative = raw_path.resolve().relative_to(repo_path.resolve()).as_posix()
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001  # nosec B112
                     continue
                 if not repo_relative:
                     continue
@@ -2312,7 +2313,7 @@ async def sync_github_source(
                 relation_kinds_by_language,
             )
 
-            for language in list(missing_relation_languages):
+            for language in missing_relation_languages:
                 candidates = [
                     proj
                     for proj in project_dicts
@@ -3901,14 +3902,16 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
         for node in file_nodes:
             if node.kind != "file":
                 continue
-            if not node.natural_key.startswith("file:"):
+            if not node.natural_key.startswith(_FILE_NODE_PREFIX):
                 continue
             meta = dict(node.meta or {})
             if str(meta.get("source_id") or "") != source_id_str:
                 continue
             if not bool(meta.get("metrics_structural_ready")):
                 continue
-            file_path = canonicalize_repo_relative_path(node.natural_key.removeprefix("file:"))
+            file_path = canonicalize_repo_relative_path(
+                node.natural_key.removeprefix(_FILE_NODE_PREFIX)
+            )
             if file_path:
                 relevant_files.add(file_path)
 

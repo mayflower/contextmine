@@ -1307,10 +1307,10 @@ function App() {
 
       <nav className={`sidebar ${mobileMenuOpen ? 'open' : ''}`}>
         <ul>
-          <li className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => navigateToPage('dashboard')}>Dashboard</li>
-          <li className={currentPage === 'cockpit' ? 'active' : ''} onClick={() => navigateToPage('cockpit', { view: DEFAULT_COCKPIT_VIEW, layer: DEFAULT_COCKPIT_LAYER })}>Architecture Cockpit</li>
-          <li className={currentPage === 'collections' ? 'active' : ''} onClick={() => navigateToPage('collections')}>Collections</li>
-          <li className={currentPage === 'runs' ? 'active' : ''} onClick={() => navigateToPage('runs')}>Runs</li>
+          <li className={currentPage === 'dashboard' ? 'active' : ''}><button type="button" onClick={() => navigateToPage('dashboard')}>Dashboard</button></li>
+          <li className={currentPage === 'cockpit' ? 'active' : ''}><button type="button" onClick={() => navigateToPage('cockpit', { view: DEFAULT_COCKPIT_VIEW, layer: DEFAULT_COCKPIT_LAYER })}>Architecture Cockpit</button></li>
+          <li className={currentPage === 'collections' ? 'active' : ''}><button type="button" onClick={() => navigateToPage('collections')}>Collections</button></li>
+          <li className={currentPage === 'runs' ? 'active' : ''}><button type="button" onClick={() => navigateToPage('runs')}>Runs</button></li>
         </ul>
       </nav>
 
@@ -1712,14 +1712,14 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" onClick={() => handleToggleExpand(collection)}>
+                        <div className="collection-header-row" role="button" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
 
                           <div className="collection-info">
                             {isEditing ? (
-                              <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()}>
+                              <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                                 <input
                                   type="text"
                                   value={editCollectionName}
@@ -1763,7 +1763,7 @@ function App() {
                             )}
                           </div>
 
-                          <div className="collection-actions-inline" onClick={e => e.stopPropagation()}>
+                          <div className="collection-actions-inline" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <button
                               className="action-btn cockpit-btn"
                               onClick={(e) => {
@@ -1807,7 +1807,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" onClick={e => e.stopPropagation()}>
+                          <div className="share-popover" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>

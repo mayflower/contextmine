@@ -29,6 +29,10 @@ from sqlalchemy import func, or_, select
 
 from app.mcp_auth import ContextMineGitHubProvider, get_current_user_id
 
+_ERR_COLLECTION_NOT_FOUND = "# Error\n\nCollection not found."
+_ERR_ARCH_DOCS_DISABLED = "# Error\n\nArchitecture docs are disabled."
+_ERR_SCENARIO_NOT_FOUND = "# Error\n\nScenario not found in collection."
+
 
 def escape_like_pattern(value: str) -> str:
     """Escape special characters in LIKE patterns to prevent SQL injection."""
@@ -377,7 +381,7 @@ async def list_documents(
         collection = coll_result.scalar_one_or_none()
 
         if not collection:
-            return "# Error\n\nCollection not found."
+            return _ERR_COLLECTION_NOT_FOUND
 
         # Check access
         has_access = collection.visibility == CollectionVisibility.GLOBAL
@@ -2130,7 +2134,7 @@ async def mcp_get_twin_status(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             scenario_uuid = uuid.UUID(scenario_id) if scenario_id else None
             payload = await get_collection_twin_status(
                 db,
@@ -2165,7 +2169,7 @@ async def mcp_get_twin_timeline(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             source_uuid = uuid.UUID(source_id) if source_id else None
             payload = await list_collection_twin_events(
                 db,
@@ -2199,7 +2203,7 @@ async def mcp_refresh_twin(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             parsed_source_ids = coerce_source_ids(_parse_csv_list(source_ids))
             payload = await trigger_collection_refresh(
                 db,
@@ -2228,7 +2232,7 @@ async def mcp_get_arc42(
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
-            return "# Error\n\nArchitecture docs are disabled."
+            return _ERR_ARCH_DOCS_DISABLED
 
         section_key = normalize_arc42_section_key(section)
         if section and not section_key:
@@ -2244,7 +2248,7 @@ async def mcp_get_arc42(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
 
             if scenario_id:
                 scenario = (
@@ -2256,7 +2260,7 @@ async def mcp_get_arc42(
                     )
                 ).scalar_one_or_none()
                 if not scenario:
-                    return "# Error\n\nScenario not found in collection."
+                    return _ERR_SCENARIO_NOT_FOUND
             else:
                 scenario = (
                     await db.execute(
@@ -2421,7 +2425,7 @@ async def mcp_arc42_drift_report(
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
-            return "# Error\n\nArchitecture docs are disabled."
+            return _ERR_ARCH_DOCS_DISABLED
 
         user_id = get_current_user_id()
         async with get_db_session() as db:
@@ -2433,7 +2437,7 @@ async def mcp_arc42_drift_report(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
 
             if scenario_id:
                 scenario = (
@@ -2445,7 +2449,7 @@ async def mcp_arc42_drift_report(
                     )
                 ).scalar_one_or_none()
                 if scenario is None:
-                    return "# Error\n\nScenario not found in collection."
+                    return _ERR_SCENARIO_NOT_FOUND
             else:
                 scenario = (
                     await db.execute(
@@ -2572,7 +2576,7 @@ async def mcp_list_ports_adapters(
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
-            return "# Error\n\nArchitecture docs are disabled."
+            return _ERR_ARCH_DOCS_DISABLED
 
         direction_value = direction.strip().lower() if direction else None
         if direction_value and direction_value not in {"inbound", "outbound"}:
@@ -2588,7 +2592,7 @@ async def mcp_list_ports_adapters(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
 
             if scenario_id:
                 scenario = (
@@ -2600,7 +2604,7 @@ async def mcp_list_ports_adapters(
                     )
                 ).scalar_one_or_none()
                 if scenario is None:
-                    return "# Error\n\nScenario not found in collection."
+                    return _ERR_SCENARIO_NOT_FOUND
             else:
                 scenario = (
                     await db.execute(
@@ -2675,7 +2679,7 @@ async def mcp_get_codebase_summary(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await get_codebase_summary_multi(
                 db,
                 collection_id=collection.id,
@@ -2709,7 +2713,7 @@ async def mcp_list_methods(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await list_methods_multi(
                 db,
                 collection_id=collection.id,
@@ -2745,7 +2749,7 @@ async def mcp_list_calls(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await list_calls_multi(
                 db,
                 collection_id=collection.id,
@@ -2780,7 +2784,7 @@ async def mcp_get_cfg(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await get_cfg_multi(
                 db,
                 collection_id=collection.id,
@@ -2816,7 +2820,7 @@ async def mcp_get_variable_flow(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await get_variable_flow_multi(
                 db,
                 collection_id=collection.id,
@@ -2852,7 +2856,7 @@ async def mcp_find_taint_sources(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await find_taint_sources_multi(
                 db,
                 collection_id=collection.id,
@@ -2887,7 +2891,7 @@ async def mcp_find_taint_sinks(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await find_taint_sinks_multi(
                 db,
                 collection_id=collection.id,
@@ -2923,7 +2927,7 @@ async def mcp_find_taint_flows(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await find_taint_flows_multi(
                 db,
                 collection_id=collection.id,
@@ -2964,7 +2968,7 @@ async def mcp_store_findings(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await store_findings(
                 db,
                 collection_id=collection.id,
@@ -2996,7 +3000,7 @@ async def mcp_export_sarif(
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
-                return "# Error\n\nCollection not found."
+                return _ERR_COLLECTION_NOT_FOUND
             payload = await export_findings_sarif(
                 db,
                 collection_id=collection.id,

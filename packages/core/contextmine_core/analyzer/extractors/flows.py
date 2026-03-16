@@ -60,7 +60,7 @@ def _sanitize_flow_token(raw: str) -> str:
         return token
 
     # Prefer an identifier-like symbol over full call-site payloads.
-    ident = re.search(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,3}", token)
+    ident = re.search(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){0,3}", token)
     if ident:
         token = ident.group(0)
 
