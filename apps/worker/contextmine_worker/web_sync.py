@@ -7,7 +7,7 @@ import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 import trafilatura

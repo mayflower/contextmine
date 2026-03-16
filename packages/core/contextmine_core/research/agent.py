@@ -400,8 +400,8 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
 
                     if sym.signature:
                         content_parts.append(f"Signature: {sym.signature}")
-                    if sym.docstring:
-                        content_parts.append(f"Documentation:\n{sym.docstring}")
+                    if sym.meta.get("docstring"):
+                        content_parts.append(f"Documentation:\n{sym.meta['docstring']}")
 
                     if not content_parts:
                         # Fall back to showing the first few lines of the symbol
@@ -1609,7 +1609,9 @@ class ResearchAgent:
             if current_steps >= run.budget_steps:
                 logger.info(
                     "Research budget exhausted at step %d/%d with %d evidence items",
-                    current_steps, run.budget_steps, len(run.evidence),
+                    current_steps,
+                    run.budget_steps,
+                    len(run.evidence),
                 )
                 if not run.answer:
                     run.complete(
@@ -1678,7 +1680,9 @@ class ResearchAgent:
                     logger.info(
                         "Accepting answer for run %s despite verification issues "
                         "(budget_remaining=%d, attempts=%d)",
-                        run.run_id[:8], budget_remaining, attempts + 1,
+                        run.run_id[:8],
+                        budget_remaining,
+                        attempts + 1,
                     )
                     run.complete(pending)
                     run_holder["pending_answer"] = None

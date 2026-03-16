@@ -23,7 +23,7 @@ def bash_tool(command: str, repo_path: str) -> str:
     import subprocess
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: python.lang.security.audit.subprocess-shell-true
             command,
             shell=True,
             cwd=repo_path,
