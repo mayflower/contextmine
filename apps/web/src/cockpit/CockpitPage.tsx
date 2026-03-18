@@ -350,6 +350,157 @@ export default function CockpitPage({
   const { nodeKinds, edgeKinds: availableEdgeKinds } = useMemo(() => graphKinds(graph), [graph])
   const resolvedNodeId = useMemo(() => resolveNodeId(graph, selectedNodeId), [graph, selectedNodeId])
 
+  const commandBarProps = useMemo(
+    () => ({
+      collections,
+      scenarios,
+      collectionId: selection.collectionId,
+      scenarioId: selection.scenarioId,
+      layer: selection.layer,
+      activeView: selection.view,
+      hotspotFilter,
+      graphQuery,
+      hideIsolated,
+      graphPage,
+      graphLimit,
+      includeKinds,
+      excludeKinds,
+      edgeKinds,
+      overlayMode,
+      graphRagCommunityMode,
+      graphRagCommunityId,
+      graphRagCommunities,
+      semanticMapMode,
+      semanticMapShowDiffOverlay,
+      semanticMapDiffMinDrift,
+      semanticMapThresholds: semanticMapThresholdsByMode[semanticMapMode],
+      c4View,
+      c4Scope,
+      c4MaxNodes,
+      architectureSection,
+      portsDirection,
+      portsContainer,
+      driftBaselineScenarioId,
+      driftScenarioOptions: scenarios,
+      availableNodeKinds: nodeKinds,
+      availableEdgeKinds,
+      onCollectionChange: setCollectionId,
+      onScenarioChange: setScenarioId,
+      onLayerChange: setLayer,
+      onFilterChange: setHotspotFilter,
+      onGraphQueryChange: (value: string) => {
+        setGraphQuery(value)
+        trackFilterChange()
+      },
+      onHideIsolatedChange: (next: boolean) => {
+        setHideIsolated(next)
+        trackFilterChange()
+      },
+      onGraphPageChange: (value: number) => setGraphPage(Math.max(0, value)),
+      onGraphLimitChange: (value: number) => {
+        const next = Math.min(10000, Math.max(1, value))
+        setGraphLimit(next)
+        if (next > 5000 && selection.view === 'deep_dive') {
+          pushToast('info', 'Deep Dive limit > 5000 may reduce interactivity.')
+        }
+      },
+      onIncludeKindsChange: (value: string[]) => {
+        setIncludeKinds(value)
+        trackFilterChange()
+      },
+      onExcludeKindsChange: (value: string[]) => {
+        setExcludeKinds(value)
+        trackFilterChange()
+      },
+      onEdgeKindsChange: (value: string[]) => {
+        setEdgeKinds(value)
+        trackFilterChange()
+      },
+      onOverlayModeChange: setOverlayMode,
+      onGraphRagCommunityModeChange: setGraphRagCommunityMode,
+      onGraphRagCommunityIdChange: setGraphRagCommunityId,
+      onSemanticMapModeChange: setSemanticMapMode,
+      onSemanticMapShowDiffOverlayChange: setSemanticMapShowDiffOverlay,
+      onSemanticMapDiffMinDriftChange: handleSemanticMapDiffMinDriftChange,
+      onSemanticMapThresholdsChange: handleSemanticMapThresholdsChange,
+      onC4ViewChange: setC4View,
+      onC4ScopeChange: setC4Scope,
+      onC4MaxNodesChange: (value: number) => setC4MaxNodes(Math.max(10, Math.min(5000, value))),
+      onArchitectureSectionChange: setArchitectureSection,
+      onPortsDirectionChange: setPortsDirection,
+      onPortsContainerChange: setPortsContainer,
+      onDriftBaselineScenarioIdChange: setDriftBaselineScenarioId,
+      onLoadOverlayFile: handleLoadOverlayFile,
+      onRefresh: refreshActiveView,
+      onOpenCollections: openCollections,
+      onOpenRuns: openRuns,
+    }),
+    [
+      collections,
+      scenarios,
+      selection.collectionId,
+      selection.scenarioId,
+      selection.layer,
+      selection.view,
+      hotspotFilter,
+      graphQuery,
+      hideIsolated,
+      graphPage,
+      graphLimit,
+      includeKinds,
+      excludeKinds,
+      edgeKinds,
+      overlayMode,
+      graphRagCommunityMode,
+      graphRagCommunityId,
+      graphRagCommunities,
+      semanticMapMode,
+      semanticMapShowDiffOverlay,
+      semanticMapDiffMinDrift,
+      semanticMapThresholdsByMode,
+      c4View,
+      c4Scope,
+      c4MaxNodes,
+      architectureSection,
+      portsDirection,
+      portsContainer,
+      driftBaselineScenarioId,
+      nodeKinds,
+      availableEdgeKinds,
+      setCollectionId,
+      setScenarioId,
+      setLayer,
+      setHotspotFilter,
+      setGraphQuery,
+      setHideIsolated,
+      setGraphPage,
+      setGraphLimit,
+      setIncludeKinds,
+      setExcludeKinds,
+      setEdgeKinds,
+      setOverlayMode,
+      setGraphRagCommunityMode,
+      setGraphRagCommunityId,
+      setSemanticMapMode,
+      setSemanticMapShowDiffOverlay,
+      handleSemanticMapDiffMinDriftChange,
+      handleSemanticMapThresholdsChange,
+      setC4View,
+      setC4Scope,
+      setC4MaxNodes,
+      setArchitectureSection,
+      setPortsDirection,
+      setPortsContainer,
+      setDriftBaselineScenarioId,
+      handleLoadOverlayFile,
+      refreshActiveView,
+      openCollections,
+      openRuns,
+      trackFilterChange,
+      pushToast,
+    ],
+  )
+
   useEffect(() => {
     if (selectedNodeId && resolvedNodeId && selectedNodeId !== resolvedNodeId) {
       setSelectedNodeId(resolvedNodeId)
@@ -547,82 +698,11 @@ export default function CockpitPage({
           activeUpdatedAt={activeUpdatedAt}
         />
         <CockpitCommandBar
-          collections={collections}
+          {...commandBarProps}
           scenarios={[]}
-          collectionId={selection.collectionId}
           scenarioId=""
-          layer={selection.layer}
-          activeView={selection.view}
-          hotspotFilter={hotspotFilter}
-          graphQuery={graphQuery}
-          hideIsolated={hideIsolated}
-          graphPage={graphPage}
-          graphLimit={graphLimit}
-          includeKinds={includeKinds}
-          excludeKinds={excludeKinds}
-          edgeKinds={edgeKinds}
-          overlayMode={overlayMode}
-          graphRagCommunityMode={graphRagCommunityMode}
-          graphRagCommunityId={graphRagCommunityId}
-          graphRagCommunities={graphRagCommunities}
-          semanticMapMode={semanticMapMode}
-          semanticMapShowDiffOverlay={semanticMapShowDiffOverlay}
-          semanticMapDiffMinDrift={semanticMapDiffMinDrift}
-          semanticMapThresholds={semanticMapThresholdsByMode[semanticMapMode]}
-          c4View={c4View}
-          c4Scope={c4Scope}
-          c4MaxNodes={c4MaxNodes}
-          architectureSection={architectureSection}
-          portsDirection={portsDirection}
-          portsContainer={portsContainer}
-          driftBaselineScenarioId={driftBaselineScenarioId}
-          driftScenarioOptions={scenarios}
           availableNodeKinds={[]}
           availableEdgeKinds={[]}
-          onCollectionChange={setCollectionId}
-          onScenarioChange={setScenarioId}
-          onLayerChange={setLayer}
-          onFilterChange={setHotspotFilter}
-          onGraphQueryChange={(value) => {
-            setGraphQuery(value)
-            trackFilterChange()
-          }}
-          onHideIsolatedChange={(next) => {
-            setHideIsolated(next)
-            trackFilterChange()
-          }}
-          onGraphPageChange={setGraphPage}
-          onGraphLimitChange={setGraphLimit}
-          onIncludeKindsChange={(value) => {
-            setIncludeKinds(value)
-            trackFilterChange()
-          }}
-          onExcludeKindsChange={(value) => {
-            setExcludeKinds(value)
-            trackFilterChange()
-          }}
-          onEdgeKindsChange={(value) => {
-            setEdgeKinds(value)
-            trackFilterChange()
-          }}
-          onOverlayModeChange={setOverlayMode}
-          onGraphRagCommunityModeChange={setGraphRagCommunityMode}
-          onGraphRagCommunityIdChange={setGraphRagCommunityId}
-          onSemanticMapModeChange={setSemanticMapMode}
-          onSemanticMapShowDiffOverlayChange={setSemanticMapShowDiffOverlay}
-          onSemanticMapDiffMinDriftChange={handleSemanticMapDiffMinDriftChange}
-          onSemanticMapThresholdsChange={handleSemanticMapThresholdsChange}
-          onC4ViewChange={setC4View}
-          onC4ScopeChange={setC4Scope}
-          onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
-          onArchitectureSectionChange={setArchitectureSection}
-          onPortsDirectionChange={setPortsDirection}
-          onPortsContainerChange={setPortsContainer}
-          onDriftBaselineScenarioIdChange={setDriftBaselineScenarioId}
-          onLoadOverlayFile={handleLoadOverlayFile}
-          onRefresh={refreshActiveView}
-          onOpenCollections={openCollections}
-          onOpenRuns={openRuns}
         />
         <section className="cockpit2-empty onboarding">
           <h3>No scenarios found for this project</h3>
@@ -648,90 +728,7 @@ export default function CockpitPage({
         activeUpdatedAt={activeUpdatedAt}
       />
 
-      <CockpitCommandBar
-        collections={collections}
-        scenarios={scenarios}
-        collectionId={selection.collectionId}
-        scenarioId={selection.scenarioId}
-        layer={selection.layer}
-        activeView={selection.view}
-        hotspotFilter={hotspotFilter}
-        graphQuery={graphQuery}
-        hideIsolated={hideIsolated}
-        graphPage={graphPage}
-        graphLimit={graphLimit}
-        includeKinds={includeKinds}
-        excludeKinds={excludeKinds}
-        edgeKinds={edgeKinds}
-        overlayMode={overlayMode}
-        graphRagCommunityMode={graphRagCommunityMode}
-        graphRagCommunityId={graphRagCommunityId}
-        graphRagCommunities={graphRagCommunities}
-        semanticMapMode={semanticMapMode}
-        semanticMapShowDiffOverlay={semanticMapShowDiffOverlay}
-        semanticMapDiffMinDrift={semanticMapDiffMinDrift}
-        semanticMapThresholds={semanticMapThresholdsByMode[semanticMapMode]}
-        c4View={c4View}
-        c4Scope={c4Scope}
-        c4MaxNodes={c4MaxNodes}
-        architectureSection={architectureSection}
-        portsDirection={portsDirection}
-        portsContainer={portsContainer}
-        driftBaselineScenarioId={driftBaselineScenarioId}
-        driftScenarioOptions={scenarios}
-        availableNodeKinds={nodeKinds}
-        availableEdgeKinds={availableEdgeKinds}
-        onCollectionChange={setCollectionId}
-        onScenarioChange={setScenarioId}
-        onLayerChange={setLayer}
-        onFilterChange={setHotspotFilter}
-        onGraphQueryChange={(value) => {
-          setGraphQuery(value)
-          trackFilterChange()
-        }}
-        onHideIsolatedChange={(next) => {
-          setHideIsolated(next)
-          trackFilterChange()
-        }}
-        onGraphPageChange={(value) => setGraphPage(Math.max(0, value))}
-        onGraphLimitChange={(value) => {
-          const next = Math.min(10000, Math.max(1, value))
-          setGraphLimit(next)
-          if (next > 5000 && selection.view === 'deep_dive') {
-            pushToast('info', 'Deep Dive limit > 5000 may reduce interactivity.')
-          }
-        }}
-        onIncludeKindsChange={(value) => {
-          setIncludeKinds(value)
-          trackFilterChange()
-        }}
-        onExcludeKindsChange={(value) => {
-          setExcludeKinds(value)
-          trackFilterChange()
-        }}
-        onEdgeKindsChange={(value) => {
-          setEdgeKinds(value)
-          trackFilterChange()
-        }}
-        onOverlayModeChange={setOverlayMode}
-        onGraphRagCommunityModeChange={setGraphRagCommunityMode}
-        onGraphRagCommunityIdChange={setGraphRagCommunityId}
-        onSemanticMapModeChange={setSemanticMapMode}
-        onSemanticMapShowDiffOverlayChange={setSemanticMapShowDiffOverlay}
-        onSemanticMapDiffMinDriftChange={handleSemanticMapDiffMinDriftChange}
-        onSemanticMapThresholdsChange={handleSemanticMapThresholdsChange}
-        onC4ViewChange={setC4View}
-        onC4ScopeChange={setC4Scope}
-        onC4MaxNodesChange={(value) => setC4MaxNodes(Math.max(10, Math.min(5000, value)))}
-        onArchitectureSectionChange={setArchitectureSection}
-        onPortsDirectionChange={setPortsDirection}
-        onPortsContainerChange={setPortsContainer}
-        onDriftBaselineScenarioIdChange={setDriftBaselineScenarioId}
-        onLoadOverlayFile={handleLoadOverlayFile}
-        onRefresh={refreshActiveView}
-        onOpenCollections={openCollections}
-        onOpenRuns={openRuns}
-      />
+      <CockpitCommandBar {...commandBarProps} />
 
       <CockpitTabs activeView={selection.view} onViewChange={setView} />
 

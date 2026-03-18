@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import yaml
+from contextmine_core.analyzer.extractors.graph_helpers import provenance as _provenance
 from contextmine_core.analyzer.extractors.graphql import (
     GraphQLExtraction,
     extract_from_graphql,
@@ -58,17 +59,6 @@ class _SymbolCandidate:
     node_id: UUID
     name: str
     natural_key: str
-
-
-def _provenance(*, mode: str, extractor: str, confidence: float) -> dict[str, Any]:
-    return {
-        "provenance": {
-            "mode": mode,
-            "extractor": extractor,
-            "confidence": round(max(0.0, min(confidence, 1.0)), 4),
-            "evidence_ids": [],
-        }
-    }
 
 
 class SurfaceCatalogExtractor:
@@ -169,9 +159,6 @@ async def build_surface_graph(
     Returns:
         Stats dict
     """
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     stats = {
         "endpoint_nodes": 0,
         "endpoint_handler_links": 0,
@@ -183,7 +170,24 @@ async def build_surface_graph(
     }
     symbol_candidates = await _load_symbol_candidates(session, collection_id)
 
-    # Process OpenAPI specs
+    await _persist_openapi_nodes(session, collection_id, catalog, symbol_candidates, stats)
+    await _persist_graphql_nodes(session, collection_id, catalog, stats)
+    await _persist_protobuf_nodes(session, collection_id, catalog, stats)
+    await _persist_job_nodes(session, collection_id, catalog, stats)
+
+    return stats
+
+
+async def _persist_openapi_nodes(
+    session: AsyncSession,
+    collection_id: UUID,
+    catalog: SurfaceCatalog,
+    symbol_candidates: dict[str, list[_SymbolCandidate]],
+    stats: dict,
+) -> None:
+    """Persist OpenAPI endpoint nodes into the knowledge graph."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     for spec in catalog.openapi_specs:
         for endpoint in spec.endpoints:
             natural_key = f"api:{endpoint.method}:{endpoint.path}"
@@ -252,7 +256,16 @@ async def build_surface_graph(
             )
             await session.execute(stmt)
 
-    # Process GraphQL schemas
+
+async def _persist_graphql_nodes(
+    session: AsyncSession,
+    collection_id: UUID,
+    catalog: SurfaceCatalog,
+    stats: dict,
+) -> None:
+    """Persist GraphQL type and operation nodes into the knowledge graph."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     for schema in catalog.graphql_schemas:
         type_node_ids: dict[str, UUID] = {}
 
@@ -328,7 +341,17 @@ async def build_surface_graph(
             await _create_evidence(session, node_id, schema.file_path)
             stats["evidence_created"] += 1
 
-    # Process Protobuf files
+
+async def _persist_protobuf_nodes(
+    session: AsyncSession,
+    collection_id: UUID,
+    catalog: SurfaceCatalog,
+    stats: dict,
+) -> None:
+    """Persist Protobuf message and service/RPC nodes into the knowledge graph."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     for proto in catalog.protobuf_files:
         message_node_ids: dict[str, UUID] = {}
 
@@ -441,7 +464,16 @@ async def build_surface_graph(
                             )
                             stats["edges_created"] += 1
 
-    # Process job definitions
+
+async def _persist_job_nodes(
+    session: AsyncSession,
+    collection_id: UUID,
+    catalog: SurfaceCatalog,
+    stats: dict,
+) -> None:
+    """Persist job definition nodes into the knowledge graph."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     for job_extraction in catalog.job_definitions:
         for job in job_extraction.jobs:
             natural_key = f"job:{job.framework}:{job.name}"
@@ -479,8 +511,6 @@ async def build_surface_graph(
             # Create evidence with file path
             await _create_evidence(session, node_id, job.file_path)
             stats["evidence_created"] += 1
-
-    return stats
 
 
 async def _create_evidence(session: AsyncSession, node_id: UUID, file_path: str) -> str | None:

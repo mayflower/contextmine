@@ -681,9 +681,9 @@ async def build_knowledge_graph(
         from contextmine_core.knowledge.builder import build_knowledge_graph_for_source
 
         async with get_session() as session:
-            kg_stats = await build_knowledge_graph_for_source(session, source_uuid)
-            stats["kg_file_nodes"] = kg_stats.get("file_nodes_created", 0)
-            stats["kg_symbol_nodes"] = kg_stats.get("symbol_nodes_created", 0)
+            kg_build_stats = await build_knowledge_graph_for_source(session, source_uuid)
+            stats["kg_file_nodes"] = kg_build_stats.file_nodes_created
+            stats["kg_symbol_nodes"] = kg_build_stats.symbol_nodes_created
             await session.commit()
             logger.info(
                 "Built KG: %d file nodes, %d symbol nodes",

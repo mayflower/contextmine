@@ -1,3 +1,4 @@
+import ViewShell from '../components/ViewShell'
 import type { CockpitLoadState, TestMatrixPayload } from '../types'
 
 interface TestMatrixViewProps {
@@ -8,34 +9,20 @@ interface TestMatrixViewProps {
 }
 
 export default function TestMatrixView({ state, error, payload, onRetry }: TestMatrixViewProps) {
-  if (state === 'loading' && !payload) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-test_matrix" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !payload) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-test_matrix" role="tabpanel">
-        <h3>Test matrix request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   const rows = payload?.matrix || []
 
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-test_matrix"
+      title="Test matrix"
+      hasData={Boolean(payload)}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel" id="cockpit-panel-test_matrix" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
       <div className="cockpit2-panel-header-row">
         <h3>Test matrix</h3>
         <p className="muted">
@@ -75,5 +62,6 @@ export default function TestMatrixView({ state, error, payload, onRetry }: TestM
         </div>
       )}
     </section>
+    </ViewShell>
   )
 }

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +15,7 @@ from contextmine_core.models import (
     TwinScenario,
 )
 from contextmine_core.twin import GraphProjection, get_full_scenario_graph
+from contextmine_core.twin.grouping import canonical_file_path_from_node, derive_arch_group
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,49 +45,8 @@ def _safe_text(value: str | None, fallback: str = "") -> str:
     return text.replace('"', "'").replace("\n", " ").strip()
 
 
-def _canonical_file_path(node: dict[str, Any]) -> str | None:
-    kind = str(node.get("kind") or "").lower()
-    natural_key = str(node.get("natural_key") or "")
-    if kind == "file" and natural_key.startswith("file:"):
-        return natural_key.split(":", 1)[1].strip() or None
-
-    meta = node.get("meta") or {}
-    file_path = meta.get("file_path")
-    if isinstance(file_path, str) and file_path.strip():
-        return file_path.strip()
-    return None
-
-
-def _derive_arch_group(path: str | None, meta: dict[str, Any]) -> tuple[str, str, str] | None:
-    architecture_meta = meta.get("architecture")
-    if isinstance(architecture_meta, dict):
-        explicit_domain = str(architecture_meta.get("domain") or "").strip()
-        explicit_container = str(architecture_meta.get("container") or "").strip()
-        explicit_component = str(architecture_meta.get("component") or "").strip()
-        if explicit_domain and explicit_container:
-            component = explicit_component or explicit_container
-            return explicit_domain, explicit_container, component
-
-    if not path:
-        return None
-
-    normalized = path.strip("/")
-    parts = [part for part in normalized.split("/") if part]
-    if not parts:
-        return None
-
-    if parts[0] == "services" and len(parts) >= 3:
-        domain = parts[1]
-        container = parts[2]
-    elif parts[0] == "apps" and len(parts) >= 2:
-        domain = parts[1]
-        container = parts[1]
-    else:
-        domain = parts[0]
-        container = parts[1] if len(parts) > 1 else parts[0]
-
-    component = PurePosixPath(normalized).stem or container
-    return domain, container, component
+_canonical_file_path = canonical_file_path_from_node
+_derive_arch_group = derive_arch_group
 
 
 def _limit_nodes_by_degree(

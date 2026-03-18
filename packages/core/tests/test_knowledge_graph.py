@@ -136,7 +136,7 @@ class TestKnowledgeGraphBuilder:
         await test_session.commit()
 
         # Verify FILE node was created
-        assert stats["file_nodes_created"] >= 1
+        assert stats.file_nodes_created >= 1
 
         # Query for the created node
         result = await test_session.execute(
@@ -209,8 +209,8 @@ class TestKnowledgeGraphBuilder:
         await test_session.commit()
 
         # Verify
-        assert stats["symbol_nodes_created"] >= 1
-        assert stats["edges_created"] >= 1  # FILE_DEFINES_SYMBOL edge
+        assert stats.symbol_nodes_created >= 1
+        assert stats.edges_created >= 1  # FILE_DEFINES_SYMBOL edge
 
         result = await test_session.execute(
             select(KnowledgeNode).where(

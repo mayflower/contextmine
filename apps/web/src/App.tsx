@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import CockpitPage from './cockpit/CockpitPage'
 import type { CockpitLayer, CockpitView } from './cockpit/types'
+import { formatDuration } from './lib/formatters'
+import { readSSEStream } from './lib/sseReader'
 
 interface HealthStatus {
   status: string
@@ -326,6 +328,20 @@ function App() {
 
   // Mobile menu state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  // Helper: update a source in both `sources` and `collectionSources` state stores
+  const updateSourceInState = useCallback((updatedSource: Source) => {
+    setSources(prev => prev.map(s => s.id === updatedSource.id ? updatedSource : s))
+    setCollectionSources(prev => {
+      const result = { ...prev }
+      for (const collId of Object.keys(result)) {
+        result[collId] = result[collId].map(s =>
+          s.id === updatedSource.id ? updatedSource : s
+        )
+      }
+      return result
+    })
+  }, [])
 
   // Check authentication status
   useEffect(() => {
@@ -818,20 +834,7 @@ function App() {
       if (response.ok) {
         const data = await response.json()
         const updatedSource = { ...selectedSource, deploy_key_fingerprint: data.fingerprint }
-        // Update the source in sources list
-        setSources(sources.map(s =>
-          s.id === selectedSource.id ? updatedSource : s
-        ))
-        // Update in collectionSources
-        setCollectionSources(prev => {
-          const updated = { ...prev }
-          for (const collId of Object.keys(updated)) {
-            updated[collId] = updated[collId].map(s =>
-              s.id === selectedSource.id ? updatedSource : s
-            )
-          }
-          return updated
-        })
+        updateSourceInState(updatedSource)
         setSelectedSource(updatedSource)
         setDeployKeyInput('')
       } else {
@@ -858,20 +861,7 @@ function App() {
       })
       if (response.ok) {
         const updatedSource = { ...selectedSource, deploy_key_fingerprint: null }
-        // Update the source in sources list
-        setSources(sources.map(s =>
-          s.id === selectedSource.id ? updatedSource : s
-        ))
-        // Update in collectionSources
-        setCollectionSources(prev => {
-          const updated = { ...prev }
-          for (const collId of Object.keys(updated)) {
-            updated[collId] = updated[collId].map(s =>
-              s.id === selectedSource.id ? updatedSource : s
-            )
-          }
-          return updated
-        })
+        updateSourceInState(updatedSource)
         setSelectedSource(updatedSource)
       } else {
         const error = await response.json()
@@ -921,18 +911,7 @@ function App() {
       })
       if (response.ok) {
         const updated = await response.json()
-        // Update sources list
-        setSources(sources.map(s => s.id === updated.id ? updated : s))
-        // Update collectionSources
-        setCollectionSources(prev => {
-          const result = { ...prev }
-          for (const collId of Object.keys(result)) {
-            result[collId] = result[collId].map(s =>
-              s.id === updated.id ? updated : s
-            )
-          }
-          return result
-        })
+        updateSourceInState(updated)
         setEditingSource(null)
       } else {
         const error = await response.json()
@@ -1056,72 +1035,55 @@ function App() {
         return
       }
 
-      const reader = response.body?.getReader()
-      if (!reader) {
-        setQueryError('Streaming not supported')
-        setQueryLoading(false)
-        return
-      }
-
-      const decoder = new TextDecoder()
-      let buffer = ''
       let markdown = ''
       let metadata: { query: string; chunks_used: number; sources: ContextSource[] } | null = null
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      try {
+        await readSSEStream(response, (eventType, data) => {
+          try {
+            const parsed = JSON.parse(data)
 
-        buffer += decoder.decode(value, { stream: true })
-
-        // Parse SSE events from buffer
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-        let eventType = ''
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7)
-          } else if (line.startsWith('data: ')) {
-            const data = line.slice(6)
-            try {
-              const parsed = JSON.parse(data)
-
-              if (eventType === 'metadata') {
-                metadata = {
-                  query: parsed.query,
-                  chunks_used: parsed.chunks_used,
-                  sources: parsed.sources.map((s: { uri: string; title: string; file_path?: string }) => ({
-                    uri: s.uri,
-                    title: s.title,
-                    file_path: s.file_path || null,
-                  })),
-                }
-                // Initialize result with metadata
+            if (eventType === 'metadata') {
+              metadata = {
+                query: parsed.query,
+                chunks_used: parsed.chunks_used,
+                sources: parsed.sources.map((s: { uri: string; title: string; file_path?: string }) => ({
+                  uri: s.uri,
+                  title: s.title,
+                  file_path: s.file_path || null,
+                })),
+              }
+              // Initialize result with metadata
+              setQueryResult({
+                markdown: '',
+                query: metadata.query,
+                chunks_used: metadata.chunks_used,
+                sources: metadata.sources,
+              })
+            } else if (eventType === 'content') {
+              markdown += parsed.text
+              if (metadata) {
                 setQueryResult({
-                  markdown: '',
+                  markdown,
                   query: metadata.query,
                   chunks_used: metadata.chunks_used,
                   sources: metadata.sources,
                 })
-              } else if (eventType === 'content') {
-                markdown += parsed.text
-                if (metadata) {
-                  setQueryResult({
-                    markdown,
-                    query: metadata.query,
-                    chunks_used: metadata.chunks_used,
-                    sources: metadata.sources,
-                  })
-                }
-              } else if (eventType === 'error') {
-                setQueryError(parsed.error || 'Stream error')
               }
-            } catch {
-              // Ignore JSON parse errors
+            } else if (eventType === 'error') {
+              setQueryError(parsed.error || 'Stream error')
             }
+          } catch {
+            // Ignore JSON parse errors
           }
+        })
+      } catch (err) {
+        if (err instanceof Error && err.message === 'Streaming not supported') {
+          setQueryError('Streaming not supported')
+          setQueryLoading(false)
+          return
         }
+        throw err
       }
 
       setQueryLoading(false)
@@ -1151,60 +1113,42 @@ function App() {
         return
       }
 
-      const reader = response.body?.getReader()
-      if (!reader) {
-        setQueryError('Streaming not supported')
-        setQueryLoading(false)
-        return
-      }
+      try {
+        await readSSEStream(response, (eventType, data) => {
+          try {
+            const parsed = JSON.parse(data)
 
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // Parse SSE events from buffer
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-        let eventType = ''
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7)
-          } else if (line.startsWith('data: ')) {
-            const data = line.slice(6)
-            try {
-              const parsed = JSON.parse(data)
-
-              if (eventType === 'step') {
-                setResearchStep(parsed.description || `Step ${parsed.step}`)
-              } else if (eventType === 'answer') {
-                setQueryResult({
-                  markdown: parsed.text,
-                  query: queryText,
-                  chunks_used: 0,
-                  sources: [],
-                })
-              } else if (eventType === 'citations') {
-                setResearchCitations(parsed.citations || [])
-                setResearchRunId(parsed.run_id)
-                // Update result with citation count
-                setQueryResult(prev => prev ? {
-                  ...prev,
-                  chunks_used: parsed.steps_used || 0,
-                } : null)
-              } else if (eventType === 'error') {
-                setQueryError(parsed.error || 'Research error')
-              }
-            } catch {
-              // Ignore JSON parse errors
+            if (eventType === 'step') {
+              setResearchStep(parsed.description || `Step ${parsed.step}`)
+            } else if (eventType === 'answer') {
+              setQueryResult({
+                markdown: parsed.text,
+                query: queryText,
+                chunks_used: 0,
+                sources: [],
+              })
+            } else if (eventType === 'citations') {
+              setResearchCitations(parsed.citations || [])
+              setResearchRunId(parsed.run_id)
+              // Update result with citation count
+              setQueryResult(prev => prev ? {
+                ...prev,
+                chunks_used: parsed.steps_used || 0,
+              } : null)
+            } else if (eventType === 'error') {
+              setQueryError(parsed.error || 'Research error')
             }
+          } catch {
+            // Ignore JSON parse errors
           }
+        })
+      } catch (err) {
+        if (err instanceof Error && err.message === 'Streaming not supported') {
+          setQueryError('Streaming not supported')
+          setQueryLoading(false)
+          return
         }
+        throw err
       }
 
       setQueryLoading(false)
@@ -2130,13 +2074,7 @@ function App() {
                       const startTime = run.start_time ? new Date(run.start_time) : null
                       const endTime = run.end_time ? new Date(run.end_time) : null
                       const durationMs = startTime && endTime ? endTime.getTime() - startTime.getTime() : null
-                      const durationStr = durationMs !== null
-                        ? durationMs < 1000
-                          ? `${durationMs}ms`
-                          : durationMs < 60000
-                            ? `${(durationMs / 1000).toFixed(1)}s`
-                            : `${Math.floor(durationMs / 60000)}m ${Math.floor((durationMs % 60000) / 1000)}s`
-                        : '-'
+                      const durationStr = formatDuration(durationMs)
 
                       return (
                         <tr key={run.id} className={`state-${run.state_type.toLowerCase()}`}>
@@ -2249,13 +2187,7 @@ function App() {
                         const startDate = new Date(run.started_at)
                         const endDate = run.finished_at ? new Date(run.finished_at) : null
                         const durationMs = endDate ? endDate.getTime() - startDate.getTime() : null
-                        const durationStr = durationMs !== null
-                          ? durationMs < 1000
-                            ? `${durationMs}ms`
-                            : durationMs < 60000
-                              ? `${(durationMs / 1000).toFixed(1)}s`
-                              : `${Math.floor(durationMs / 60000)}m ${Math.floor((durationMs % 60000) / 1000)}s`
-                          : '-'
+                        const durationStr = formatDuration(durationMs)
 
                         return (
                           <tr key={run.id} className={`run-${run.status}`}>

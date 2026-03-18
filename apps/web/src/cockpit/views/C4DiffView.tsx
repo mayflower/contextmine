@@ -2,8 +2,10 @@ import mermaidLib from 'mermaid'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import ViewShell from '../components/ViewShell'
 import { cockpitFlags } from '../flags'
 import type { CockpitLoadState, MermaidPayload } from '../types'
+import { renderMermaid } from '../utils/mermaidUtils'
 
 interface C4DiffViewProps {
   mermaid: MermaidPayload | null
@@ -30,23 +32,6 @@ function withSemanticClasses(source: string, ids: Set<string>, className: 'added
     : '\nclassDef removed fill:#fee2e2,stroke:#991b1b,stroke-width:2px;\n'
   const classLines = [...ids].map((id) => `class ${id} ${className};`).join('\n')
   return `${source}\n${classDef}${classLines}\n`
-}
-
-async function renderMermaid(container: HTMLElement, id: string, content: string) {
-  if (!content.trim()) {
-    const pre = document.createElement('pre')
-    container.replaceChildren(pre)
-    return
-  }
-  const rendered = await mermaidLib.render(id, content)
-  const parsed = new DOMParser().parseFromString(rendered.svg, 'image/svg+xml')
-  if (parsed.querySelector('parsererror')) {
-    const pre = document.createElement('pre')
-    pre.textContent = content
-    container.replaceChildren(pre)
-    return
-  }
-  container.replaceChildren(document.importNode(parsed.documentElement, true))
 }
 
 export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffViewProps) {
@@ -119,33 +104,18 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
     run()
   }, [mermaid, showSource, transformed])
 
-  if (state === 'loading' && !mermaid) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-c4_diff" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !mermaid) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-c4_diff" role="tabpanel">
-        <h3>C4 diagram request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-c4_diff"
+      title="C4 diagram"
+      hasData={Boolean(mermaid)}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel" id="cockpit-panel-c4_diff" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       {renderError ? (
         <div className="cockpit2-alert error inline">
           <p>{renderError}</p>
@@ -245,5 +215,6 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
         </article>
       )}
     </section>
+    </ViewShell>
   )
 }

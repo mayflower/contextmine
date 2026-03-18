@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from contextmine_core.analyzer.extractors.graph_helpers import upsert_edge as _upsert_knowledge_edge
+from contextmine_core.analyzer.extractors.graph_helpers import upsert_node as _upsert_knowledge_node
 from contextmine_core.architecture_intents import (
     ArchitectureIntentV1,
     IntentRisk,
@@ -568,55 +570,6 @@ def _relation_to_knowledge_edge_kind(kind: RelationKind) -> KnowledgeEdgeKind:
         RelationKind.IMPLEMENTS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
     }
     return mapping.get(kind, KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL)
-
-
-async def _upsert_knowledge_node(
-    session: AsyncSession,
-    collection_id: UUID,
-    kind: KnowledgeNodeKind,
-    natural_key: str,
-    name: str,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeNode).values(
-        collection_id=collection_id,
-        kind=kind,
-        natural_key=natural_key,
-        name=name,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_node_natural",
-        set_={
-            "name": stmt.excluded.name,
-            "meta": stmt.excluded.meta,
-        },
-    ).returning(KnowledgeNode.id)
-    return (await session.execute(stmt)).scalar_one()
-
-
-async def _upsert_knowledge_edge(
-    session: AsyncSession,
-    collection_id: UUID,
-    source_node_id: UUID,
-    target_node_id: UUID,
-    kind: KnowledgeEdgeKind,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeEdge).values(
-        collection_id=collection_id,
-        source_node_id=source_node_id,
-        target_node_id=target_node_id,
-        kind=kind,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_edge_unique",
-        set_={
-            "meta": stmt.excluded.meta,
-        },
-    ).returning(KnowledgeEdge.id)
-    return (await session.execute(stmt)).scalar_one()
 
 
 async def submit_intent(

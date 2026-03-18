@@ -7,6 +7,7 @@ import json
 import re
 import uuid
 from collections import defaultdict, deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -341,7 +342,7 @@ async def get_collection_twin_status(
             ready_count += 1
             if finished_at and (materialized_at is None or finished_at > materialized_at):
                 materialized_at = finished_at
-        elif status in {"failed"}:
+        elif status == "failed":
             failed_count += 1
         elif status in {"queued", "materializing", "loading", "generating"}:
             in_progress_count += 1
@@ -902,6 +903,52 @@ async def _resolve_node_by_ref(
     )
 
 
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE wildcard characters in *value*."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def _with_analysis_cache(
+    session: AsyncSession,
+    *,
+    collection_id: UUID,
+    scenario_id: UUID | None,
+    tool_name: str,
+    params: dict[str, Any],
+    projection_profile: str,
+    cache_ttl_seconds: int,
+    compute: Callable[[AsyncSession, TwinScenario], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Resolve scenario, check cache, call *compute* on miss, write cache."""
+    scenario = await _resolve_analysis_scenario(
+        session, collection_id=collection_id, scenario_id=scenario_id
+    )
+    cache_key = await _current_analysis_cache_key(
+        session, collection_id=collection_id, projection_profile=projection_profile
+    )
+    params_hash = _hash_params(params)
+    cached = await _read_cached_analysis(
+        session,
+        scenario_id=scenario.id,
+        tool_name=tool_name,
+        cache_key=cache_key,
+        params_hash=params_hash,
+    )
+    if cached is not None:
+        return cached
+    payload = await compute(session, scenario)
+    await _write_cached_analysis(
+        session,
+        scenario_id=scenario.id,
+        tool_name=tool_name,
+        cache_key=cache_key,
+        params_hash=params_hash,
+        payload=payload,
+        ttl_seconds=cache_ttl_seconds,
+    )
+    return payload
+
+
 async def get_codebase_summary(
     session: AsyncSession,
     *,
@@ -909,100 +956,83 @@ async def get_codebase_summary(
     scenario_id: UUID | None,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
-    params: dict[str, Any] = {}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile="summary"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="summary",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        total_nodes = (
+            await session.execute(
+                select(func.count())
+                .select_from(TwinNode)
+                .where(
+                    TwinNode.scenario_id == scenario.id,
+                    TwinNode.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+        total_edges = (
+            await session.execute(
+                select(func.count())
+                .select_from(TwinEdge)
+                .where(
+                    TwinEdge.scenario_id == scenario.id,
+                    TwinEdge.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+        file_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(TwinNode)
+                .where(
+                    TwinNode.scenario_id == scenario.id,
+                    TwinNode.is_active.is_(True),
+                    TwinNode.kind == "file",
+                )
+            )
+        ).scalar_one()
+        method_like_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(TwinNode)
+                .where(
+                    TwinNode.scenario_id == scenario.id,
+                    TwinNode.is_active.is_(True),
+                    TwinNode.kind.in_(["function", "method"]),
+                )
+            )
+        ).scalar_one()
+        call_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(TwinEdge)
+                .where(
+                    TwinEdge.scenario_id == scenario.id,
+                    TwinEdge.is_active.is_(True),
+                    TwinEdge.kind == "symbol_calls_symbol",
+                )
+            )
+        ).scalar_one()
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "scenario_version": int(scenario.version),
+            "summary": {
+                "nodes": int(total_nodes or 0),
+                "edges": int(total_edges or 0),
+                "files": int(file_count or 0),
+                "methods": int(method_like_count or 0),
+                "calls": int(call_count or 0),
+            },
+        }
 
-    total_nodes = (
-        await session.execute(
-            select(func.count())
-            .select_from(TwinNode)
-            .where(
-                TwinNode.scenario_id == scenario.id,
-                TwinNode.is_active.is_(True),
-            )
-        )
-    ).scalar_one()
-    total_edges = (
-        await session.execute(
-            select(func.count())
-            .select_from(TwinEdge)
-            .where(
-                TwinEdge.scenario_id == scenario.id,
-                TwinEdge.is_active.is_(True),
-            )
-        )
-    ).scalar_one()
-    file_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(TwinNode)
-            .where(
-                TwinNode.scenario_id == scenario.id,
-                TwinNode.is_active.is_(True),
-                TwinNode.kind == "file",
-            )
-        )
-    ).scalar_one()
-    method_like_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(TwinNode)
-            .where(
-                TwinNode.scenario_id == scenario.id,
-                TwinNode.is_active.is_(True),
-                TwinNode.kind.in_(["function", "method"]),
-            )
-        )
-    ).scalar_one()
-    call_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(TwinEdge)
-            .where(
-                TwinEdge.scenario_id == scenario.id,
-                TwinEdge.is_active.is_(True),
-                TwinEdge.kind == "symbol_calls_symbol",
-            )
-        )
-    ).scalar_one()
-
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "scenario_version": int(scenario.version),
-        "summary": {
-            "nodes": int(total_nodes or 0),
-            "edges": int(total_edges or 0),
-            "files": int(file_count or 0),
-            "methods": int(method_like_count or 0),
-            "calls": int(call_count or 0),
-        },
-    }
-    await _write_cached_analysis(
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="summary",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={},
+        projection_profile="summary",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def list_methods(
@@ -1015,75 +1045,61 @@ async def list_methods(
     limit: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
-    params = {"query": query or "", "page": page, "limit": limit}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile="methods"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="methods",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        stmt = select(TwinNode).where(
+            TwinNode.scenario_id == scenario.id,
+            TwinNode.is_active.is_(True),
+            TwinNode.kind.in_(["function", "method", "class"]),
+        )
+        if query:
+            escaped = f"%{_escape_like(query.strip())}%"
+            stmt = stmt.where(
+                or_(
+                    TwinNode.name.ilike(escaped),
+                    TwinNode.natural_key.ilike(escaped),
+                )
+            )
+        total = (
+            await session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+        rows = (
+            (
+                await session.execute(
+                    stmt.order_by(TwinNode.name.asc()).offset(page * limit).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "items": [
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "kind": row.kind,
+                    "natural_key": row.natural_key,
+                    "file_path": (row.meta or {}).get("file_path"),
+                    "meta": row.meta or {},
+                }
+                for row in rows
+            ],
+            "page": page,
+            "limit": limit,
+            "total": int(total or 0),
+        }
 
-    stmt = select(TwinNode).where(
-        TwinNode.scenario_id == scenario.id,
-        TwinNode.is_active.is_(True),
-        TwinNode.kind.in_(["function", "method", "class"]),
-    )
-    if query:
-        escaped = f"%{query.strip()}%"
-        stmt = stmt.where(
-            or_(
-                TwinNode.name.ilike(escaped),
-                TwinNode.natural_key.ilike(escaped),
-            )
-        )
-    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-    rows = (
-        (
-            await session.execute(
-                stmt.order_by(TwinNode.name.asc()).offset(page * limit).limit(limit)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "items": [
-            {
-                "id": str(row.id),
-                "name": row.name,
-                "kind": row.kind,
-                "natural_key": row.natural_key,
-                "file_path": (row.meta or {}).get("file_path"),
-                "meta": row.meta or {},
-            }
-            for row in rows
-        ],
-        "page": page,
-        "limit": limit,
-        "total": int(total or 0),
-    }
-    await _write_cached_analysis(
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="methods",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"query": query or "", "page": page, "limit": limit},
+        projection_profile="methods",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def list_calls(
@@ -1095,84 +1111,68 @@ async def list_calls(
     limit: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
-    params = {"page": page, "limit": limit}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile="calls"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="calls",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
-
-    node_rows = (
-        await session.execute(
-            select(TwinNode.id, TwinNode.name, TwinNode.natural_key).where(
-                TwinNode.scenario_id == scenario.id,
-                TwinNode.is_active.is_(True),
-            )
-        )
-    ).all()
-    node_by_id = {row.id: row for row in node_rows}
-    edge_stmt = select(TwinEdge).where(
-        TwinEdge.scenario_id == scenario.id,
-        TwinEdge.is_active.is_(True),
-        TwinEdge.kind == "symbol_calls_symbol",
-    )
-    total = (
-        await session.execute(select(func.count()).select_from(edge_stmt.subquery()))
-    ).scalar_one()
-    edges = (
-        (
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        node_rows = (
             await session.execute(
-                edge_stmt.order_by(TwinEdge.created_at.desc()).offset(page * limit).limit(limit)
+                select(TwinNode.id, TwinNode.name, TwinNode.natural_key).where(
+                    TwinNode.scenario_id == scenario.id,
+                    TwinNode.is_active.is_(True),
+                )
             )
+        ).all()
+        node_by_id = {row.id: row for row in node_rows}
+        edge_stmt = select(TwinEdge).where(
+            TwinEdge.scenario_id == scenario.id,
+            TwinEdge.is_active.is_(True),
+            TwinEdge.kind == "symbol_calls_symbol",
         )
-        .scalars()
-        .all()
-    )
-    items = []
-    for edge in edges:
-        src = node_by_id.get(edge.source_node_id)
-        dst = node_by_id.get(edge.target_node_id)
-        items.append(
-            {
-                "id": str(edge.id),
-                "caller_id": str(edge.source_node_id),
-                "callee_id": str(edge.target_node_id),
-                "caller": src.name if src else str(edge.source_node_id),
-                "callee": dst.name if dst else str(edge.target_node_id),
-                "caller_natural_key": src.natural_key if src else None,
-                "callee_natural_key": dst.natural_key if dst else None,
-                "meta": edge.meta or {},
-            }
+        total = (
+            await session.execute(select(func.count()).select_from(edge_stmt.subquery()))
+        ).scalar_one()
+        edges = (
+            (
+                await session.execute(
+                    edge_stmt.order_by(TwinEdge.created_at.desc()).offset(page * limit).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
         )
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "items": items,
-        "page": page,
-        "limit": limit,
-        "total": int(total or 0),
-    }
-    await _write_cached_analysis(
+        items = []
+        for edge in edges:
+            src = node_by_id.get(edge.source_node_id)
+            dst = node_by_id.get(edge.target_node_id)
+            items.append(
+                {
+                    "id": str(edge.id),
+                    "caller_id": str(edge.source_node_id),
+                    "callee_id": str(edge.target_node_id),
+                    "caller": src.name if src else str(edge.source_node_id),
+                    "callee": dst.name if dst else str(edge.target_node_id),
+                    "caller_natural_key": src.natural_key if src else None,
+                    "callee_natural_key": dst.natural_key if dst else None,
+                    "meta": edge.meta or {},
+                }
+            )
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": int(total or 0),
+        }
+
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="calls",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"page": page, "limit": limit},
+        projection_profile="calls",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def get_cfg(
@@ -1184,107 +1184,93 @@ async def get_cfg(
     depth: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
-    params = {"node_ref": node_ref, "depth": depth}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile="cfg"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="cfg",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        root = await _resolve_node_by_ref(session, scenario_id=scenario.id, node_ref=node_ref)
+        if not root:
+            raise ValueError("Node not found")
 
-    root = await _resolve_node_by_ref(session, scenario_id=scenario.id, node_ref=node_ref)
-    if not root:
-        raise ValueError("Node not found")
+        queue: deque[tuple[UUID, int]] = deque([(root.id, 0)])
+        seen: set[UUID] = {root.id}
+        adjacency: list[TwinEdge] = []
+        while queue:
+            node_id, hop = queue.popleft()
+            if hop >= max(depth, 1):
+                continue
+            edges = (
+                (
+                    await session.execute(
+                        select(TwinEdge).where(
+                            TwinEdge.scenario_id == scenario.id,
+                            TwinEdge.is_active.is_(True),
+                            TwinEdge.kind.in_(["symbol_calls_symbol", "symbol_contains_symbol"]),
+                            or_(
+                                TwinEdge.source_node_id == node_id,
+                                TwinEdge.target_node_id == node_id,
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for edge in edges:
+                adjacency.append(edge)
+                next_id = (
+                    edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
+                )
+                if next_id in seen:
+                    continue
+                seen.add(next_id)
+                queue.append((next_id, hop + 1))
 
-    queue: deque[tuple[UUID, int]] = deque([(root.id, 0)])
-    seen: set[UUID] = {root.id}
-    adjacency: list[TwinEdge] = []
-    while queue:
-        node_id, hop = queue.popleft()
-        if hop >= max(depth, 1):
-            continue
-        edges = (
+        nodes = (
             (
                 await session.execute(
-                    select(TwinEdge).where(
-                        TwinEdge.scenario_id == scenario.id,
-                        TwinEdge.is_active.is_(True),
-                        TwinEdge.kind.in_(["symbol_calls_symbol", "symbol_contains_symbol"]),
-                        or_(
-                            TwinEdge.source_node_id == node_id,
-                            TwinEdge.target_node_id == node_id,
-                        ),
+                    select(TwinNode).where(
+                        TwinNode.scenario_id == scenario.id,
+                        TwinNode.id.in_(list(seen)),
                     )
                 )
             )
             .scalars()
             .all()
         )
-        for edge in edges:
-            adjacency.append(edge)
-            next_id = edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
-            if next_id in seen:
-                continue
-            seen.add(next_id)
-            queue.append((next_id, hop + 1))
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "root_node_id": str(root.id),
+            "approximation": True,
+            "nodes": [
+                {
+                    "id": str(node.id),
+                    "name": node.name,
+                    "kind": node.kind,
+                    "natural_key": node.natural_key,
+                }
+                for node in nodes
+            ],
+            "edges": [
+                {
+                    "id": str(edge.id),
+                    "source_node_id": str(edge.source_node_id),
+                    "target_node_id": str(edge.target_node_id),
+                    "kind": edge.kind,
+                    "meta": edge.meta or {},
+                }
+                for edge in adjacency
+            ],
+        }
 
-    nodes = (
-        (
-            await session.execute(
-                select(TwinNode).where(
-                    TwinNode.scenario_id == scenario.id,
-                    TwinNode.id.in_(list(seen)),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "root_node_id": str(root.id),
-        "approximation": True,
-        "nodes": [
-            {
-                "id": str(node.id),
-                "name": node.name,
-                "kind": node.kind,
-                "natural_key": node.natural_key,
-            }
-            for node in nodes
-        ],
-        "edges": [
-            {
-                "id": str(edge.id),
-                "source_node_id": str(edge.source_node_id),
-                "target_node_id": str(edge.target_node_id),
-                "kind": edge.kind,
-                "meta": edge.meta or {},
-            }
-            for edge in adjacency
-        ],
-    }
-    await _write_cached_analysis(
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="cfg",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"node_ref": node_ref, "depth": depth},
+        projection_profile="cfg",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def get_variable_flow(
@@ -1297,106 +1283,90 @@ async def get_variable_flow(
     max_hops: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
-    params = {
-        "node_ref": node_ref,
-        "variable": variable or "",
-        "max_hops": max_hops,
-    }
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile="variable_flow"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="variable_flow",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        root = await _resolve_node_by_ref(session, scenario_id=scenario.id, node_ref=node_ref)
+        if not root:
+            raise ValueError("Node not found")
 
-    root = await _resolve_node_by_ref(session, scenario_id=scenario.id, node_ref=node_ref)
-    if not root:
-        raise ValueError("Node not found")
+        edge_kinds = [
+            "symbol_references_symbol",
+            "symbol_calls_symbol",
+            "symbol_contains_symbol",
+        ]
+        queue: deque[list[UUID]] = deque([[root.id]])
+        paths: list[list[UUID]] = []
+        while queue and len(paths) < 100:
+            path = queue.popleft()
+            current = path[-1]
+            if len(path) - 1 >= max(max_hops, 1):
+                paths.append(path)
+                continue
+            edges = (
+                (
+                    await session.execute(
+                        select(TwinEdge).where(
+                            TwinEdge.scenario_id == scenario.id,
+                            TwinEdge.is_active.is_(True),
+                            TwinEdge.kind.in_(edge_kinds),
+                            TwinEdge.source_node_id == current,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not edges:
+                paths.append(path)
+                continue
+            for edge in edges[:6]:
+                if edge.target_node_id in path:
+                    continue
+                queue.append([*path, edge.target_node_id])
 
-    edge_kinds = ["symbol_references_symbol", "symbol_calls_symbol", "symbol_contains_symbol"]
-    queue: deque[list[UUID]] = deque([[root.id]])
-    paths: list[list[UUID]] = []
-    while queue and len(paths) < 100:
-        path = queue.popleft()
-        current = path[-1]
-        if len(path) - 1 >= max(max_hops, 1):
-            paths.append(path)
-            continue
-        edges = (
+        node_ids = {node_id for path in paths for node_id in path}
+        nodes = (
             (
                 await session.execute(
-                    select(TwinEdge).where(
-                        TwinEdge.scenario_id == scenario.id,
-                        TwinEdge.is_active.is_(True),
-                        TwinEdge.kind.in_(edge_kinds),
-                        TwinEdge.source_node_id == current,
+                    select(TwinNode).where(
+                        TwinNode.scenario_id == scenario.id,
+                        TwinNode.id.in_(list(node_ids)),
                     )
                 )
             )
             .scalars()
             .all()
         )
-        if not edges:
-            paths.append(path)
-            continue
-        for edge in edges[:6]:
-            if edge.target_node_id in path:
-                continue
-            queue.append([*path, edge.target_node_id])
-
-    node_ids = {node_id for path in paths for node_id in path}
-    nodes = (
-        (
-            await session.execute(
-                select(TwinNode).where(
-                    TwinNode.scenario_id == scenario.id,
-                    TwinNode.id.in_(list(node_ids)),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    node_map = {node.id: node for node in nodes}
-    rendered_paths = [
-        [
-            {
-                "node_id": str(node_id),
-                "name": node_map[node_id].name if node_id in node_map else str(node_id),
-                "natural_key": node_map[node_id].natural_key if node_id in node_map else None,
-            }
-            for node_id in path
+        node_map = {node.id: node for node in nodes}
+        rendered_paths = [
+            [
+                {
+                    "node_id": str(node_id),
+                    "name": (node_map[node_id].name if node_id in node_map else str(node_id)),
+                    "natural_key": (node_map[node_id].natural_key if node_id in node_map else None),
+                }
+                for node_id in path
+            ]
+            for path in paths[:50]
         ]
-        for path in paths[:50]
-    ]
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "variable": variable,
-        "approximation": True,
-        "root_node_id": str(root.id),
-        "paths": rendered_paths,
-    }
-    await _write_cached_analysis(
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "variable": variable,
+            "approximation": True,
+            "root_node_id": str(root.id),
+            "paths": rendered_paths,
+        }
+
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="variable_flow",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"node_ref": node_ref, "variable": variable or "", "max_hops": max_hops},
+        projection_profile="variable_flow",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def _find_pattern_nodes(
@@ -1439,56 +1409,41 @@ async def find_taint_sources(
     limit: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
     lang = (language or "python").lower()
     patterns = SOURCE_PATTERNS.get(lang, SOURCE_PATTERNS["python"])
-    params = {"language": lang, "limit": limit}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile=f"taint_sources:{lang}"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="taint_sources",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
 
-    rows = await _find_pattern_nodes(
-        session, scenario_id=scenario.id, patterns=patterns, limit=limit
-    )
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "language": lang,
-        "patterns": patterns,
-        "items": [
-            {
-                "id": str(row.id),
-                "name": row.name,
-                "natural_key": row.natural_key,
-                "kind": row.kind,
-                "meta": row.meta or {},
-            }
-            for row in rows
-        ],
-        "total": len(rows),
-    }
-    await _write_cached_analysis(
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        rows = await _find_pattern_nodes(
+            session, scenario_id=scenario.id, patterns=patterns, limit=limit
+        )
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "language": lang,
+            "patterns": patterns,
+            "items": [
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "natural_key": row.natural_key,
+                    "kind": row.kind,
+                    "meta": row.meta or {},
+                }
+                for row in rows
+            ],
+            "total": len(rows),
+        }
+
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="taint_sources",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"language": lang, "limit": limit},
+        projection_profile=f"taint_sources:{lang}",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def find_taint_sinks(
@@ -1500,56 +1455,41 @@ async def find_taint_sinks(
     limit: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
     lang = (language or "python").lower()
     patterns = SINK_PATTERNS.get(lang, SINK_PATTERNS["python"])
-    params = {"language": lang, "limit": limit}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile=f"taint_sinks:{lang}"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="taint_sinks",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
 
-    rows = await _find_pattern_nodes(
-        session, scenario_id=scenario.id, patterns=patterns, limit=limit
-    )
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "language": lang,
-        "patterns": patterns,
-        "items": [
-            {
-                "id": str(row.id),
-                "name": row.name,
-                "natural_key": row.natural_key,
-                "kind": row.kind,
-                "meta": row.meta or {},
-            }
-            for row in rows
-        ],
-        "total": len(rows),
-    }
-    await _write_cached_analysis(
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        rows = await _find_pattern_nodes(
+            session, scenario_id=scenario.id, patterns=patterns, limit=limit
+        )
+        return {
+            "collection_id": str(collection_id),
+            "scenario_id": str(scenario.id),
+            "language": lang,
+            "patterns": patterns,
+            "items": [
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "natural_key": row.natural_key,
+                    "kind": row.kind,
+                    "meta": row.meta or {},
+                }
+                for row in rows
+            ],
+            "total": len(rows),
+        }
+
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="taint_sinks",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"language": lang, "limit": limit},
+        projection_profile=f"taint_sinks:{lang}",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def find_taint_flows(
@@ -1562,147 +1502,122 @@ async def find_taint_flows(
     max_results: int,
     cache_ttl_seconds: int,
 ) -> dict[str, Any]:
-    scenario = await _resolve_analysis_scenario(
-        session, collection_id=collection_id, scenario_id=scenario_id
-    )
     lang = (language or "python").lower()
-    params = {"language": lang, "max_hops": max_hops, "max_results": max_results}
-    cache_key = await _current_analysis_cache_key(
-        session, collection_id=collection_id, projection_profile=f"taint_flows:{lang}"
-    )
-    params_hash = _hash_params(params)
-    cached = await _read_cached_analysis(
-        session,
-        scenario_id=scenario.id,
-        tool_name="taint_flows",
-        cache_key=cache_key,
-        params_hash=params_hash,
-    )
-    if cached is not None:
-        return cached
 
-    sources_payload = await find_taint_sources(
-        session,
-        collection_id=collection_id,
-        scenario_id=scenario.id,
-        language=lang,
-        limit=120,
-        cache_ttl_seconds=cache_ttl_seconds,
-    )
-    sinks_payload = await find_taint_sinks(
-        session,
-        collection_id=collection_id,
-        scenario_id=scenario.id,
-        language=lang,
-        limit=120,
-        cache_ttl_seconds=cache_ttl_seconds,
-    )
-    source_ids = [UUID(item["id"]) for item in sources_payload["items"]]
-    sink_ids = {UUID(item["id"]) for item in sinks_payload["items"]}
-    if not source_ids or not sink_ids:
-        payload = {
+    async def _compute(session: AsyncSession, scenario: TwinScenario) -> dict[str, Any]:
+        sources_payload = await find_taint_sources(
+            session,
+            collection_id=collection_id,
+            scenario_id=scenario.id,
+            language=lang,
+            limit=120,
+            cache_ttl_seconds=cache_ttl_seconds,
+        )
+        sinks_payload = await find_taint_sinks(
+            session,
+            collection_id=collection_id,
+            scenario_id=scenario.id,
+            language=lang,
+            limit=120,
+            cache_ttl_seconds=cache_ttl_seconds,
+        )
+        source_ids = [UUID(item["id"]) for item in sources_payload["items"]]
+        sink_ids = {UUID(item["id"]) for item in sinks_payload["items"]}
+        if not source_ids or not sink_ids:
+            return {
+                "collection_id": str(collection_id),
+                "scenario_id": str(scenario.id),
+                "language": lang,
+                "flows": [],
+                "total": 0,
+            }
+
+        edges = (
+            (
+                await session.execute(
+                    select(TwinEdge).where(
+                        TwinEdge.scenario_id == scenario.id,
+                        TwinEdge.is_active.is_(True),
+                        TwinEdge.kind == "symbol_calls_symbol",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        outgoing: dict[UUID, list[UUID]] = defaultdict(list)
+        for edge in edges:
+            outgoing[edge.source_node_id].append(edge.target_node_id)
+
+        node_rows = (
+            await session.execute(
+                select(TwinNode.id, TwinNode.name, TwinNode.natural_key).where(
+                    TwinNode.scenario_id == scenario.id,
+                    TwinNode.is_active.is_(True),
+                )
+            )
+        ).all()
+        node_map = {row.id: row for row in node_rows}
+
+        sanitizer_tokens = [_normalize_pattern_token(x) for x in SANITIZER_PATTERNS.get(lang, [])]
+
+        flows: list[dict[str, Any]] = []
+        for source_id in source_ids:
+            queue: deque[list[UUID]] = deque([[source_id]])
+            while queue and len(flows) < max_results:
+                path = queue.popleft()
+                current = path[-1]
+                if current in sink_ids and len(path) > 1:
+                    rendered = []
+                    for node_id in path:
+                        node = node_map.get(node_id)
+                        rendered.append(
+                            {
+                                "id": str(node_id),
+                                "name": node.name if node else str(node_id),
+                                "natural_key": (node.natural_key if node else None),
+                            }
+                        )
+                    flows.append(
+                        {
+                            "source_id": str(source_id),
+                            "sink_id": str(current),
+                            "path": rendered,
+                            "hops": len(path) - 1,
+                            "confidence": ("high" if len(path) <= 4 else "medium"),
+                        }
+                    )
+                    continue
+                if len(path) - 1 >= max_hops:
+                    continue
+                for target in outgoing.get(current, [])[:20]:
+                    if target in path:
+                        continue
+                    target_node = node_map.get(target)
+                    if target_node and any(
+                        token in target_node.name.lower() for token in sanitizer_tokens
+                    ):
+                        continue
+                    queue.append([*path, target])
+
+        return {
             "collection_id": str(collection_id),
             "scenario_id": str(scenario.id),
             "language": lang,
-            "flows": [],
-            "total": 0,
+            "flows": flows,
+            "total": len(flows),
         }
-        await _write_cached_analysis(
-            session,
-            scenario_id=scenario.id,
-            tool_name="taint_flows",
-            cache_key=cache_key,
-            params_hash=params_hash,
-            payload=payload,
-            ttl_seconds=cache_ttl_seconds,
-        )
-        return payload
 
-    edges = (
-        (
-            await session.execute(
-                select(TwinEdge).where(
-                    TwinEdge.scenario_id == scenario.id,
-                    TwinEdge.is_active.is_(True),
-                    TwinEdge.kind == "symbol_calls_symbol",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    outgoing: dict[UUID, list[UUID]] = defaultdict(list)
-    for edge in edges:
-        outgoing[edge.source_node_id].append(edge.target_node_id)
-
-    node_rows = (
-        await session.execute(
-            select(TwinNode.id, TwinNode.name, TwinNode.natural_key).where(
-                TwinNode.scenario_id == scenario.id,
-                TwinNode.is_active.is_(True),
-            )
-        )
-    ).all()
-    node_map = {row.id: row for row in node_rows}
-
-    sanitizer_tokens = [_normalize_pattern_token(x) for x in SANITIZER_PATTERNS.get(lang, [])]
-
-    flows: list[dict[str, Any]] = []
-    for source_id in source_ids:
-        queue: deque[list[UUID]] = deque([[source_id]])
-        while queue and len(flows) < max_results:
-            path = queue.popleft()
-            current = path[-1]
-            if current in sink_ids and len(path) > 1:
-                rendered = []
-                for node_id in path:
-                    node = node_map.get(node_id)
-                    rendered.append(
-                        {
-                            "id": str(node_id),
-                            "name": node.name if node else str(node_id),
-                            "natural_key": node.natural_key if node else None,
-                        }
-                    )
-                flows.append(
-                    {
-                        "source_id": str(source_id),
-                        "sink_id": str(current),
-                        "path": rendered,
-                        "hops": len(path) - 1,
-                        "confidence": "high" if len(path) <= 4 else "medium",
-                    }
-                )
-                continue
-            if len(path) - 1 >= max_hops:
-                continue
-            for target in outgoing.get(current, [])[:20]:
-                if target in path:
-                    continue
-                target_node = node_map.get(target)
-                if target_node and any(
-                    token in target_node.name.lower() for token in sanitizer_tokens
-                ):
-                    continue
-                queue.append([*path, target])
-
-    payload = {
-        "collection_id": str(collection_id),
-        "scenario_id": str(scenario.id),
-        "language": lang,
-        "flows": flows,
-        "total": len(flows),
-    }
-    await _write_cached_analysis(
+    return await _with_analysis_cache(
         session,
-        scenario_id=scenario.id,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
         tool_name="taint_flows",
-        cache_key=cache_key,
-        params_hash=params_hash,
-        payload=payload,
-        ttl_seconds=cache_ttl_seconds,
+        params={"language": lang, "max_hops": max_hops, "max_results": max_results},
+        projection_profile=f"taint_flows:{lang}",
+        cache_ttl_seconds=cache_ttl_seconds,
+        compute=_compute,
     )
-    return payload
 
 
 async def store_findings(
@@ -2977,6 +2892,107 @@ async def _run_multi_engine(
     }
 
 
+# ---------------------------------------------------------------------------
+# Engine dispatch registry: maps tool_name -> {engine_name -> single-engine fn}
+# Graphrag functions accept ``cache_ttl_seconds``; LSP/Joern functions do not.
+# ---------------------------------------------------------------------------
+
+_ENGINE_DISPATCH: dict[
+    str,
+    dict[str, Callable[..., Awaitable[dict[str, Any]]]],
+] = {
+    "summary": {
+        "graphrag": get_codebase_summary,
+        "lsp": lsp_get_codebase_summary,
+        "joern": joern_get_codebase_summary,
+    },
+    "methods": {
+        "graphrag": list_methods,
+        "lsp": lsp_list_methods,
+        "joern": joern_list_methods,
+    },
+    "calls": {
+        "graphrag": list_calls,
+        "lsp": lsp_list_calls,
+        "joern": joern_list_calls,
+    },
+    "cfg": {
+        "graphrag": get_cfg,
+        "lsp": lsp_get_cfg,
+        "joern": joern_get_cfg,
+    },
+    "variable_flow": {
+        "graphrag": get_variable_flow,
+        "lsp": lsp_get_variable_flow,
+        "joern": joern_get_variable_flow,
+    },
+    "taint_sources": {
+        "graphrag": find_taint_sources,
+        "lsp": lsp_find_taint_sources,
+        "joern": joern_find_taint_sources,
+    },
+    "taint_sinks": {
+        "graphrag": find_taint_sinks,
+        "lsp": lsp_find_taint_sinks,
+        "joern": joern_find_taint_sinks,
+    },
+    "taint_flows": {
+        "graphrag": find_taint_flows,
+        "lsp": lsp_find_taint_flows,
+        "joern": joern_find_taint_flows,
+    },
+}
+
+
+async def _run_analysis_multi(
+    session: AsyncSession,
+    *,
+    tool_name: str,
+    collection_id: UUID,
+    scenario_id: UUID | None,
+    cache_ttl_seconds: int,
+    params: dict[str, Any],
+    extra_kw: dict[str, Any],
+    engines: list[str] | None = None,
+) -> dict[str, Any]:
+    """Generic multi-engine dispatcher driven by ``_ENGINE_DISPATCH``.
+
+    *params* is the cache-key dict (values already normalised).
+    *extra_kw* are the tool-specific keyword arguments forwarded to each
+    single-engine function.  ``cache_ttl_seconds`` is added automatically
+    for the ``graphrag`` engine.
+    """
+    dispatch = _ENGINE_DISPATCH[tool_name]
+    base_kw: dict[str, Any] = {
+        "collection_id": collection_id,
+        "scenario_id": scenario_id,
+    }
+    runners: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}
+    for engine, fn in dispatch.items():
+        kw = {**base_kw, **extra_kw}
+        if engine == "graphrag":
+            kw["cache_ttl_seconds"] = cache_ttl_seconds
+        # Capture *fn* and *kw* per-iteration to avoid late-binding issues.
+        runners[engine] = lambda _fn=fn, _kw=kw: _fn(session, **_kw)
+
+    return await _run_multi_engine(
+        session,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
+        projection_profile=tool_name,
+        tool_name=tool_name,
+        params=params,
+        cache_ttl_seconds=cache_ttl_seconds,
+        engines=engines,
+        runners=runners,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public *_multi wrappers -- thin delegates to ``_run_analysis_multi``
+# ---------------------------------------------------------------------------
+
+
 async def get_codebase_summary_multi(
     session: AsyncSession,
     *,
@@ -2985,33 +3001,15 @@ async def get_codebase_summary_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="summary",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="summary",
-        tool_name="summary",
-        params={},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={},
+        extra_kw={},
         engines=engines,
-        runners={
-            "graphrag": lambda: get_codebase_summary(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_get_codebase_summary(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-            ),
-            "joern": lambda: joern_get_codebase_summary(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-            ),
-        },
     )
 
 
@@ -3026,42 +3024,15 @@ async def list_methods_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="methods",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="methods",
-        tool_name="methods",
-        params={"query": query or "", "page": page, "limit": limit},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"query": query or "", "page": page, "limit": limit},
+        extra_kw={"query": query, "page": page, "limit": limit},
         engines=engines,
-        runners={
-            "graphrag": lambda: list_methods(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                query=query,
-                page=page,
-                limit=limit,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_list_methods(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                query=query,
-                page=page,
-                limit=limit,
-            ),
-            "joern": lambda: joern_list_methods(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                query=query,
-                page=page,
-                limit=limit,
-            ),
-        },
     )
 
 
@@ -3075,39 +3046,15 @@ async def list_calls_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="calls",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="calls",
-        tool_name="calls",
-        params={"page": page, "limit": limit},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"page": page, "limit": limit},
+        extra_kw={"page": page, "limit": limit},
         engines=engines,
-        runners={
-            "graphrag": lambda: list_calls(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                page=page,
-                limit=limit,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_list_calls(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                page=page,
-                limit=limit,
-            ),
-            "joern": lambda: joern_list_calls(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                page=page,
-                limit=limit,
-            ),
-        },
     )
 
 
@@ -3121,39 +3068,15 @@ async def get_cfg_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="cfg",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="cfg",
-        tool_name="cfg",
-        params={"node_ref": node_ref, "depth": depth},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"node_ref": node_ref, "depth": depth},
+        extra_kw={"node_ref": node_ref, "depth": depth},
         engines=engines,
-        runners={
-            "graphrag": lambda: get_cfg(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                depth=depth,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_get_cfg(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                depth=depth,
-            ),
-            "joern": lambda: joern_get_cfg(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                depth=depth,
-            ),
-        },
     )
 
 
@@ -3168,42 +3091,15 @@ async def get_variable_flow_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="variable_flow",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="variable_flow",
-        tool_name="variable_flow",
-        params={"node_ref": node_ref, "variable": variable or "", "max_hops": max_hops},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"node_ref": node_ref, "variable": variable or "", "max_hops": max_hops},
+        extra_kw={"node_ref": node_ref, "variable": variable, "max_hops": max_hops},
         engines=engines,
-        runners={
-            "graphrag": lambda: get_variable_flow(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                variable=variable,
-                max_hops=max_hops,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_get_variable_flow(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                variable=variable,
-                max_hops=max_hops,
-            ),
-            "joern": lambda: joern_get_variable_flow(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                node_ref=node_ref,
-                variable=variable,
-                max_hops=max_hops,
-            ),
-        },
     )
 
 
@@ -3217,39 +3113,15 @@ async def find_taint_sources_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="taint_sources",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="taint_sources",
-        tool_name="taint_sources",
-        params={"language": language or "python", "limit": limit},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"language": language or "python", "limit": limit},
+        extra_kw={"language": language, "limit": limit},
         engines=engines,
-        runners={
-            "graphrag": lambda: find_taint_sources(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_find_taint_sources(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-            ),
-            "joern": lambda: joern_find_taint_sources(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-            ),
-        },
     )
 
 
@@ -3263,39 +3135,15 @@ async def find_taint_sinks_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="taint_sinks",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="taint_sinks",
-        tool_name="taint_sinks",
-        params={"language": language or "python", "limit": limit},
         cache_ttl_seconds=cache_ttl_seconds,
+        params={"language": language or "python", "limit": limit},
+        extra_kw={"language": language, "limit": limit},
         engines=engines,
-        runners={
-            "graphrag": lambda: find_taint_sinks(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_find_taint_sinks(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-            ),
-            "joern": lambda: joern_find_taint_sinks(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                limit=limit,
-            ),
-        },
     )
 
 
@@ -3310,44 +3158,17 @@ async def find_taint_flows_multi(
     cache_ttl_seconds: int,
     engines: list[str] | None = None,
 ) -> dict[str, Any]:
-    return await _run_multi_engine(
+    return await _run_analysis_multi(
         session,
+        tool_name="taint_flows",
         collection_id=collection_id,
         scenario_id=scenario_id,
-        projection_profile="taint_flows",
-        tool_name="taint_flows",
+        cache_ttl_seconds=cache_ttl_seconds,
         params={
             "language": language or "python",
             "max_hops": max_hops,
             "max_results": max_results,
         },
-        cache_ttl_seconds=cache_ttl_seconds,
+        extra_kw={"language": language, "max_hops": max_hops, "max_results": max_results},
         engines=engines,
-        runners={
-            "graphrag": lambda: find_taint_flows(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                max_hops=max_hops,
-                max_results=max_results,
-                cache_ttl_seconds=cache_ttl_seconds,
-            ),
-            "lsp": lambda: lsp_find_taint_flows(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                max_hops=max_hops,
-                max_results=max_results,
-            ),
-            "joern": lambda: joern_find_taint_flows(
-                session,
-                collection_id=collection_id,
-                scenario_id=scenario_id,
-                language=language,
-                max_hops=max_hops,
-                max_results=max_results,
-            ),
-        },
     )

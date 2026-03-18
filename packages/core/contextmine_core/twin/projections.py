@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import PurePosixPath
 from typing import Any
+
+from contextmine_core.twin.grouping import (
+    canonical_file_path_from_node,
+    derive_arch_group,
+)
 
 
 class GraphProjection(str, Enum):
@@ -39,52 +43,27 @@ class ArchitectureProjectionEdge:
     meta: dict[str, Any]
 
 
-def _canonical_file_path(node: dict[str, Any]) -> str | None:
-    kind = str(node.get("kind") or "").lower()
-    natural_key = str(node.get("natural_key") or "")
-    meta = node.get("meta") or {}
-
-    if kind == "file" and natural_key.startswith("file:"):
-        return natural_key.split(":", 1)[1]
-
-    file_path = meta.get("file_path")
-    if isinstance(file_path, str) and file_path.strip():
-        return file_path.strip()
-
-    return None
+_canonical_file_path = canonical_file_path_from_node
 
 
 def _derive_group(
     path: str | None, meta: dict[str, Any]
 ) -> tuple[str, str, str, str, float] | None:
-    architecture_meta = meta.get("architecture")
-    if isinstance(architecture_meta, dict):
-        explicit_domain = str(architecture_meta.get("domain") or "").strip()
-        explicit_container = str(architecture_meta.get("container") or "").strip()
-        explicit_component = str(architecture_meta.get("component") or "").strip()
-        if explicit_domain and explicit_container:
-            component = explicit_component or explicit_container
-            return explicit_domain, explicit_container, component, "explicit", 1.0
+    """Thin wrapper adding strategy/confidence to the shared grouping logic."""
+    payload = meta or {}
+    architecture_meta = payload.get("architecture")
+    is_explicit = isinstance(architecture_meta, dict) and bool(
+        str(architecture_meta.get("domain") or "").strip()
+        and str(architecture_meta.get("container") or "").strip()
+    )
 
-    if not path:
+    group = derive_arch_group(path, meta)
+    if group is None:
         return None
 
-    normalized = path.strip("/")
-    parts = [p for p in normalized.split("/") if p]
-    if not parts:
-        return None
-
-    if parts[0] == "services" and len(parts) >= 3:
-        domain = parts[1]
-        container = parts[2]
-    elif parts[0] == "apps" and len(parts) >= 2:
-        domain = parts[1]
-        container = parts[1]
-    else:
-        domain = parts[0]
-        container = parts[1] if len(parts) > 1 else parts[0]
-
-    component = PurePosixPath(normalized).stem or container
+    domain, container, component = group
+    if is_explicit:
+        return domain, container, component, "explicit", 1.0
     return domain, container, component, "heuristic", 0.6
 
 

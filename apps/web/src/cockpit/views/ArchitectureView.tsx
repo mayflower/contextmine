@@ -1,6 +1,8 @@
 import mermaidLib from 'mermaid'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import ViewShell from '../components/ViewShell'
+import { renderMermaid } from '../utils/mermaidUtils'
 import type {
   Arc42DriftDelta,
   Arc42DriftPayload,
@@ -93,23 +95,6 @@ function groupPortsByContainer(items: PortAdapterItem[], direction: 'inbound' | 
     .map(([container, rows]) => ({ container, rows }))
 }
 
-async function renderMermaid(container: HTMLElement, id: string, content: string) {
-  if (!content.trim()) {
-    const pre = document.createElement('pre')
-    container.replaceChildren(pre)
-    return
-  }
-  const rendered = await mermaidLib.render(id, content)
-  const parsed = new DOMParser().parseFromString(rendered.svg, 'image/svg+xml')
-  if (parsed.querySelector('parsererror')) {
-    const pre = document.createElement('pre')
-    pre.textContent = content
-    container.replaceChildren(pre)
-    return
-  }
-  container.replaceChildren(document.importNode(parsed.documentElement, true))
-}
-
 export default function ArchitectureView({
   state,
   error,
@@ -191,35 +176,23 @@ export default function ArchitectureView({
     run()
   }, [erm?.mermaid?.content])
 
-  if (state === 'loading' && !arc42 && !portsAdapters && !drift && !erm) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-architecture" role="tabpanel">
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !arc42 && !portsAdapters && !drift && !erm) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-architecture" role="tabpanel">
-        <h3>Architecture view failed</h3>
-        <p>{error || 'Could not load architecture intelligence payloads.'}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-architecture"
+      title="Architecture view"
+      hasData={Boolean(arc42 || portsAdapters || drift || erm)}
+      onRetry={onRetry}
+      skeleton={
+        <>
+          <div className="cockpit2-skeleton-card" />
+          <div className="cockpit2-skeleton-card" />
+          <div className="cockpit2-skeleton-card tall" />
+        </>
+      }
+    >
     <section className="cockpit2-panel cockpit2-architecture-panel" id="cockpit-panel-architecture" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Architecture intelligence</h3>
         <p className="muted">
@@ -234,7 +207,7 @@ export default function ArchitectureView({
             onClick={() => void onReindex()}
             disabled={actionsBusy}
           >
-            {actions.reindexState === 'loading' ? 'Reindexing...' : 'Daten neu indizieren'}
+            {actions.reindexState === 'loading' ? 'Reindexing...' : 'Reindex data'}
           </button>
           <button
             type="button"
@@ -242,7 +215,7 @@ export default function ArchitectureView({
             onClick={() => void onRegenerateArc42()}
             disabled={actionsBusy}
           >
-            {actions.regenerateState === 'loading' ? 'Generating arc42...' : 'arc42 neu generieren'}
+            {actions.regenerateState === 'loading' ? 'Generating arc42...' : 'Regenerate arc42'}
           </button>
         </div>
         <div className="cockpit2-chip-row" aria-live="polite">
@@ -561,5 +534,6 @@ export default function ArchitectureView({
         </article>
       ) : null}
     </section>
+    </ViewShell>
   )
 }

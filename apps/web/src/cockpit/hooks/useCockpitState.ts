@@ -5,32 +5,14 @@ import {
   type CockpitSelection,
   type OverlayMode,
   type CockpitView,
+  COCKPIT_LAYERS,
+  COCKPIT_VIEWS,
   DEFAULT_LAYER,
   DEFAULT_VIEW,
 } from '../types'
 
-const VALID_LAYERS: CockpitLayer[] = [
-  'portfolio_system',
-  'domain_container',
-  'component_interface',
-  'code_controlflow',
-]
-
-const VALID_VIEWS: CockpitView[] = [
-  'overview',
-  'topology',
-  'deep_dive',
-  'c4_diff',
-  'architecture',
-  'city',
-  'evolution',
-  'graphrag',
-  'semantic_map',
-  'ui_map',
-  'test_matrix',
-  'rebuild_readiness',
-  'exports',
-]
+const VALID_LAYERS: CockpitLayer[] = COCKPIT_LAYERS.map((l) => l.key)
+const VALID_VIEWS: CockpitView[] = COCKPIT_VIEWS.map((v) => v.key)
 const VALID_OVERLAYS: OverlayMode[] = ['none', 'runtime', 'risk']
 const DEFAULT_PAGE = 0
 const DEFAULT_LIMIT = 1200

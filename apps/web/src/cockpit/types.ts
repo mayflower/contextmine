@@ -871,6 +871,14 @@ export const COCKPIT_LAYERS: Array<{ key: CockpitLayer; label: string }> = [
   { key: 'component_interface', label: 'Component / Interface' },
 ]
 
+const LAYER_LABEL_MAP: Record<CockpitLayer, string> = Object.fromEntries(
+  COCKPIT_LAYERS.map((l) => [l.key, l.label]),
+) as Record<CockpitLayer, string>
+
+export function layerLabel(layer: CockpitLayer): string {
+  return LAYER_LABEL_MAP[layer] ?? layer
+}
+
 export const EXPORT_FORMATS: Array<{ key: ExportFormat; label: string; extension: string }> = [
   { key: 'cc_json', label: 'CodeCharta (cc.json)', extension: 'cc.json' },
   { key: 'cx2', label: 'CX2', extension: 'cx2.json' },

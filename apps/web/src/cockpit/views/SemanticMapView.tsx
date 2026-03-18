@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 
+import ViewShell from '../components/ViewShell'
 import type {
   CockpitLoadState,
   SemanticMapMode,
@@ -274,35 +275,20 @@ export default function SemanticMapView({
   const hasSelection = Boolean(selectedNodeId)
   const flaggedDriftCount = diffItems.filter((item) => item.drift >= diffMinDrift).length
 
-  if (state === 'loading' && !payload) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-semantic_map" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !payload) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-semantic_map" role="tabpanel">
-        <h3>Semantic map request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   const unavailable = payload?.status.status === 'unavailable'
 
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-semantic_map"
+      title="Semantic map"
+      hasData={Boolean(payload)}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel cockpit2-semantic-panel" id="cockpit-panel-semantic_map" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Semantic Map</h3>
         <p className="muted">
@@ -433,5 +419,6 @@ export default function SemanticMapView({
         </>
       )}
     </section>
+    </ViewShell>
   )
 }

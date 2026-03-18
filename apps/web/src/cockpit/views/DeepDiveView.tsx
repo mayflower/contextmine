@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import cytoscape, { type Core } from 'cytoscape'
 
+import ViewShell from '../components/ViewShell'
+import { layerLabel } from '../types'
 import type { CockpitLayer, CockpitLoadState, DeepDiveMode, OverlayState, TwinGraphResponse } from '../types'
 
 interface DeepDiveViewProps {
@@ -21,13 +23,6 @@ interface DeepDiveViewProps {
 
 function getLayoutName(density: number): 'cose' | 'breadthfirst' {
   return density > 5000 ? 'breadthfirst' : 'cose'
-}
-
-function layerLabel(layer: CockpitLayer): string {
-  if (layer === 'portfolio_system') return 'Portfolio / System'
-  if (layer === 'domain_container') return 'Domain / Container'
-  if (layer === 'component_interface') return 'Component / Interface'
-  return 'Code / Controlflow'
 }
 
 export default function DeepDiveView({
@@ -169,33 +164,18 @@ export default function DeepDiveView({
     }
   }, [graph, state, showLabels, density, overlay, selectedNodeId, onSelectNodeId])
 
-  if (state === 'loading' && graph.nodes.length === 0) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-deep_dive" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && graph.nodes.length === 0) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-deep_dive" role="tabpanel">
-        <h3>Deep dive request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-deep_dive"
+      title="Deep dive"
+      hasData={graph.nodes.length > 0}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel" id="cockpit-panel-deep_dive" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Deep dive graph</h3>
         <p className="muted">
@@ -276,5 +256,6 @@ export default function DeepDiveView({
         </section>
       )}
     </section>
+    </ViewShell>
   )
 }

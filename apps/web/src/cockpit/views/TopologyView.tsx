@@ -8,7 +8,9 @@ import ReactFlow, {
   type ReactFlowInstance,
 } from 'reactflow'
 
+import ViewShell from '../components/ViewShell'
 import { runElkLayout, runGridLayout, type LayoutEngine } from '../layout/layoutCore'
+import { layerLabel } from '../types'
 import type { CockpitLayer, CockpitLoadState, OverlayState, TwinGraphResponse } from '../types'
 
 interface TopologyViewProps {
@@ -27,13 +29,6 @@ interface TopologyViewProps {
   onSelectNodeId: (nodeId: string) => void
   onLayoutCompleted: (engine: LayoutEngine, durationMs: number, nodeCount: number) => void
   onRetry: () => void
-}
-
-function layerLabel(layer: CockpitLayer): string {
-  if (layer === 'portfolio_system') return 'Portfolio / System'
-  if (layer === 'domain_container') return 'Domain / Container'
-  if (layer === 'component_interface') return 'Component / Interface'
-  return 'Code / Controlflow'
 }
 
 function overlayColorForNode(overlay: OverlayState, naturalKey: string, fallbackName: string): string {
@@ -190,35 +185,20 @@ export default function TopologyView({
         style: { strokeWidth: width },
       }
     })
-  }, [graph.edges, graph.nodes, showLabels, overlay])
-
-  if (state === 'loading' && graph.nodes.length === 0) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-topology" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && graph.nodes.length === 0) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-topology" role="tabpanel">
-        <h3>Topology request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
+  }, [graph.edges, graph.nodes, overlay])
 
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-topology"
+      title="Topology"
+      hasData={graph.nodes.length > 0}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel" id="cockpit-panel-topology" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Topology graph</h3>
         <p className="muted">
@@ -320,5 +300,6 @@ export default function TopologyView({
         )}
       </div>
     </section>
+    </ViewShell>
   )
 }

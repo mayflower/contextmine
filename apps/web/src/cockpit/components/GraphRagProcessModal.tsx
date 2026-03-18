@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import mermaid from 'mermaid'
 
 import type { GraphRagProcessDetailPayload } from '../types'
+import { renderMermaidSvg } from '../utils/mermaidUtils'
 
 interface GraphRagProcessModalProps {
   detail: GraphRagProcessDetailPayload
@@ -9,18 +10,6 @@ interface GraphRagProcessModalProps {
   onClose: () => void
   onSelectNodeId: (nodeId: string) => void
   onToggleFocus: () => void
-}
-
-function renderMermaidSvg(container: HTMLElement, svg: string, fallbackText: string): void {
-  const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml')
-  if (parsed.querySelector('parsererror')) {
-    const pre = document.createElement('pre')
-    pre.textContent = fallbackText
-    container.replaceChildren(pre)
-    return
-  }
-  const svgElement = parsed.documentElement
-  container.replaceChildren(document.importNode(svgElement, true))
 }
 
 function toMermaid(detail: GraphRagProcessDetailPayload): string {

@@ -10,12 +10,32 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from contextmine_core.analyzer.extractors.ast_utils import (
+    HTTP_CLIENT_NAMES,
+    HTTP_METHOD_NAMES,
     first_child,
+    first_string_argument,
     is_pascal_case,
+    js_call_name,
     line_number,
     node_text,
+    string_literal,
     unquote,
     walk,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    create_node_evidence as _create_node_evidence,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    dedupe_strings as _dedupe,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    provenance as _provenance,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    upsert_edge as _upsert_edge,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    upsert_node as _upsert_node,
 )
 from contextmine_core.analyzer.extractors.traceability import (
     build_endpoint_symbol_index,
@@ -23,38 +43,18 @@ from contextmine_core.analyzer.extractors.traceability import (
     symbol_token_variants,
 )
 from contextmine_core.models import (
-    KnowledgeEdge,
     KnowledgeEdgeKind,
     KnowledgeNode,
-    KnowledgeNodeEvidence,
     KnowledgeNodeKind,
 )
 from contextmine_core.treesitter.languages import TreeSitterLanguage, detect_language
 from contextmine_core.treesitter.manager import get_treesitter_manager
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
-
-
-def _provenance(
-    *,
-    mode: str,
-    extractor: str,
-    confidence: float,
-    evidence_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "provenance": {
-            "mode": mode,
-            "extractor": extractor,
-            "confidence": round(max(0.0, min(confidence, 1.0)), 4),
-            "evidence_ids": list(dict.fromkeys(evidence_ids or [])),
-        }
-    }
 
 
 JS_UI_FILE_SUFFIXES = (".tsx", ".jsx", ".vue", ".svelte", ".ts", ".js")
@@ -118,9 +118,6 @@ UI_ROUTE_FILE_BASENAMES = {
     "routes.ts",
     "routes.js",
 }
-HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
-HTTP_CLIENT_NAMES = {"axios", "client", "api", "http", "request", "agent"}
-ROUTER_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 NAV_METHOD_NAMES = {"navigate", "push", "replace", "to"}
 JS_UI_LANGUAGES = {
     TreeSitterLanguage.JAVASCRIPT,
@@ -341,10 +338,6 @@ def _route_path_from_file(file_path: str) -> str | None:
     if base_prefix:
         route = f"{base_prefix.rstrip('/')}/{route}".rstrip("/")
     return f"/{route.strip('/')}"
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(v.strip() for v in values if v and v.strip()))
 
 
 def _line_number_for_offset(content: str, offset: int) -> int:
@@ -657,7 +650,7 @@ def _route_from_object(file_path: str, content: str, node: Any) -> UIRouteDef | 
 
 def _route_from_router_call(file_path: str, content: str, node: Any) -> UIRouteDef | None:
     _, base_name, method_name = _js_call_name(content, node)
-    if method_name.lower() not in ROUTER_METHOD_NAMES:
+    if method_name.lower() not in HTTP_METHOD_NAMES:
         return None
     if "router" not in base_name.lower():
         return None
@@ -821,20 +814,7 @@ def _contains_jsx(node: Any) -> bool:
     return any(child.type in {"jsx_element", "jsx_self_closing_element"} for child in walk(node))
 
 
-def _js_call_name(content: str, call_node: Any) -> tuple[str, str, str]:
-    function = call_node.child_by_field_name("function")
-    if function is None:
-        return "", "", ""
-    if function.type == "identifier":
-        base = node_text(content, function).strip()
-        return base, base, ""
-    if function.type == "member_expression":
-        obj = node_text(content, function.child_by_field_name("object")).strip()
-        prop = node_text(content, function.child_by_field_name("property")).strip()
-        full = f"{obj}.{prop}" if obj and prop else obj or prop
-        return full, obj, prop
-    token = node_text(content, function).strip()
-    return token, token, ""
+_js_call_name = js_call_name
 
 
 def _endpoint_from_call(
@@ -876,15 +856,8 @@ def _navigation_target(
     return None
 
 
-def _first_string_argument(content: str, call_node: Any) -> str | None:
-    args = call_node.child_by_field_name("arguments")
-    if args is None:
-        return None
-    for child in args.children:
-        literal = _string_literal(content, child)
-        if literal:
-            return literal
-    return None
+_first_string_argument = first_string_argument
+_string_literal = string_literal
 
 
 def _first_string_or_url_argument(content: str, call_node: Any) -> str | None:
@@ -921,17 +894,6 @@ def _object_field_string(
         literal = _string_literal(content, value_node)
         if literal:
             return literal
-    return None
-
-
-def _string_literal(content: str, node: Any) -> str | None:
-    if node.type == "string":
-        return unquote(node_text(content, node))
-    if node.type == "template_string":
-        raw = node_text(content, node).strip()
-        if "${" in raw:
-            return None
-        return unquote(raw)
     return None
 
 
@@ -989,74 +951,6 @@ def _view_name_from_value(content: str, value_node: Any) -> str | None:
     return None
 
 
-async def _create_node_evidence(
-    session: AsyncSession,
-    *,
-    node_id: UUID,
-    file_path: str,
-    line: int,
-    snippet: str | None = None,
-) -> str:
-    from contextmine_core.models import KnowledgeEvidence
-
-    evidence = KnowledgeEvidence(
-        file_path=file_path,
-        start_line=max(1, line),
-        end_line=max(1, line),
-        snippet=snippet,
-    )
-    session.add(evidence)
-    await session.flush()
-    session.add(KnowledgeNodeEvidence(node_id=node_id, evidence_id=evidence.id))
-    return str(evidence.id)
-
-
-async def _upsert_node(
-    session: AsyncSession,
-    *,
-    collection_id: UUID,
-    kind: KnowledgeNodeKind,
-    natural_key: str,
-    name: str,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeNode).values(
-        collection_id=collection_id,
-        kind=kind,
-        natural_key=natural_key,
-        name=name,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_node_natural",
-        set_={"name": stmt.excluded.name, "meta": stmt.excluded.meta},
-    ).returning(KnowledgeNode.id)
-    return (await session.execute(stmt)).scalar_one()
-
-
-async def _upsert_edge(
-    session: AsyncSession,
-    *,
-    collection_id: UUID,
-    source_node_id: UUID,
-    target_node_id: UUID,
-    kind: KnowledgeEdgeKind,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeEdge).values(
-        collection_id=collection_id,
-        source_node_id=source_node_id,
-        target_node_id=target_node_id,
-        kind=kind,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_edge_unique",
-        set_={"meta": stmt.excluded.meta},
-    ).returning(KnowledgeEdge.id)
-    return (await session.execute(stmt)).scalar_one()
-
-
 def _normalize_endpoint_path(value: str) -> str | None:
     raw = (value or "").strip()
     if not raw:
@@ -1087,18 +981,7 @@ def _endpoint_path_from_name(name: str) -> tuple[str | None, str | None]:
     return method, _normalize_endpoint_path(path)
 
 
-def _parse_endpoint_hint(hint: str) -> tuple[str | None, str | None]:
-    value = (hint or "").strip()
-    if not value:
-        return None, None
-    method = None
-    path = value
-    if " " in value:
-        first, remainder = value.split(" ", 1)
-        if first.strip().lower() in HTTP_METHOD_NAMES:
-            method = first.strip().lower()
-            path = remainder.strip()
-    return method, _normalize_endpoint_path(path)
+_parse_endpoint_hint = _endpoint_path_from_name
 
 
 async def _build_endpoint_path_indexes(
@@ -1165,226 +1048,221 @@ async def build_ui_graph(
     )
 
     for extraction in extractions:
-        route_ids_for_extraction: dict[str, UUID] = {}
-        view_ids_for_extraction: dict[str, UUID] = {}
-        for route in extraction.routes:
-            route_key = f"ui_route:{route.path}"
-            route_meta = {
-                "file_path": route.file_path,
-                "path": route.path,
-                "view_name_hint": route.view_name_hint,
-                **_provenance(
-                    mode="inferred" if route.inferred else "deterministic",
-                    extractor=_EXTRACTOR_UI_V1,
-                    confidence=0.79 if route.inferred else 0.98,
-                ),
-            }
-            route_id = await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.UI_ROUTE,
-                natural_key=route_key,
-                name=route.path,
-                meta=route_meta,
-            )
-            evidence_id = await _create_node_evidence(
-                session,
-                node_id=route_id,
-                file_path=route.file_path,
-                line=route.line,
-                snippet=f"route {route.path}",
-            )
-            route_meta["provenance"]["evidence_ids"] = [evidence_id]
-            await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.UI_ROUTE,
-                natural_key=route_key,
-                name=route.path,
-                meta=route_meta,
-            )
-            route_ids_for_extraction[route.path] = route_id
-            stats["ui_routes"] += 1
+        route_ids_for_extraction = await _persist_routes(session, collection_id, extraction, stats)
+        view_ids_for_extraction = await _persist_views(
+            session,
+            collection_id,
+            extraction,
+            source_id,
+            endpoint_symbol_index,
+            endpoint_path_index,
+            endpoint_method_path_index,
+            stats,
+        )
+        await _link_routes_to_views(
+            session,
+            collection_id,
+            extraction,
+            route_ids_for_extraction,
+            view_ids_for_extraction,
+            stats,
+        )
 
-        for view in extraction.views:
-            view_key = f"ui_view:{view.file_path}:{view.name}"
-            view_meta = {
+    return stats
+
+
+async def _persist_routes(
+    session: AsyncSession,
+    collection_id: UUID,
+    extraction: UIExtraction,
+    stats: dict[str, int],
+) -> dict[str, UUID]:
+    """Persist UI route nodes. Returns a mapping of route path to node ID."""
+    route_ids: dict[str, UUID] = {}
+
+    for route in extraction.routes:
+        route_key = f"ui_route:{route.path}"
+        route_meta = {
+            "file_path": route.file_path,
+            "path": route.path,
+            "view_name_hint": route.view_name_hint,
+            **_provenance(
+                mode="inferred" if route.inferred else "deterministic",
+                extractor=_EXTRACTOR_UI_V1,
+                confidence=0.79 if route.inferred else 0.98,
+            ),
+        }
+        route_id = await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.UI_ROUTE,
+            natural_key=route_key,
+            name=route.path,
+            meta=route_meta,
+        )
+        evidence_id = await _create_node_evidence(
+            session,
+            node_id=route_id,
+            file_path=route.file_path,
+            start_line=route.line,
+            snippet=f"route {route.path}",
+        )
+        route_meta["provenance"]["evidence_ids"] = [evidence_id]
+        await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.UI_ROUTE,
+            natural_key=route_key,
+            name=route.path,
+            meta=route_meta,
+        )
+        route_ids[route.path] = route_id
+        stats["ui_routes"] += 1
+
+    return route_ids
+
+
+async def _persist_views(
+    session: AsyncSession,
+    collection_id: UUID,
+    extraction: UIExtraction,
+    source_id: UUID | None,
+    endpoint_symbol_index: dict[str, set[UUID]],
+    endpoint_path_index: dict[str, set[UUID]],
+    endpoint_method_path_index: dict[tuple[str, str], set[UUID]],
+    stats: dict[str, int],
+) -> dict[str, UUID]:
+    """Persist UI view nodes, components, contracts, and endpoint links.
+
+    Returns a mapping of view name to node ID.
+    """
+    view_ids: dict[str, UUID] = {}
+
+    for view in extraction.views:
+        view_key = f"ui_view:{view.file_path}:{view.name}"
+        view_meta = {
+            "file_path": view.file_path,
+            "components": view.components,
+            "symbol_hints": view.symbol_hints,
+            "endpoint_hints": view.endpoint_hints,
+            "navigation_targets": view.navigation_targets,
+            "call_sites": view.call_sites,
+            **_provenance(
+                mode="inferred" if view.inferred else "deterministic",
+                extractor=_EXTRACTOR_UI_V1,
+                confidence=0.8 if view.inferred else 0.94,
+            ),
+        }
+        view_id = await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.UI_VIEW,
+            natural_key=view_key,
+            name=view.name,
+            meta=view_meta,
+        )
+        evidence_id = await _create_node_evidence(
+            session,
+            node_id=view_id,
+            file_path=view.file_path,
+            start_line=view.line,
+            snippet=f"view {view.name}",
+        )
+        view_meta["provenance"]["evidence_ids"] = [evidence_id]
+        await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.UI_VIEW,
+            natural_key=view_key,
+            name=view.name,
+            meta=view_meta,
+        )
+        view_ids[view.name] = view_id
+        stats["ui_views"] += 1
+
+        for component_name in view.components:
+            component_key = f"ui_component:{view.file_path}:{component_name}"
+            component_meta = {
                 "file_path": view.file_path,
-                "components": view.components,
-                "symbol_hints": view.symbol_hints,
-                "endpoint_hints": view.endpoint_hints,
-                "navigation_targets": view.navigation_targets,
-                "call_sites": view.call_sites,
-                **_provenance(
-                    mode="inferred" if view.inferred else "deterministic",
+                **_provenance(mode="deterministic", extractor=_EXTRACTOR_UI_V1, confidence=0.88),
+            }
+            component_id = await _upsert_node(
+                session,
+                collection_id=collection_id,
+                kind=KnowledgeNodeKind.UI_COMPONENT,
+                natural_key=component_key,
+                name=component_name,
+                meta=component_meta,
+            )
+            stats["ui_components"] += 1
+
+            await _upsert_edge(
+                session,
+                collection_id=collection_id,
+                source_node_id=view_id,
+                target_node_id=component_id,
+                kind=KnowledgeEdgeKind.UI_VIEW_COMPOSES_COMPONENT,
+                meta=_provenance(
+                    mode="deterministic",
                     extractor=_EXTRACTOR_UI_V1,
-                    confidence=0.8 if view.inferred else 0.94,
+                    confidence=0.88,
+                    evidence_ids=[evidence_id],
+                ),
+            )
+            stats["ui_edges"] += 1
+
+        resolved_symbol_refs = await resolve_symbol_refs_for_calls(
+            session=session,
+            collection_id=collection_id,
+            source_id=source_id,
+            file_path=view.file_path,
+            call_sites=view.call_sites,
+            fallback_symbol_hints=view.symbol_hints,
+        )
+        view_meta["resolved_symbol_refs"] = [
+            {
+                "symbol_node_id": str(ref.symbol_node_id),
+                "symbol_name": ref.symbol_name,
+                "engine": ref.engine,
+                "confidence": ref.confidence,
+            }
+            for ref in resolved_symbol_refs
+        ]
+        await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.UI_VIEW,
+            natural_key=view_key,
+            name=view.name,
+            meta=view_meta,
+        )
+
+        linked_endpoint_ids: set[UUID] = set()
+        for ref in resolved_symbol_refs:
+            contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
+            contract_meta = {
+                "source_view": view.name,
+                "symbol_node_id": str(ref.symbol_node_id),
+                "symbol_name": ref.symbol_name,
+                "resolution_engine": ref.engine,
+                **_provenance(
+                    mode="deterministic" if ref.engine.startswith("scip") else "inferred",
+                    extractor=f"{_EXTRACTOR_UI_V1}.{ref.engine}",
+                    confidence=ref.confidence,
                 ),
             }
-            view_id = await _upsert_node(
+            contract_id = await _upsert_node(
                 session,
                 collection_id=collection_id,
-                kind=KnowledgeNodeKind.UI_VIEW,
-                natural_key=view_key,
-                name=view.name,
-                meta=view_meta,
+                kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
+                natural_key=contract_key,
+                name=f"{view.name} contract",
+                meta=contract_meta,
             )
-            evidence_id = await _create_node_evidence(
-                session,
-                node_id=view_id,
-                file_path=view.file_path,
-                line=view.line,
-                snippet=f"view {view.name}",
-            )
-            view_meta["provenance"]["evidence_ids"] = [evidence_id]
-            await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.UI_VIEW,
-                natural_key=view_key,
-                name=view.name,
-                meta=view_meta,
-            )
-            view_ids_for_extraction[view.name] = view_id
-            stats["ui_views"] += 1
-
-            for component_name in view.components:
-                component_key = f"ui_component:{view.file_path}:{component_name}"
-                component_meta = {
-                    "file_path": view.file_path,
-                    **_provenance(
-                        mode="deterministic", extractor=_EXTRACTOR_UI_V1, confidence=0.88
-                    ),
-                }
-                component_id = await _upsert_node(
-                    session,
-                    collection_id=collection_id,
-                    kind=KnowledgeNodeKind.UI_COMPONENT,
-                    natural_key=component_key,
-                    name=component_name,
-                    meta=component_meta,
-                )
-                stats["ui_components"] += 1
-
-                await _upsert_edge(
-                    session,
-                    collection_id=collection_id,
-                    source_node_id=view_id,
-                    target_node_id=component_id,
-                    kind=KnowledgeEdgeKind.UI_VIEW_COMPOSES_COMPONENT,
-                    meta=_provenance(
-                        mode="deterministic",
-                        extractor=_EXTRACTOR_UI_V1,
-                        confidence=0.88,
-                        evidence_ids=[evidence_id],
-                    ),
-                )
-                stats["ui_edges"] += 1
-
-            resolved_symbol_refs = await resolve_symbol_refs_for_calls(
-                session=session,
-                collection_id=collection_id,
-                source_id=source_id,
-                file_path=view.file_path,
-                call_sites=view.call_sites,
-                fallback_symbol_hints=view.symbol_hints,
-            )
-            view_meta["resolved_symbol_refs"] = [
-                {
-                    "symbol_node_id": str(ref.symbol_node_id),
-                    "symbol_name": ref.symbol_name,
-                    "engine": ref.engine,
-                    "confidence": ref.confidence,
-                }
-                for ref in resolved_symbol_refs
-            ]
-            await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.UI_VIEW,
-                natural_key=view_key,
-                name=view.name,
-                meta=view_meta,
-            )
-
-            linked_endpoint_ids: set[UUID] = set()
-            for ref in resolved_symbol_refs:
-                contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
-                contract_meta = {
-                    "source_view": view.name,
-                    "symbol_node_id": str(ref.symbol_node_id),
-                    "symbol_name": ref.symbol_name,
-                    "resolution_engine": ref.engine,
-                    **_provenance(
-                        mode="deterministic" if ref.engine.startswith("scip") else "inferred",
-                        extractor=f"{_EXTRACTOR_UI_V1}.{ref.engine}",
-                        confidence=ref.confidence,
-                    ),
-                }
-                contract_id = await _upsert_node(
-                    session,
-                    collection_id=collection_id,
-                    kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
-                    natural_key=contract_key,
-                    name=f"{view.name} contract",
-                    meta=contract_meta,
-                )
-                stats["interface_contracts"] += 1
-                token_candidates = symbol_token_variants(ref.symbol_name)
-                for token in token_candidates:
-                    endpoint_ids = endpoint_symbol_index.get(token, set())
-                    for endpoint_id in endpoint_ids:
-                        await _upsert_edge(
-                            session,
-                            collection_id=collection_id,
-                            source_node_id=contract_id,
-                            target_node_id=endpoint_id,
-                            kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
-                            meta=_provenance(
-                                mode="inferred",
-                                extractor=f"{_EXTRACTOR_UI_V1}.endpoint.{ref.engine}",
-                                confidence=max(0.66, ref.confidence - 0.08),
-                                evidence_ids=[evidence_id],
-                            ),
-                        )
-                        linked_endpoint_ids.add(endpoint_id)
-                        stats["contract_edges"] += 1
-
-            for endpoint_hint in view.endpoint_hints:
-                method_hint, path_hint = _parse_endpoint_hint(endpoint_hint)
-                if not path_hint:
-                    continue
-                endpoint_ids: set[UUID] = set(endpoint_path_index.get(path_hint, set()))
-                if method_hint:
-                    endpoint_ids.update(
-                        endpoint_method_path_index.get((method_hint, path_hint), set())
-                    )
-                endpoint_ids.difference_update(linked_endpoint_ids)
-                if not endpoint_ids:
-                    continue
-
-                method_token = method_hint or "any"
-                contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
-                contract_meta = {
-                    "source_view": view.name,
-                    "endpoint_hint": endpoint_hint,
-                    "endpoint_path": path_hint,
-                    "endpoint_method": method_hint,
-                    **_provenance(
-                        mode="inferred",
-                        extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
-                        confidence=0.83,
-                    ),
-                }
-                contract_id = await _upsert_node(
-                    session,
-                    collection_id=collection_id,
-                    kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
-                    natural_key=contract_key,
-                    name=f"{view.name} endpoint contract",
-                    meta=contract_meta,
-                )
-                stats["interface_contracts"] += 1
+            stats["interface_contracts"] += 1
+            token_candidates = symbol_token_variants(ref.symbol_name)
+            for token in token_candidates:
+                endpoint_ids = endpoint_symbol_index.get(token, set())
                 for endpoint_id in endpoint_ids:
                     await _upsert_edge(
                         session,
@@ -1394,46 +1272,106 @@ async def build_ui_graph(
                         kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
                         meta=_provenance(
                             mode="inferred",
-                            extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
-                            confidence=0.82,
+                            extractor=f"{_EXTRACTOR_UI_V1}.endpoint.{ref.engine}",
+                            confidence=max(0.66, ref.confidence - 0.08),
                             evidence_ids=[evidence_id],
                         ),
                     )
+                    linked_endpoint_ids.add(endpoint_id)
                     stats["contract_edges"] += 1
 
-        if extraction.routes and extraction.views:
-            default_view_name = extraction.views[0].name if len(extraction.views) == 1 else None
-            views_by_name = {view.name: view for view in extraction.views}
-            for route in extraction.routes:
-                route_id = route_ids_for_extraction.get(route.path)
-                if not route_id:
-                    continue
+        for endpoint_hint in view.endpoint_hints:
+            method_hint, path_hint = _parse_endpoint_hint(endpoint_hint)
+            if not path_hint:
+                continue
+            endpoint_ids: set[UUID] = set(endpoint_path_index.get(path_hint, set()))
+            if method_hint:
+                endpoint_ids.update(endpoint_method_path_index.get((method_hint, path_hint), set()))
+            endpoint_ids.difference_update(linked_endpoint_ids)
+            if not endpoint_ids:
+                continue
 
-                target_view_name = route.view_name_hint or default_view_name
-                target_view_id = (
-                    view_ids_for_extraction.get(target_view_name) if target_view_name else None
-                )
-                if target_view_id is None:
-                    continue
-
-                target_view = views_by_name.get(target_view_name) if target_view_name else None
-                inferred = (
-                    route.inferred
-                    or route.view_name_hint is None
-                    or bool(target_view and target_view.inferred)
-                )
+            method_token = method_hint or "any"
+            contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
+            contract_meta = {
+                "source_view": view.name,
+                "endpoint_hint": endpoint_hint,
+                "endpoint_path": path_hint,
+                "endpoint_method": method_hint,
+                **_provenance(
+                    mode="inferred",
+                    extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
+                    confidence=0.83,
+                ),
+            }
+            contract_id = await _upsert_node(
+                session,
+                collection_id=collection_id,
+                kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
+                natural_key=contract_key,
+                name=f"{view.name} endpoint contract",
+                meta=contract_meta,
+            )
+            stats["interface_contracts"] += 1
+            for endpoint_id in endpoint_ids:
                 await _upsert_edge(
                     session,
                     collection_id=collection_id,
-                    source_node_id=route_id,
-                    target_node_id=target_view_id,
-                    kind=KnowledgeEdgeKind.UI_ROUTE_RENDERS_VIEW,
+                    source_node_id=contract_id,
+                    target_node_id=endpoint_id,
+                    kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
                     meta=_provenance(
-                        mode="inferred" if inferred else "deterministic",
-                        extractor=_EXTRACTOR_UI_V1,
-                        confidence=0.78 if inferred else 0.94,
+                        mode="inferred",
+                        extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
+                        confidence=0.82,
+                        evidence_ids=[evidence_id],
                     ),
                 )
-                stats["ui_edges"] += 1
+                stats["contract_edges"] += 1
 
-    return stats
+    return view_ids
+
+
+async def _link_routes_to_views(
+    session: AsyncSession,
+    collection_id: UUID,
+    extraction: UIExtraction,
+    route_ids: dict[str, UUID],
+    view_ids: dict[str, UUID],
+    stats: dict[str, int],
+) -> None:
+    """Create edges linking UI routes to the views they render."""
+    if not extraction.routes or not extraction.views:
+        return
+
+    default_view_name = extraction.views[0].name if len(extraction.views) == 1 else None
+    views_by_name = {view.name: view for view in extraction.views}
+    for route in extraction.routes:
+        route_id = route_ids.get(route.path)
+        if not route_id:
+            continue
+
+        target_view_name = route.view_name_hint or default_view_name
+        target_view_id = view_ids.get(target_view_name) if target_view_name else None
+        if target_view_id is None:
+            continue
+
+        target_view = views_by_name.get(target_view_name) if target_view_name else None
+        inferred = (
+            route.inferred
+            or route.view_name_hint is None
+            or bool(target_view and target_view.inferred)
+        )
+        await _upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=route_id,
+            target_node_id=target_view_id,
+            kind=KnowledgeEdgeKind.UI_ROUTE_RENDERS_VIEW,
+            meta=_provenance(
+                mode="inferred" if inferred else "deterministic",
+                extractor=_EXTRACTOR_UI_V1,
+                confidence=0.78 if inferred else 0.94,
+            ),
+        )
+        stats["ui_edges"] += 1

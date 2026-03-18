@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    content_hash as _hash,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    provenance as _provenance,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    upsert_edge as _upsert_edge,
+)
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    upsert_node as _upsert_node,
+)
 from contextmine_core.analyzer.extractors.tests import TestsExtraction
 from contextmine_core.analyzer.extractors.traceability import (
     build_endpoint_symbol_index,
@@ -15,37 +26,14 @@ from contextmine_core.analyzer.extractors.traceability import (
 )
 from contextmine_core.analyzer.extractors.ui import UIExtraction
 from contextmine_core.models import (
-    KnowledgeEdge,
     KnowledgeEdgeKind,
     KnowledgeNode,
     KnowledgeNodeKind,
 )
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-def _hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
-
-
-def _provenance(
-    *,
-    mode: str,
-    extractor: str,
-    confidence: float,
-    evidence_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "provenance": {
-            "mode": mode,
-            "extractor": extractor,
-            "confidence": round(max(0.0, min(confidence, 1.0)), 4),
-            "evidence_ids": list(dict.fromkeys(evidence_ids or [])),
-        }
-    }
 
 
 MAX_FLOW_TOKEN_LEN = 160
@@ -205,52 +193,6 @@ def synthesize_user_flows(
         synthesis.flows.append(flow)
 
     return synthesis
-
-
-async def _upsert_node(
-    session: AsyncSession,
-    *,
-    collection_id: UUID,
-    kind: KnowledgeNodeKind,
-    natural_key: str,
-    name: str,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeNode).values(
-        collection_id=collection_id,
-        kind=kind,
-        natural_key=natural_key,
-        name=name,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_node_natural",
-        set_={"name": stmt.excluded.name, "meta": stmt.excluded.meta},
-    ).returning(KnowledgeNode.id)
-    return (await session.execute(stmt)).scalar_one()
-
-
-async def _upsert_edge(
-    session: AsyncSession,
-    *,
-    collection_id: UUID,
-    source_node_id: UUID,
-    target_node_id: UUID,
-    kind: KnowledgeEdgeKind,
-    meta: dict[str, Any],
-) -> UUID:
-    stmt = pg_insert(KnowledgeEdge).values(
-        collection_id=collection_id,
-        source_node_id=source_node_id,
-        target_node_id=target_node_id,
-        kind=kind,
-        meta=meta,
-    )
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_knowledge_edge_unique",
-        set_={"meta": stmt.excluded.meta},
-    ).returning(KnowledgeEdge.id)
-    return (await session.execute(stmt)).scalar_one()
 
 
 async def build_flows_graph(

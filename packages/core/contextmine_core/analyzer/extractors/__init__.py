@@ -99,7 +99,7 @@ from contextmine_core.analyzer.extractors.ui import (
 
 # Re-exports for backwards compatibility
 # The old erm module used ERMExtractor and ERMSchema - map to new schema module
-ERMExtractor = None  # Deprecated - use extract_schema_from_file instead
+ERMExtractor = None  # Deprecated - use extract_schema_from_file
 ERMSchema = AggregatedSchema  # Alias for backwards compatibility
 build_erm_graph = build_schema_graph  # Alias for backwards compatibility
 

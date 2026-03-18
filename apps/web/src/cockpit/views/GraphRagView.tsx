@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import cytoscape, { type Core } from 'cytoscape'
 
 import GraphRagProcessModal from '../components/GraphRagProcessModal'
+import ViewShell from '../components/ViewShell'
 import type {
   CockpitLoadState,
   GraphRagCommunity,
@@ -404,35 +405,20 @@ export default function GraphRagView({
 
   const activeModalProcessId = processDetail?.process.id || ''
 
-  if (state === 'loading' && graph.nodes.length === 0) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-graphrag" role="tabpanel">
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && graph.nodes.length === 0) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-graphrag" role="tabpanel">
-        <h3>GraphRAG request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   const showGuidedEmpty = status === 'unavailable' || graph.total_nodes === 0
 
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-graphrag"
+      title="GraphRAG"
+      hasData={graph.nodes.length > 0}
+      onRetry={onRetry}
+      skeletonCount={1}
+      skeletonTall
+    >
     <section className="cockpit2-panel cockpit2-graphrag-panel" id="cockpit-panel-graphrag" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>GraphRAG graph</h3>
         <p className="muted">
@@ -709,5 +695,6 @@ export default function GraphRagView({
         />
       ) : null}
     </section>
+    </ViewShell>
   )
 }

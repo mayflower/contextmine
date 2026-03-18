@@ -7,7 +7,6 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +19,7 @@ from contextmine_core.models import (
     TwinTemporalCouplingSnapshot,
 )
 from contextmine_core.pathing import canonicalize_repo_relative_path
+from contextmine_core.twin.grouping import derive_arch_group as _derive_arch_group_tuple
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,41 +85,12 @@ def _file_path_from_natural_key(node_natural_key: str) -> str | None:
 
 def derive_arch_group(path: str | None, meta: dict[str, Any] | None = None) -> EntityGroup | None:
     """Resolve domain/container/component from explicit architecture meta or heuristics."""
-    payload = meta or {}
-    architecture_meta = payload.get("architecture")
-    if isinstance(architecture_meta, dict):
-        explicit_domain = str(architecture_meta.get("domain") or "").strip()
-        explicit_container = str(architecture_meta.get("container") or "").strip()
-        explicit_component = str(architecture_meta.get("component") or "").strip()
-        if explicit_domain and explicit_container:
-            return EntityGroup(
-                domain=explicit_domain,
-                container=explicit_container,
-                component=explicit_component or explicit_container,
-            )
-
-    if not path:
+    # Canonicalize the path before delegating to the shared implementation.
+    canonical_path = canonicalize_repo_relative_path(path) if path else None
+    result = _derive_arch_group_tuple(canonical_path, meta)
+    if result is None:
         return None
-
-    normalized = canonicalize_repo_relative_path(path)
-    if not normalized:
-        return None
-
-    parts = [part for part in normalized.strip("/").split("/") if part]
-    if not parts:
-        return None
-
-    if parts[0] == "services" and len(parts) >= 3:
-        domain = parts[1]
-        container = parts[2]
-    elif parts[0] == "apps" and len(parts) >= 2:
-        domain = parts[1]
-        container = parts[1]
-    else:
-        domain = parts[0]
-        container = parts[1] if len(parts) > 1 else parts[0]
-
-    component = PurePosixPath(normalized).stem or container
+    domain, container, component = result
     return EntityGroup(domain=domain, container=container, component=component)
 
 
@@ -483,9 +454,7 @@ async def get_investment_utilization_payload(
 
     warnings: list[str] = []
     if not utilization_available:
-        warnings.append(
-            "Coverage coverage across entities is below 30%; utilization axis suppressed."
-        )
+        warnings.append("Coverage across entities is below 30%; utilization axis suppressed.")
 
     items.sort(
         key=lambda item: (

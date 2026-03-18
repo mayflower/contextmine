@@ -1,3 +1,4 @@
+import ViewShell from '../components/ViewShell'
 import type { CockpitLoadState, RebuildReadinessPayload } from '../types'
 
 interface RebuildReadinessViewProps {
@@ -17,34 +18,17 @@ export default function RebuildReadinessView({
   payload,
   onRetry,
 }: RebuildReadinessViewProps) {
-  if (state === 'loading' && !payload) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-rebuild_readiness" role="tabpanel">
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !payload) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-rebuild_readiness" role="tabpanel">
-        <h3>Readiness request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-rebuild_readiness"
+      title="Readiness"
+      hasData={Boolean(payload)}
+      onRetry={onRetry}
+      skeletonCount={2}
+    >
     <section className="cockpit2-panel" id="cockpit-panel-rebuild_readiness" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Rebuild readiness</h3>
         <p className="muted">
@@ -117,5 +101,6 @@ export default function RebuildReadinessView({
         </article>
       ) : null}
     </section>
+    </ViewShell>
   )
 }

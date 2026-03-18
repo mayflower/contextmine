@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 
+import ViewShell from '../components/ViewShell'
 import type { CityPayload, CockpitLoadState } from '../types'
 
 type SortKey = 'node' | 'complexity' | 'coupling' | 'coverage' | 'loc' | 'change_frequency' | 'churn'
@@ -94,18 +95,7 @@ export default function OverviewView({
     setSortDirection(nextKey === 'node' ? 'asc' : 'desc')
   }
 
-  if (state === 'loading' && !city) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-overview" role="tabpanel">
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-      </div>
-    )
-  }
-
-  if ((state === 'empty' || !city) && !error) {
+  if ((state === 'empty' || !city) && !error && state !== 'loading') {
     return (
       <section className="cockpit2-empty" id="cockpit-panel-overview" role="tabpanel">
         <h3>No city data available yet</h3>
@@ -115,28 +105,20 @@ export default function OverviewView({
     )
   }
 
-  if (state === 'error' && !city) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-overview" role="tabpanel">
-        <h3>Overview request failed</h3>
-        <p>{error}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   const metricsUnavailable = city?.metrics_status?.status === 'unavailable'
   const unavailableReason = city?.metrics_status?.reason
 
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-overview"
+      title="Overview"
+      hasData={Boolean(city)}
+      onRetry={onRetry}
+      skeletonCount={4}
+    >
     <section className="cockpit2-workspace" id="cockpit-panel-overview" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-main">
         <article className="cockpit2-panel">
           <h3>System health summary</h3>
@@ -232,5 +214,6 @@ export default function OverviewView({
         </article>
       </div>
     </section>
+    </ViewShell>
   )
 }

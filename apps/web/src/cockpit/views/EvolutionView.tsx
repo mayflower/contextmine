@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import ReactFlow, { Background, Controls, type Edge as RFEdge, type Node as RFNode } from 'reactflow'
 
+import ViewShell from '../components/ViewShell'
 import type {
   CockpitLoadState,
   FitnessFunctionsPayload,
@@ -100,35 +101,23 @@ export default function EvolutionView({
   const fitnessViolations = fitnessFunctions?.violations || []
   const maxBubbleSize = Math.max(...investmentItems.map((item) => item.size), 1)
 
-  if (state === 'loading' && !investmentUtilization && !knowledgeIslands && !temporalCoupling && !fitnessFunctions) {
-    return (
-      <div className="cockpit2-skeleton-grid" id="cockpit-panel-evolution" role="tabpanel">
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card" />
-        <div className="cockpit2-skeleton-card tall" />
-      </div>
-    )
-  }
-
-  if (state === 'error' && !investmentUtilization && !knowledgeIslands && !temporalCoupling && !fitnessFunctions) {
-    return (
-      <section className="cockpit2-alert error" id="cockpit-panel-evolution" role="tabpanel">
-        <h3>Evolution view failed</h3>
-        <p>{error || 'Could not load evolution analytics payloads.'}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
-      </section>
-    )
-  }
-
   return (
+    <ViewShell
+      state={state}
+      error={error || null}
+      panelId="cockpit-panel-evolution"
+      title="Evolution view"
+      hasData={Boolean(investmentUtilization || knowledgeIslands || temporalCoupling || fitnessFunctions)}
+      onRetry={onRetry}
+      skeleton={
+        <>
+          <div className="cockpit2-skeleton-card" />
+          <div className="cockpit2-skeleton-card" />
+          <div className="cockpit2-skeleton-card tall" />
+        </>
+      }
+    >
     <section className="cockpit2-panel" id="cockpit-panel-evolution" role="tabpanel">
-      {error ? (
-        <div className="cockpit2-alert error inline">
-          <p>{error}</p>
-          <button type="button" onClick={onRetry}>Retry</button>
-        </div>
-      ) : null}
-
       <div className="cockpit2-panel-header-row">
         <h3>Evolution analytics</h3>
         <p className="muted">Investment vs utilization, ownership, temporal coupling, and fitness</p>
@@ -337,5 +326,6 @@ export default function EvolutionView({
         )}
       </article>
     </section>
+    </ViewShell>
   )
 }
