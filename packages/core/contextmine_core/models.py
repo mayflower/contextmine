@@ -25,6 +25,22 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+# ---------------------------------------------------------------------------
+# Frequently-used foreign-key references and cascade options (S1192)
+# ---------------------------------------------------------------------------
+_CASCADE_ALL_DELETE_ORPHAN = "all, delete-orphan"
+_ON_DELETE_CASCADE = "CASCADE"
+_ON_DELETE_SET_NULL = "SET NULL"
+_FK_USERS = "users.id"
+_FK_COLLECTIONS = "collections.id"
+_FK_SOURCES = "sources.id"
+_FK_DOCUMENTS = "documents.id"
+_FK_TWIN_SCENARIOS = "twin_scenarios.id"
+_FK_TWIN_NODES = "twin_nodes.id"
+_FK_TWIN_SOURCE_VERSIONS = "twin_source_versions.id"
+_FK_KNOWLEDGE_NODES = "knowledge_nodes.id"
+_FK_KNOWLEDGE_EVIDENCE = "knowledge_evidence.id"
+
 
 class CollectionVisibility(enum.Enum):
     """Visibility options for collections."""
@@ -269,13 +285,13 @@ class User(Base):
 
     # Relationships
     oauth_tokens: Mapped[list["OAuthToken"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     owned_collections: Mapped[list["Collection"]] = relationship(
-        back_populates="owner", cascade="all, delete-orphan"
+        back_populates="owner", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     collection_memberships: Mapped[list["CollectionMember"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -286,7 +302,7 @@ class OAuthToken(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey(_FK_USERS, ondelete="CASCADE"), nullable=False
     )
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
@@ -316,7 +332,7 @@ class Collection(Base):
         nullable=False,
     )
     owner_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey(_FK_USERS, ondelete="CASCADE"), nullable=False
     )
     config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -326,13 +342,13 @@ class Collection(Base):
     # Relationships
     owner: Mapped["User"] = relationship(back_populates="owned_collections")
     members: Mapped[list["CollectionMember"]] = relationship(
-        back_populates="collection", cascade="all, delete-orphan"
+        back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     invites: Mapped[list["CollectionInvite"]] = relationship(
-        back_populates="collection", cascade="all, delete-orphan"
+        back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     sources: Mapped[list["Source"]] = relationship(
-        back_populates="collection", cascade="all, delete-orphan"
+        back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -343,12 +359,12 @@ class CollectionMember(Base):
 
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         primary_key=True,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(_FK_USERS, ondelete="CASCADE"),
         primary_key=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -368,7 +384,7 @@ class CollectionInvite(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     github_login: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -388,7 +404,7 @@ class Source(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     type: Mapped[SourceType] = mapped_column(
@@ -417,16 +433,16 @@ class Source(Base):
     # Relationships
     collection: Mapped["Collection"] = relationship(back_populates="sources")
     runs: Mapped[list["SyncRun"]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     documents: Mapped[list["Document"]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     ingest_token: Mapped["SourceIngestToken | None"] = relationship(
-        back_populates="source", cascade="all, delete-orphan", uselist=False
+        back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN, uselist=False
     )
     coverage_ingest_jobs: Mapped[list["CoverageIngestJob"]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -439,7 +455,7 @@ class SourceIngestToken(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -465,17 +481,17 @@ class CoverageIngestJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     scenario_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -500,7 +516,7 @@ class CoverageIngestJob(Base):
     collection: Mapped["Collection"] = relationship()
     scenario: Mapped["TwinScenario | None"] = relationship()
     reports: Mapped[list["CoverageIngestReport"]] = relationship(
-        back_populates="job", cascade="all, delete-orphan"
+        back_populates="job", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -535,7 +551,7 @@ class SyncRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     started_at: Mapped[datetime] = mapped_column(
@@ -566,7 +582,7 @@ class Document(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     uri: Mapped[str] = mapped_column(String(2048), unique=True, nullable=False)
@@ -588,10 +604,10 @@ class Document(Base):
     # Relationships
     source: Mapped["Source"] = relationship(back_populates="documents")
     chunks: Mapped[list["Chunk"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan"
+        back_populates="document", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     symbols: Mapped[list["Symbol"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan"
+        back_populates="document", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -628,7 +644,7 @@ class Chunk(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
+        ForeignKey(_FK_DOCUMENTS, ondelete="CASCADE"),
         nullable=False,
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -642,7 +658,7 @@ class Chunk(Base):
     # Embedding columns
     embedding_model_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("embedding_models.id", ondelete="SET NULL"),
+        ForeignKey("embedding_models.id", ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -676,7 +692,7 @@ class Symbol(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
+        ForeignKey(_FK_DOCUMENTS, ondelete="CASCADE"),
         nullable=False,
     )
     # Qualified name: e.g., "ResearchAgent.research" or just "run_research"
@@ -711,13 +727,13 @@ class Symbol(Base):
     outgoing_edges: Mapped[list["SymbolEdge"]] = relationship(
         back_populates="source_symbol",
         foreign_keys="SymbolEdge.source_symbol_id",
-        cascade="all, delete-orphan",
+        cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
     # Edges where this symbol is the target
     incoming_edges: Mapped[list["SymbolEdge"]] = relationship(
         back_populates="target_symbol",
         foreign_keys="SymbolEdge.target_symbol_id",
-        cascade="all, delete-orphan",
+        cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
 
 
@@ -797,13 +813,13 @@ class KnowledgeEvidence(Base):
     # Optional link to indexed document
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="SET NULL"),
+        ForeignKey(_FK_DOCUMENTS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     # Optional link to specific chunk
     chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("chunks.id", ondelete="SET NULL"),
+        ForeignKey("chunks.id", ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     # File path (may differ from document URI for non-indexed files)
@@ -839,7 +855,7 @@ class KnowledgeNode(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     kind: Mapped[KnowledgeNodeKind] = mapped_column(
@@ -870,17 +886,17 @@ class KnowledgeNode(Base):
     # Relationships
     collection: Mapped["Collection"] = relationship()
     evidence_links: Mapped[list["KnowledgeNodeEvidence"]] = relationship(
-        back_populates="node", cascade="all, delete-orphan"
+        back_populates="node", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     outgoing_edges: Mapped[list["KnowledgeEdge"]] = relationship(
         back_populates="source_node",
         foreign_keys="KnowledgeEdge.source_node_id",
-        cascade="all, delete-orphan",
+        cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
     incoming_edges: Mapped[list["KnowledgeEdge"]] = relationship(
         back_populates="target_node",
         foreign_keys="KnowledgeEdge.target_node_id",
-        cascade="all, delete-orphan",
+        cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
 
 
@@ -908,17 +924,17 @@ class KnowledgeEdge(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     source_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     target_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     kind: Mapped[KnowledgeEdgeKind] = mapped_column(
@@ -947,7 +963,7 @@ class KnowledgeEdge(Base):
         foreign_keys=[target_node_id],
     )
     evidence_links: Mapped[list["KnowledgeEdgeEvidence"]] = relationship(
-        back_populates="edge", cascade="all, delete-orphan"
+        back_populates="edge", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -958,12 +974,12 @@ class KnowledgeNodeEvidence(Base):
 
     node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_NODES, ondelete="CASCADE"),
         primary_key=True,
     )
     evidence_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_EVIDENCE, ondelete="CASCADE"),
         primary_key=True,
     )
 
@@ -984,7 +1000,7 @@ class KnowledgeEdgeEvidence(Base):
     )
     evidence_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_EVIDENCE, ondelete="CASCADE"),
         primary_key=True,
     )
 
@@ -1009,7 +1025,7 @@ class KnowledgeArtifact(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     kind: Mapped[KnowledgeArtifactKind] = mapped_column(
@@ -1039,7 +1055,7 @@ class KnowledgeArtifact(Base):
     # Relationships
     collection: Mapped["Collection"] = relationship()
     evidence_links: Mapped[list["KnowledgeArtifactEvidence"]] = relationship(
-        back_populates="artifact", cascade="all, delete-orphan"
+        back_populates="artifact", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -1055,7 +1071,7 @@ class KnowledgeArtifactEvidence(Base):
     )
     evidence_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_evidence.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_EVIDENCE, ondelete="CASCADE"),
         primary_key=True,
     )
 
@@ -1088,7 +1104,7 @@ class KnowledgeCommunity(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     # Hierarchy level: 1 = node communities, 2 = meta-communities
@@ -1114,7 +1130,7 @@ class KnowledgeCommunity(Base):
     # Relationships
     collection: Mapped["Collection"] = relationship()
     members: Mapped[list["CommunityMember"]] = relationship(
-        back_populates="community", cascade="all, delete-orphan"
+        back_populates="community", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -1136,7 +1152,7 @@ class CommunityMember(Base):
     )
     node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_KNOWLEDGE_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     # Membership strength (0-1, higher = stronger membership)
@@ -1172,7 +1188,7 @@ class KnowledgeEmbedding(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     target_type: Mapped[EmbeddingTargetType] = mapped_column(
@@ -1224,13 +1240,13 @@ class TwinScenario(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     base_scenario_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     is_as_is: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1238,7 +1254,7 @@ class TwinScenario(Base):
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey(_FK_USERS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -1268,7 +1284,7 @@ class TwinNode(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -1277,17 +1293,17 @@ class TwinNode(Base):
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     provenance_node_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_nodes.id", ondelete="SET NULL"),
+        ForeignKey(_FK_KNOWLEDGE_NODES, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     source_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="SET NULL"),
+        ForeignKey(_FK_SOURCES, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     source_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SOURCE_VERSIONS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -1331,29 +1347,29 @@ class TwinEdge(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     source_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     target_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     source_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="SET NULL"),
+        ForeignKey(_FK_SOURCES, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     source_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SOURCE_VERSIONS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -1406,12 +1422,12 @@ class TwinSourceVersion(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     revision_key: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1457,22 +1473,22 @@ class TwinEvent(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=False,
     )
     scenario_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     source_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="SET NULL"),
+        ForeignKey(_FK_SOURCES, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     source_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SOURCE_VERSIONS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1516,7 +1532,7 @@ class TwinAnalysisCache(Base):
     cache_key: Mapped[str] = mapped_column(String(128), nullable=False)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     engine: Mapped[str] = mapped_column(String(32), nullable=False, default="graphrag")
@@ -1549,12 +1565,12 @@ class TwinFinding(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     source_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_source_versions.id", ondelete="SET NULL"),
+        ForeignKey(_FK_TWIN_SOURCE_VERSIONS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1590,7 +1606,7 @@ class TwinNodeLayer(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_nodes.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_NODES, ondelete="CASCADE"),
         nullable=False,
     )
     layer: Mapped[TwinLayer] = mapped_column(
@@ -1649,7 +1665,7 @@ class ArchitectureIntent(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     intent_version: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -1689,7 +1705,7 @@ class ArchitectureIntent(Base):
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey(_FK_USERS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1743,19 +1759,19 @@ class TwinPatch(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     scenario_version: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("architecture_intents.id", ondelete="SET NULL"),
+        ForeignKey("architecture_intents.id", ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     patch_ops: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey(_FK_USERS, ondelete=_ON_DELETE_SET_NULL),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -1779,7 +1795,7 @@ class ValidationSnapshot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     collection_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("collections.id", ondelete="CASCADE"),
+        ForeignKey(_FK_COLLECTIONS, ondelete="CASCADE"),
         nullable=True,
     )
     source_kind: Mapped[ValidationSourceKind] = mapped_column(
@@ -1814,7 +1830,7 @@ class MetricSnapshot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     node_natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -1853,7 +1869,7 @@ class TwinOwnershipSnapshot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     node_natural_key: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -1906,7 +1922,7 @@ class TwinTemporalCouplingSnapshot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("twin_scenarios.id", ondelete="CASCADE"),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete="CASCADE"),
         nullable=False,
     )
     entity_level: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1943,7 +1959,7 @@ class GUIScreen(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sources.id", ondelete="CASCADE"),
+        ForeignKey(_FK_SOURCES, ondelete="CASCADE"),
         nullable=False,
     )
     url_path: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -1956,7 +1972,7 @@ class GUIScreen(Base):
     # Relationships
     source: Mapped["Source"] = relationship()
     elements: Mapped[list["GUIElement"]] = relationship(
-        back_populates="screen", cascade="all, delete-orphan"
+        back_populates="screen", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 

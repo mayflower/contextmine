@@ -170,6 +170,9 @@ class MemoryArtifactStore(ArtifactStore):
             return run_id in self._runs
 
 
+_META_JSON = "meta.json"
+
+
 class FileArtifactStore(ArtifactStore):
     """File-based artifact store with TTL eviction.
 
@@ -244,7 +247,7 @@ class FileArtifactStore(ArtifactStore):
             report_path.write_text(run.to_report_markdown())
 
             # Save metadata
-            meta_path = run_dir / "meta.json"
+            meta_path = run_dir / _META_JSON
             meta = {
                 "run_id": run.run_id,
                 "question": run.question,
@@ -268,7 +271,7 @@ class FileArtifactStore(ArtifactStore):
         for run_dir in runs:
             if not run_dir.is_dir():
                 continue
-            meta_path = run_dir / "meta.json"
+            meta_path = run_dir / _META_JSON
             if meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text())
@@ -326,7 +329,7 @@ class FileArtifactStore(ArtifactStore):
             for run_dir in self._artifact_dir.iterdir():
                 if not run_dir.is_dir():
                     continue
-                meta_path = run_dir / "meta.json"
+                meta_path = run_dir / _META_JSON
                 if not meta_path.exists():
                     continue
                 try:
@@ -373,7 +376,7 @@ class FileArtifactStore(ArtifactStore):
             for run_dir in self._artifact_dir.iterdir():
                 if not run_dir.is_dir():
                     continue
-                meta_path = run_dir / "meta.json"
+                meta_path = run_dir / _META_JSON
                 if not meta_path.exists():
                     continue
                 try:

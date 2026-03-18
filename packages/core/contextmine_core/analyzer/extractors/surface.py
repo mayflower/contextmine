@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Common YAML file extensions used for detection
+_YAML_EXTENSIONS = (".yml", ".yaml")
+
 
 @dataclass
 class SurfaceCatalog:
@@ -110,7 +113,7 @@ class SurfaceCatalogExtractor:
 
     def _load_openapi_document(self, file_path: str, content: str) -> dict[str, Any] | None:
         """Parse and validate OpenAPI/Swagger docs deterministically."""
-        if not file_path.endswith((".yml", ".yaml", ".json")):
+        if not file_path.endswith((*_YAML_EXTENSIONS, ".json")):
             return None
 
         try:
@@ -129,11 +132,11 @@ class SurfaceCatalogExtractor:
 
     def _is_job_file(self, file_path: str) -> bool:
         """Check if file is a job definition file."""
-        if ".github/workflows" in file_path and file_path.endswith((".yml", ".yaml")):
+        if ".github/workflows" in file_path and file_path.endswith(_YAML_EXTENSIONS):
             return True
         if file_path.endswith(("cronjob.yaml", "cronjob.yml")):
             return True
-        return "prefect" in file_path.lower() and file_path.endswith((".yml", ".yaml"))
+        return "prefect" in file_path.lower() and file_path.endswith(_YAML_EXTENSIONS)
 
 
 async def build_surface_graph(

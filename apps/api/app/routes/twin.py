@@ -111,6 +111,13 @@ from app.middleware import get_session
 
 router = APIRouter(prefix="/twin", tags=["twin"])
 
+# ---------------------------------------------------------------------------
+# Reusable error messages (S1192)
+# ---------------------------------------------------------------------------
+_ERR_INVALID_SCENARIO_ID = "Invalid scenario_id"
+_ERR_INVALID_COLLECTION_ID = "Invalid collection_id"
+_ERR_ARCH_DOCS_DISABLED = "Architecture docs are disabled"
+
 
 class CreateScenarioRequest(BaseModel):
     collection_id: str
@@ -160,7 +167,7 @@ async def _load_scenario(db, scenario_id: str) -> TwinScenario:
     try:
         scenario_uuid = uuid.UUID(scenario_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid scenario_id") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SCENARIO_ID) from e
 
     scenario = (
         await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
@@ -174,7 +181,7 @@ def _parse_collection_id(collection_id: str) -> uuid.UUID:
     try:
         return uuid.UUID(collection_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid collection_id") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_COLLECTION_ID) from e
 
 
 def _parse_optional_scenario_id(scenario_id: str | None) -> uuid.UUID | None:
@@ -183,7 +190,7 @@ def _parse_optional_scenario_id(scenario_id: str | None) -> uuid.UUID | None:
     try:
         return uuid.UUID(scenario_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid scenario_id") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SCENARIO_ID) from e
 
 
 def _parse_engines_query(engines: str | None) -> list[str] | None:
@@ -303,7 +310,7 @@ async def _resolve_view_scenario(
         try:
             scenario_uuid = uuid.UUID(scenario_id)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="Invalid scenario_id") from e
+            raise HTTPException(status_code=400, detail=_ERR_INVALID_SCENARIO_ID) from e
         scenario = (
             await db.execute(
                 select(TwinScenario).where(
@@ -1928,7 +1935,7 @@ async def create_scenario(request: Request, body: CreateScenarioRequest) -> dict
     try:
         collection_id = uuid.UUID(body.collection_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid collection_id") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_COLLECTION_ID) from e
 
     async with get_db_session() as db:
         await _ensure_owner(db, collection_id, user_id)
@@ -1961,7 +1968,7 @@ async def list_scenarios(request: Request, collection_id: str | None = None) -> 
             try:
                 collection_uuid = uuid.UUID(collection_id)
             except ValueError as e:
-                raise HTTPException(status_code=400, detail="Invalid collection_id") from e
+                raise HTTPException(status_code=400, detail=_ERR_INVALID_COLLECTION_ID) from e
             await _ensure_member(db, collection_uuid, user_id)
             stmt = stmt.where(TwinScenario.collection_id == collection_uuid)
 
@@ -2628,7 +2635,7 @@ async def arc42_view(
 
     settings = get_settings()
     if not settings.arch_docs_enabled:
-        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+        raise HTTPException(status_code=503, detail=_ERR_ARCH_DOCS_DISABLED)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
@@ -2794,7 +2801,7 @@ async def arc42_drift_view(
 
     settings = get_settings()
     if not settings.arch_docs_enabled:
-        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+        raise HTTPException(status_code=503, detail=_ERR_ARCH_DOCS_DISABLED)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
@@ -2864,7 +2871,7 @@ async def ports_adapters_view(
 
     settings = get_settings()
     if not settings.arch_docs_enabled:
-        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+        raise HTTPException(status_code=503, detail=_ERR_ARCH_DOCS_DISABLED)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
@@ -2914,7 +2921,7 @@ async def erm_view(
 
     settings = get_settings()
     if not settings.arch_docs_enabled:
-        raise HTTPException(status_code=503, detail="Architecture docs are disabled")
+        raise HTTPException(status_code=503, detail=_ERR_ARCH_DOCS_DISABLED)
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)

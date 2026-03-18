@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Common YAML file extensions used for detection
+_YAML_EXTENSIONS = (".yml", ".yaml")
+
 
 # ============================================================================
 # Data models for extraction output
@@ -200,8 +203,7 @@ def _is_config_file(file_path: str) -> bool:
 
     # Accept config files and code files that might define jobs
     config_extensions = (
-        ".yml",
-        ".yaml",
+        *_YAML_EXTENSIONS,
         ".json",
         ".toml",
         ".py",
@@ -554,9 +556,9 @@ def extract_jobs(file_path: str, content: str) -> JobsExtraction:
     result = JobsExtraction(file_path=file_path)
 
     # Detect file type based on path and content
-    if ".github/workflows" in file_path and file_path.endswith((".yml", ".yaml")):
+    if ".github/workflows" in file_path and file_path.endswith(_YAML_EXTENSIONS):
         _extract_github_workflow_sync(file_path, content, result)
-    elif file_path.endswith((".yml", ".yaml")):
+    elif file_path.endswith(_YAML_EXTENSIONS):
         try:
             data = yaml.safe_load(content)
             if isinstance(data, dict):

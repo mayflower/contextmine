@@ -72,7 +72,7 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffVie
     syncLock.current = true
     target.scrollTop = source.scrollTop
     target.scrollLeft = source.scrollLeft
-    window.requestAnimationFrame(() => {
+    globalThis.requestAnimationFrame(() => {
       syncLock.current = false
     })
   }

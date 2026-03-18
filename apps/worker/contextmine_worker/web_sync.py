@@ -221,7 +221,7 @@ def _crawl_python(
 def _crawl_spider_md(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
-    user_agent: str = "ContextMine-Spider/0.1",
+    user_agent: str = DEFAULT_USER_AGENT,
     delay_ms: int = DEFAULT_DELAY_MS,
     start_url: str | None = None,
 ) -> list[WebPage]:
@@ -290,7 +290,7 @@ def _crawl_spider_md(
 def run_spider_md(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
-    user_agent: str = "ContextMine-Spider/0.1",
+    user_agent: str = DEFAULT_USER_AGENT,
     delay_ms: int = DEFAULT_DELAY_MS,
     start_url: str | None = None,
 ) -> list[WebPage]:

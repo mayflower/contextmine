@@ -38,6 +38,9 @@ from contextmine_core.semantic_snapshot.models import (
 
 logger = logging.getLogger(__name__)
 
+# Placeholder SCIP path used when indexing fails
+_NULL_SCIP_PATH = Path("/dev/null")
+
 # Backend registry - order matters for language detection priority
 BACKENDS: list[BaseIndexerBackend] = [
     TypescriptIndexerBackend(),
@@ -158,7 +161,7 @@ def index_project(target: ProjectTarget, cfg: IndexConfig) -> IndexArtifact:
                 return IndexArtifact(
                     language=target.language,
                     project_root=target.root_path,
-                    scip_path=Path("/dev/null"),
+                    scip_path=_NULL_SCIP_PATH,
                     logs_path=None,
                     tool_name=backend.TOOL_NAME,
                     tool_version="unknown",
@@ -171,7 +174,7 @@ def index_project(target: ProjectTarget, cfg: IndexConfig) -> IndexArtifact:
                 return IndexArtifact(
                     language=target.language,
                     project_root=target.root_path,
-                    scip_path=Path("/dev/null"),
+                    scip_path=_NULL_SCIP_PATH,
                     logs_path=None,
                     tool_name=backend.TOOL_NAME,
                     tool_version="unknown",
@@ -184,7 +187,7 @@ def index_project(target: ProjectTarget, cfg: IndexConfig) -> IndexArtifact:
     return IndexArtifact(
         language=target.language,
         project_root=target.root_path,
-        scip_path=Path("/dev/null"),
+        scip_path=_NULL_SCIP_PATH,
         logs_path=None,
         tool_name="unknown",
         tool_version="unknown",

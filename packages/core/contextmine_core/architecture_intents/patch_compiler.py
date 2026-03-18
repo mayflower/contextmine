@@ -7,6 +7,9 @@ from typing import Any
 
 from contextmine_core.architecture_intents.schema import ArchitectureIntentV1, IntentAction
 
+# RFC6902 JSON Patch append-to-array path for twin nodes
+_PATCH_APPEND_NODES = "/nodes/-"
+
 
 def _default_node(kind: str, natural_key: str, name: str, params: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -34,7 +37,7 @@ def compile_intent_patch(intent: ArchitectureIntentV1) -> list[dict[str, Any]]:
             name=params.get("name", f"Domain {target_id}"),
             params=params,
         )
-        return [{"op": "add", "path": "/nodes/-", "value": node}]
+        return [{"op": "add", "path": _PATCH_APPEND_NODES, "value": node}]
 
     if action == IntentAction.SPLIT_CONTAINER:
         container_a = _default_node(
@@ -50,8 +53,8 @@ def compile_intent_patch(intent: ArchitectureIntentV1) -> list[dict[str, Any]]:
             params=params,
         )
         return [
-            {"op": "add", "path": "/nodes/-", "value": container_a},
-            {"op": "add", "path": "/nodes/-", "value": container_b},
+            {"op": "add", "path": _PATCH_APPEND_NODES, "value": container_a},
+            {"op": "add", "path": _PATCH_APPEND_NODES, "value": container_b},
         ]
 
     if action == IntentAction.MOVE_COMPONENT:
@@ -79,7 +82,7 @@ def compile_intent_patch(intent: ArchitectureIntentV1) -> list[dict[str, Any]]:
             "meta": params,
         }
         return [
-            {"op": "add", "path": "/nodes/-", "value": interface_node},
+            {"op": "add", "path": _PATCH_APPEND_NODES, "value": interface_node},
             {"op": "add", "path": "/edges/-", "value": edge},
         ]
 
@@ -91,7 +94,7 @@ def compile_intent_patch(intent: ArchitectureIntentV1) -> list[dict[str, Any]]:
             name=params.get("name", "validator"),
             params=params,
         )
-        return [{"op": "add", "path": "/nodes/-", "value": validator_node}]
+        return [{"op": "add", "path": _PATCH_APPEND_NODES, "value": validator_node}]
 
     if action == IntentAction.APPLY_DATA_BOUNDARY:
         return [

@@ -58,8 +58,8 @@ export async function initFaro(): Promise<Faro | null> {
         new TracingInstrumentation({
           instrumentationOptions: {
             propagateTraceHeaderCorsUrls: [
-              new RegExp(`${window.location.origin}/api/.*`),
-              new RegExp(`${window.location.origin}/mcp/.*`),
+              new RegExp(`${globalThis.location.origin}/api/.*`),
+              new RegExp(`${globalThis.location.origin}/mcp/.*`),
             ],
           },
         }),

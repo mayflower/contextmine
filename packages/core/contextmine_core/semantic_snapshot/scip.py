@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Prefix used by SCIP for local (file-scoped) symbols
+_LOCAL_SYMBOL_PREFIX = "local "
+
 # Map SCIP SymbolInformation.Kind to our SymbolKind
 SCIP_KIND_TO_SYMBOL_KIND: dict[int, SymbolKind] = {
     # From scip.proto SymbolInformation.Kind enum
@@ -174,7 +177,7 @@ class SCIPProvider:
             # Process symbol definitions in this document
             for sym_info in doc.symbols:
                 symbol_str = sym_info.symbol
-                if symbol_str.startswith("local "):
+                if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
                     continue
                 if symbol_str in seen_symbols:
                     continue
@@ -279,7 +282,9 @@ class SCIPProvider:
                     )
                 )
 
-                if role == OccurrenceRole.DEFINITION and not occ.symbol.startswith("local "):
+                if role == OccurrenceRole.DEFINITION and not occ.symbol.startswith(
+                    _LOCAL_SYMBOL_PREFIX
+                ):
                     definition_occurrences_by_file.setdefault(file_path, []).append(
                         (occ.symbol, occ_range)
                     )
@@ -311,7 +316,9 @@ class SCIPProvider:
                             symbols.append(symbol)
                             _remember_symbol(symbol)
 
-                if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith("local "):
+                if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith(
+                    _LOCAL_SYMBOL_PREFIX
+                ):
                     occurrence_candidates.append(
                         (
                             file_path,
@@ -326,7 +333,7 @@ class SCIPProvider:
         # Process external symbols (symbols defined in external packages)
         for ext_sym in index.external_symbols:
             symbol_str = ext_sym.symbol
-            if symbol_str.startswith("local "):
+            if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
                 continue
             if symbol_str in seen_symbols:
                 continue
@@ -556,7 +563,7 @@ class SCIPProvider:
             return None
 
         # Handle local symbols
-        if symbol_str.startswith("local "):
+        if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
             return f"local_{symbol_str[6:]}"
 
         # Extract the last descriptor from the symbol
@@ -581,7 +588,7 @@ class SCIPProvider:
         This is primarily used when scip-python emits UnspecifiedKind and no
         display_name for document symbols.
         """
-        if not symbol_str or symbol_str.startswith("local "):
+        if not symbol_str or symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
             return SymbolKind.UNKNOWN, None
 
         descriptor_tail = self._descriptor_tail(symbol_str)

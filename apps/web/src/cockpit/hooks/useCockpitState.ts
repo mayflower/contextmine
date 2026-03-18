@@ -23,16 +23,7 @@ function parseCsvParam(value: string | null): string[] {
 }
 
 function parseInitialSelection(): CockpitSelection {
-  if (typeof window === 'undefined') {
-    return {
-      collectionId: '',
-      scenarioId: '',
-      layer: DEFAULT_LAYER,
-      view: DEFAULT_VIEW,
-    }
-  }
-
-  const params = new URLSearchParams(window.location.search)
+  const params = new URLSearchParams(globalThis.location.search)
   const rawLayer = params.get('layer')
   const rawView = params.get('view')
   const normalizedRawView = rawView === 'user_flows' ? 'ui_map' : rawView
@@ -61,10 +52,6 @@ function writeSelectionToUrl(args: {
   hideIsolated: boolean
   edgeKinds: string[]
 }): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
   const {
     selection,
     graphQuery,
@@ -78,7 +65,7 @@ function writeSelectionToUrl(args: {
     edgeKinds,
   } = args
 
-  const params = new URLSearchParams(window.location.search)
+  const params = new URLSearchParams(globalThis.location.search)
   params.set('page', 'cockpit')
 
   if (selection.collectionId) {
@@ -160,50 +147,41 @@ function writeSelectionToUrl(args: {
   }
 
   const nextQuery = params.toString()
-  const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname
-  window.history.replaceState({}, '', nextUrl)
+  const nextUrl = nextQuery ? `${globalThis.location.pathname}?${nextQuery}` : globalThis.location.pathname
+  globalThis.history.replaceState({}, '', nextUrl)
 }
 
 export function useCockpitState() {
   const [selection, setSelection] = useState<CockpitSelection>(() => parseInitialSelection())
   const [hotspotFilter, setHotspotFilter] = useState('')
   const [graphQuery, setGraphQuery] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return new URLSearchParams(window.location.search).get('query') ?? ''
+    return new URLSearchParams(globalThis.location.search).get('query') ?? ''
   })
   const [selectedNodeId, setSelectedNodeId] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return new URLSearchParams(window.location.search).get('node') ?? ''
+    return new URLSearchParams(globalThis.location.search).get('node') ?? ''
   })
   const [graphPage, setGraphPage] = useState(() => {
-    if (typeof window === 'undefined') return DEFAULT_PAGE
-    const raw = Number(new URLSearchParams(window.location.search).get('pageIndex') ?? DEFAULT_PAGE)
+    const raw = Number(new URLSearchParams(globalThis.location.search).get('pageIndex') ?? DEFAULT_PAGE)
     return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PAGE
   })
   const [graphLimit, setGraphLimit] = useState(() => {
-    if (typeof window === 'undefined') return DEFAULT_LIMIT
-    const raw = Number(new URLSearchParams(window.location.search).get('limit') ?? DEFAULT_LIMIT)
+    const raw = Number(new URLSearchParams(globalThis.location.search).get('limit') ?? DEFAULT_LIMIT)
     return Number.isFinite(raw) && raw >= 1 ? raw : DEFAULT_LIMIT
   })
   const [includeKinds, setIncludeKinds] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return []
-    return parseCsvParam(new URLSearchParams(window.location.search).get('includeKinds'))
+    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('includeKinds'))
   })
   const [excludeKinds, setExcludeKinds] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return []
-    return parseCsvParam(new URLSearchParams(window.location.search).get('excludeKinds'))
+    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('excludeKinds'))
   })
   const [edgeKinds, setEdgeKinds] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return []
-    return parseCsvParam(new URLSearchParams(window.location.search).get('edgeKinds'))
+    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('edgeKinds'))
   })
   const [hideIsolated, setHideIsolated] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return (new URLSearchParams(window.location.search).get('hideIsolated') ?? '') === '1'
+    return (new URLSearchParams(globalThis.location.search).get('hideIsolated') ?? '') === '1'
   })
   const [overlayMode, setOverlayMode] = useState<OverlayMode>(() => {
-    if (typeof window === 'undefined') return 'none'
-    const raw = (new URLSearchParams(window.location.search).get('overlay') ?? 'none') as OverlayMode
+    const raw = (new URLSearchParams(globalThis.location.search).get('overlay') ?? 'none') as OverlayMode
     return VALID_OVERLAYS.includes(raw) ? raw : 'none'
   })
 

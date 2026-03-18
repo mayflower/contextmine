@@ -32,6 +32,8 @@ from app.mcp_auth import ContextMineGitHubProvider, get_current_user_id
 _ERR_COLLECTION_NOT_FOUND = "# Error\n\nCollection not found."
 _ERR_ARCH_DOCS_DISABLED = "# Error\n\nArchitecture docs are disabled."
 _ERR_SCENARIO_NOT_FOUND = "# Error\n\nScenario not found in collection."
+_ERR_SCENARIO_NOT_FOUND_SHORT = "# Error\n\nScenario not found."
+_ERR_NO_COLLECTIONS = "# No Collections Available\n\nNo accessible collections found."
 
 
 def escape_like_pattern(value: str) -> str:
@@ -1158,7 +1160,7 @@ async def research_validation(
                 collection_ids = await get_accessible_collection_ids(db, user_id)
 
             if not collection_ids:
-                return "# No Collections Available\n\nNo accessible collections found."
+                return _ERR_NO_COLLECTIONS
 
             code_path_lower = code_path.lower()
             query_words = set(code_path_lower.replace("/", " ").replace("_", " ").split())
@@ -1301,7 +1303,7 @@ async def research_data_model(
                 collection_ids = await get_accessible_collection_ids(db, user_id)
 
             if not collection_ids:
-                return "# No Collections Available\n\nNo accessible collections found."
+                return _ERR_NO_COLLECTIONS
 
             entity_lower = entity.lower()
             query_words = set(entity_lower.replace("_", " ").split())
@@ -1448,7 +1450,7 @@ async def research_architecture(
                 collection_ids = await get_accessible_collection_ids(db, user_id)
 
             if not collection_ids:
-                return "# No Collections Available\n\nNo accessible collections found."
+                return _ERR_NO_COLLECTIONS
 
             topic_lower = topic.lower()
 
@@ -1942,7 +1944,7 @@ async def mcp_create_architecture_intent(
                 await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
             ).scalar_one_or_none()
             if not scenario:
-                return "# Error\n\nScenario not found."
+                return _ERR_SCENARIO_NOT_FOUND_SHORT
 
             collection = (
                 await db.execute(select(Collection).where(Collection.id == scenario.collection_id))
@@ -2004,7 +2006,7 @@ async def mcp_approve_architecture_intent(
                 await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
             ).scalar_one_or_none()
             if not scenario:
-                return "# Error\n\nScenario not found."
+                return _ERR_SCENARIO_NOT_FOUND_SHORT
 
             collection = (
                 await db.execute(select(Collection).where(Collection.id == scenario.collection_id))
@@ -3038,7 +3040,7 @@ async def mcp_export_twin_view(
                 await db.execute(select(TwinScenario).where(TwinScenario.id == scenario_uuid))
             ).scalar_one_or_none()
             if not scenario:
-                return "# Error\n\nScenario not found."
+                return _ERR_SCENARIO_NOT_FOUND_SHORT
 
             if format == "lpg_jsonl":
                 content = await export_lpg_jsonl(db, scenario.id)

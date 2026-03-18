@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+# OpenTelemetry GenAI semantic convention attribute keys (S1192)
+_ATTR_GEN_AI_SYSTEM = "gen_ai.system"
+_ATTR_GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
+
 
 def trace_llm_call(
     provider: str,
@@ -53,8 +57,8 @@ def trace_llm_call(
             with tracer.start_as_current_span(
                 f"llm.{operation}",
                 attributes={
-                    "gen_ai.system": provider,
-                    "gen_ai.request.model": model,
+                    _ATTR_GEN_AI_SYSTEM: provider,
+                    _ATTR_GEN_AI_REQUEST_MODEL: model,
                     "gen_ai.operation.name": operation,
                 },
             ) as span:
@@ -108,8 +112,8 @@ async def trace_embedding_call(
     with tracer.start_as_current_span(
         "embedding.embed",
         attributes={
-            "gen_ai.system": provider,
-            "gen_ai.request.model": model,
+            _ATTR_GEN_AI_SYSTEM: provider,
+            _ATTR_GEN_AI_REQUEST_MODEL: model,
             "embedding.batch_size": batch_size,
         },
     ) as span:
@@ -186,8 +190,8 @@ def trace_sync_llm_call(
             with tracer.start_as_current_span(
                 f"llm.{operation}",
                 attributes={
-                    "gen_ai.system": provider,
-                    "gen_ai.request.model": model,
+                    _ATTR_GEN_AI_SYSTEM: provider,
+                    _ATTR_GEN_AI_REQUEST_MODEL: model,
                     "gen_ai.operation.name": operation,
                 },
             ) as span:

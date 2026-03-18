@@ -29,6 +29,12 @@ from app.middleware import get_session
 
 router = APIRouter(tags=["sources"])
 
+# ---------------------------------------------------------------------------
+# Reusable error messages (S1192)
+# ---------------------------------------------------------------------------
+_ERR_INVALID_SOURCE_ID = "Invalid source ID"
+_ERR_SOURCE_NOT_FOUND = "Source not found"
+
 
 class CreateSourceRequest(BaseModel):
     """Request model for creating a source."""
@@ -305,13 +311,13 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
@@ -333,13 +339,13 @@ async def update_source(
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
@@ -403,13 +409,13 @@ async def sync_now(request: Request, source_id: str) -> dict[str, str]:
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         result = await db.execute(select(Source).where(Source.id == src_uuid))
         source = result.scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         await _get_collection_with_access(db, str(source.collection_id), user_id)
         next_run = datetime.now(UTC)
@@ -431,14 +437,14 @@ async def rotate_coverage_ingest_token(
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         source = (
             await db.execute(select(Source).where(Source.id == src_uuid))
         ).scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         collection = (
             await db.execute(select(Collection).where(Collection.id == source.collection_id))
@@ -493,14 +499,14 @@ async def get_coverage_ingest_token(
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         source = (
             await db.execute(select(Source).where(Source.id == src_uuid))
         ).scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         collection = (
             await db.execute(select(Collection).where(Collection.id == source.collection_id))
@@ -541,14 +547,14 @@ async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         source = (
             await db.execute(select(Source).where(Source.id == src_uuid))
         ).scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         collection = (
             await db.execute(select(Collection).where(Collection.id == source.collection_id))
@@ -572,7 +578,7 @@ async def set_deploy_key(
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     private_key = body.private_key.strip()
     if not validate_ssh_private_key(private_key):
@@ -586,7 +592,7 @@ async def set_deploy_key(
             await db.execute(select(Source).where(Source.id == src_uuid))
         ).scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
         if source.type != SourceType.GITHUB:
             raise HTTPException(
                 status_code=400, detail="Deploy keys are only supported for GitHub sources"
@@ -613,14 +619,14 @@ async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
     try:
         src_uuid = uuid.UUID(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source ID") from e
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
         source = (
             await db.execute(select(Source).where(Source.id == src_uuid))
         ).scalar_one_or_none()
         if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         collection = (
             await db.execute(select(Collection).where(Collection.id == source.collection_id))

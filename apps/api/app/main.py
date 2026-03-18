@@ -36,6 +36,7 @@ from app.routes import (
 
 # Static files directory (built frontend)
 STATIC_DIR = Path(os.getenv("STATIC_DIR", "/app/static"))
+_INDEX_HTML = STATIC_DIR / "index.html"
 
 
 @asynccontextmanager
@@ -168,16 +169,16 @@ def create_app() -> FastAPI:
             file_path = (STATIC_DIR / path).resolve()
             # Prevent path traversal attacks
             if not file_path.is_relative_to(STATIC_DIR.resolve()):
-                return FileResponse(STATIC_DIR / "index.html")
+                return FileResponse(_INDEX_HTML)
             if file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)
             # Otherwise serve index.html for SPA routing
-            return FileResponse(STATIC_DIR / "index.html")
+            return FileResponse(_INDEX_HTML)
 
         @app.get("/")
         async def serve_index() -> FileResponse:
             """Serve index.html at root."""
-            return FileResponse(STATIC_DIR / "index.html")
+            return FileResponse(_INDEX_HTML)
     else:
         # No static files - just expose metrics
         instrumentator.expose(app, include_in_schema=False)

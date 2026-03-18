@@ -103,11 +103,7 @@ interface CockpitNavigationOptions {
 }
 
 function parseInitialPage(): Page {
-  if (typeof window === 'undefined') {
-    return 'dashboard'
-  }
-
-  const params = new URLSearchParams(window.location.search)
+  const params = new URLSearchParams(globalThis.location.search)
   const rawPage = params.get('page')
   if (!rawPage) {
     return 'dashboard'
@@ -117,11 +113,7 @@ function parseInitialPage(): Page {
 }
 
 function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  const params = new URLSearchParams(window.location.search)
+  const params = new URLSearchParams(globalThis.location.search)
   params.set('page', page)
 
   if (page === 'cockpit') {
@@ -168,8 +160,8 @@ function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions):
   }
 
   const nextQuery = params.toString()
-  const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname
-  window.history.replaceState({}, '', nextUrl)
+  const nextUrl = nextQuery ? `${globalThis.location.pathname}?${nextQuery}` : globalThis.location.pathname
+  globalThis.history.replaceState({}, '', nextUrl)
 }
 
 /**
@@ -366,8 +358,8 @@ function App() {
       setCurrentPage(parseInitialPage())
     }
 
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
+    globalThis.addEventListener('popstate', onPopState)
+    return () => globalThis.removeEventListener('popstate', onPopState)
   }, [])
 
   // Check health status
@@ -417,7 +409,7 @@ function App() {
   }, [currentPage, user])
 
   const handleLogin = () => {
-    window.location.href = '/api/auth/login'
+    globalThis.location.href = '/api/auth/login'
   }
 
   const handleLogout = async () => {
@@ -1515,7 +1507,7 @@ function App() {
                 <pre className="config-block">{`- name: Push coverage to ContextMine
   if: always()
   env:
-    CONTEXTMINE_URL: ${window.location.origin}
+    CONTEXTMINE_URL: ${globalThis.location.origin}
     CONTEXTMINE_SOURCE_ID: \${{ secrets.CONTEXTMINE_SOURCE_ID }}
     CONTEXTMINE_INGEST_TOKEN: \${{ secrets.CONTEXTMINE_INGEST_TOKEN }}
   run: |
@@ -1535,14 +1527,14 @@ function App() {
                 <p className="note">Connect your AI assistant to ContextMine. Authentication is handled via GitHub OAuth - you'll be prompted to login when first connecting.</p>
 
                 <h3>Claude Code (CLI)</h3>
-                <code className="usage-example">claude mcp add contextmine {window.location.origin}/mcp</code>
+                <code className="usage-example">claude mcp add contextmine {globalThis.location.origin}/mcp</code>
 
                 <h3>Claude Desktop</h3>
                 <p className="note">Add to <code>claude_desktop_config.json</code>:</p>
                 <pre className="config-block">{`{
   "mcpServers": {
     "contextmine": {
-      "url": "${window.location.origin}/mcp"
+      "url": "${globalThis.location.origin}/mcp"
     }
   }
 }`}</pre>
@@ -1552,7 +1544,7 @@ function App() {
                 <pre className="config-block">{`{
   "mcpServers": {
     "contextmine": {
-      "url": "${window.location.origin}/mcp"
+      "url": "${globalThis.location.origin}/mcp"
     }
   }
 }`}</pre>
@@ -1563,7 +1555,7 @@ function App() {
   "mcp": {
     "servers": {
       "contextmine": {
-        "url": "${window.location.origin}/mcp"
+        "url": "${globalThis.location.origin}/mcp"
       }
     }
   }
@@ -1574,7 +1566,7 @@ function App() {
                 <pre className="config-block">{`{
   "mcpServers": {
     "contextmine": {
-      "url": "${window.location.origin}/mcp"
+      "url": "${globalThis.location.origin}/mcp"
     }
   }
 }`}</pre>

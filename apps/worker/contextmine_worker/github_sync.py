@@ -19,6 +19,8 @@ from git.exc import GitCommandError
 
 logger = logging.getLogger(__name__)
 
+_HTTPS_SCHEME = "https://"
+
 # File extensions to index (code + docs)
 ALLOWED_EXTENSIONS = {
     # Documentation
@@ -222,7 +224,7 @@ def https_url_to_ssh(https_url: str) -> str:
         SSH URL like git@github.com:owner/repo.git
     """
     # Remove https:// prefix and any auth
-    url = https_url.replace("https://", "")
+    url = https_url.replace(_HTTPS_SCHEME, "")
     if "@" in url:
         url = url.split("@", 1)[1]
 
@@ -278,10 +280,10 @@ def clone_or_pull_repo(
 
             # Convert HTTPS URL to SSH URL
             clone_url = https_url_to_ssh(clone_url)
-        elif token and clone_url.startswith("https://"):
+        elif token and clone_url.startswith(_HTTPS_SCHEME):
             # Add token to URL if provided
             # Insert token into URL: https://token@github.com/...
-            clone_url = clone_url.replace("https://", f"https://{token}@")
+            clone_url = clone_url.replace(_HTTPS_SCHEME, f"https://{token}@")
 
         if repo_path.exists():
             # Pull latest

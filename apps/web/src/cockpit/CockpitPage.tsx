@@ -554,8 +554,8 @@ export default function CockpitPage({
       return
     }
 
-    const timeoutId = window.setTimeout(() => setToast(null), 2200)
-    return () => window.clearTimeout(timeoutId)
+    const timeoutId = globalThis.setTimeout(() => setToast(null), 2200)
+    return () => globalThis.clearTimeout(timeoutId)
   }, [toast])
 
   const handleOpenTopologyFromOverview = () => {
@@ -617,7 +617,7 @@ export default function CockpitPage({
       onOpenCollections()
       return
     }
-    window.location.href = '/?page=collections'
+    globalThis.location.href = '/?page=collections'
   }
 
   const openRuns = () => {
@@ -625,7 +625,7 @@ export default function CockpitPage({
       onOpenRuns()
       return
     }
-    window.location.href = '/?page=runs'
+    globalThis.location.href = '/?page=runs'
   }
 
   const trackFilterChange = () => {

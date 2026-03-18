@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+_EXTRACTOR_VERSION = "flows.v1"
 MAX_FLOW_TOKEN_LEN = 160
 MAX_FLOW_STEP_NAME_LEN = 480
 
@@ -236,7 +237,7 @@ async def build_flows_graph(
     for flow in synthesis.flows:
         flow_meta = {
             "route_path": flow.route_path,
-            **_provenance(mode="inferred", extractor="flows.v1", confidence=0.8),
+            **_provenance(mode="inferred", extractor=_EXTRACTOR_VERSION, confidence=0.8),
         }
         flow_id = await _upsert_node(
             session,
@@ -257,7 +258,7 @@ async def build_flows_graph(
                 "test_case_refs": step.test_case_refs,
                 **_provenance(
                     mode="inferred" if step.symbol_hints else "deterministic",
-                    extractor="flows.v1",
+                    extractor=_EXTRACTOR_VERSION,
                     confidence=step_confidence,
                     evidence_ids=step.evidence_ids,
                 ),
@@ -280,7 +281,7 @@ async def build_flows_graph(
                 kind=KnowledgeEdgeKind.USER_FLOW_HAS_STEP,
                 meta=_provenance(
                     mode="deterministic",
-                    extractor="flows.v1",
+                    extractor=_EXTRACTOR_VERSION,
                     confidence=0.9,
                 ),
             )
@@ -317,7 +318,7 @@ async def build_flows_graph(
                     kind=KnowledgeEdgeKind.TEST_CASE_VERIFIES_FLOW,
                     meta=_provenance(
                         mode="inferred",
-                        extractor="flows.v1",
+                        extractor=_EXTRACTOR_VERSION,
                         confidence=0.7,
                     ),
                 )
