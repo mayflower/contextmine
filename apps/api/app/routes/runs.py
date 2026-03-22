@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from contextmine_core import (
     Collection,
@@ -28,10 +29,10 @@ class SyncRunResponse(BaseModel):
     id: str
     source_id: str
     started_at: datetime
-    finished_at: datetime | None
+    finished_at: datetime | None = None
     status: str
-    stats: dict | None
-    error: str | None
+    stats: dict | None = None
+    error: str | None = None
 
 
 def get_current_user_id(request: Request) -> uuid.UUID:
@@ -43,10 +44,18 @@ def get_current_user_id(request: Request) -> uuid.UUID:
     return uuid.UUID(user_id)
 
 
-@router.get("/runs", response_model=list[SyncRunResponse])
+@router.get(
+    "/runs",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this source"},
+        404: {"description": "Source not found"},
+    },
+)
 async def list_runs(
     request: Request,
-    source_id: str = Query(..., description="Source ID to get runs for"),
+    source_id: Annotated[str, Query(..., description="Source ID to get runs for")],
 ) -> list[SyncRunResponse]:
     """List sync runs for a source."""
     user_id = get_current_user_id(request)

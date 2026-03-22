@@ -34,10 +34,10 @@ class ChunkResult(BaseModel):
     uri: str
     title: str
     score: float
-    fts_rank: int | None
-    vector_rank: int | None
-    fts_score: float | None
-    vector_score: float | None
+    fts_rank: int | None = None
+    vector_rank: int | None = None
+    fts_score: float | None = None
+    vector_score: float | None = None
 
 
 class SearchResponse(BaseModel):
@@ -81,7 +81,10 @@ async def get_query_embedding(query: str, collection_id: str | None = None) -> l
     return result.embeddings[0]
 
 
-@router.post("", response_model=SearchResponse)
+@router.post(
+    "",
+    responses={400: {"description": "Invalid collection_id"}},
+)
 @limiter.limit(RATE_LIMIT_SEARCH)
 async def search(request: Request, body: SearchRequest) -> SearchResponse:
     """Perform hybrid search over chunks.

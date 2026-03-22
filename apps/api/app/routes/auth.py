@@ -36,11 +36,14 @@ class UserResponse(BaseModel):
 
     id: str
     github_login: str
-    name: str | None
-    avatar_url: str | None
+    name: str | None = None
+    avatar_url: str | None = None
 
 
-@router.get("/login")
+@router.get(
+    "/login",
+    responses={500: {"description": "GitHub OAuth is not configured"}},
+)
 @limiter.limit(RATE_LIMIT_AUTH)
 async def login(request: Request) -> RedirectResponse:
     """Initiate GitHub OAuth login flow."""
@@ -209,7 +212,10 @@ async def logout(request: Request) -> dict[str, str]:
     return {"status": "logged_out"}
 
 
-@router.get("/me")
+@router.get(
+    "/me",
+    responses={401: {"description": "Not authenticated or user not found"}},
+)
 async def get_current_user(request: Request) -> UserResponse:
     """Get the current authenticated user."""
     session = get_session(request)

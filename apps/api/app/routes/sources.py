@@ -57,8 +57,8 @@ class SourceResponse(BaseModel):
     config: dict
     enabled: bool
     schedule_interval_minutes: int
-    next_run_at: datetime | None
-    last_run_at: datetime | None
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
     created_at: datetime
     document_count: int = 0
     deploy_key_fingerprint: str | None = None
@@ -83,7 +83,7 @@ class SetDeployKeyRequest(BaseModel):
 class DeployKeyResponse(BaseModel):
     """Response model for deploy key info."""
 
-    fingerprint: str | None
+    fingerprint: str | None = None
     has_key: bool
 
 
@@ -93,17 +93,17 @@ class RotateCoverageIngestTokenResponse(BaseModel):
     token: str
     token_preview: str
     created_at: datetime
-    rotated_at: datetime | None
+    rotated_at: datetime | None = None
 
 
 class CoverageIngestTokenMetadataResponse(BaseModel):
     """Metadata-only view of source ingest token."""
 
     has_token: bool
-    token_preview: str | None
-    created_at: datetime | None
-    rotated_at: datetime | None
-    last_used_at: datetime | None
+    token_preview: str | None = None
+    created_at: datetime | None = None
+    rotated_at: datetime | None = None
+    last_used_at: datetime | None = None
 
 
 def get_current_user_id(request: Request) -> uuid.UUID:
@@ -209,7 +209,15 @@ async def _get_collection_with_access(
     return collection
 
 
-@router.post("/collections/{collection_id}/sources", response_model=SourceResponse)
+@router.post(
+    "/collections/{collection_id}/sources",
+    responses={
+        400: {"description": "Invalid source type, URL, or collection ID"},
+        401: {"description": "Not authenticated or user not found"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def create_source(
     request: Request, collection_id: str, body: CreateSourceRequest
 ) -> SourceResponse:
@@ -263,7 +271,15 @@ async def create_source(
         )
 
 
-@router.get("/collections/{collection_id}/sources", response_model=list[SourceResponse])
+@router.get(
+    "/collections/{collection_id}/sources",
+    responses={
+        400: {"description": "Invalid collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this collection"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def list_sources(request: Request, collection_id: str) -> list[SourceResponse]:
     """List sources in a collection."""
     user_id = get_current_user_id(request)
@@ -303,7 +319,15 @@ async def list_sources(request: Request, collection_id: str) -> list[SourceRespo
         ]
 
 
-@router.delete("/sources/{source_id}")
+@router.delete(
+    "/sources/{source_id}",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can delete sources"},
+        404: {"description": "Source not found"},
+    },
+)
 async def delete_source(request: Request, source_id: str) -> dict[str, str]:
     """Delete a source."""
     user_id = get_current_user_id(request)
@@ -329,7 +353,15 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
         return {"status": "deleted"}
 
 
-@router.patch("/sources/{source_id}", response_model=SourceResponse)
+@router.patch(
+    "/sources/{source_id}",
+    responses={
+        400: {"description": "Invalid source ID, schedule interval, or max_pages"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can update sources"},
+        404: {"description": "Source not found"},
+    },
+)
 async def update_source(
     request: Request, source_id: str, body: UpdateSourceRequest
 ) -> SourceResponse:
@@ -401,7 +433,15 @@ async def update_source(
         )
 
 
-@router.post("/sources/{source_id}/sync-now")
+@router.post(
+    "/sources/{source_id}/sync-now",
+    responses={
+        400: {"description": "Invalid source ID or collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this collection"},
+        404: {"description": "Source or collection not found"},
+    },
+)
 async def sync_now(request: Request, source_id: str) -> dict[str, str]:
     """Trigger a sync for a source (sets next_run_at to now)."""
     user_id = get_current_user_id(request)
@@ -426,7 +466,12 @@ async def sync_now(request: Request, source_id: str) -> dict[str, str]:
 
 @router.post(
     "/sources/{source_id}/metrics/coverage-ingest-token/rotate",
-    response_model=RotateCoverageIngestTokenResponse,
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can rotate ingest tokens"},
+        404: {"description": "Source not found"},
+    },
 )
 async def rotate_coverage_ingest_token(
     request: Request, source_id: str
@@ -488,7 +533,12 @@ async def rotate_coverage_ingest_token(
 
 @router.get(
     "/sources/{source_id}/metrics/coverage-ingest-token",
-    response_model=CoverageIngestTokenMetadataResponse,
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can view ingest token metadata"},
+        404: {"description": "Source not found"},
+    },
 )
 async def get_coverage_ingest_token(
     request: Request, source_id: str
@@ -539,7 +589,15 @@ async def get_coverage_ingest_token(
         )
 
 
-@router.get("/sources/{source_id}/deploy-key", response_model=DeployKeyResponse)
+@router.get(
+    "/sources/{source_id}/deploy-key",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can view deploy key info"},
+        404: {"description": "Source not found"},
+    },
+)
 async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
     """Get deploy key info for a source (fingerprint only, not the key itself)."""
     user_id = get_current_user_id(request)
@@ -568,7 +626,15 @@ async def get_deploy_key(request: Request, source_id: str) -> DeployKeyResponse:
         )
 
 
-@router.put("/sources/{source_id}/deploy-key", response_model=DeployKeyResponse)
+@router.put(
+    "/sources/{source_id}/deploy-key",
+    responses={
+        400: {"description": "Invalid source ID, SSH key, or non-GitHub source"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can set deploy keys"},
+        404: {"description": "Source not found"},
+    },
+)
 async def set_deploy_key(
     request: Request, source_id: str, body: SetDeployKeyRequest
 ) -> DeployKeyResponse:
@@ -611,7 +677,15 @@ async def set_deploy_key(
         return DeployKeyResponse(fingerprint=source.deploy_key_fingerprint, has_key=True)
 
 
-@router.delete("/sources/{source_id}/deploy-key")
+@router.delete(
+    "/sources/{source_id}/deploy-key",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can delete deploy keys"},
+        404: {"description": "Source not found"},
+    },
+)
 async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
     """Remove the deploy key from a source."""
     user_id = get_current_user_id(request)

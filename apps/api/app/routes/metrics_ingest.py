@@ -45,14 +45,14 @@ class CoverageIngestJobResponse(BaseModel):
     id: str
     source_id: str
     collection_id: str
-    scenario_id: str | None
+    scenario_id: str | None = None
     commit_sha: str
-    branch: str | None
+    branch: str | None = None
     provider: str
-    workflow_run_id: str | None
+    workflow_run_id: str | None = None
     status: str
-    error_code: str | None
-    error_detail: str | None
+    error_code: str | None = None
+    error_detail: str | None = None
     stats: dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -163,7 +163,17 @@ def _serialize_job(
     )
 
 
-@router.post("/sources/{source_id}/metrics/coverage-ingest")
+@router.post(
+    "/sources/{source_id}/metrics/coverage-ingest",
+    responses={
+        400: {"description": "Invalid input (bad commit_sha, source_id, manifest, or source type)"},
+        401: {"description": "Missing or invalid ingest token"},
+        404: {"description": "Source not found"},
+        409: {"description": "Commit SHA mismatch with source cursor"},
+        413: {"description": "Total report payload exceeds size limit"},
+        500: {"description": "Failed to trigger Prefect ingest flow"},
+    },
+)
 @limiter.limit("30/minute")
 @limiter.limit("10/minute", key_func=_ingest_source_key)
 async def upload_coverage_ingest(
@@ -171,11 +181,11 @@ async def upload_coverage_ingest(
     source_id: str,
     commit_sha: Annotated[str, Form(...)],
     reports: Annotated[list[UploadFile], File(...)],
-    branch: str | None = Form(default=None),
-    workflow_run_id: str | None = Form(default=None),
-    provider: str = Form(default="github_actions"),
-    manifest: str | None = Form(default=None),
-    x_contextmine_ingest_token: str | None = Header(default=None),
+    branch: Annotated[str | None, Form()] = None,
+    workflow_run_id: Annotated[str | None, Form()] = None,
+    provider: Annotated[str, Form()] = "github_actions",
+    manifest: Annotated[str | None, Form()] = None,
+    x_contextmine_ingest_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Upload CI coverage reports and enqueue async ingest processing."""
     del request
@@ -315,7 +325,12 @@ async def upload_coverage_ingest(
 
 @router.get(
     "/sources/{source_id}/metrics/coverage-ingest/{job_id}",
-    response_model=CoverageIngestJobResponse,
+    responses={
+        400: {"description": "Invalid source_id or job_id"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to collection"},
+        404: {"description": "Source or coverage ingest job not found"},
+    },
 )
 async def get_coverage_ingest_job(
     request: Request, source_id: str, job_id: str

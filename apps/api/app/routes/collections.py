@@ -62,8 +62,8 @@ class MemberResponse(BaseModel):
 
     user_id: str
     github_login: str
-    name: str | None
-    avatar_url: str | None
+    name: str | None = None
+    avatar_url: str | None = None
     is_owner: bool
 
 
@@ -83,7 +83,13 @@ def get_current_user_id(request: Request) -> uuid.UUID:
     return uuid.UUID(user_id)
 
 
-@router.post("", response_model=CollectionResponse)
+@router.post(
+    "",
+    responses={
+        400: {"description": "Invalid visibility or slug already exists"},
+        401: {"description": "Not authenticated or user not found"},
+    },
+)
 async def create_collection(request: Request, body: CreateCollectionRequest) -> CollectionResponse:
     """Create a new collection."""
     user_id = get_current_user_id(request)
@@ -131,7 +137,10 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
         )
 
 
-@router.get("", response_model=list[CollectionResponse])
+@router.get(
+    "",
+    responses={401: {"description": "Not authenticated"}},
+)
 async def list_collections(request: Request) -> list[CollectionResponse]:
     """List collections visible to the current user.
 
@@ -186,7 +195,15 @@ async def list_collections(request: Request) -> list[CollectionResponse]:
         return collections
 
 
-@router.patch("/{collection_id}", response_model=CollectionResponse)
+@router.patch(
+    "/{collection_id}",
+    responses={
+        400: {"description": "Invalid collection ID or visibility value"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def update_collection(
     request: Request, collection_id: str, body: UpdateCollectionRequest
 ) -> CollectionResponse:
@@ -241,7 +258,15 @@ async def update_collection(
         )
 
 
-@router.get("/{collection_id}/members", response_model=list[MemberResponse])
+@router.get(
+    "/{collection_id}/members",
+    responses={
+        400: {"description": "Invalid collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this collection"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def list_members(request: Request, collection_id: str) -> list[MemberResponse]:
     """List members of a collection."""
     user_id = get_current_user_id(request)
@@ -284,7 +309,15 @@ async def list_members(request: Request, collection_id: str) -> list[MemberRespo
         return members
 
 
-@router.get("/{collection_id}/invites", response_model=list[InviteResponse])
+@router.get(
+    "/{collection_id}/invites",
+    responses={
+        400: {"description": "Invalid collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def list_invites(request: Request, collection_id: str) -> list[InviteResponse]:
     """List pending invites for a collection (owner only)."""
     user_id = get_current_user_id(request)
@@ -309,7 +342,17 @@ async def list_invites(request: Request, collection_id: str) -> list[InviteRespo
         ]
 
 
-@router.post("/{collection_id}/share")
+@router.post(
+    "/{collection_id}/share",
+    responses={
+        400: {
+            "description": "Invalid collection ID, sharing with owner, duplicate member, or duplicate invite"
+        },
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def share_collection(
     request: Request, collection_id: str, body: ShareRequest
 ) -> dict[str, str]:
@@ -374,7 +417,15 @@ async def share_collection(
             return {"status": "invite_created", "github_login": body.github_login}
 
 
-@router.delete("/{collection_id}")
+@router.delete(
+    "/{collection_id}",
+    responses={
+        400: {"description": "Invalid collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found"},
+    },
+)
 async def delete_collection(request: Request, collection_id: str) -> dict[str, str]:
     """Delete a collection and all its sources/documents/chunks.
 
@@ -426,7 +477,15 @@ async def delete_collection(request: Request, collection_id: str) -> dict[str, s
         return {"status": "deleted", "collection_id": collection_id}
 
 
-@router.delete("/{collection_id}/share/{identifier}")
+@router.delete(
+    "/{collection_id}/share/{identifier}",
+    responses={
+        400: {"description": "Invalid collection ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Only the owner can perform this action"},
+        404: {"description": "Collection not found or member/invite not found"},
+    },
+)
 async def unshare_collection(
     request: Request, collection_id: str, identifier: str
 ) -> dict[str, str]:

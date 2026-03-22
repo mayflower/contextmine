@@ -21,7 +21,13 @@ def _user_id_or_401(request: Request) -> uuid.UUID:
     return uuid.UUID(user_id)
 
 
-@router.get("/status")
+@router.get(
+    "/status",
+    responses={
+        400: {"description": "Invalid collection_id"},
+        401: {"description": "Not authenticated"},
+    },
+)
 async def validation_status(request: Request, collection_id: str | None = None) -> dict:
     """Get latest validation and orchestration status."""
     _user_id_or_401(request)

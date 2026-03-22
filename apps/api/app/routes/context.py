@@ -61,7 +61,13 @@ def get_current_user_id(request: Request) -> uuid.UUID | None:
     return uuid.UUID(user_id)
 
 
-@router.post("", response_model=ContextResponse)
+@router.post(
+    "",
+    responses={
+        400: {"description": "Invalid collection_id or provider"},
+        500: {"description": "Error assembling context"},
+    },
+)
 @limiter.limit(RATE_LIMIT_SEARCH)
 async def create_context(request: Request, body: ContextRequest) -> ContextResponse:
     """Assemble a context document from retrieved chunks.
@@ -133,7 +139,12 @@ async def create_context(request: Request, body: ContextRequest) -> ContextRespo
     )
 
 
-@router.post("/stream")
+@router.post(
+    "/stream",
+    responses={
+        400: {"description": "Invalid collection_id or provider"},
+    },
+)
 @limiter.limit(RATE_LIMIT_SEARCH)
 async def create_context_stream(request: Request, body: ContextRequest) -> StreamingResponse:
     """Stream a context document using Server-Sent Events.

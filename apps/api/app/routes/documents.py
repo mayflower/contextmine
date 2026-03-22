@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from contextmine_core import (
     Collection,
@@ -54,12 +55,20 @@ def get_current_user_id(request: Request) -> uuid.UUID:
     return uuid.UUID(user_id)
 
 
-@router.get("/sources/{source_id}/documents", response_model=DocumentListResponse)
+@router.get(
+    "/sources/{source_id}/documents",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this source"},
+        404: {"description": "Source not found"},
+    },
+)
 async def list_documents(
     request: Request,
     source_id: str,
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
 ) -> DocumentListResponse:
     """List documents for a source (paginated)."""
     user_id = get_current_user_id(request)
@@ -132,7 +141,15 @@ async def list_documents(
         )
 
 
-@router.get("/sources/{source_id}/documents/count")
+@router.get(
+    "/sources/{source_id}/documents/count",
+    responses={
+        400: {"description": "Invalid source ID"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied to this source"},
+        404: {"description": "Source not found"},
+    },
+)
 async def get_document_count(request: Request, source_id: str) -> dict:
     """Get document count for a source."""
     user_id = get_current_user_id(request)
