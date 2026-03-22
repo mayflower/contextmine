@@ -1715,12 +1715,6 @@ class ResearchAgent:
 
             return {"run": run, "pending_answer": None}
 
-        def should_verify(state: AgentState) -> str:
-            """Check if we need to verify an answer."""
-            if run_holder.get("pending_answer"):
-                return "verify"
-            return "continue"
-
         def after_tools(_state: AgentState) -> str:
             """Route after tool execution."""
             if run_holder.get("pending_answer"):

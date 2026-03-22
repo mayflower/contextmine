@@ -609,7 +609,7 @@ async def submit_intent(
 
     if db_intent.requires_approval:
         db_intent.status = ArchitectureIntentStatus.BLOCKED
-        await _record_intent_run(
+        _record_intent_run(
             session,
             db_intent.id,
             scenario_version_before=scenario.version,
@@ -687,7 +687,7 @@ async def execute_intent(
 
         intent.status = ArchitectureIntentStatus.EXECUTED
         intent.last_error = None
-        await _record_intent_run(
+        _record_intent_run(
             session,
             intent.id,
             before_version,
@@ -699,7 +699,7 @@ async def execute_intent(
     except Exception as exc:  # noqa: BLE001
         intent.status = ArchitectureIntentStatus.FAILED
         intent.last_error = str(exc)
-        await _record_intent_run(
+        _record_intent_run(
             session,
             intent.id,
             before_version,
@@ -711,7 +711,7 @@ async def execute_intent(
         raise
 
 
-async def _record_intent_run(  # async for caller consistency (awaited in async context)
+def _record_intent_run(
     session: AsyncSession,
     intent_id: UUID,
     scenario_version_before: int,
@@ -720,6 +720,7 @@ async def _record_intent_run(  # async for caller consistency (awaited in async 
     message: str | None,
     error: str | None,
 ) -> None:
+    """Record an intent run (sync — Session.add does not need await)."""
     session.add(
         ArchitectureIntentRun(
             id=uuid.uuid4(),

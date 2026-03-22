@@ -98,9 +98,6 @@ class TypescriptIndexerBackend(BaseIndexerBackend):
                 timeout_s=timeout,
                 logs_path=logs_path,
             )
-        except CommandNotFoundError:
-            # Re-raise so callers can distinguish missing tool from indexing failure
-            raise
         finally:
             if generated_project_config and generated_project_config.exists():
                 generated_project_config.unlink(missing_ok=True)

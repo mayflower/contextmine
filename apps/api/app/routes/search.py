@@ -73,7 +73,7 @@ async def get_query_embedding(query: str, collection_id: str | None = None) -> l
     try:
         provider, model_name = parse_embedding_model_spec(settings.default_embedding_model)
         embedder = get_embedder(provider, model_name)
-    except (ValueError, Exception):
+    except Exception:
         # Fall back to FakeEmbedder if no API key configured
         embedder = FakeEmbedder()
 

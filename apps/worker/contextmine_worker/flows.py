@@ -1691,7 +1691,7 @@ async def get_due_sources() -> list[Source]:
         return list(result.scalars().all())
 
 
-async def get_github_token_for_source(source_id: str, collection_id: str) -> str | None:
+async def get_github_token_for_source(_source_id: str, collection_id: str) -> str | None:
     """Get the GitHub OAuth token for a source's collection owner."""
     import uuid as uuid_module
 

@@ -83,17 +83,13 @@ class PythonIndexerBackend(BaseIndexerBackend):
         # Run indexer
         timeout = cfg.timeout_s_by_language.get(Language.PYTHON, 300)
 
-        try:
-            result = run_cmd(
-                cmd=cmd,
-                cwd=target.root_path,
-                env=env if env else None,
-                timeout_s=timeout,
-                logs_path=logs_path,
-            )
-        except CommandNotFoundError:
-            # Re-raise so callers can distinguish missing tool from indexing failure
-            raise
+        result = run_cmd(
+            cmd=cmd,
+            cwd=target.root_path,
+            env=env if env else None,
+            timeout_s=timeout,
+            logs_path=logs_path,
+        )
 
         duration = time.monotonic() - start_time
 

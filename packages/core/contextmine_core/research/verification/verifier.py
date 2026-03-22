@@ -507,7 +507,7 @@ List any claims that are NOT supported by the evidence."""
         self,
         citations: list[CitationVerification],
         evidence_support: EvidenceSupportScore,
-        confidence_calibration: ConfidenceCalibration,
+        _confidence_calibration: ConfidenceCalibration,
         semantic_grounding: SemanticGrounding | None,
         issues: list[str],
     ) -> VerificationStatus:
@@ -516,7 +516,7 @@ List any claims that are NOT supported by the evidence."""
         Args:
             citations: Citation verification results
             evidence_support: Evidence support score
-            confidence_calibration: Confidence calibration result
+            _confidence_calibration: Confidence calibration result (reserved for future use)
             semantic_grounding: Semantic grounding check result
             issues: List of issues found
 

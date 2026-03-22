@@ -450,15 +450,15 @@ class MockLspClient:
         """Set mock hover response."""
         self._hovers[(file_path, line, column)] = info
 
-    async def start(self) -> None:  # must be async to match LspClient interface
+    async def start(self) -> None:  # Intentionally async: LspClient interface contract
         """Mock start."""
         self._started = True
 
-    async def stop(self) -> None:  # must be async to match LspClient interface
+    async def stop(self) -> None:  # Intentionally async: LspClient interface contract
         """Mock stop."""
         self._started = False
 
-    async def get_definition(  # must be async to match LspClient interface
+    async def get_definition(  # Intentionally async: LspClient interface contract
         self,
         file_path: str,
         line: int,
@@ -467,7 +467,7 @@ class MockLspClient:
         """Get mock definition."""
         return self._definitions.get((file_path, line, column), [])
 
-    async def get_references(  # must be async to match LspClient interface
+    async def get_references(  # Intentionally async: LspClient interface contract
         self,
         file_path: str,
         line: int,
@@ -477,7 +477,7 @@ class MockLspClient:
         """Get mock references."""
         return self._references.get((file_path, line, column), [])
 
-    async def get_hover(  # must be async to match LspClient interface
+    async def get_hover(  # Intentionally async: LspClient interface contract
         self,
         file_path: str,
         line: int,
@@ -486,7 +486,7 @@ class MockLspClient:
         """Get mock hover."""
         return self._hovers.get((file_path, line, column))
 
-    async def get_document_symbols(  # must be async to match LspClient interface
+    async def get_document_symbols(  # Intentionally async: LspClient interface contract
         self,
         _file_path: str,
     ) -> list[dict[str, Any]]:

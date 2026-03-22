@@ -90,17 +90,13 @@ class JavaIndexerBackend(BaseIndexerBackend):
         # Run indexer
         timeout = cfg.timeout_s_by_language.get(Language.JAVA, 900)
 
-        try:
-            result = run_cmd(
-                cmd=cmd,
-                cwd=target.root_path,
-                env=env,
-                timeout_s=timeout,
-                logs_path=logs_path,
-            )
-        except CommandNotFoundError:
-            # Re-raise so callers can distinguish missing tool from indexing failure
-            raise
+        result = run_cmd(
+            cmd=cmd,
+            cwd=target.root_path,
+            env=env,
+            timeout_s=timeout,
+            logs_path=logs_path,
+        )
 
         duration = time.monotonic() - start_time
 

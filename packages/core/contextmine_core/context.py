@@ -425,7 +425,7 @@ async def assemble_context(
     try:
         emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
         embedder = get_embedder(emb_provider, emb_model)
-    except (ValueError, Exception):
+    except Exception:
         embedder = FakeEmbedder()
 
     embed_result = await embedder.embed_batch([query])
@@ -516,7 +516,7 @@ async def assemble_context_stream(
     try:
         emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
         embedder = get_embedder(emb_provider, emb_model)
-    except (ValueError, Exception):
+    except Exception:
         embedder = FakeEmbedder()
 
     embed_result = await embedder.embed_batch([query])

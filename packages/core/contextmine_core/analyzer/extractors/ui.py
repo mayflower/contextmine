@@ -168,12 +168,14 @@ _EXTRACTOR_UI_V1 = "ui.v1"
 UI_RENDER_CALL_PATTERN = re.compile(
     r"(?i)(?:\bview|render(?:_template|Template)?|template|TemplateResponse)\s*\(\s*['\"](?P<name>[^'\"]+)['\"]"
 )
+_HTTP_METHODS = r"get|post|put|patch|delete|match|any"
+_HTTP_METHODS_WITH_MAP = r"get|post|put|patch|delete|match|any|map"
+_PHP_VAR_OR_ROUTER = r"\$[a-z_]\w*|app|router|route"
+_QUOTED_PATH = r"['\"](?P<path>[^'\"]+)['\"]"
 UI_ROUTE_PATTERNS = (
+    re.compile(rf"(?i)\bRoute::(?:{_HTTP_METHODS})\s*\(\s*{_QUOTED_PATH}"),
     re.compile(
-        r"(?i)\bRoute::(?:get|post|put|patch|delete|match|any)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
-    ),
-    re.compile(
-        r"(?i)\b(?:\$[a-z_]\w*|app|router|route)\s*->\s*(?:get|post|put|patch|delete|match|any|map)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
+        rf"(?i)\b(?:{_PHP_VAR_OR_ROUTER})\s*->\s*(?:{_HTTP_METHODS_WITH_MAP})\s*\(\s*{_QUOTED_PATH}"
     ),
     re.compile(r"(?i)#\[\s*Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
     re.compile(r"(?i)@Route\s*\(\s*(?:path\s*[:=]\s*)?['\"](?P<path>[^'\"]+)['\"]"),
@@ -190,7 +192,7 @@ UI_ENDPOINT_HINT_PATTERNS = (
 UI_NAVIGATION_HINT_PATTERN = re.compile(r"(?i)\bhref\s*=\s*['\"](?P<path>[^'\"]+)['\"]")
 UI_COMPONENT_TAG_PATTERN = re.compile(r"<(?P<tag>[A-Za-z][A-Za-z0-9:_-]{2,})\b")
 UI_SYMBOL_HINT_PATTERN = re.compile(
-    r"\b(?P<symbol>[A-Z][A-Za-z0-9_]+Controller::[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*(?:Service|Controller|Handler|Action)\b)"
+    r"\b(?P<symbol>[A-Z]\w+Controller::\w+|[A-Z]\w*(?:Service|Controller|Handler|Action)\b)"
 )
 
 

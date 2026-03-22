@@ -300,7 +300,7 @@ class SymbolTraceResolver:
             return []
 
         for definition in defs:
-            row = await self._find_knowledge_symbol_by_location(
+            row = self._find_knowledge_symbol_by_location(
                 file_path=definition.file_path,
                 line=definition.start_line,
             )
@@ -555,7 +555,7 @@ class SymbolTraceResolver:
         self._joern_client = client
         self._joern_ready = True
 
-    async def _find_knowledge_symbol_by_location(  # async for caller consistency (awaited)
+    def _find_knowledge_symbol_by_location(
         self,
         *,
         file_path: str,

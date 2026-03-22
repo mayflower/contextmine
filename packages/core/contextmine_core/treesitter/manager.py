@@ -14,12 +14,9 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from contextmine_core.treesitter.languages import TreeSitterLanguage, detect_language
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from contextmine_core.treesitter.languages import (
     TreeSitterLanguage,
@@ -18,9 +18,6 @@ from contextmine_core.treesitter.languages import (
     get_symbol_query,
 )
 from contextmine_core.treesitter.manager import get_treesitter_manager
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
