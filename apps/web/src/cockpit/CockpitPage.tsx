@@ -612,7 +612,7 @@ export default function CockpitPage({
     pushToast('info', 'Downloaded export artifact.')
   }
 
-  const openCollections = () => {
+  function openCollections() {
     if (onOpenCollections) {
       onOpenCollections()
       return
@@ -620,7 +620,7 @@ export default function CockpitPage({
     globalThis.location.href = '/?page=collections'
   }
 
-  const openRuns = () => {
+  function openRuns() {
     if (onOpenRuns) {
       onOpenRuns()
       return
@@ -628,7 +628,7 @@ export default function CockpitPage({
     globalThis.location.href = '/?page=runs'
   }
 
-  const trackFilterChange = () => {
+  function trackFilterChange() {
     getFaro()?.api.pushEvent('cockpit_filter_changed', {
       query: graphQuery,
       include: includeKinds.join(','),
@@ -637,7 +637,7 @@ export default function CockpitPage({
     })
   }
 
-  const handleLoadOverlayFile = async (file: File) => {
+  async function handleLoadOverlayFile(file: File) {
     try {
       const parsed = await parseOverlayFile(file)
       setOverlayData((prev) => ({

@@ -5,3 +5,6 @@ deploy/helm/contextmine/values-servicemesh.yaml
 
 # Test files may have intentional security patterns for testing
 **/tests/
+
+# Agent tools intentionally use shell=True for subprocess execution
+apps/worker/contextmine_worker/agents/
