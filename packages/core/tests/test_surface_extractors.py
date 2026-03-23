@@ -1,10 +1,16 @@
 """Tests for System Surface Catalog extractors."""
 
+from uuid import uuid4
+
 from contextmine_core.analyzer.extractors.graphql import extract_from_graphql
 from contextmine_core.analyzer.extractors.jobs import JobKind, extract_jobs
-from contextmine_core.analyzer.extractors.openapi import extract_from_openapi
+from contextmine_core.analyzer.extractors.openapi import EndpointDef, extract_from_openapi
 from contextmine_core.analyzer.extractors.protobuf import extract_from_protobuf
-from contextmine_core.analyzer.extractors.surface import SurfaceCatalogExtractor
+from contextmine_core.analyzer.extractors.surface import (
+    SurfaceCatalogExtractor,
+    _resolve_endpoint_handler_symbols,
+    _SymbolCandidate,
+)
 
 
 class TestOpenAPIExtractor:
@@ -488,3 +494,201 @@ jobs:
         result = extractor.add_file(".github/workflows/test.yml", content)
         assert result is True
         assert len(extractor.catalog.job_definitions) == 1
+
+    def test_unrecognized_file_returns_false(self) -> None:
+        """A plain Python file is not recognized as a surface spec."""
+        extractor = SurfaceCatalogExtractor()
+        result = extractor.add_file("src/main.py", "print('hello')")
+        assert result is False
+
+    def test_yaml_without_openapi_marker_returns_false(self) -> None:
+        """A YAML file without openapi/swagger key is not recognized."""
+        extractor = SurfaceCatalogExtractor()
+        content = """
+name: some config
+settings:
+  key: value
+"""
+        result = extractor.add_file("config.yaml", content)
+        assert result is False
+        assert len(extractor.catalog.openapi_specs) == 0
+
+    def test_invalid_yaml_returns_false(self) -> None:
+        """Malformed YAML is gracefully rejected."""
+        extractor = SurfaceCatalogExtractor()
+        result = extractor.add_file("bad.yaml", ": : : [invalid")
+        assert result is False
+
+    def test_openapi_yaml_no_paths_returns_false(self) -> None:
+        """An OpenAPI doc without paths is not accepted."""
+        extractor = SurfaceCatalogExtractor()
+        content = """
+openapi: "3.0.0"
+info:
+  title: Empty
+  version: "1.0"
+"""
+        result = extractor.add_file("empty.yaml", content)
+        assert result is False
+
+    def test_k8s_cronjob_yaml_detected(self) -> None:
+        """A file named cronjob.yaml is detected as a job definition."""
+        extractor = SurfaceCatalogExtractor()
+        content = """
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: my-cron
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: worker
+              image: worker:1.0
+          restartPolicy: OnFailure
+"""
+        result = extractor.add_file("deploy/cronjob.yaml", content)
+        assert result is True
+        assert len(extractor.catalog.job_definitions) == 1
+
+    def test_prefect_yaml_detected(self) -> None:
+        """A prefect deployment YAML is detected as jobs."""
+        extractor = SurfaceCatalogExtractor()
+        content = """
+deployments:
+  - name: etl-flow
+    flow_name: run_etl
+    entrypoint: flows/etl.py:run_etl
+    schedules:
+      - cron: "0 */6 * * *"
+"""
+        result = extractor.add_file("prefect-deploy.yaml", content)
+        assert result is True
+        assert len(extractor.catalog.job_definitions) == 1
+
+    def test_graphql_empty_schema_returns_false(self) -> None:
+        """A .graphql file with no types is not added."""
+        extractor = SurfaceCatalogExtractor()
+        result = extractor.add_file("empty.graphql", "# just a comment")
+        assert result is False
+        assert len(extractor.catalog.graphql_schemas) == 0
+
+    def test_proto_empty_file_returns_false(self) -> None:
+        """A .proto file with no messages or services is not added."""
+        extractor = SurfaceCatalogExtractor()
+        result = extractor.add_file("empty.proto", 'syntax = "proto3";')
+        assert result is False
+        assert len(extractor.catalog.protobuf_files) == 0
+
+    def test_multiple_files_accumulate(self) -> None:
+        """Adding multiple spec files accumulates in the catalog."""
+        extractor = SurfaceCatalogExtractor()
+
+        openapi_content = """
+openapi: "3.0.0"
+info:
+  title: API
+  version: "1.0"
+paths:
+  /ping:
+    get:
+      responses:
+        "200":
+          description: pong
+"""
+        graphql_content = """
+type Query {
+  ping: String!
+}
+"""
+        extractor.add_file("api.yaml", openapi_content)
+        extractor.add_file("schema.graphql", graphql_content)
+
+        assert len(extractor.catalog.openapi_specs) == 1
+        assert len(extractor.catalog.graphql_schemas) == 1
+
+
+# ---------------------------------------------------------------------------
+# _resolve_endpoint_handler_symbols
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEndpointHandlerSymbols:
+    def test_no_hints_returns_empty(self) -> None:
+        endpoint = EndpointDef(path="/test", method="GET")
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates={})
+        assert result == []
+
+    def test_operation_id_match(self) -> None:
+        uid = uuid4()
+        candidates: dict[str, list[_SymbolCandidate]] = {
+            "listusers": [
+                _SymbolCandidate(node_id=uid, name="listUsers", natural_key="symbol:listUsers")
+            ],
+        }
+        endpoint = EndpointDef(path="/users", method="GET", operation_id="listUsers")
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates=candidates)
+        assert len(result) == 1
+        assert result[0]["symbol_name"] == "listUsers"
+
+    def test_handler_hint_match(self) -> None:
+        uid = uuid4()
+        candidates: dict[str, list[_SymbolCandidate]] = {
+            "createorder": [
+                _SymbolCandidate(node_id=uid, name="createOrder", natural_key="symbol:createOrder")
+            ],
+        }
+        endpoint = EndpointDef(
+            path="/orders",
+            method="POST",
+            handler_hints=["createOrder"],
+        )
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates=candidates)
+        assert len(result) == 1
+        assert float(result[0]["confidence"]) >= 0.94
+
+    def test_exact_name_match_boosts_confidence(self) -> None:
+        uid = uuid4()
+        candidates: dict[str, list[_SymbolCandidate]] = {
+            "myhandler": [
+                _SymbolCandidate(node_id=uid, name="myHandler", natural_key="symbol:myHandler")
+            ],
+        }
+        endpoint = EndpointDef(
+            path="/x",
+            method="GET",
+            handler_hints=["myHandler"],
+        )
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates=candidates)
+        assert len(result) == 1
+        # Exact match should boost above base 0.94
+        assert float(result[0]["confidence"]) > 0.94
+
+    def test_no_matching_token_returns_empty(self) -> None:
+        candidates: dict[str, list[_SymbolCandidate]] = {
+            "other": [_SymbolCandidate(node_id=uuid4(), name="other", natural_key="symbol:other")],
+        }
+        endpoint = EndpointDef(path="/test", method="GET", operation_id="nonexistent")
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates=candidates)
+        assert result == []
+
+    def test_deduplicates_by_node_id(self) -> None:
+        """Same symbol matched via operation_id and handler_hint is deduplicated."""
+        uid = uuid4()
+        candidates: dict[str, list[_SymbolCandidate]] = {
+            "dosomething": [
+                _SymbolCandidate(node_id=uid, name="doSomething", natural_key="symbol:doSomething")
+            ],
+        }
+        endpoint = EndpointDef(
+            path="/x",
+            method="POST",
+            operation_id="doSomething",
+            handler_hints=["doSomething"],
+        )
+        result = _resolve_endpoint_handler_symbols(endpoint=endpoint, symbol_candidates=candidates)
+        # Should produce exactly one record despite two matching hints
+        assert len(result) == 1
