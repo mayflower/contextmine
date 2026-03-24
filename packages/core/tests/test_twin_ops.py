@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -982,3 +983,1214 @@ class TestEngineConstants:
         from contextmine_core.twin.ops import LSP_METHOD_KINDS
 
         assert {5, 6, 12} == LSP_METHOD_KINDS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Async DB function tests with mocked AsyncSession
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_mock_session() -> MagicMock:
+    """Build a mock AsyncSession with chainable execute results."""
+    session = MagicMock()
+    session.execute = AsyncMock()
+    session.flush = AsyncMock()
+    session.add = MagicMock()
+    return session
+
+
+def _scalar_one_or_none(value: Any) -> MagicMock:
+    """Create a mock result that returns *value* for .scalar_one_or_none()."""
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = value
+    return result
+
+
+def _scalar_one(value: Any) -> MagicMock:
+    """Create a mock result that returns *value* for .scalar_one()."""
+    result = MagicMock()
+    result.scalar_one.return_value = value
+    return result
+
+
+def _scalars_all(values: list[Any]) -> MagicMock:
+    """Create a mock result that returns *values* for .scalars().all()."""
+    result = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = values
+    scalars.first.return_value = values[0] if values else None
+    result.scalars.return_value = scalars
+    return result
+
+
+# ── get_or_create_source_version ────────────────────────────────────────
+
+
+class TestGetOrCreateSourceVersion:
+    @pytest.mark.anyio
+    async def test_returns_existing_version(self) -> None:
+        from contextmine_core.twin.ops import get_or_create_source_version
+
+        session = _make_mock_session()
+        existing = MagicMock()
+        existing.id = uuid4()
+        session.execute.return_value = _scalar_one_or_none(existing)
+
+        result = await get_or_create_source_version(
+            session,
+            collection_id=uuid4(),
+            source_id=uuid4(),
+            revision_key="rev1",
+        )
+
+        assert result is existing
+        session.add.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_creates_new_version_when_none_exists(self) -> None:
+        from contextmine_core.twin.ops import get_or_create_source_version
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        result = await get_or_create_source_version(
+            session,
+            collection_id=uuid4(),
+            source_id=uuid4(),
+            revision_key="rev1",
+            language_profile="python",
+            status="queued",
+        )
+
+        session.add.assert_called_once()
+        await session.flush()
+        assert result.revision_key == "rev1"
+        assert result.status == "queued"
+        assert result.language_profile == "python"
+        assert result.stats == {}
+
+
+# ── set_source_version_status ────────────────────────────────────────────
+
+
+class TestSetSourceVersionStatus:
+    @pytest.mark.anyio
+    async def test_transitions_status(self) -> None:
+        from contextmine_core.twin.ops import set_source_version_status
+
+        session = _make_mock_session()
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "queued"
+        sv.stats = {"old": True}
+        sv.started_at = None
+        sv.finished_at = None
+        session.execute.return_value = _scalar_one(sv)
+
+        result = await set_source_version_status(
+            session,
+            source_version_id=sv.id,
+            status="materializing",
+            stats={"new": True},
+            started=True,
+        )
+
+        assert result.status == "materializing"
+        assert result.stats == {"old": True, "new": True}
+        assert result.started_at is not None
+        assert result.updated_at is not None
+
+    @pytest.mark.anyio
+    async def test_finished_flag_sets_finished_at(self) -> None:
+        from contextmine_core.twin.ops import set_source_version_status
+
+        session = _make_mock_session()
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "materializing"
+        sv.stats = {}
+        sv.started_at = datetime(2024, 1, 1)
+        sv.finished_at = None
+        session.execute.return_value = _scalar_one(sv)
+
+        result = await set_source_version_status(
+            session,
+            source_version_id=sv.id,
+            status="ready",
+            finished=True,
+        )
+
+        assert result.status == "ready"
+        assert result.finished_at is not None
+
+    @pytest.mark.anyio
+    async def test_started_flag_not_overwritten_when_already_set(self) -> None:
+        from contextmine_core.twin.ops import set_source_version_status
+
+        session = _make_mock_session()
+        original_start = datetime(2024, 1, 1)
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "materializing"
+        sv.stats = {}
+        sv.started_at = original_start
+        sv.finished_at = None
+        session.execute.return_value = _scalar_one(sv)
+
+        await set_source_version_status(
+            session,
+            source_version_id=sv.id,
+            status="ready",
+            started=True,
+        )
+
+        # started_at should NOT have been overwritten
+        assert sv.started_at is original_start
+
+
+# ── record_twin_event ────────────────────────────────────────────────────
+
+
+class TestRecordTwinEvent:
+    @pytest.mark.anyio
+    async def test_returns_existing_event_idempotently(self) -> None:
+        from contextmine_core.twin.ops import record_twin_event
+
+        session = _make_mock_session()
+        existing = MagicMock()
+        existing.id = uuid4()
+        session.execute.return_value = _scalar_one_or_none(existing)
+
+        result = await record_twin_event(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            source_id=None,
+            source_version_id=None,
+            event_type="test",
+            status="queued",
+            payload=None,
+            idempotency_key="key1",
+        )
+
+        assert result is existing
+        session.add.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_creates_new_event_when_not_found(self) -> None:
+        from contextmine_core.twin.ops import record_twin_event
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        cid = uuid4()
+        result = await record_twin_event(
+            session,
+            collection_id=cid,
+            scenario_id=uuid4(),
+            source_id=uuid4(),
+            source_version_id=uuid4(),
+            event_type="refresh_requested",
+            status="queued",
+            payload={"force": True},
+            idempotency_key="key2",
+            error="some error",
+        )
+
+        session.add.assert_called_once()
+        assert result.collection_id == cid
+        assert result.event_type == "refresh_requested"
+        assert result.status == "queued"
+        assert result.payload == {"force": True}
+        assert result.error == "some error"
+
+    @pytest.mark.anyio
+    async def test_none_payload_becomes_empty_dict(self) -> None:
+        from contextmine_core.twin.ops import record_twin_event
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        result = await record_twin_event(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            source_id=None,
+            source_version_id=None,
+            event_type="test",
+            status="queued",
+            payload=None,
+            idempotency_key="key3",
+        )
+
+        assert result.payload == {}
+
+
+# ── invalidate_analysis_cache_for_scenario ───────────────────────────────
+
+
+class TestInvalidateAnalysisCacheForScenario:
+    @pytest.mark.anyio
+    async def test_returns_rowcount(self) -> None:
+        from contextmine_core.twin.ops import invalidate_analysis_cache_for_scenario
+
+        session = _make_mock_session()
+        result = MagicMock()
+        result.rowcount = 5
+        session.execute.return_value = result
+
+        count = await invalidate_analysis_cache_for_scenario(session, scenario_id=uuid4())
+
+        assert count == 5
+
+    @pytest.mark.anyio
+    async def test_returns_zero_when_rowcount_is_none(self) -> None:
+        from contextmine_core.twin.ops import invalidate_analysis_cache_for_scenario
+
+        session = _make_mock_session()
+        result = MagicMock(spec=[])  # no rowcount attr
+        session.execute.return_value = result
+
+        count = await invalidate_analysis_cache_for_scenario(session, scenario_id=uuid4())
+
+        assert count == 0
+
+
+# ── _resolve_status_scenario ─────────────────────────────────────────────
+
+
+class TestResolveStatusScenario:
+    @pytest.mark.anyio
+    async def test_with_explicit_scenario_id(self) -> None:
+        from contextmine_core.twin.ops import _resolve_status_scenario
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        session.execute.return_value = _scalar_one_or_none(scenario)
+
+        result = await _resolve_status_scenario(
+            session, collection_id=uuid4(), scenario_id=scenario.id
+        )
+
+        assert result is scenario
+
+    @pytest.mark.anyio
+    async def test_with_none_scenario_id_falls_back_to_as_is(self) -> None:
+        from contextmine_core.twin.ops import _resolve_status_scenario
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.is_as_is = True
+        session.execute.return_value = _scalar_one_or_none(scenario)
+
+        result = await _resolve_status_scenario(session, collection_id=uuid4(), scenario_id=None)
+
+        assert result is scenario
+
+    @pytest.mark.anyio
+    async def test_returns_none_when_not_found(self) -> None:
+        from contextmine_core.twin.ops import _resolve_status_scenario
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        result = await _resolve_status_scenario(session, collection_id=uuid4(), scenario_id=uuid4())
+
+        assert result is None
+
+
+# ── _current_analysis_cache_key ──────────────────────────────────────────
+
+
+class TestCurrentAnalysisCacheKey:
+    @pytest.mark.anyio
+    async def test_empty_versions_returns_consistent_hash(self) -> None:
+        from contextmine_core.twin.ops import _current_analysis_cache_key
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalars_all([])
+
+        cid = uuid4()
+        result = await _current_analysis_cache_key(
+            session, collection_id=cid, projection_profile="summary"
+        )
+
+        assert len(result) == 64
+        assert all(c in "0123456789abcdef" for c in result)
+
+    @pytest.mark.anyio
+    async def test_with_ready_versions(self) -> None:
+        from contextmine_core.twin.ops import _current_analysis_cache_key
+
+        session = _make_mock_session()
+        v1 = MagicMock()
+        v1.source_id = uuid4()
+        v1.revision_key = "rev1"
+        v1.extractor_version = "v1"
+        session.execute.return_value = _scalars_all([v1])
+
+        result = await _current_analysis_cache_key(
+            session, collection_id=uuid4(), projection_profile="test"
+        )
+
+        assert len(result) == 64
+
+    @pytest.mark.anyio
+    async def test_different_profiles_produce_different_keys(self) -> None:
+        from contextmine_core.twin.ops import _current_analysis_cache_key
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalars_all([])
+
+        cid = uuid4()
+        k1 = await _current_analysis_cache_key(
+            session, collection_id=cid, projection_profile="profile_a"
+        )
+        k2 = await _current_analysis_cache_key(
+            session, collection_id=cid, projection_profile="profile_b"
+        )
+
+        assert k1 != k2
+
+
+# ── _read_cached_analysis ────────────────────────────────────────────────
+
+
+class TestReadCachedAnalysis:
+    @pytest.mark.anyio
+    async def test_returns_payload_when_cache_hit(self) -> None:
+        from contextmine_core.twin.ops import _read_cached_analysis
+
+        session = _make_mock_session()
+        cache_row = MagicMock()
+        cache_row.payload = {"answer": 42}
+        session.execute.return_value = _scalar_one_or_none(cache_row)
+
+        result = await _read_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="test_tool",
+            cache_key="ck",
+            params_hash="ph",
+        )
+
+        assert result == {"answer": 42}
+
+    @pytest.mark.anyio
+    async def test_returns_none_on_cache_miss(self) -> None:
+        from contextmine_core.twin.ops import _read_cached_analysis
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        result = await _read_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="test_tool",
+            cache_key="ck",
+            params_hash="ph",
+        )
+
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_returns_empty_dict_when_payload_is_none(self) -> None:
+        from contextmine_core.twin.ops import _read_cached_analysis
+
+        session = _make_mock_session()
+        cache_row = MagicMock()
+        cache_row.payload = None
+        session.execute.return_value = _scalar_one_or_none(cache_row)
+
+        result = await _read_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="test_tool",
+            cache_key="ck",
+            params_hash="ph",
+        )
+
+        assert result == {}
+
+
+# ── _write_cached_analysis ───────────────────────────────────────────────
+
+
+class TestWriteCachedAnalysis:
+    @pytest.mark.anyio
+    async def test_updates_existing_row(self) -> None:
+        from contextmine_core.twin.ops import _write_cached_analysis
+
+        session = _make_mock_session()
+        existing = MagicMock()
+        existing.payload = {"old": True}
+        session.execute.return_value = _scalar_one_or_none(existing)
+
+        await _write_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="test_tool",
+            cache_key="ck",
+            params_hash="ph",
+            payload={"new": True},
+            ttl_seconds=3600,
+        )
+
+        assert existing.payload == {"new": True}
+        assert existing.expires_at is not None
+        session.add.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_creates_new_row_on_miss(self) -> None:
+        from contextmine_core.twin.ops import _write_cached_analysis
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        await _write_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="test_tool",
+            cache_key="ck",
+            params_hash="ph",
+            payload={"data": 1},
+            ttl_seconds=300,
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args[0][0]
+        assert added.payload == {"data": 1}
+        assert added.tool_name == "test_tool"
+
+    @pytest.mark.anyio
+    async def test_ttl_clamps_to_minimum_one_second(self) -> None:
+        from contextmine_core.twin.ops import _write_cached_analysis
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        await _write_cached_analysis(
+            session,
+            scenario_id=uuid4(),
+            tool_name="t",
+            cache_key="ck",
+            params_hash="ph",
+            payload={},
+            ttl_seconds=0,
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args[0][0]
+        # The function clamps ttl to max(0, 1) = 1
+        # expires_at = now + timedelta(seconds=1) which should be in the future
+        assert added.expires_at is not None
+
+
+# ── _resolve_node_by_ref ─────────────────────────────────────────────────
+
+
+class TestResolveNodeByRef:
+    @pytest.mark.anyio
+    async def test_finds_by_uuid(self) -> None:
+        from contextmine_core.twin.ops import _resolve_node_by_ref
+
+        session = _make_mock_session()
+        node = MagicMock()
+        node.id = uuid4()
+        session.execute.return_value = _scalar_one_or_none(node)
+
+        result = await _resolve_node_by_ref(session, scenario_id=uuid4(), node_ref=str(node.id))
+
+        assert result is node
+
+    @pytest.mark.anyio
+    async def test_falls_back_to_natural_key_when_uuid_not_found(self) -> None:
+        from contextmine_core.twin.ops import _resolve_node_by_ref
+
+        session = _make_mock_session()
+        node = MagicMock()
+        node.id = uuid4()
+        # First call (UUID lookup) returns None, second call (natural_key) returns the node
+        session.execute.side_effect = [
+            _scalar_one_or_none(None),
+            _scalars_all([node]),
+        ]
+
+        result = await _resolve_node_by_ref(session, scenario_id=uuid4(), node_ref=str(uuid4()))
+
+        assert result is node
+
+    @pytest.mark.anyio
+    async def test_finds_by_natural_key_when_non_uuid(self) -> None:
+        from contextmine_core.twin.ops import _resolve_node_by_ref
+
+        session = _make_mock_session()
+        node = MagicMock()
+        node.id = uuid4()
+        session.execute.return_value = _scalars_all([node])
+
+        result = await _resolve_node_by_ref(
+            session, scenario_id=uuid4(), node_ref="file:src/main.py"
+        )
+
+        assert result is node
+
+    @pytest.mark.anyio
+    async def test_returns_none_when_nothing_found(self) -> None:
+        from contextmine_core.twin.ops import _resolve_node_by_ref
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalars_all([])
+
+        result = await _resolve_node_by_ref(session, scenario_id=uuid4(), node_ref="nonexistent")
+
+        assert result is None
+
+
+# ── store_findings ───────────────────────────────────────────────────────
+
+
+class TestStoreFindings:
+    @pytest.mark.anyio
+    async def test_creates_new_findings(self) -> None:
+        from contextmine_core.twin.ops import store_findings
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        # _resolve_analysis_scenario -> _resolve_status_scenario -> scenario
+        session.execute.side_effect = [
+            # _resolve_status_scenario (called by _resolve_analysis_scenario)
+            _scalar_one_or_none(scenario),
+            # First finding: fingerprint lookup -> not found
+            _scalar_one_or_none(None),
+            # Second finding: fingerprint lookup -> not found
+            _scalar_one_or_none(None),
+        ]
+
+        cid = uuid4()
+        result = await store_findings(
+            session,
+            collection_id=cid,
+            scenario_id=None,
+            findings=[
+                {
+                    "finding_type": "taint_flow",
+                    "severity": "high",
+                    "message": "SQL injection",
+                    "filename": "app.py",
+                    "line_number": 10,
+                },
+                {
+                    "finding_type": "xss",
+                    "severity": "medium",
+                    "message": "XSS risk",
+                    "filename": "views.py",
+                    "line_number": 20,
+                },
+            ],
+        )
+
+        assert result["created"] == 2
+        assert len(result["ids"]) == 2
+        assert result["collection_id"] == str(cid)
+        assert result["scenario_id"] == str(scenario.id)
+        # Two findings added
+        assert session.add.call_count == 2
+
+    @pytest.mark.anyio
+    async def test_updates_existing_finding(self) -> None:
+        from contextmine_core.twin.ops import store_findings
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        existing_finding = MagicMock()
+        existing_finding.id = uuid4()
+        existing_finding.severity = "low"
+        existing_finding.confidence = "low"
+        existing_finding.status = "open"
+        existing_finding.message = "old message"
+        existing_finding.flow_data = {}
+        existing_finding.meta = {}
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),  # resolve scenario
+            _scalar_one_or_none(existing_finding),  # fingerprint match
+        ]
+
+        result = await store_findings(
+            session,
+            collection_id=uuid4(),
+            scenario_id=scenario.id,
+            findings=[
+                {
+                    "finding_type": "taint_flow",
+                    "severity": "HIGH",
+                    "message": "Updated message",
+                    "filename": "app.py",
+                    "line_number": 10,
+                },
+            ],
+        )
+
+        assert result["created"] == 1
+        assert str(existing_finding.id) in result["ids"]
+        # Existing finding should be updated
+        assert existing_finding.severity == "high"
+        assert existing_finding.message == "Updated message"
+
+    @pytest.mark.anyio
+    async def test_raises_when_scenario_not_found(self) -> None:
+        from contextmine_core.twin.ops import store_findings
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        with pytest.raises(ValueError, match="Scenario not found"):
+            await store_findings(
+                session,
+                collection_id=uuid4(),
+                scenario_id=uuid4(),
+                findings=[],
+            )
+
+
+# ── list_findings ────────────────────────────────────────────────────────
+
+
+class TestListFindings:
+    @pytest.mark.anyio
+    async def test_lists_findings_for_scenario(self) -> None:
+        from contextmine_core.twin.ops import list_findings
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        now = datetime.now(UTC)
+        finding = MagicMock()
+        finding.id = uuid4()
+        finding.finding_type = "taint_flow"
+        finding.severity = "high"
+        finding.confidence = "high"
+        finding.status = "open"
+        finding.filename = "app.py"
+        finding.line_number = 42
+        finding.message = "Injection detected"
+        finding.flow_data = {"path": ["a", "b"]}
+        finding.meta = {}
+        finding.created_at = now
+        finding.updated_at = now
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),  # resolve scenario
+            _scalars_all([finding]),  # findings query
+        ]
+
+        result = await list_findings(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            limit=50,
+            page=0,
+        )
+
+        assert result["total"] == 1
+        assert len(result["items"]) == 1
+        assert result["items"][0]["finding_type"] == "taint_flow"
+        assert result["items"][0]["severity"] == "high"
+
+    @pytest.mark.anyio
+    async def test_filters_by_min_severity(self) -> None:
+        from contextmine_core.twin.ops import list_findings
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        now = datetime.now(UTC)
+
+        def _make_finding(sev: str) -> MagicMock:
+            f = MagicMock()
+            f.id = uuid4()
+            f.finding_type = "test"
+            f.severity = sev
+            f.confidence = "high"
+            f.status = "open"
+            f.filename = "f.py"
+            f.line_number = 1
+            f.message = "msg"
+            f.flow_data = {}
+            f.meta = {}
+            f.created_at = now
+            f.updated_at = now
+            return f
+
+        findings = [_make_finding("critical"), _make_finding("low"), _make_finding("medium")]
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all(findings),
+        ]
+
+        result = await list_findings(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            min_severity="high",
+            limit=50,
+            page=0,
+        )
+
+        # Only critical is >= high (threshold = 3)
+        assert result["total"] == 1
+        assert result["items"][0]["severity"] == "critical"
+
+    @pytest.mark.anyio
+    async def test_pagination(self) -> None:
+        from contextmine_core.twin.ops import list_findings
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        now = datetime.now(UTC)
+        findings = []
+        for i in range(5):
+            f = MagicMock()
+            f.id = uuid4()
+            f.finding_type = "test"
+            f.severity = "medium"
+            f.confidence = "medium"
+            f.status = "open"
+            f.filename = f"file_{i}.py"
+            f.line_number = i
+            f.message = f"msg {i}"
+            f.flow_data = {}
+            f.meta = {}
+            f.created_at = now
+            f.updated_at = now
+            findings.append(f)
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all(findings),
+        ]
+
+        result = await list_findings(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            limit=2,
+            page=1,
+        )
+
+        assert result["total"] == 5
+        assert len(result["items"]) == 2
+        assert result["page"] == 1
+
+
+# ── export_findings_sarif ────────────────────────────────────────────────
+
+
+class TestExportFindingsSarif:
+    @pytest.mark.anyio
+    async def test_exports_sarif_format(self) -> None:
+        from contextmine_core.twin.ops import export_findings_sarif
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        now = datetime.now(UTC)
+        finding = MagicMock()
+        finding.id = uuid4()
+        finding.finding_type = "taint_flow"
+        finding.severity = "critical"
+        finding.confidence = "high"
+        finding.status = "open"
+        finding.filename = "vuln.py"
+        finding.line_number = 7
+        finding.message = "Dangerous"
+        finding.flow_data = {}
+        finding.meta = {}
+        finding.created_at = now
+        finding.updated_at = now
+
+        session.execute.side_effect = [
+            # list_findings -> resolve scenario
+            _scalar_one_or_none(scenario),
+            # list_findings -> query findings
+            _scalars_all([finding]),
+        ]
+
+        cid = uuid4()
+        result = await export_findings_sarif(
+            session,
+            collection_id=cid,
+            scenario_id=None,
+        )
+
+        assert result["collection_id"] == str(cid)
+        assert result["finding_count"] == 1
+        sarif = result["sarif"]
+        assert sarif["version"] == "2.1.0"
+        assert len(sarif["runs"]) == 1
+        assert len(sarif["runs"][0]["results"]) == 1
+        assert sarif["runs"][0]["results"][0]["level"] == "error"
+
+    @pytest.mark.anyio
+    async def test_exports_empty_sarif_when_no_findings(self) -> None:
+        from contextmine_core.twin.ops import export_findings_sarif
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([]),
+        ]
+
+        result = await export_findings_sarif(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+        )
+
+        assert result["finding_count"] == 0
+        assert result["sarif"]["runs"][0]["results"] == []
+
+
+# ── _with_analysis_cache ─────────────────────────────────────────────────
+
+
+class TestWithAnalysisCache:
+    @pytest.mark.anyio
+    async def test_returns_cached_result_on_hit(self) -> None:
+        from contextmine_core.twin.ops import _with_analysis_cache
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        session.execute.side_effect = [
+            # _resolve_status_scenario
+            _scalar_one_or_none(scenario),
+            # _current_analysis_cache_key
+            _scalars_all([]),
+            # _read_cached_analysis
+            _scalar_one_or_none(MagicMock(payload={"cached": True})),
+        ]
+
+        compute = AsyncMock(return_value={"computed": True})
+
+        result = await _with_analysis_cache(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            tool_name="test",
+            params={},
+            projection_profile="p",
+            cache_ttl_seconds=300,
+            compute=compute,
+        )
+
+        assert result == {"cached": True}
+        compute.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_calls_compute_on_cache_miss(self) -> None:
+        from contextmine_core.twin.ops import _with_analysis_cache
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        session.execute.side_effect = [
+            # _resolve_status_scenario
+            _scalar_one_or_none(scenario),
+            # _current_analysis_cache_key
+            _scalars_all([]),
+            # _read_cached_analysis -> miss
+            _scalar_one_or_none(None),
+            # _write_cached_analysis -> existing row lookup
+            _scalar_one_or_none(None),
+        ]
+
+        compute = AsyncMock(return_value={"computed": True})
+
+        result = await _with_analysis_cache(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            tool_name="test",
+            params={},
+            projection_profile="p",
+            cache_ttl_seconds=300,
+            compute=compute,
+        )
+
+        assert result == {"computed": True}
+        compute.assert_called_once()
+
+
+# ── mark_previous_source_versions_stale ──────────────────────────────────
+
+
+class TestMarkPreviousSourceVersionsStale:
+    @pytest.mark.anyio
+    async def test_marks_old_versions_stale(self) -> None:
+        from contextmine_core.twin.ops import mark_previous_source_versions_stale
+
+        session = _make_mock_session()
+        old1 = MagicMock()
+        old1.status = "ready"
+        old2 = MagicMock()
+        old2.status = "ready"
+        session.execute.return_value = _scalars_all([old1, old2])
+
+        result = await mark_previous_source_versions_stale(
+            session,
+            source_id=uuid4(),
+            keep_source_version_id=uuid4(),
+        )
+
+        assert result == 2
+        assert old1.status == "stale"
+        assert old2.status == "stale"
+
+    @pytest.mark.anyio
+    async def test_returns_zero_when_no_old_versions(self) -> None:
+        from contextmine_core.twin.ops import mark_previous_source_versions_stale
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalars_all([])
+
+        result = await mark_previous_source_versions_stale(
+            session,
+            source_id=uuid4(),
+            keep_source_version_id=uuid4(),
+        )
+
+        assert result == 0
+
+
+# ── compute_revision_key_for_source ──────────────────────────────────────
+
+
+class TestComputeRevisionKeyForSource:
+    @pytest.mark.anyio
+    async def test_github_source_uses_cursor(self) -> None:
+        from contextmine_core.twin.ops import compute_revision_key_for_source
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.type = MagicMock()
+        source.type.__eq__ = lambda self, other: True  # match SourceType.GITHUB
+        source.cursor = "abc123"
+        source.id = uuid4()
+
+        # Patch SourceType to match
+        with patch("contextmine_core.twin.ops.SourceType") as MockSourceType:
+            MockSourceType.GITHUB = source.type
+            result = await compute_revision_key_for_source(session, source)
+
+        assert result == "abc123"
+
+    @pytest.mark.anyio
+    async def test_non_github_source_hashes_docs(self) -> None:
+        from contextmine_core.twin.ops import compute_revision_key_for_source
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.type = "web"
+        source.cursor = None
+        source.id = uuid4()
+
+        doc1 = MagicMock()
+        doc1.uri = "https://example.com/a"
+        doc1.content_hash = "hash_a"
+        doc2 = MagicMock()
+        doc2.uri = "https://example.com/b"
+        doc2.content_hash = "hash_b"
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [doc1, doc2]
+        session.execute.return_value = mock_result
+
+        with patch("contextmine_core.twin.ops.SourceType") as MockSourceType:
+            MockSourceType.GITHUB = "github"
+            result = await compute_revision_key_for_source(session, source)
+
+        assert result.startswith("web:")
+        assert len(result) == 4 + 64  # "web:" + sha256 hex
+
+    @pytest.mark.anyio
+    async def test_no_docs_returns_empty_key(self) -> None:
+        from contextmine_core.twin.ops import compute_revision_key_for_source
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.type = "web"
+        source.cursor = None
+        source.id = uuid4()
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+
+        with patch("contextmine_core.twin.ops.SourceType") as MockSourceType:
+            MockSourceType.GITHUB = "github"
+            result = await compute_revision_key_for_source(session, source)
+
+        assert result == f"source:{source.id}:empty"
+
+
+# ── list_collection_twin_events ──────────────────────────────────────────
+
+
+class TestListCollectionTwinEvents:
+    @pytest.mark.anyio
+    async def test_returns_paginated_events(self) -> None:
+        from contextmine_core.twin.ops import list_collection_twin_events
+
+        session = _make_mock_session()
+        now = datetime.now(UTC)
+
+        event = MagicMock()
+        event.id = uuid4()
+        event.scenario_id = uuid4()
+        event.source_id = uuid4()
+        event.source_version_id = uuid4()
+        event.event_type = "refresh_requested"
+        event.status = "queued"
+        event.payload = {"force": True}
+        event.event_ts = now
+        event.idempotency_key = "key1"
+        event.error = None
+
+        session.execute.side_effect = [
+            _scalar_one(1),  # count
+            _scalars_all([event]),  # rows
+        ]
+
+        cid = uuid4()
+        result = await list_collection_twin_events(
+            session,
+            collection_id=cid,
+            page=0,
+            limit=50,
+        )
+
+        assert result["collection_id"] == str(cid)
+        assert result["total"] == 1
+        assert len(result["items"]) == 1
+        assert result["items"][0]["event_type"] == "refresh_requested"
+        assert result["page"] == 0
+        assert result["limit"] == 50
+
+    @pytest.mark.anyio
+    async def test_empty_events(self) -> None:
+        from contextmine_core.twin.ops import list_collection_twin_events
+
+        session = _make_mock_session()
+        session.execute.side_effect = [
+            _scalar_one(0),  # count
+            _scalars_all([]),  # rows
+        ]
+
+        result = await list_collection_twin_events(
+            session,
+            collection_id=uuid4(),
+        )
+
+        assert result["total"] == 0
+        assert result["items"] == []
+
+
+# ── get_collection_twin_diff ─────────────────────────────────────────────
+
+
+class TestGetCollectionTwinDiff:
+    @pytest.mark.anyio
+    async def test_raises_when_scenario_not_found(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_diff
+
+        session = _make_mock_session()
+        session.execute.return_value = _scalar_one_or_none(None)
+
+        with pytest.raises(ValueError, match="Scenario not found"):
+            await get_collection_twin_diff(
+                session,
+                collection_id=uuid4(),
+                scenario_id=uuid4(),
+                from_version=1,
+                to_version=2,
+            )
+
+    @pytest.mark.anyio
+    async def test_raises_when_from_exceeds_to(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_diff
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        session.execute.return_value = _scalar_one_or_none(scenario)
+
+        with pytest.raises(ValueError, match="from_version must be <= to_version"):
+            await get_collection_twin_diff(
+                session,
+                collection_id=uuid4(),
+                scenario_id=None,
+                from_version=5,
+                to_version=2,
+            )
+
+    @pytest.mark.anyio
+    async def test_returns_diff_with_deltas(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_diff
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        event = MagicMock()
+        event.payload = {
+            "nodes_upserted": 3,
+            "edges_upserted": 2,
+            "nodes_deactivated": 1,
+            "edges_deactivated": 0,
+            "sample_node_keys": ["key1", "key2"],
+        }
+
+        sample_node = MagicMock()
+        sample_node.id = uuid4()
+        sample_node.natural_key = "key1"
+        sample_node.name = "node1"
+        sample_node.kind = "file"
+        sample_node.is_active = True
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),  # resolve scenario
+            _scalars_all([event]),  # events
+            _scalars_all([sample_node]),  # sample nodes
+        ]
+
+        result = await get_collection_twin_diff(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            from_version=1,
+            to_version=3,
+        )
+
+        assert result["delta"]["nodes_added"] == 3
+        assert result["delta"]["edges_added"] == 2
+        assert result["delta"]["nodes_removed"] == 1
+        assert len(result["sample_nodes"]) == 1
