@@ -2194,3 +2194,375 @@ class TestGetCollectionTwinDiff:
         assert result["delta"]["edges_added"] == 2
         assert result["delta"]["nodes_removed"] == 1
         assert len(result["sample_nodes"]) == 1
+
+    @pytest.mark.anyio
+    async def test_filters_events_outside_version_range(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_diff
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+
+        # Event with version outside range should be excluded
+        event_in_range = MagicMock()
+        event_in_range.payload = {
+            "scenario_version": 2,
+            "nodes_upserted": 5,
+            "edges_upserted": 3,
+            "nodes_deactivated": 0,
+            "edges_deactivated": 0,
+        }
+        event_out_of_range = MagicMock()
+        event_out_of_range.payload = {
+            "scenario_version": 10,
+            "nodes_upserted": 100,
+            "edges_upserted": 50,
+            "nodes_deactivated": 99,
+            "edges_deactivated": 49,
+        }
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([event_in_range, event_out_of_range]),
+            _scalars_all([]),  # sample nodes
+        ]
+
+        result = await get_collection_twin_diff(
+            session,
+            collection_id=uuid4(),
+            scenario_id=None,
+            from_version=1,
+            to_version=5,
+        )
+
+        # Only the in-range event should contribute
+        assert result["delta"]["nodes_added"] == 5
+        assert result["delta"]["edges_added"] == 3
+
+
+# ── get_collection_twin_status ──────────────────────────────────────────
+
+
+class TestGetCollectionTwinStatus:
+    @pytest.mark.anyio
+    async def test_returns_status_with_no_sources(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_status
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.version = 1
+
+        session.execute.side_effect = [
+            # _resolve_status_scenario
+            _scalar_one_or_none(scenario),
+            # select(Source)
+            _scalars_all([]),
+            # select(TwinEvent)
+            _scalars_all([]),
+        ]
+
+        cid = uuid4()
+        result = await get_collection_twin_status(session, collection_id=cid)
+
+        assert result["collection_id"] == str(cid)
+        assert result["freshness"] == "failed"  # no sources -> failed
+        assert result["sources"] == []
+
+    @pytest.mark.anyio
+    async def test_returns_ready_when_all_sources_ready(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_status
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.version = 2
+
+        source = MagicMock()
+        source.id = uuid4()
+
+        now = datetime.now(UTC)
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "ready"
+        sv.revision_key = "rev1"
+        sv.finished_at = now
+        sv.started_at = now
+        sv.stats = {}
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([source]),
+            # latest source version for source
+            _scalar_one_or_none(sv),
+            # last error event
+            _scalar_one_or_none(None),
+            # timeline events
+            _scalars_all([]),
+        ]
+
+        result = await get_collection_twin_status(session, collection_id=uuid4())
+
+        assert result["freshness"] == "ready"
+        assert len(result["sources"]) == 1
+        assert result["sources"][0]["status"] == "ready"
+
+    @pytest.mark.anyio
+    async def test_returns_degraded_when_failed_sources(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_status
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.version = 1
+
+        source = MagicMock()
+        source.id = uuid4()
+
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "failed"
+        sv.revision_key = "rev1"
+        sv.finished_at = None
+        sv.started_at = datetime.now(UTC)
+        sv.stats = {}
+
+        err_event = MagicMock()
+        err_event.error = "timeout"
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([source]),
+            _scalar_one_or_none(sv),
+            _scalar_one_or_none(err_event),
+            _scalars_all([]),
+        ]
+
+        result = await get_collection_twin_status(session, collection_id=uuid4())
+
+        assert result["freshness"] == "degraded"
+        assert result["sources"][0]["last_error"] == "timeout"
+
+    @pytest.mark.anyio
+    async def test_aggregates_scip_stats(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_status
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.version = 1
+
+        source = MagicMock()
+        source.id = uuid4()
+
+        now = datetime.now(UTC)
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "ready"
+        sv.revision_key = "rev1"
+        sv.finished_at = now
+        sv.started_at = now
+        sv.stats = {
+            "scip_projects_detected": 3,
+            "scip_projects_indexed": 3,
+            "scip_projects_failed": 0,
+            "scip_projects_by_language": {"python": 2, "typescript": 1},
+            "metrics_requested_files": 10,
+            "metrics_mapped_files": 10,
+        }
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([source]),
+            _scalar_one_or_none(sv),
+            _scalar_one_or_none(None),
+            _scalars_all([]),
+        ]
+
+        result = await get_collection_twin_status(session, collection_id=uuid4())
+
+        assert result["scip_status"] == "ready"
+        assert result["scip_projects_by_language"]["python"] == 2
+        assert result["scip_projects_by_language"]["typescript"] == 1
+        assert result["metrics_gate"]["status"] == "pass"
+
+    @pytest.mark.anyio
+    async def test_behavioral_layers_status(self) -> None:
+        from contextmine_core.twin.ops import get_collection_twin_status
+
+        session = _make_mock_session()
+        scenario = MagicMock()
+        scenario.id = uuid4()
+        scenario.version = 1
+
+        source = MagicMock()
+        source.id = uuid4()
+
+        now = datetime.now(UTC)
+        sv = MagicMock()
+        sv.id = uuid4()
+        sv.status = "ready"
+        sv.revision_key = "rev1"
+        sv.finished_at = now
+        sv.started_at = now
+        sv.stats = {
+            "behavioral_layers_status": "ready",
+            "last_behavioral_materialized_at": "2024-06-01T12:00:00Z",
+            "scip_projects_detected": 1,
+            "scip_projects_indexed": 1,
+            "scip_projects_failed": 0,
+            "metrics_requested_files": 5,
+            "metrics_mapped_files": 5,
+        }
+
+        session.execute.side_effect = [
+            _scalar_one_or_none(scenario),
+            _scalars_all([source]),
+            _scalar_one_or_none(sv),
+            _scalar_one_or_none(None),
+            _scalars_all([]),
+        ]
+
+        result = await get_collection_twin_status(session, collection_id=uuid4())
+
+        assert result["behavioral_layers_status"] == "ready"
+        assert result["last_behavioral_materialized_at"] is not None
+
+
+# ── trigger_collection_refresh ──────────────────────────────────────────
+
+
+class TestTriggerCollectionRefresh:
+    @pytest.mark.anyio
+    async def test_creates_new_source_versions(self) -> None:
+        from contextmine_core.twin.ops import trigger_collection_refresh
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.id = uuid4()
+        source.type = "web"
+        source.cursor = None
+
+        doc = MagicMock()
+        doc.uri = "https://example.com"
+        doc.content_hash = "abc123"
+
+        # Fresh source version
+        new_sv = MagicMock()
+        new_sv.id = uuid4()
+        new_sv.status = "queued"
+        new_sv.revision_key = "web:abc"
+
+        # Existing idempotent event
+        existing_event = MagicMock()
+        existing_event.id = uuid4()
+
+        session.execute.side_effect = [
+            # select(Source)
+            _scalars_all([source]),
+            # compute_revision_key_for_source -> select docs
+            MagicMock(all=lambda: [doc]),
+            # latest source version
+            _scalar_one_or_none(None),
+            # get_or_create_source_version -> lookup
+            _scalar_one_or_none(None),
+            # record_twin_event -> lookup
+            _scalar_one_or_none(None),
+        ]
+
+        cid = uuid4()
+        result = await trigger_collection_refresh(
+            session,
+            collection_id=cid,
+        )
+
+        assert result["collection_id"] == str(cid)
+        assert result["created"] >= 1
+        assert len(result["items"]) >= 1
+
+    @pytest.mark.anyio
+    async def test_skips_up_to_date_sources(self) -> None:
+        from contextmine_core.twin.ops import trigger_collection_refresh
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.id = uuid4()
+        source.type = "web"
+        source.cursor = None
+
+        doc = MagicMock()
+        doc.uri = "https://example.com"
+        doc.content_hash = "abc123"
+
+        # Latest version matches current revision
+        latest_sv = MagicMock()
+        latest_sv.id = uuid4()
+        latest_sv.status = "ready"
+        latest_sv.extractor_version = "scip-kg-v1"
+
+        session.execute.side_effect = [
+            _scalars_all([source]),
+            MagicMock(all=lambda: [doc]),
+            _scalar_one_or_none(latest_sv),
+        ]
+
+        # Make the revision key match
+        import hashlib
+
+        digest_input = f"{doc.uri}:{doc.content_hash}"
+        expected_key = f"web:{hashlib.sha256(digest_input.encode()).hexdigest()}"
+        latest_sv.revision_key = expected_key
+
+        with patch("contextmine_core.twin.ops.SourceType") as MockSourceType:
+            MockSourceType.GITHUB = "github"
+            result = await trigger_collection_refresh(
+                session,
+                collection_id=uuid4(),
+            )
+
+        assert result["skipped"] >= 1
+
+    @pytest.mark.anyio
+    async def test_force_overrides_skip(self) -> None:
+        from contextmine_core.twin.ops import trigger_collection_refresh
+
+        session = _make_mock_session()
+        source = MagicMock()
+        source.id = uuid4()
+        source.type = "web"
+        source.cursor = None
+
+        doc = MagicMock()
+        doc.uri = "https://example.com"
+        doc.content_hash = "abc123"
+
+        latest_sv = MagicMock()
+        latest_sv.id = uuid4()
+        latest_sv.status = "ready"
+        latest_sv.extractor_version = "scip-kg-v1"
+
+        session.execute.side_effect = [
+            _scalars_all([source]),
+            MagicMock(all=lambda: [doc]),
+            _scalar_one_or_none(latest_sv),
+            # get_or_create_source_version
+            _scalar_one_or_none(None),
+            # record_twin_event
+            _scalar_one_or_none(None),
+        ]
+
+        import hashlib
+
+        digest_input = f"{doc.uri}:{doc.content_hash}"
+        expected_key = f"web:{hashlib.sha256(digest_input.encode()).hexdigest()}"
+        latest_sv.revision_key = expected_key
+
+        with patch("contextmine_core.twin.ops.SourceType") as MockSourceType:
+            MockSourceType.GITHUB = "github"
+            result = await trigger_collection_refresh(
+                session,
+                collection_id=uuid4(),
+                force=True,
+            )
+
+        assert result["created"] >= 1

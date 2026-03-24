@@ -1570,7 +1570,7 @@ class TestMaterializeBehavioralLayersWithExtractions:
             source_version_id=None,
         )
 
-        assert result["behavioral_layers_status"] == "ready"  # type: ignore[index]
+        assert result["behavioral_layers_status"] == "ready"
 
     async def test_with_source_version_updates_stats(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When source_version_id is given, updates source version stats."""
