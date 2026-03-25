@@ -48,12 +48,24 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine
         run: uv run alembic upgrade head
 
-      - name: Run tests with coverage
+      - name: Run Python tests with coverage
         env:
           DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@localhost:5432/contextmine
           DEBUG: "true"
         run: |
           uv run pytest --cov=apps --cov=packages --cov-report=xml:coverage.xml --cov-report=term -v || true
+        continue-on-error: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run frontend tests with coverage
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx vitest run --coverage || true
         continue-on-error: true
 
       # Optional ContextMine coverage ingest (CI push model).
