@@ -30,7 +30,7 @@ export default function NodeInspector({
   neighborhoodError,
   overlay,
   onClearSelection,
-}: NodeInspectorProps) {
+}: Readonly<NodeInspectorProps>) {
   const node = graph.nodes.find((entry) => entry.id === selectedNodeId) ?? null
   if (!node) {
     return (

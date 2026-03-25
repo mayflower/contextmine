@@ -62,7 +62,7 @@
 
 .sidebar li {
   padding: 12px 24px;
-  color: #a0aec0;
+  color: #cbd5e1;
   cursor: pointer;
   transition: all 0.2s;
   font-size: 0.9rem;
@@ -75,7 +75,7 @@
 
 .sidebar li.active {
   background: rgba(99, 102, 241, 0.2);
-  color: #818cf8;
+  color: #a5b4fc;
   border-left: 3px solid #818cf8;
 }
 
@@ -102,7 +102,7 @@
   justify-content: space-between;
   align-items: center;
   font-size: 0.85rem;
-  color: #a0aec0;
+  color: #cbd5e1;
 }
 
 .footer-left {
@@ -112,7 +112,7 @@
 }
 
 .footer-left a {
-  color: #a0aec0;
+  color: #cbd5e1;
   text-decoration: underline;
 }
 
@@ -126,7 +126,7 @@
 }
 
 .footer-links a {
-  color: #a0aec0;
+  color: #cbd5e1;
   text-decoration: none;
   transition: color 0.2s;
 }
@@ -141,7 +141,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 6px;
@@ -274,7 +274,7 @@
 }
 
 .welcome-content p {
-  color: #a0aec0;
+  color: #cbd5e1;
   line-height: 1.6;
   margin: 0;
 }
@@ -322,7 +322,7 @@
 }
 
 .feature-text span {
-  color: #a0aec0;
+  color: #cbd5e1;
   font-size: 0.85rem;
   line-height: 1.4;
 }
@@ -512,7 +512,7 @@
 
 .status-count.error {
   background: #fee2e2;
-  color: #dc2626;
+  color: #b91c1c;
 }
 
 /* Status badges for runs table */
@@ -537,12 +537,12 @@
 
 .status-badge.failed {
   background: #fee2e2;
-  color: #dc2626;
+  color: #b91c1c;
 }
 
 .status-badge.pending {
   background: #f3f4f6;
-  color: #6b7280;
+  color: #4b5563;
 }
 
 /* Compact tables */
@@ -650,7 +650,7 @@
 
 .status.error {
   background: #fed7d7;
-  color: #c53030;
+  color: #991b1b;
 }
 
 .status.loading {
@@ -911,7 +911,7 @@ code {
 
 .manage-button {
   padding: 4px 12px;
-  background: #818cf8;
+  background: #6366f1;
   color: white;
   border: none;
   border-radius: 4px;
@@ -953,7 +953,7 @@ code {
 .delete-collection-button {
   padding: 8px 16px;
   background: #fee2e2;
-  color: #dc2626;
+  color: #b91c1c;
   border: 1px solid #fca5a5;
   border-radius: 6px;
   font-size: 0.9rem;
@@ -1065,7 +1065,7 @@ code {
 
 .share-button {
   padding: 8px 16px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1107,7 +1107,7 @@ code {
 }
 
 .collection-chip.active {
-  background: #818cf8;
+  background: #6366f1;
   color: white;
   border-color: #818cf8;
 }
@@ -1242,7 +1242,7 @@ code {
 
 .sync-button {
   padding: 4px 10px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 4px;
@@ -1336,7 +1336,7 @@ code {
 }
 
 .source-type-badge.web {
-  background: #0ea5e9;
+  background: #0284c7;
   color: white;
 }
 
@@ -1508,7 +1508,7 @@ code {
 
 .query-button {
   padding: 12px 24px;
-  background: #818cf8;
+  background: #6366f1;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1782,7 +1782,7 @@ code {
 
 .save-button {
   padding: 8px 16px;
-  background: #818cf8;
+  background: #6366f1;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1809,7 +1809,7 @@ code {
   padding: 4px 10px;
   background: #f0f4ff;
   border: 1px solid #818cf8;
-  color: #6366f1;
+  color: #4338ca;
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.8rem;
@@ -2049,7 +2049,7 @@ tr.state-running {
 }
 
 .note.error {
-  color: #dc2626;
+  color: #b91c1c;
   background: #fef2f2;
   padding: 12px;
   border-radius: 4px;
@@ -2081,7 +2081,7 @@ tr.state-running {
 
 .create-button-inline {
   padding: 8px 16px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2137,7 +2137,7 @@ tr.state-running {
 
 .collection-form-inline .create-button {
   padding: 10px 20px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2182,7 +2182,7 @@ tr.state-running {
 .empty-state .create-button {
   margin-top: 16px;
   padding: 12px 24px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 8px;
@@ -2276,7 +2276,7 @@ tr.state-running {
 
 .visibility-badge.global {
   background: #dbeafe;
-  color: #2563eb;
+  color: #1d4ed8;
 }
 
 /* Collection Stats */
@@ -2391,7 +2391,7 @@ tr.state-running {
 
 .edit-collection-form .save-btn {
   padding: 6px 12px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 4px;
@@ -2508,7 +2508,7 @@ tr.state-running {
 .member-chip .owner-tag {
   font-size: 0.65rem;
   background: #dbeafe;
-  color: #2563eb;
+  color: #1d4ed8;
   padding: 1px 4px;
   border-radius: 4px;
   margin-left: 2px;
@@ -2551,7 +2551,7 @@ tr.state-running {
 
 .share-form-mini .add-btn {
   padding: 8px 14px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2614,7 +2614,7 @@ tr.state-running {
 
 .add-source-btn {
   padding: 8px 16px;
-  background: #818cf8;
+  background: #6366f1;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2703,7 +2703,7 @@ tr.state-running {
 
 .source-row .sync-btn {
   padding: 4px 10px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 4px;
@@ -2724,7 +2724,7 @@ tr.state-running {
   padding: 4px 10px;
   background: #f0f4ff;
   border: 1px solid #818cf8;
-  color: #6366f1;
+  color: #4338ca;
   border-radius: 4px;
   font-size: 0.75rem;
   cursor: pointer;
@@ -2839,7 +2839,7 @@ tr.state-running {
 .source-edit-inline .save-btn,
 .source-key-inline .save-key-btn {
   padding: 6px 14px;
-  background: #22c55e;
+  background: #16a34a;
   color: white;
   border: none;
   border-radius: 4px;

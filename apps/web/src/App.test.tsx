@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 type Page = 'dashboard' | 'collections' | 'runs' | 'cockpit'
 
-const VALID_PAGES: Page[] = ['dashboard', 'collections', 'runs', 'cockpit']
+const VALID_PAGES = new Set<Page>(['dashboard', 'collections', 'runs', 'cockpit'])
 
 function parseInitialPage(): Page {
   const params = new URLSearchParams(globalThis.location.search)
@@ -23,7 +23,7 @@ function parseInitialPage(): Page {
   if (!rawPage) {
     return 'dashboard'
   }
-  return VALID_PAGES.includes(rawPage as Page) ? (rawPage as Page) : 'dashboard'
+  return VALID_PAGES.has(rawPage as Page) ? (rawPage as Page) : 'dashboard'
 }
 
 function formatSourceUrl(url: string): string {

@@ -42,7 +42,7 @@ export default function GraphRagProcessModal({
   onClose,
   onSelectNodeId,
   onToggleFocus,
-}: GraphRagProcessModalProps) {
+}: Readonly<GraphRagProcessModalProps>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mermaidCode = useMemo(() => toMermaid(detail), [detail])
 

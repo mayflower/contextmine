@@ -139,7 +139,7 @@ export default function CockpitCommandBar({
   onLoadOverlayFile,
   onOpenCollections,
   onOpenRuns,
-}: CockpitCommandBarProps) {
+}: Readonly<CockpitCommandBarProps>) {
   const [showAdvancedGraphControls, setShowAdvancedGraphControls] = useState(false)
   const showLayer =
     activeView === 'topology' ||

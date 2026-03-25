@@ -11,9 +11,9 @@ import {
   DEFAULT_VIEW,
 } from '../types'
 
-const VALID_LAYERS: CockpitLayer[] = COCKPIT_LAYERS.map((l) => l.key)
-const VALID_VIEWS: CockpitView[] = COCKPIT_VIEWS.map((v) => v.key)
-const VALID_OVERLAYS: OverlayMode[] = ['none', 'runtime', 'risk']
+const VALID_LAYERS = new Set<CockpitLayer>(COCKPIT_LAYERS.map((l) => l.key))
+const VALID_VIEWS = new Set<CockpitView>(COCKPIT_VIEWS.map((v) => v.key))
+const VALID_OVERLAYS = new Set<OverlayMode>(['none', 'runtime', 'risk'])
 const DEFAULT_PAGE = 0
 const DEFAULT_LIMIT = 1200
 
@@ -31,12 +31,21 @@ function parseInitialSelection(): CockpitSelection {
   return {
     collectionId: params.get('collection') ?? '',
     scenarioId: params.get('scenario') ?? '',
-    layer: VALID_LAYERS.includes(rawLayer as CockpitLayer)
+    layer: VALID_LAYERS.has(rawLayer as CockpitLayer)
       ? (rawLayer as CockpitLayer)
       : DEFAULT_LAYER,
-    view: VALID_VIEWS.includes(normalizedRawView as CockpitView)
+    view: VALID_VIEWS.has(normalizedRawView as CockpitView)
       ? (normalizedRawView as CockpitView)
       : DEFAULT_VIEW,
+  }
+}
+
+/** Set or delete a URL parameter based on a truthy/falsy value. */
+function setOrDelete(params: URLSearchParams, key: string, value: string | false): void {
+  if (value) {
+    params.set(key, value)
+  } else {
+    params.delete(key)
   }
 }
 
@@ -68,83 +77,19 @@ function writeSelectionToUrl(args: {
   const params = new URLSearchParams(globalThis.location.search)
   params.set('page', 'cockpit')
 
-  if (selection.collectionId) {
-    params.set('collection', selection.collectionId)
-  } else {
-    params.delete('collection')
-  }
-
-  if (selection.scenarioId) {
-    params.set('scenario', selection.scenarioId)
-  } else {
-    params.delete('scenario')
-  }
-
-  if (selection.view !== DEFAULT_VIEW) {
-    params.set('view', selection.view)
-  } else {
-    params.delete('view')
-  }
-
-  if (selection.layer !== DEFAULT_LAYER) {
-    params.set('layer', selection.layer)
-  } else {
-    params.delete('layer')
-  }
-
-  if (graphQuery.trim()) {
-    params.set('query', graphQuery.trim())
-  } else {
-    params.delete('query')
-  }
-
-  if (selectedNodeId.trim()) {
-    params.set('node', selectedNodeId.trim())
-  } else {
-    params.delete('node')
-  }
-
-  if (graphPage > DEFAULT_PAGE) {
-    params.set('pageIndex', String(graphPage))
-  } else {
-    params.delete('pageIndex')
-  }
-
-  if (graphLimit !== DEFAULT_LIMIT) {
-    params.set('limit', String(graphLimit))
-  } else {
-    params.delete('limit')
-  }
-
-  if (includeKinds.length > 0) {
-    params.set('includeKinds', includeKinds.join(','))
-  } else {
-    params.delete('includeKinds')
-  }
-
-  if (excludeKinds.length > 0) {
-    params.set('excludeKinds', excludeKinds.join(','))
-  } else {
-    params.delete('excludeKinds')
-  }
-
-  if (overlayMode !== 'none') {
-    params.set('overlay', overlayMode)
-  } else {
-    params.delete('overlay')
-  }
-
-  if (hideIsolated) {
-    params.set('hideIsolated', '1')
-  } else {
-    params.delete('hideIsolated')
-  }
-
-  if (edgeKinds.length > 0) {
-    params.set('edgeKinds', edgeKinds.join(','))
-  } else {
-    params.delete('edgeKinds')
-  }
+  setOrDelete(params, 'collection', selection.collectionId || false)
+  setOrDelete(params, 'scenario', selection.scenarioId || false)
+  setOrDelete(params, 'view', selection.view !== DEFAULT_VIEW && selection.view)
+  setOrDelete(params, 'layer', selection.layer !== DEFAULT_LAYER && selection.layer)
+  setOrDelete(params, 'query', graphQuery.trim() || false)
+  setOrDelete(params, 'node', selectedNodeId.trim() || false)
+  setOrDelete(params, 'pageIndex', graphPage > DEFAULT_PAGE && String(graphPage))
+  setOrDelete(params, 'limit', graphLimit !== DEFAULT_LIMIT && String(graphLimit))
+  setOrDelete(params, 'includeKinds', includeKinds.length > 0 && includeKinds.join(','))
+  setOrDelete(params, 'excludeKinds', excludeKinds.length > 0 && excludeKinds.join(','))
+  setOrDelete(params, 'overlay', overlayMode !== 'none' && overlayMode)
+  setOrDelete(params, 'hideIsolated', hideIsolated && '1')
+  setOrDelete(params, 'edgeKinds', edgeKinds.length > 0 && edgeKinds.join(','))
 
   const nextQuery = params.toString()
   const nextUrl = nextQuery ? `${globalThis.location.pathname}?${nextQuery}` : globalThis.location.pathname
@@ -182,7 +127,7 @@ export function useCockpitState() {
   })
   const [overlayMode, setOverlayMode] = useState<OverlayMode>(() => {
     const raw = (new URLSearchParams(globalThis.location.search).get('overlay') ?? 'none') as OverlayMode
-    return VALID_OVERLAYS.includes(raw) ? raw : 'none'
+    return VALID_OVERLAYS.has(raw) ? raw : 'none'
   })
 
   useEffect(() => {

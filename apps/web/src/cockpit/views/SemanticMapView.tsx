@@ -164,7 +164,7 @@ export default function SemanticMapView({
   onModeChange,
   onSelectNodeId,
   onRetry,
-}: SemanticMapViewProps) {
+}: Readonly<SemanticMapViewProps>) {
   const points = payload?.points || []
 
   const diffItems = useMemo(() => {

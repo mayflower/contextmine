@@ -65,7 +65,7 @@ export default function TopologyView({
   onSelectNodeId,
   onLayoutCompleted,
   onRetry,
-}: TopologyViewProps) {
+}: Readonly<TopologyViewProps>) {
   const [showLabels, setShowLabels] = useState(false)
   const [showMiniMap, setShowMiniMap] = useState(false)
   const [showDisplayOptions, setShowDisplayOptions] = useState(false)
@@ -252,12 +252,12 @@ export default function TopologyView({
         </div>
       ) : null}
 
-      {overlay.mode !== 'none' ? (
+      {overlay.mode === 'none' ? null : (
         <div className="cockpit2-overlay-legend">
           <span>Overlay:</span>
           <strong>{overlay.mode === 'runtime' ? 'Runtime health' : 'Dependency risk'}</strong>
         </div>
-      ) : null}
+      )}
 
       <div className="cockpit2-canvas">
         {graph.nodes.length > 0 ? (
@@ -284,11 +284,11 @@ export default function TopologyView({
                 <p>
                   The selected layer (<strong>{layerLabel(layer)}</strong>) is currently empty for this scenario.
                 </p>
-                {layer !== 'code_controlflow' ? (
+                {layer === 'code_controlflow' ? null : (
                   <button type="button" onClick={onSwitchToCodeLayer}>
                     Switch to Code / Controlflow
                   </button>
-                ) : null}
+                )}
               </>
             ) : (
               <p>

@@ -26,7 +26,7 @@ export default function ViewShell({
   skeletonTall = false,
   skeleton,
   children,
-}: ViewShellProps) {
+}: Readonly<ViewShellProps>) {
   if (state === 'loading' && !hasData) {
     return (
       <div className="cockpit2-skeleton-grid" id={panelId} role="tabpanel">

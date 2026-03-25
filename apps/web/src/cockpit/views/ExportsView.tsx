@@ -24,7 +24,7 @@ export default function ExportsView({
   onGenerate,
   onCopy,
   onDownload,
-}: ExportsViewProps) {
+}: Readonly<ExportsViewProps>) {
   return (
     <section className="cockpit2-panel" id="cockpit-panel-exports" role="tabpanel">
       <div className="cockpit2-panel-header-row">

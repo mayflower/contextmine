@@ -5,7 +5,7 @@ interface CockpitTabsProps {
   onViewChange: (view: CockpitView) => void
 }
 
-export default function CockpitTabs({ activeView, onViewChange }: CockpitTabsProps) {
+export default function CockpitTabs({ activeView, onViewChange }: Readonly<CockpitTabsProps>) {
   return (
     <div className="cockpit2-tabs" role="tablist" aria-label="Architecture Cockpit views">
       {COCKPIT_VIEWS.map((tab) => {

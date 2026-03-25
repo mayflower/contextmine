@@ -34,7 +34,7 @@ function withSemanticClasses(source: string, ids: Set<string>, className: 'added
   return `${source}\n${classDef}${classLines}\n`
 }
 
-export default function C4DiffView({ mermaid, state, error, onRetry }: C4DiffViewProps) {
+export default function C4DiffView({ mermaid, state, error, onRetry }: Readonly<C4DiffViewProps>) {
   const leftRef = useRef<HTMLDivElement | null>(null)
   const rightRef = useRef<HTMLDivElement | null>(null)
   const syncLock = useRef(false)

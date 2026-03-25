@@ -107,7 +107,7 @@ export default function ArchitectureView({
   onReindex,
   onRegenerateArc42,
   onRetry,
-}: ArchitectureViewProps) {
+}: Readonly<ArchitectureViewProps>) {
   const [activeTab, setActiveTab] = useState<'arc42' | 'ports' | 'erd' | 'drift'>('arc42')
   const sectionEntries = useMemo(
     () => Object.entries(arc42?.arc42.sections || {}),

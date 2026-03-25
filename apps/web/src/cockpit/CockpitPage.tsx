@@ -110,7 +110,7 @@ export default function CockpitPage({
   collections,
   onOpenCollections,
   onOpenRuns,
-}: CockpitPageProps) {
+}: Readonly<CockpitPageProps>) {
   const {
     selection,
     hotspotFilter,

@@ -77,7 +77,7 @@ export default function OverviewView({
   onOpenTopology,
   onOpenCity,
   onSelectHotspot,
-}: OverviewViewProps) {
+}: Readonly<OverviewViewProps>) {
   const [sortKey, setSortKey] = useState<SortKey>('complexity')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 

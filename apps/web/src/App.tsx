@@ -91,7 +91,7 @@ interface SyncRun {
 type Page = 'dashboard' | 'collections' | 'runs' | 'cockpit'
 
 const GITHUB_REPO = 'https://github.com/mayflower/contextmine'
-const VALID_PAGES: Page[] = ['dashboard', 'collections', 'runs', 'cockpit']
+const VALID_PAGES = new Set<Page>(['dashboard', 'collections', 'runs', 'cockpit'])
 const DEFAULT_COCKPIT_VIEW: CockpitView = 'overview'
 const DEFAULT_COCKPIT_LAYER: CockpitLayer = 'code_controlflow'
 
@@ -109,7 +109,32 @@ function parseInitialPage(): Page {
     return 'dashboard'
   }
 
-  return VALID_PAGES.includes(rawPage as Page) ? (rawPage as Page) : 'dashboard'
+  return VALID_PAGES.has(rawPage as Page) ? (rawPage as Page) : 'dashboard'
+}
+
+const COCKPIT_PARAM_KEYS = [
+  'collection', 'scenario', 'view', 'layer', 'query', 'node',
+  'pageIndex', 'limit', 'includeKinds', 'excludeKinds', 'overlay', 'hideIsolated', 'edgeKinds',
+]
+
+function applyCockpitParams(params: URLSearchParams, options?: CockpitNavigationOptions): void {
+  const nextView = options?.view
+  const nextLayer = options?.layer
+
+  if (options?.collectionId) {
+    params.set('collection', options.collectionId)
+  } else if (options && !options.collectionId) {
+    params.delete('collection')
+  }
+
+  if (options?.scenarioId) {
+    params.set('scenario', options.scenarioId)
+  } else if (options && !options.scenarioId) {
+    params.delete('scenario')
+  }
+
+  params.set('view', nextView || params.get('view') || DEFAULT_COCKPIT_VIEW)
+  params.set('layer', nextLayer || params.get('layer') || DEFAULT_COCKPIT_LAYER)
 }
 
 function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions): void {
@@ -117,46 +142,11 @@ function updatePageQuery(page: Page, cockpitOptions?: CockpitNavigationOptions):
   params.set('page', page)
 
   if (page === 'cockpit') {
-    const nextView = cockpitOptions?.view
-    const nextLayer = cockpitOptions?.layer
-
-    if (cockpitOptions?.collectionId) {
-      params.set('collection', cockpitOptions.collectionId)
-    } else if (cockpitOptions && !cockpitOptions.collectionId) {
-      params.delete('collection')
-    }
-
-    if (cockpitOptions?.scenarioId) {
-      params.set('scenario', cockpitOptions.scenarioId)
-    } else if (cockpitOptions && !cockpitOptions.scenarioId) {
-      params.delete('scenario')
-    }
-
-    if (nextView) {
-      params.set('view', nextView)
-    } else if (!params.get('view')) {
-      params.set('view', DEFAULT_COCKPIT_VIEW)
-    }
-
-    if (nextLayer) {
-      params.set('layer', nextLayer)
-    } else if (!params.get('layer')) {
-      params.set('layer', DEFAULT_COCKPIT_LAYER)
-    }
+    applyCockpitParams(params, cockpitOptions)
   } else {
-    params.delete('collection')
-    params.delete('scenario')
-    params.delete('view')
-    params.delete('layer')
-    params.delete('query')
-    params.delete('node')
-    params.delete('pageIndex')
-    params.delete('limit')
-    params.delete('includeKinds')
-    params.delete('excludeKinds')
-    params.delete('overlay')
-    params.delete('hideIsolated')
-    params.delete('edgeKinds')
+    for (const key of COCKPIT_PARAM_KEYS) {
+      params.delete(key)
+    }
   }
 
   const nextQuery = params.toString()
@@ -277,7 +267,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [_sources, setSources] = useState<Source[]>([])
+  const [, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1332,15 +1322,15 @@ function App() {
                 <h2>System Status</h2>
                 <div className="status-row">
                   <span className="label">API</span>
-                  {loading ? (
-                    <span className="status loading">Checking...</span>
-                  ) : healthError ? (
-                    <span className="status error">Error</span>
-                  ) : (
-                    <span className={`status ${health?.status === 'ok' ? 'ok' : 'error'}`}>
-                      {health?.status === 'ok' ? 'Healthy' : 'Unhealthy'}
-                    </span>
-                  )}
+                  {(() => {
+                    if (loading) return <span className="status loading">Checking...</span>
+                    if (healthError) return <span className="status error">Error</span>
+                    return (
+                      <span className={`status ${health?.status === 'ok' ? 'ok' : 'error'}`}>
+                        {health?.status === 'ok' ? 'Healthy' : 'Unhealthy'}
+                      </span>
+                    )
+                  })()}
                 </div>
                 <div className="status-row">
                   <span className="label">Sync Runs</span>
@@ -1407,9 +1397,10 @@ function App() {
                     />
                   </div>
                   <button type="submit" className="query-button" disabled={queryLoading || !queryText.trim()}>
-                    {queryLoading
-                      ? (researchStep || (queryMode === 'deep' ? 'Researching...' : 'Generating...'))
-                      : (queryMode === 'deep' ? 'Start Research' : 'Generate Context')}
+                    {(() => {
+                      if (queryLoading) return researchStep || (queryMode === 'deep' ? 'Researching...' : 'Generating...')
+                      return queryMode === 'deep' ? 'Start Research' : 'Generate Context'
+                    })()}
                   </button>
                 </form>
                 {queryError && <p className="query-error">{queryError}</p>}
@@ -1625,17 +1616,22 @@ function App() {
                 </div>
               )}
 
-              {collectionsLoading ? (
-                <p className="loading-text">Loading collections...</p>
-              ) : collections.length === 0 ? (
-                <div className="empty-state">
-                  <p>No collections yet</p>
-                  <p className="note">Collections organize your documentation and code sources.</p>
-                  <button className="create-button" onClick={() => setSelectedCollection({ id: 'new' } as Collection)}>
-                    Create Your First Collection
-                  </button>
-                </div>
-              ) : (
+              {(() => {
+                if (collectionsLoading) {
+                  return <p className="loading-text">Loading collections...</p>
+                }
+                if (collections.length === 0) {
+                  return (
+                    <div className="empty-state">
+                      <p>No collections yet</p>
+                      <p className="note">Collections organize your documentation and code sources.</p>
+                      <button className="create-button" onClick={() => setSelectedCollection({ id: 'new' } as Collection)}>
+                        Create Your First Collection
+                      </button>
+                    </div>
+                  )
+                }
+                return (
                 <div className="collections-list">
                   {collections.map((collection) => {
                     const isExpanded = expandedCollections.has(collection.id)
@@ -1687,7 +1683,11 @@ function App() {
                           </div>
 
                           <div className="collection-stats">
-                            <span className="stat">{sourceCount > 0 ? `${sourceCount} source${sourceCount !== 1 ? 's' : ''}` : 'No sources'}</span>
+                            <span className="stat">{(() => {
+                              if (sourceCount === 0) return 'No sources'
+                              const plural = sourceCount === 1 ? '' : 's'
+                              return `${sourceCount} source${plural}`
+                            })()}</span>
                             <span className="stat">{docCount > 0 ? `${docCount} docs` : ''}</span>
                             {sourceCount > 0 && (
                               <span className={`sync-status status-${syncStatus}`}>
@@ -1834,8 +1834,9 @@ function App() {
                                       const isManagingKey = selectedSource?.id === source.id
 
                                       return (
-                                        <div key={source.id} className={`source-row ${!source.enabled ? 'disabled' : ''} ${isEditingThis || isManagingKey ? 'editing' : ''}`}>
-                                          {isEditingThis ? (
+                                        <div key={source.id} className={`source-row ${source.enabled ? '' : 'disabled'} ${isEditingThis || isManagingKey ? 'editing' : ''}`}>
+                                          {(() => {
+                                          if (isEditingThis) return (
                                             /* Inline Edit Form */
                                             <div className="source-edit-inline">
                                               <div className="edit-row">
@@ -1891,7 +1892,8 @@ function App() {
                                               </div>
                                               {editSourceError && <p className="inline-error">{editSourceError}</p>}
                                             </div>
-                                          ) : isManagingKey ? (
+                                          )
+                                          if (isManagingKey) return (
                                             /* Inline Deploy Key Management */
                                             <div className="source-key-inline">
                                               <div className="edit-row">
@@ -1931,7 +1933,8 @@ function App() {
                                               )}
                                               {deployKeyError && <p className="inline-error">{deployKeyError}</p>}
                                             </div>
-                                          ) : (
+                                          )
+                                          return (
                                             /* Normal Source Row */
                                             <>
                                               <span className={`source-type-badge ${source.type}`}>{source.type}</span>
@@ -1977,7 +1980,8 @@ function App() {
                                                 </div>
                                               )}
                                             </>
-                                          )}
+                                          )
+                                          })()}
                                         </div>
                                       )
                                     })}
@@ -1991,7 +1995,8 @@ function App() {
                     )
                   })}
                 </div>
-              )}
+              )
+              })()}
             </section>
           </>
         )}
@@ -2001,50 +2006,54 @@ function App() {
             {/* Active Runs from Prefect */}
             <section className="card active-runs-section">
               <h2>Active Runs</h2>
-              {prefectFlowRuns?.error ? (
-                <p className="note error">Prefect connection error: {prefectFlowRuns.error}</p>
-              ) : prefectFlowRuns?.active && prefectFlowRuns.active.length > 0 ? (
-                <div className="active-runs-grid">
-                  {prefectFlowRuns.active.map((run) => (
-                    <div key={run.id} className={`active-run-card state-${run.state_type.toLowerCase()}`}>
-                      <div className="run-header">
-                        <span className={`state-badge ${run.state_type.toLowerCase()}`}>
-                          {run.state_name}
-                        </span>
-                        <span className="run-name">{run.name}</span>
-                      </div>
-                      {run.parameters.source_url && (
-                        <div className="run-source">
-                          {formatSourceUrl(run.parameters.source_url)}
-                        </div>
-                      )}
-                      {run.progress && (
-                        <div className="run-progress">
-                          <div className="progress-bar">
-                            <div
-                              className="progress-fill"
-                              style={{ width: `${run.progress.percent}%` }}
-                            />
+              {(() => {
+                if (prefectFlowRuns?.error) {
+                  return <p className="note error">Prefect connection error: {prefectFlowRuns.error}</p>
+                }
+                if (prefectFlowRuns?.active && prefectFlowRuns.active.length > 0) {
+                  return (
+                    <div className="active-runs-grid">
+                      {prefectFlowRuns.active.map((run) => (
+                        <div key={run.id} className={`active-run-card state-${run.state_type.toLowerCase()}`}>
+                          <div className="run-header">
+                            <span className={`state-badge ${run.state_type.toLowerCase()}`}>
+                              {run.state_name}
+                            </span>
+                            <span className="run-name">{run.name}</span>
                           </div>
-                          <div className="progress-stats">
-                            <span>{run.progress.completed}/{run.progress.total} tasks</span>
-                            {run.progress.current_task && (
-                              <span className="current-task">{run.progress.current_task}</span>
-                            )}
-                          </div>
+                          {run.parameters.source_url && (
+                            <div className="run-source">
+                              {formatSourceUrl(run.parameters.source_url)}
+                            </div>
+                          )}
+                          {run.progress && (
+                            <div className="run-progress">
+                              <div className="progress-bar">
+                                <div
+                                  className="progress-fill"
+                                  style={{ width: `${run.progress.percent}%` }}
+                                />
+                              </div>
+                              <div className="progress-stats">
+                                <span>{run.progress.completed}/{run.progress.total} tasks</span>
+                                {run.progress.current_task && (
+                                  <span className="current-task">{run.progress.current_task}</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {run.start_time && (
+                            <div className="run-started">
+                              Started {new Date(run.start_time).toLocaleTimeString()}
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {run.start_time && (
-                        <div className="run-started">
-                          Started {new Date(run.start_time).toLocaleTimeString()}
-                        </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="note">No active runs. Runs will appear here when syncs are in progress.</p>
-              )}
+                  )
+                }
+                return <p className="note">No active runs. Runs will appear here when syncs are in progress.</p>
+              })()}
             </section>
 
             {/* Recent Runs from Prefect */}
@@ -2158,11 +2167,10 @@ function App() {
             {selectedRunSource && (
               <section className="card">
                 <h2>Runs: {formatSourceUrl(selectedRunSource.url)}</h2>
-                {runsLoading ? (
-                  <p>Loading runs...</p>
-                ) : runs.length === 0 ? (
-                  <p className="note">No runs yet for this source.</p>
-                ) : (
+                {(() => {
+                  if (runsLoading) return <p>Loading runs...</p>
+                  if (runs.length === 0) return <p className="note">No runs yet for this source.</p>
+                  return (
                   <table className="runs-table">
                     <thead>
                       <tr>
@@ -2187,9 +2195,10 @@ function App() {
                             <td>{endDate ? endDate.toLocaleString() : '-'}</td>
                             <td>{durationStr}</td>
                             <td>
-                              <span className={`status ${run.status === 'success' ? 'ok' : run.status === 'failed' ? 'error' : 'loading'}`}>
-                                {run.status}
-                              </span>
+                              {(() => {
+                                const statusClass = run.status === 'success' ? 'ok' : (run.status === 'failed' ? 'error' : 'loading')
+                                return <span className={`status ${statusClass}`}>{run.status}</span>
+                              })()}
                             </td>
                             <td className="stats-cell">
                               {run.stats ? (
@@ -2245,7 +2254,8 @@ function App() {
                       })}
                     </tbody>
                   </table>
-                )}
+                  )
+                })()}
               </section>
             )}
           </>

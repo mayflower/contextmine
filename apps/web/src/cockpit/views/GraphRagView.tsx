@@ -104,7 +104,7 @@ export default function GraphRagView({
   onTracePath,
   onLoadProcessDetail,
   onRetry,
-}: GraphRagViewProps) {
+}: Readonly<GraphRagViewProps>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<Core | null>(null)
   const [showLabels, setShowLabels] = useState(true)
@@ -215,9 +215,8 @@ export default function GraphRagView({
           const edgeInProcess =
             focusedProcessNodeIds.has(edge.source_node_id) && focusedProcessNodeIds.has(edge.target_node_id)
           const edgeInCommunity =
-            !hasCommunityFocus
-              ? true
-              : graph.nodes.some(
+            hasCommunityFocus
+              ? graph.nodes.some(
                   (node) =>
                     node.id === edge.source_node_id &&
                     String(node.meta?.community_id || '') === communityId,
@@ -227,6 +226,7 @@ export default function GraphRagView({
                     node.id === edge.target_node_id &&
                     String(node.meta?.community_id || '') === communityId,
                 )
+              : true
           const edgeTouchesSelected =
             selectedNodeId &&
             (edge.source_node_id === selectedNodeId || edge.target_node_id === selectedNodeId)
@@ -426,7 +426,7 @@ export default function GraphRagView({
         </p>
       </div>
 
-      {!showGuidedEmpty ? (
+      {showGuidedEmpty ? null : (
         <section className="cockpit2-graphrag-community-bar">
           <h4>Communities</h4>
           {communitiesState === 'loading' ? <p className="muted">Loading communities…</p> : null}
@@ -457,7 +457,7 @@ export default function GraphRagView({
             </div>
           ) : null}
         </section>
-      ) : null}
+      )}
 
       {showGuidedEmpty ? (
         <section className="cockpit2-empty">
@@ -634,11 +634,11 @@ export default function GraphRagView({
           </p>
         </div>
 
-        {!selectedNodeId ? (
+        {selectedNodeId ? null : (
           <div className="cockpit2-empty">
             <p>Select a graph node to inspect indexed evidence text.</p>
           </div>
-        ) : null}
+        )}
 
         {selectedNodeId && evidenceState === 'loading' ? (
           <div className="cockpit2-skeleton-grid">

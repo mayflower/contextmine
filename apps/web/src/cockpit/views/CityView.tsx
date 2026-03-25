@@ -26,7 +26,7 @@ export default function CityView({
   onEntityLevelChange,
   onReload,
   onOpenOverview,
-}: CityViewProps) {
+}: Readonly<CityViewProps>) {
   return (
     <section className="cockpit2-panel cockpit2-city-panel" id="cockpit-panel-city" role="tabpanel">
       <div className="cockpit2-panel-header-row">

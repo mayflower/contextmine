@@ -8,7 +8,7 @@ interface TestMatrixViewProps {
   onRetry: () => void
 }
 
-export default function TestMatrixView({ state, error, payload, onRetry }: TestMatrixViewProps) {
+export default function TestMatrixView({ state, error, payload, onRetry }: Readonly<TestMatrixViewProps>) {
   const rows = payload?.matrix || []
 
   return (

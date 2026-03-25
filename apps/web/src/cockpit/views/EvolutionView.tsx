@@ -93,7 +93,7 @@ export default function EvolutionView({
   fitnessFunctions,
   panelErrors,
   onRetry,
-}: EvolutionViewProps) {
+}: Readonly<EvolutionViewProps>) {
   const couplingNodes = useMemo(() => toCouplingNodes(temporalCoupling), [temporalCoupling])
   const couplingEdges = useMemo(() => toCouplingEdges(temporalCoupling), [temporalCoupling])
   const investmentItems = investmentUtilization?.items || []

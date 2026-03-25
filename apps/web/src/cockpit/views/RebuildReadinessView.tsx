@@ -17,7 +17,7 @@ export default function RebuildReadinessView({
   error,
   payload,
   onRetry,
-}: RebuildReadinessViewProps) {
+}: Readonly<RebuildReadinessViewProps>) {
   return (
     <ViewShell
       state={state}

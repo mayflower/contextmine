@@ -39,7 +39,7 @@ export default function DeepDiveView({
   onSelectNodeId,
   onSwitchToCodeLayer,
   onRetry,
-}: DeepDiveViewProps) {
+}: Readonly<DeepDiveViewProps>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<Core | null>(null)
   const [showLabels, setShowLabels] = useState(true)
@@ -242,11 +242,11 @@ export default function DeepDiveView({
               <p>
                 The selected layer (<strong>{layerLabel(layer)}</strong>) has no nodes in this scenario.
               </p>
-              {layer !== 'code_controlflow' ? (
+              {layer === 'code_controlflow' ? null : (
                 <button type="button" onClick={onSwitchToCodeLayer}>
                   Switch to Code / Controlflow
                 </button>
-              ) : null}
+              )}
             </>
           ) : (
             <p>

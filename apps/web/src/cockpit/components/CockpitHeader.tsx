@@ -24,7 +24,7 @@ function formatStatus(state: CockpitLoadState): string {
   return 'Idle'
 }
 
-export default function CockpitHeader({ selection, scenario, activeState, activeUpdatedAt }: CockpitHeaderProps) {
+export default function CockpitHeader({ selection, scenario, activeState, activeUpdatedAt }: Readonly<CockpitHeaderProps>) {
   const scenarioKind = scenario?.is_as_is ? 'AS-IS' : 'TO-BE'
 
   return (

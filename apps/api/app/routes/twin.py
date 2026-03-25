@@ -9,7 +9,7 @@ import uuid
 from collections import defaultdict, deque
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from contextmine_core import Collection, CollectionMember, get_settings
 from contextmine_core import get_session as get_db_session
@@ -1929,7 +1929,15 @@ async def _resolve_knowledge_node(
     )
 
 
-@router.post("/scenarios")
+@router.post(
+    "/scenarios",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def create_scenario(request: Request, body: CreateScenarioRequest) -> dict:
     user_id = _user_id_or_401(request)
     try:
@@ -1958,7 +1966,15 @@ async def create_scenario(request: Request, body: CreateScenarioRequest) -> dict
         }
 
 
-@router.get("/scenarios")
+@router.get(
+    "/scenarios",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def list_scenarios(request: Request, collection_id: str | None = None) -> dict:
     """List scenarios, optionally filtered by collection."""
     user_id = _user_id_or_401(request)
@@ -1997,7 +2013,15 @@ async def list_scenarios(request: Request, collection_id: str | None = None) -> 
         }
 
 
-@router.get("/scenarios/{scenario_id}")
+@router.get(
+    "/scenarios/{scenario_id}",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def get_scenario(request: Request, scenario_id: str) -> dict:
     user_id = _user_id_or_401(request)
     async with get_db_session() as db:
@@ -2018,7 +2042,16 @@ async def get_scenario(request: Request, scenario_id: str) -> dict:
         }
 
 
-@router.post("/scenarios/{scenario_id}/intents")
+@router.post(
+    "/scenarios/{scenario_id}/intents",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        409: {"description": "Conflict"},
+    },
+)
 async def create_intent(request: Request, scenario_id: str, body: ArchitectureIntentV1) -> dict:
     user_id = _user_id_or_401(request)
 
@@ -2050,7 +2083,16 @@ async def create_intent(request: Request, scenario_id: str, body: ArchitectureIn
         }
 
 
-@router.post("/scenarios/{scenario_id}/intents/{intent_id}/approve")
+@router.post(
+    "/scenarios/{scenario_id}/intents/{intent_id}/approve",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        409: {"description": "Conflict"},
+    },
+)
 async def approve_intent(request: Request, scenario_id: str, intent_id: str) -> dict:
     user_id = _user_id_or_401(request)
 
@@ -2076,7 +2118,15 @@ async def approve_intent(request: Request, scenario_id: str, intent_id: str) -> 
         }
 
 
-@router.get("/scenarios/{scenario_id}/patches")
+@router.get(
+    "/scenarios/{scenario_id}/patches",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def get_patches(request: Request, scenario_id: str) -> dict:
     user_id = _user_id_or_401(request)
 
@@ -2099,17 +2149,25 @@ async def get_patches(request: Request, scenario_id: str) -> dict:
         }
 
 
-@router.get("/scenarios/{scenario_id}/graph")
+@router.get(
+    "/scenarios/{scenario_id}/graph",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graph_view(
     request: Request,
     scenario_id: str,
-    layer: str | None = Query(default=None),
-    projection: str | None = Query(default=GraphProjection.CODE_SYMBOL.value),
-    entity_level: str | None = Query(default=None),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=200, ge=1, le=5000),
+    layer: Annotated[str | None, Query()] = None,
+    projection: Annotated[str | None, Query()] = GraphProjection.CODE_SYMBOL.value,
+    entity_level: Annotated[str | None, Query()] = None,
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     layer_enum = _parse_layer(layer)
@@ -2131,17 +2189,25 @@ async def graph_view(
         )
 
 
-@router.get("/scenarios/{scenario_id}/graph/neighborhood")
+@router.get(
+    "/scenarios/{scenario_id}/graph/neighborhood",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graph_neighborhood_view(
     request: Request,
     scenario_id: str,
-    node_id: str = Query(min_length=1),
-    projection: str | None = Query(default=GraphProjection.CODE_SYMBOL.value),
-    entity_level: str | None = Query(default=None),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    hops: int = Query(default=1, ge=1, le=4),
-    limit: int = Query(default=200, ge=1, le=2000),
+    node_id: Annotated[str, Query(min_length=1)],
+    projection: Annotated[str | None, Query()] = GraphProjection.CODE_SYMBOL.value,
+    entity_level: Annotated[str | None, Query()] = None,
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    hops: Annotated[int, Query(ge=1, le=4)] = 1,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     projection_enum = _parse_projection(projection)
@@ -2201,11 +2267,19 @@ async def graph_neighborhood_view(
         }
 
 
-@router.get("/collections/{collection_id}/status")
+@router.get(
+    "/collections/{collection_id}/status",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_status_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2219,18 +2293,26 @@ async def twin_status_view(
         )
 
 
-@router.get("/collections/{collection_id}/timeline")
+@router.get(
+    "/collections/{collection_id}/timeline",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_timeline_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    source_id: str | None = Query(default=None),
-    event_type: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    from_ts: str | None = Query(default=None),
-    to_ts: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    scenario_id: Annotated[str | None, Query()] = None,
+    source_id: Annotated[str | None, Query()] = None,
+    event_type: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    from_ts: Annotated[str | None, Query()] = None,
+    to_ts: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict:
     del scenario_id
     user_id = _user_id_or_401(request)
@@ -2260,7 +2342,15 @@ async def twin_timeline_view(
         )
 
 
-@router.post("/collections/{collection_id}/refresh")
+@router.post(
+    "/collections/{collection_id}/refresh",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_refresh(
     request: Request,
     collection_id: str,
@@ -2284,13 +2374,22 @@ async def twin_refresh(
         return payload
 
 
-@router.get("/collections/{collection_id}/views/diff")
+@router.get(
+    "/collections/{collection_id}/views/diff",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_diff_view(
     request: Request,
     collection_id: str,
-    from_version: int = Query(ge=1),
-    to_version: int = Query(ge=1),
-    scenario_id: str | None = Query(default=None),
+    from_version: Annotated[int, Query(ge=1)],
+    to_version: Annotated[int, Query(ge=1)],
+    scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2309,12 +2408,21 @@ async def twin_diff_view(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/summary")
+@router.get(
+    "/collections/{collection_id}/analysis/summary",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_summary(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    engines: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2335,15 +2443,24 @@ async def twin_analysis_summary(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/methods")
+@router.get(
+    "/collections/{collection_id}/analysis/methods",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_methods(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    query: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
-    engines: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    query: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2371,14 +2488,23 @@ async def twin_analysis_methods(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/calls")
+@router.get(
+    "/collections/{collection_id}/analysis/calls",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_calls(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
-    engines: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2401,14 +2527,23 @@ async def twin_analysis_calls(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/cfg")
+@router.get(
+    "/collections/{collection_id}/analysis/cfg",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_cfg(
     request: Request,
     collection_id: str,
-    node_ref: str = Query(min_length=1),
-    scenario_id: str | None = Query(default=None),
-    depth: int = Query(default=2, ge=1, le=8),
-    engines: str | None = Query(default=None),
+    node_ref: Annotated[str, Query(min_length=1)],
+    scenario_id: Annotated[str | None, Query()] = None,
+    depth: Annotated[int, Query(ge=1, le=8)] = 2,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2431,15 +2566,24 @@ async def twin_analysis_cfg(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/variable-flow")
+@router.get(
+    "/collections/{collection_id}/analysis/variable-flow",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_variable_flow(
     request: Request,
     collection_id: str,
-    node_ref: str = Query(min_length=1),
-    variable: str | None = Query(default=None),
-    scenario_id: str | None = Query(default=None),
-    max_hops: int = Query(default=6, ge=1, le=20),
-    engines: str | None = Query(default=None),
+    node_ref: Annotated[str, Query(min_length=1)],
+    variable: Annotated[str | None, Query()] = None,
+    scenario_id: Annotated[str | None, Query()] = None,
+    max_hops: Annotated[int, Query(ge=1, le=20)] = 6,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2463,14 +2607,23 @@ async def twin_analysis_variable_flow(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/taint/sources")
+@router.get(
+    "/collections/{collection_id}/analysis/taint/sources",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_taint_sources(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    language: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=300),
-    engines: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    language: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=300)] = 50,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2493,14 +2646,23 @@ async def twin_analysis_taint_sources(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.get("/collections/{collection_id}/analysis/taint/sinks")
+@router.get(
+    "/collections/{collection_id}/analysis/taint/sinks",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_taint_sinks(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    language: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=300),
-    engines: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    language: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=300)] = 50,
+    engines: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     settings = get_settings()
@@ -2523,7 +2685,16 @@ async def twin_analysis_taint_sinks(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.post("/collections/{collection_id}/analysis/taint/flows")
+@router.post(
+    "/collections/{collection_id}/analysis/taint/flows",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        422: {"description": "Validation error"},
+    },
+)
 async def twin_analysis_taint_flows(
     request: Request,
     collection_id: str,
@@ -2550,7 +2721,15 @@ async def twin_analysis_taint_flows(
             raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-@router.post("/collections/{collection_id}/analysis/findings/store")
+@router.post(
+    "/collections/{collection_id}/analysis/findings/store",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_store_findings(
     request: Request,
     collection_id: str,
@@ -2571,15 +2750,23 @@ async def twin_store_findings(
         return payload
 
 
-@router.get("/collections/{collection_id}/analysis/findings")
+@router.get(
+    "/collections/{collection_id}/analysis/findings",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_list_findings(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    min_severity: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=500),
+    scenario_id: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    min_severity: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2597,13 +2784,21 @@ async def twin_list_findings(
         )
 
 
-@router.get("/collections/{collection_id}/analysis/findings/sarif")
+@router.get(
+    "/collections/{collection_id}/analysis/findings/sarif",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def twin_export_findings_sarif(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    min_severity: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    min_severity: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2619,13 +2814,24 @@ async def twin_export_findings_sarif(
         )
 
 
-@router.get("/collections/{collection_id}/views/arc42")
+@router.get(
+    "/collections/{collection_id}/views/arc42",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        409: {"description": "Conflict"},
+        502: {"description": "Bad gateway"},
+        503: {"description": "Service unavailable"},
+    },
+)
 async def arc42_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    section: str | None = Query(default=None),
-    regenerate: bool = Query(default=False),
+    scenario_id: Annotated[str | None, Query()] = None,
+    section: Annotated[str | None, Query()] = None,
+    regenerate: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2789,12 +2995,21 @@ async def arc42_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/arc42/drift")
+@router.get(
+    "/collections/{collection_id}/views/arc42/drift",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        503: {"description": "Service unavailable"},
+    },
+)
 async def arc42_drift_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    baseline_scenario_id: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    baseline_scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2854,13 +3069,22 @@ async def arc42_drift_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/ports-adapters")
+@router.get(
+    "/collections/{collection_id}/views/ports-adapters",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        503: {"description": "Service unavailable"},
+    },
+)
 async def ports_adapters_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    direction: str | None = Query(default=None),
-    container: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
+    direction: Annotated[str | None, Query()] = None,
+    container: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -2909,12 +3133,21 @@ async def ports_adapters_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/erm")
+@router.get(
+    "/collections/{collection_id}/views/erm",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+        503: {"description": "Service unavailable"},
+    },
+)
 async def erm_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    include_mermaid: bool = Query(default=True),
+    scenario_id: Annotated[str | None, Query()] = None,
+    include_mermaid: Annotated[bool, Query()] = True,
 ) -> dict[str, Any]:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3091,18 +3324,26 @@ async def erm_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/topology")
+@router.get(
+    "/collections/{collection_id}/views/topology",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def topology_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    layer: str | None = Query(default=TwinLayer.DOMAIN_CONTAINER.value),
-    projection: str | None = Query(default=GraphProjection.ARCHITECTURE.value),
-    entity_level: str | None = Query(default=None),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=1000, ge=1, le=5000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    layer: Annotated[str | None, Query()] = TwinLayer.DOMAIN_CONTAINER.value,
+    projection: Annotated[str | None, Query()] = GraphProjection.ARCHITECTURE.value,
+    entity_level: Annotated[str | None, Query()] = None,
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3136,19 +3377,27 @@ async def topology_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/deep-dive")
+@router.get(
+    "/collections/{collection_id}/views/deep-dive",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def deep_dive_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    layer: str | None = Query(default=TwinLayer.CODE_CONTROLFLOW.value),
-    projection: str | None = Query(default=GraphProjection.CODE_FILE.value),
-    entity_level: str | None = Query(default=None),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    mode: str | None = Query(default="file_dependency"),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=3000, ge=1, le=10000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    layer: Annotated[str | None, Query()] = TwinLayer.CODE_CONTROLFLOW.value,
+    projection: Annotated[str | None, Query()] = GraphProjection.CODE_FILE.value,
+    entity_level: Annotated[str | None, Query()] = None,
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    mode: Annotated[str | None, Query()] = "file_dependency",
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 3000,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3250,13 +3499,21 @@ async def deep_dive_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/ui-map")
+@router.get(
+    "/collections/{collection_id}/views/ui-map",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def ui_map_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=1200, ge=1, le=10000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 1200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3312,13 +3569,21 @@ async def ui_map_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/test-matrix")
+@router.get(
+    "/collections/{collection_id}/views/test-matrix",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def test_matrix_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=1200, ge=1, le=10000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 1200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3353,13 +3618,21 @@ async def test_matrix_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/user-flows")
+@router.get(
+    "/collections/{collection_id}/views/user-flows",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def user_flows_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=1200, ge=1, le=10000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 1200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3415,11 +3688,19 @@ async def user_flows_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/rebuild-readiness")
+@router.get(
+    "/collections/{collection_id}/views/rebuild-readiness",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def rebuild_readiness_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3468,18 +3749,26 @@ async def rebuild_readiness_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag")
+@router.get(
+    "/collections/{collection_id}/views/graphrag",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    edge_kinds: str | None = Query(default=None),
-    community_mode: str | None = Query(default="color"),
-    community_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=800, ge=1, le=5000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    edge_kinds: Annotated[str | None, Query()] = None,
+    community_mode: Annotated[str | None, Query()] = "color",
+    community_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 800,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3636,13 +3925,21 @@ async def graphrag_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag/communities")
+@router.get(
+    "/collections/{collection_id}/views/graphrag/communities",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_communities_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=200, ge=1, le=1000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3690,22 +3987,30 @@ def _default_dup_max_overlap(map_mode: str) -> float:
     return 0.30 if map_mode == "semantic" else 0.35
 
 
-@router.get("/collections/{collection_id}/views/semantic-map")
+@router.get(
+    "/collections/{collection_id}/views/semantic-map",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def semantic_map_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    map_mode: str | None = Query(default="code_structure"),
-    include_kinds: str | None = Query(default=None),
-    exclude_kinds: str | None = Query(default=None),
-    edge_kinds: str | None = Query(default=None),
-    mixed_cluster_max_dominant_ratio: float = Query(default=0.55, ge=0.0, le=1.0),
-    isolated_distance_multiplier: float = Query(default=1.2, ge=0.1, le=10.0),
-    semantic_duplication_min_similarity: float | None = Query(default=None, ge=0.0, le=1.0),
-    semantic_duplication_max_source_overlap: float | None = Query(default=None, ge=0.0, le=1.0),
-    misplaced_min_dominant_ratio: float = Query(default=0.6, ge=0.0, le=1.0),
-    page: int = Query(default=0, ge=0),
-    limit: int = Query(default=500, ge=1, le=5000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    map_mode: Annotated[str | None, Query()] = "code_structure",
+    include_kinds: Annotated[str | None, Query()] = None,
+    exclude_kinds: Annotated[str | None, Query()] = None,
+    edge_kinds: Annotated[str | None, Query()] = None,
+    mixed_cluster_max_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.55,
+    isolated_distance_multiplier: Annotated[float, Query(ge=0.1, le=10.0)] = 1.2,
+    semantic_duplication_min_similarity: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    semantic_duplication_max_source_overlap: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    misplaced_min_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.6,
+    page: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -3966,14 +4271,22 @@ async def semantic_map_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag/path")
+@router.get(
+    "/collections/{collection_id}/views/graphrag/path",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_path_view(
     request: Request,
     collection_id: str,
-    from_node_id: str = Query(min_length=1),
-    to_node_id: str = Query(min_length=1),
-    scenario_id: str | None = Query(default=None),
-    max_hops: int = Query(default=6, ge=1, le=20),
+    from_node_id: Annotated[str, Query(min_length=1)],
+    to_node_id: Annotated[str, Query(min_length=1)],
+    scenario_id: Annotated[str | None, Query()] = None,
+    max_hops: Annotated[int, Query(ge=1, le=20)] = 6,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4046,11 +4359,19 @@ async def graphrag_path_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag/processes")
+@router.get(
+    "/collections/{collection_id}/views/graphrag/processes",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_processes_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4081,12 +4402,20 @@ async def graphrag_processes_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag/processes/{process_id}")
+@router.get(
+    "/collections/{collection_id}/views/graphrag/processes/{process_id}",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_process_detail_view(
     request: Request,
     collection_id: str,
     process_id: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: Annotated[str | None, Query()] = None,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4157,13 +4486,21 @@ async def graphrag_process_detail_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/graphrag/evidence")
+@router.get(
+    "/collections/{collection_id}/views/graphrag/evidence",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def graphrag_evidence_view(
     request: Request,
     collection_id: str,
-    node_id: str = Query(min_length=1),
-    scenario_id: str | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
+    node_id: Annotated[str, Query(min_length=1)],
+    scenario_id: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4302,12 +4639,20 @@ async def graphrag_evidence_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/city")
+@router.get(
+    "/collections/{collection_id}/views/city",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def city_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    hotspots_limit: int = Query(default=50, ge=1, le=200),
+    scenario_id: Annotated[str | None, Query()] = None,
+    hotspots_limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4560,13 +4905,21 @@ async def city_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/evolution/investment-utilization")
+@router.get(
+    "/collections/{collection_id}/views/evolution/investment-utilization",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def evolution_investment_utilization_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    entity_level: str = Query(default="container"),
-    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
+    scenario_id: Annotated[str | None, Query()] = None,
+    entity_level: Annotated[str, Query()] = "container",
+    window_days: Annotated[int, Query(ge=1, le=3650)] = DEFAULT_EVOLUTION_WINDOW_DAYS,
 ) -> dict:
     _ensure_evolution_enabled()
     user_id = _user_id_or_401(request)
@@ -4593,14 +4946,22 @@ async def evolution_investment_utilization_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/evolution/knowledge-islands")
+@router.get(
+    "/collections/{collection_id}/views/evolution/knowledge-islands",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def evolution_knowledge_islands_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    entity_level: str = Query(default="container"),
-    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
-    ownership_threshold: float = Query(default=0.7, ge=0.0, le=1.0),
+    scenario_id: Annotated[str | None, Query()] = None,
+    entity_level: Annotated[str, Query()] = "container",
+    window_days: Annotated[int, Query(ge=1, le=3650)] = DEFAULT_EVOLUTION_WINDOW_DAYS,
+    ownership_threshold: Annotated[float, Query(ge=0.0, le=1.0)] = 0.7,
 ) -> dict:
     _ensure_evolution_enabled()
     user_id = _user_id_or_401(request)
@@ -4629,15 +4990,23 @@ async def evolution_knowledge_islands_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/evolution/temporal-coupling")
+@router.get(
+    "/collections/{collection_id}/views/evolution/temporal-coupling",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def evolution_temporal_coupling_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    entity_level: str = Query(default="component"),
-    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
-    min_jaccard: float = Query(default=DEFAULT_MIN_JACCARD, ge=0.0, le=1.0),
-    max_edges: int = Query(default=DEFAULT_MAX_COUPLING_EDGES, ge=1, le=2000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    entity_level: Annotated[str, Query()] = "component",
+    window_days: Annotated[int, Query(ge=1, le=3650)] = DEFAULT_EVOLUTION_WINDOW_DAYS,
+    min_jaccard: Annotated[float, Query(ge=0.0, le=1.0)] = DEFAULT_MIN_JACCARD,
+    max_edges: Annotated[int, Query(ge=1, le=2000)] = DEFAULT_MAX_COUPLING_EDGES,
 ) -> dict:
     _ensure_evolution_enabled()
     user_id = _user_id_or_401(request)
@@ -4668,13 +5037,21 @@ async def evolution_temporal_coupling_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/evolution/fitness-functions")
+@router.get(
+    "/collections/{collection_id}/views/evolution/fitness-functions",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def evolution_fitness_functions_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    window_days: int = Query(default=DEFAULT_EVOLUTION_WINDOW_DAYS, ge=1, le=3650),
-    include_resolved: bool = Query(default=False),
+    scenario_id: Annotated[str | None, Query()] = None,
+    window_days: Annotated[int, Query(ge=1, le=3650)] = DEFAULT_EVOLUTION_WINDOW_DAYS,
+    include_resolved: Annotated[bool, Query()] = False,
 ) -> dict:
     _ensure_evolution_enabled()
     user_id = _user_id_or_401(request)
@@ -4697,15 +5074,23 @@ async def evolution_fitness_functions_view(
         }
 
 
-@router.get("/collections/{collection_id}/views/mermaid")
+@router.get(
+    "/collections/{collection_id}/views/mermaid",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def mermaid_view(
     request: Request,
     collection_id: str,
-    scenario_id: str | None = Query(default=None),
-    compare_with_base: bool = Query(default=True),
-    c4_view: str | None = Query(default="container"),
-    c4_scope: str | None = Query(default=None),
-    max_nodes: int = Query(default=120, ge=10, le=5000),
+    scenario_id: Annotated[str | None, Query()] = None,
+    compare_with_base: Annotated[bool, Query()] = True,
+    c4_view: Annotated[str | None, Query()] = "container",
+    c4_scope: Annotated[str | None, Query()] = None,
+    max_nodes: Annotated[int, Query(ge=10, le=5000)] = 120,
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4760,7 +5145,15 @@ async def mermaid_view(
         }
 
 
-@router.post("/scenarios/{scenario_id}/cypher")
+@router.post(
+    "/scenarios/{scenario_id}/cypher",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def query_cypher(request: Request, scenario_id: str, body: CypherRequest) -> dict:
     user_id = _user_id_or_401(request)
     async with get_db_session() as db:
@@ -4774,7 +5167,15 @@ async def query_cypher(request: Request, scenario_id: str, body: CypherRequest) 
         return {"rows": rows, "count": len(rows)}
 
 
-@router.post("/scenarios/{scenario_id}/exports")
+@router.post(
+    "/scenarios/{scenario_id}/exports",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def create_export(request: Request, scenario_id: str, body: ExportRequest) -> dict:
     user_id = _user_id_or_401(request)
 
@@ -4932,7 +5333,15 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
         }
 
 
-@router.get("/scenarios/{scenario_id}/exports/{export_id}")
+@router.get(
+    "/scenarios/{scenario_id}/exports/{export_id}",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def get_export(request: Request, scenario_id: str, export_id: str) -> dict:
     user_id = _user_id_or_401(request)
 
@@ -4966,7 +5375,15 @@ async def get_export(request: Request, scenario_id: str, export_id: str) -> dict
         }
 
 
-@router.get("/scenarios/{scenario_id}/exports/{export_id}/raw")
+@router.get(
+    "/scenarios/{scenario_id}/exports/{export_id}/raw",
+    responses={
+        400: {"description": "Bad request"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not found"},
+    },
+)
 async def get_export_raw(request: Request, scenario_id: str, export_id: str) -> Response:
     user_id = _user_id_or_401(request)
 
