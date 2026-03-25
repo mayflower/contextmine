@@ -58,6 +58,12 @@ possibly-missing-attribute = "ignore"
 unresolved-import = "ignore"
 # Test code uses `in` operator with Optional types
 unsupported-operator = "ignore"
+# SQLAlchemy async session patterns: ty can't resolve async through re-exports
+invalid-await = "ignore"
+# Test stubs with simplified return types
+invalid-return-type = "ignore"
+# SQLAlchemy Result.rowcount and gitpython diff types not in stubs
+unresolved-attribute = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["apps/api/tests", "apps/worker/tests", "packages/core/tests"]
