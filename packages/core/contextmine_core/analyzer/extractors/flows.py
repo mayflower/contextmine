@@ -250,78 +250,119 @@ async def build_flows_graph(
         stats["user_flows"] += 1
 
         for step in flow.steps:
-            step_confidence = 0.78 if step.symbol_hints else 0.84
-            step_meta = {
-                "order": step.order,
-                "endpoint_path": step.endpoint_path,
-                "symbol_hints": step.symbol_hints,
-                "test_case_refs": step.test_case_refs,
-                **_provenance(
-                    mode="inferred" if step.symbol_hints else "deterministic",
-                    extractor=_EXTRACTOR_VERSION,
-                    confidence=step_confidence,
-                    evidence_ids=step.evidence_ids,
-                ),
-            }
-            step_id = await _upsert_node(
+            step_id = await _persist_flow_step(
                 session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.FLOW_STEP,
-                natural_key=step.natural_key,
-                name=step.name,
-                meta=step_meta,
+                collection_id,
+                flow_id,
+                step,
+                stats,
             )
-            stats["flow_steps"] += 1
-
-            await _upsert_edge(
+            await _link_step_endpoints(
                 session,
-                collection_id=collection_id,
-                source_node_id=flow_id,
-                target_node_id=step_id,
-                kind=KnowledgeEdgeKind.USER_FLOW_HAS_STEP,
-                meta=_provenance(
-                    mode="deterministic",
-                    extractor=_EXTRACTOR_VERSION,
-                    confidence=0.9,
-                ),
+                collection_id,
+                step_id,
+                step,
+                endpoint_symbol_index,
+                stats,
             )
-            stats["flow_edges"] += 1
-
-            endpoint_ids: set[UUID] = set()
-            for symbol_hint in step.symbol_hints:
-                for token in symbol_token_variants(symbol_hint):
-                    endpoint_ids.update(endpoint_symbol_index.get(token, set()))
-            for endpoint_id in endpoint_ids:
-                await _upsert_edge(
-                    session,
-                    collection_id=collection_id,
-                    source_node_id=step_id,
-                    target_node_id=endpoint_id,
-                    kind=KnowledgeEdgeKind.FLOW_STEP_CALLS_ENDPOINT,
-                    meta=_provenance(
-                        mode="inferred",
-                        extractor="flows.v1.symbol_trace",
-                        confidence=0.78,
-                    ),
-                )
-                stats["flow_endpoint_edges"] += 1
-
-            for test_case_ref in step.test_case_refs:
-                test_case_id = test_case_by_key.get(test_case_ref)
-                if not test_case_id:
-                    continue
-                await _upsert_edge(
-                    session,
-                    collection_id=collection_id,
-                    source_node_id=test_case_id,
-                    target_node_id=flow_id,
-                    kind=KnowledgeEdgeKind.TEST_CASE_VERIFIES_FLOW,
-                    meta=_provenance(
-                        mode="inferred",
-                        extractor=_EXTRACTOR_VERSION,
-                        confidence=0.7,
-                    ),
-                )
-                stats["flow_test_edges"] += 1
+            await _link_step_tests(
+                session,
+                collection_id,
+                flow_id,
+                step,
+                test_case_by_key,
+                stats,
+            )
 
     return stats
+
+
+async def _persist_flow_step(
+    session: AsyncSession,
+    collection_id: UUID,
+    flow_id: UUID,
+    step: FlowStepDef,
+    stats: dict[str, int],
+) -> UUID:
+    """Create a flow step node and link it to its flow."""
+    step_confidence = 0.78 if step.symbol_hints else 0.84
+    step_meta = {
+        "order": step.order,
+        "endpoint_path": step.endpoint_path,
+        "symbol_hints": step.symbol_hints,
+        "test_case_refs": step.test_case_refs,
+        **_provenance(
+            mode="inferred" if step.symbol_hints else "deterministic",
+            extractor=_EXTRACTOR_VERSION,
+            confidence=step_confidence,
+            evidence_ids=step.evidence_ids,
+        ),
+    }
+    step_id = await _upsert_node(
+        session,
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.FLOW_STEP,
+        natural_key=step.natural_key,
+        name=step.name,
+        meta=step_meta,
+    )
+    stats["flow_steps"] += 1
+    await _upsert_edge(
+        session,
+        collection_id=collection_id,
+        source_node_id=flow_id,
+        target_node_id=step_id,
+        kind=KnowledgeEdgeKind.USER_FLOW_HAS_STEP,
+        meta=_provenance(mode="deterministic", extractor=_EXTRACTOR_VERSION, confidence=0.9),
+    )
+    stats["flow_edges"] += 1
+    return step_id
+
+
+async def _link_step_endpoints(
+    session: AsyncSession,
+    collection_id: UUID,
+    step_id: UUID,
+    step: FlowStepDef,
+    endpoint_symbol_index: dict[str, set[UUID]],
+    stats: dict[str, int],
+) -> None:
+    """Link a flow step to matching API endpoints."""
+    endpoint_ids: set[UUID] = set()
+    for symbol_hint in step.symbol_hints:
+        for token in symbol_token_variants(symbol_hint):
+            endpoint_ids.update(endpoint_symbol_index.get(token, set()))
+    for endpoint_id in endpoint_ids:
+        await _upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=step_id,
+            target_node_id=endpoint_id,
+            kind=KnowledgeEdgeKind.FLOW_STEP_CALLS_ENDPOINT,
+            meta=_provenance(mode="inferred", extractor="flows.v1.symbol_trace", confidence=0.78),
+        )
+        stats["flow_endpoint_edges"] += 1
+
+
+async def _link_step_tests(
+    session: AsyncSession,
+    collection_id: UUID,
+    flow_id: UUID,
+    step: FlowStepDef,
+    test_case_by_key: dict[str, UUID],
+    stats: dict[str, int],
+) -> None:
+    """Link test cases that verify a flow step."""
+    for test_case_ref in step.test_case_refs:
+        test_case_id = test_case_by_key.get(test_case_ref)
+        if not test_case_id:
+            continue
+        await _upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=test_case_id,
+            target_node_id=flow_id,
+            kind=KnowledgeEdgeKind.TEST_CASE_VERIFIES_FLOW,
+            meta=_provenance(mode="inferred", extractor=_EXTRACTOR_VERSION, confidence=0.7),
+        )
+        stats["flow_test_edges"] += 1

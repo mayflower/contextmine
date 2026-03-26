@@ -257,28 +257,46 @@ class SymbolTraceResolver:
         for caller in callers[:3]:
             called_ids = self._twin_calls.get(caller.node_id, [])
             referenced_ids = self._twin_refs.get(caller.node_id, [])
-            for target_id in [*called_ids, *referenced_ids]:
-                if target_id in seen_targets:
-                    continue
-                seen_targets.add(target_id)
-                target = self._twin_by_id.get(target_id)
-                if target is None:
-                    continue
-                if callee_token and callee_token not in _extract_token_variants(target.name):
-                    continue
-                kg_row = await self._ensure_knowledge_symbol_from_twin(target)
-                engine = "scip.calls" if target_id in called_ids else "scip.refs"
-                confidence = 0.94 if engine == "scip.calls" else 0.81
-                refs.append(
-                    ResolvedSymbolRef(
-                        symbol_node_id=kg_row.node_id,
-                        symbol_name=kg_row.name,
-                        engine=engine,
-                        confidence=confidence,
-                        natural_key=kg_row.natural_key,
-                    )
-                )
+            await self._collect_scip_refs_for_caller(
+                called_ids,
+                referenced_ids,
+                callee_token,
+                seen_targets,
+                refs,
+            )
         return refs
+
+    async def _collect_scip_refs_for_caller(
+        self,
+        called_ids: list[UUID],
+        referenced_ids: list[UUID],
+        callee_token: str,
+        seen_targets: set[UUID],
+        refs: list[ResolvedSymbolRef],
+    ) -> None:
+        """Collect resolved symbol refs from a single caller's targets."""
+        called_set = set(called_ids)
+        for target_id in [*called_ids, *referenced_ids]:
+            if target_id in seen_targets:
+                continue
+            seen_targets.add(target_id)
+            target = self._twin_by_id.get(target_id)
+            if target is None:
+                continue
+            if callee_token and callee_token not in _extract_token_variants(target.name):
+                continue
+            kg_row = await self._ensure_knowledge_symbol_from_twin(target)
+            engine = "scip.calls" if target_id in called_set else "scip.refs"
+            confidence = 0.94 if engine == "scip.calls" else 0.81
+            refs.append(
+                ResolvedSymbolRef(
+                    symbol_node_id=kg_row.node_id,
+                    symbol_name=kg_row.name,
+                    engine=engine,
+                    confidence=confidence,
+                    natural_key=kg_row.natural_key,
+                )
+            )
 
     async def _resolve_with_lsp(self, call_site: CallSite) -> list[ResolvedSymbolRef]:
         await self._ensure_lsp_client()
@@ -735,38 +753,42 @@ async def build_endpoint_symbol_index(
         symbol_rows = {row.id: row for row in loaded_rows}
 
     for endpoint in endpoint_rows:
-        meta = endpoint.meta or {}
-        tokens: set[str] = set()
-
-        operation_id = str(meta.get("operation_id") or "").strip()
-        tokens.update(_extract_token_variants(operation_id))
-
-        for item in (
-            meta.get("handler_symbol_names", [])
-            if isinstance(meta.get("handler_symbol_names"), list)
-            else []
-        ):
-            tokens.update(_extract_token_variants(str(item)))
-
-        for item in (
-            meta.get("handler_symbols", []) if isinstance(meta.get("handler_symbols"), list) else []
-        ):
-            tokens.update(_extract_token_variants(str(item)))
-
-        for raw in (
-            meta.get("handler_symbol_node_ids", [])
-            if isinstance(meta.get("handler_symbol_node_ids"), list)
-            else []
-        ):
-            symbol_id = _parse_uuid(raw)
-            if symbol_id is None:
-                continue
-            symbol = symbol_rows.get(symbol_id)
-            if symbol is None:
-                continue
-            tokens.update(_extract_token_variants(symbol.name))
-            tokens.update(_extract_token_variants(symbol.natural_key))
-
+        tokens = _collect_endpoint_tokens(endpoint, symbol_rows)
         for token in tokens:
             index.setdefault(token, set()).add(endpoint.id)
     return index
+
+
+def _collect_endpoint_tokens(
+    endpoint: Any,
+    symbol_rows: dict[UUID, Any],
+) -> set[str]:
+    """Collect all symbol tokens for one endpoint node."""
+    meta = endpoint.meta or {}
+    tokens: set[str] = set()
+
+    operation_id = str(meta.get("operation_id") or "").strip()
+    tokens.update(_extract_token_variants(operation_id))
+
+    for item in _meta_list(meta, "handler_symbol_names"):
+        tokens.update(_extract_token_variants(str(item)))
+    for item in _meta_list(meta, "handler_symbols"):
+        tokens.update(_extract_token_variants(str(item)))
+
+    for raw in _meta_list(meta, "handler_symbol_node_ids"):
+        symbol_id = _parse_uuid(raw)
+        if symbol_id is None:
+            continue
+        symbol = symbol_rows.get(symbol_id)
+        if symbol is None:
+            continue
+        tokens.update(_extract_token_variants(symbol.name))
+        tokens.update(_extract_token_variants(symbol.natural_key))
+
+    return tokens
+
+
+def _meta_list(meta: dict[str, Any], key: str) -> list[Any]:
+    """Safely get a list from meta, defaulting to empty."""
+    value = meta.get(key)
+    return value if isinstance(value, list) else []

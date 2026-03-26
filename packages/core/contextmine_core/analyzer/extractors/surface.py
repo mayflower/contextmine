@@ -352,7 +352,6 @@ async def _persist_protobuf_nodes(
     stats: dict,
 ) -> None:
     """Persist Protobuf message and service/RPC nodes into the knowledge graph."""
-    from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     for proto in catalog.protobuf_files:
@@ -444,28 +443,51 @@ async def _persist_protobuf_nodes(
             stats["proto_nodes"] += 1
 
             # Create edges to request/response message types
-            for rpc in service.rpcs:
-                for msg_name, msg_node_id in message_node_ids.items():
-                    if msg_name == rpc.request_type or msg_name == rpc.response_type:
-                        edge_exists = await session.execute(
-                            select(KnowledgeEdge.id).where(
-                                KnowledgeEdge.collection_id == collection_id,
-                                KnowledgeEdge.source_node_id == node_id,
-                                KnowledgeEdge.target_node_id == msg_node_id,
-                                KnowledgeEdge.kind == KnowledgeEdgeKind.RPC_USES_MESSAGE,
-                            )
-                        )
-                        if not edge_exists.scalar_one_or_none():
-                            session.add(
-                                KnowledgeEdge(
-                                    collection_id=collection_id,
-                                    source_node_id=node_id,
-                                    target_node_id=msg_node_id,
-                                    kind=KnowledgeEdgeKind.RPC_USES_MESSAGE,
-                                    meta={"rpc_name": rpc.name},
-                                )
-                            )
-                            stats["edges_created"] += 1
+            await _link_rpc_messages(
+                session,
+                collection_id,
+                node_id,
+                service,
+                message_node_ids,
+                stats,
+            )
+
+
+async def _link_rpc_messages(
+    session: AsyncSession,
+    collection_id: UUID,
+    service_node_id: UUID,
+    service: Any,
+    message_node_ids: dict[str, UUID],
+    stats: dict,
+) -> None:
+    """Create RPC_USES_MESSAGE edges for a service's RPCs."""
+    from sqlalchemy import select
+
+    for rpc in service.rpcs:
+        for msg_name, msg_node_id in message_node_ids.items():
+            if msg_name != rpc.request_type and msg_name != rpc.response_type:
+                continue
+            edge_exists = await session.execute(
+                select(KnowledgeEdge.id).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.source_node_id == service_node_id,
+                    KnowledgeEdge.target_node_id == msg_node_id,
+                    KnowledgeEdge.kind == KnowledgeEdgeKind.RPC_USES_MESSAGE,
+                )
+            )
+            if edge_exists.scalar_one_or_none():
+                continue
+            session.add(
+                KnowledgeEdge(
+                    collection_id=collection_id,
+                    source_node_id=service_node_id,
+                    target_node_id=msg_node_id,
+                    kind=KnowledgeEdgeKind.RPC_USES_MESSAGE,
+                    meta={"rpc_name": rpc.name},
+                )
+            )
+            stats["edges_created"] += 1
 
 
 async def _persist_job_nodes(

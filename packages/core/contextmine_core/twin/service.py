@@ -452,100 +452,143 @@ async def ingest_snapshot_into_as_is(
         node_count += 1
 
     for symbol in snapshot.symbols:
-        if symbol.kind == SymbolKind.UNKNOWN:
-            continue
-        canonical_symbol_path = canonicalize_repo_relative_path(symbol.file_path)
-        symbol_key = f"symbol:{symbol.def_id}"
-        symbol_node_ids[symbol.def_id] = await _upsert_twin_node(
+        added = await _ingest_symbol(
             session,
-            scenario.id,
-            natural_key=symbol_key,
-            kind=symbol.kind.value,
-            name=symbol.name or symbol.def_id,
-            meta={
-                "file_path": canonical_symbol_path or symbol.file_path,
-                "def_id": symbol.def_id,
-                "symbol_kind": symbol.kind.value,
-                "range": symbol.range.to_dict(),
-            },
-            provenance_node_id=None,
+            scenario,
+            collection_id,
+            symbol,
+            file_node_ids,
+            knowledge_file_node_ids,
+            symbol_node_ids,
+            knowledge_symbol_node_ids,
         )
-        knowledge_symbol_node_ids[symbol.def_id] = await _upsert_knowledge_node(
-            session=session,
-            collection_id=collection_id,
-            kind=KnowledgeNodeKind.SYMBOL,
-            natural_key=symbol_key,
-            name=symbol.name or symbol.def_id,
-            meta={
-                "file_path": canonical_symbol_path or symbol.file_path,
-                "def_id": symbol.def_id,
-                "symbol_kind": symbol.kind.value,
-                "range": symbol.range.to_dict(),
-            },
-        )
-        node_count += 1
-
-        file_node_id = file_node_ids.get(canonical_symbol_path or symbol.file_path)
-        if file_node_id:
-            await _upsert_twin_edge(
-                session,
-                scenario.id,
-                file_node_id,
-                symbol_node_ids[symbol.def_id],
-                "file_defines_symbol",
-                {},
-            )
-            edge_count += 1
-        knowledge_file_node_id = knowledge_file_node_ids.get(
-            canonical_symbol_path or symbol.file_path
-        )
-        knowledge_symbol_node_id = knowledge_symbol_node_ids.get(symbol.def_id)
-        if knowledge_file_node_id and knowledge_symbol_node_id:
-            await _upsert_knowledge_edge(
-                session=session,
-                collection_id=collection_id,
-                source_node_id=knowledge_file_node_id,
-                target_node_id=knowledge_symbol_node_id,
-                kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
-                meta={},
-            )
+        if added:
+            node_count += 1
+            edge_count += added
 
     for relation in snapshot.relations:
-        src = symbol_node_ids.get(relation.src_def_id)
-        dst = symbol_node_ids.get(relation.dst_def_id)
-        if not src or not dst:
-            continue
-
-        edge_kind = _relation_to_edge_kind(relation.kind)
-        await _upsert_twin_edge(
+        added = await _ingest_relation(
             session,
-            scenario.id,
-            src,
-            dst,
-            edge_kind,
-            {"resolved": relation.resolved, "weight": relation.weight, **(relation.meta or {})},
+            scenario,
+            collection_id,
+            relation,
+            symbol_node_ids,
+            knowledge_symbol_node_ids,
         )
-        edge_count += 1
-        knowledge_src = knowledge_symbol_node_ids.get(relation.src_def_id)
-        knowledge_dst = knowledge_symbol_node_ids.get(relation.dst_def_id)
-        if knowledge_src and knowledge_dst:
-            await _upsert_knowledge_edge(
-                session=session,
-                collection_id=collection_id,
-                source_node_id=knowledge_src,
-                target_node_id=knowledge_dst,
-                kind=_relation_to_knowledge_edge_kind(relation.kind),
-                meta={
-                    "resolved": relation.resolved,
-                    "weight": relation.weight,
-                    **(relation.meta or {}),
-                },
-            )
+        edge_count += added
 
     scenario.version += 1
     scenario.updated_at = datetime.now(UTC)
 
     return scenario, {"nodes_upserted": node_count, "edges_upserted": edge_count}
+
+
+async def _ingest_symbol(
+    session: AsyncSession,
+    scenario: TwinScenario,
+    collection_id: UUID,
+    symbol: Any,
+    file_node_ids: dict[str, UUID],
+    knowledge_file_node_ids: dict[str, UUID],
+    symbol_node_ids: dict[str, UUID],
+    knowledge_symbol_node_ids: dict[str, UUID],
+) -> int:
+    """Ingest a single symbol into twin and knowledge graphs. Returns edge count delta."""
+    if symbol.kind == SymbolKind.UNKNOWN:
+        return 0
+    canonical_symbol_path = canonicalize_repo_relative_path(symbol.file_path)
+    symbol_key = f"symbol:{symbol.def_id}"
+    symbol_meta = {
+        "file_path": canonical_symbol_path or symbol.file_path,
+        "def_id": symbol.def_id,
+        "symbol_kind": symbol.kind.value,
+        "range": symbol.range.to_dict(),
+    }
+    symbol_node_ids[symbol.def_id] = await _upsert_twin_node(
+        session,
+        scenario.id,
+        natural_key=symbol_key,
+        kind=symbol.kind.value,
+        name=symbol.name or symbol.def_id,
+        meta=symbol_meta,
+        provenance_node_id=None,
+    )
+    knowledge_symbol_node_ids[symbol.def_id] = await _upsert_knowledge_node(
+        session=session,
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.SYMBOL,
+        natural_key=symbol_key,
+        name=symbol.name or symbol.def_id,
+        meta=symbol_meta,
+    )
+
+    edge_delta = 0
+    file_path_key = canonical_symbol_path or symbol.file_path
+    file_node_id = file_node_ids.get(file_path_key)
+    if file_node_id:
+        await _upsert_twin_edge(
+            session,
+            scenario.id,
+            file_node_id,
+            symbol_node_ids[symbol.def_id],
+            "file_defines_symbol",
+            {},
+        )
+        edge_delta += 1
+
+    kg_file = knowledge_file_node_ids.get(file_path_key)
+    kg_sym = knowledge_symbol_node_ids.get(symbol.def_id)
+    if kg_file and kg_sym:
+        await _upsert_knowledge_edge(
+            session=session,
+            collection_id=collection_id,
+            source_node_id=kg_file,
+            target_node_id=kg_sym,
+            kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+            meta={},
+        )
+    return edge_delta
+
+
+async def _ingest_relation(
+    session: AsyncSession,
+    scenario: TwinScenario,
+    collection_id: UUID,
+    relation: Any,
+    symbol_node_ids: dict[str, UUID],
+    knowledge_symbol_node_ids: dict[str, UUID],
+) -> int:
+    """Ingest a single relation into twin and knowledge graphs. Returns edge count delta."""
+    src = symbol_node_ids.get(relation.src_def_id)
+    dst = symbol_node_ids.get(relation.dst_def_id)
+    if not src or not dst:
+        return 0
+
+    edge_kind = _relation_to_edge_kind(relation.kind)
+    await _upsert_twin_edge(
+        session,
+        scenario.id,
+        src,
+        dst,
+        edge_kind,
+        {"resolved": relation.resolved, "weight": relation.weight, **(relation.meta or {})},
+    )
+    knowledge_src = knowledge_symbol_node_ids.get(relation.src_def_id)
+    knowledge_dst = knowledge_symbol_node_ids.get(relation.dst_def_id)
+    if knowledge_src and knowledge_dst:
+        await _upsert_knowledge_edge(
+            session=session,
+            collection_id=collection_id,
+            source_node_id=knowledge_src,
+            target_node_id=knowledge_dst,
+            kind=_relation_to_knowledge_edge_kind(relation.kind),
+            meta={
+                "resolved": relation.resolved,
+                "weight": relation.weight,
+                **(relation.meta or {}),
+            },
+        )
+    return 1
 
 
 def _relation_to_edge_kind(kind: RelationKind) -> str:
@@ -740,63 +783,81 @@ async def _apply_patch_ops(
     patch_ops: list[dict[str, Any]],
 ) -> None:
     for op in patch_ops:
-        operation = op.get("op")
-        path = op.get("path", "")
-        value = op.get("value")
+        await _apply_single_patch_op(session, scenario_id, op)
 
-        if operation == "add" and path == "/nodes/-":
-            node_dict = value or {}
-            await _upsert_twin_node(
-                session=session,
-                scenario_id=scenario_id,
-                natural_key=node_dict["natural_key"],
-                kind=node_dict.get("kind", "component"),
-                name=node_dict.get("name", node_dict["natural_key"]),
-                meta=node_dict.get("meta", {}),
-                provenance_node_id=None,
+
+async def _apply_single_patch_op(
+    session: AsyncSession,
+    scenario_id: UUID,
+    op: dict[str, Any],
+) -> None:
+    """Apply a single patch operation to a scenario graph."""
+    operation = op.get("op")
+    path = op.get("path", "")
+    value = op.get("value")
+
+    if operation == "add" and path == "/nodes/-":
+        node_dict = value or {}
+        await _upsert_twin_node(
+            session=session,
+            scenario_id=scenario_id,
+            natural_key=node_dict["natural_key"],
+            kind=node_dict.get("kind", "component"),
+            name=node_dict.get("name", node_dict["natural_key"]),
+            meta=node_dict.get("meta", {}),
+            provenance_node_id=None,
+        )
+        return
+
+    if operation == "add" and path == "/edges/-":
+        edge_dict = value or {}
+        src = await _get_node_id_by_key(session, scenario_id, edge_dict["source_natural_key"])
+        dst = await _get_node_id_by_key(session, scenario_id, edge_dict["target_natural_key"])
+        if not src or not dst:
+            raise ValueError("edge add failed: missing source/target node")
+        await _upsert_twin_edge(
+            session=session,
+            scenario_id=scenario_id,
+            source_node_id=src,
+            target_node_id=dst,
+            kind=edge_dict.get("kind", "relates_to"),
+            meta=edge_dict.get("meta", {}),
+        )
+        return
+
+    if operation == "replace" and path.startswith("/nodes/by_natural_key/"):
+        await _apply_node_meta_replace(session, scenario_id, path, value)
+        return
+
+    raise ValueError(f"unsupported patch operation: {json.dumps(op)}")
+
+
+async def _apply_node_meta_replace(
+    session: AsyncSession,
+    scenario_id: UUID,
+    path: str,
+    value: Any,
+) -> None:
+    """Apply a replace operation on a node's meta field."""
+    parts = path.split("/")
+    if len(parts) < 6:
+        raise ValueError(f"invalid replace path: {path}")
+    natural_key = parts[3]
+    meta_key = parts[5]
+    node = (
+        await session.execute(
+            select(TwinNode).where(
+                TwinNode.scenario_id == scenario_id,
+                TwinNode.natural_key == natural_key,
             )
-            continue
-
-        if operation == "add" and path == "/edges/-":
-            edge_dict = value or {}
-            src = await _get_node_id_by_key(session, scenario_id, edge_dict["source_natural_key"])
-            dst = await _get_node_id_by_key(session, scenario_id, edge_dict["target_natural_key"])
-            if not src or not dst:
-                raise ValueError("edge add failed: missing source/target node")
-
-            await _upsert_twin_edge(
-                session=session,
-                scenario_id=scenario_id,
-                source_node_id=src,
-                target_node_id=dst,
-                kind=edge_dict.get("kind", "relates_to"),
-                meta=edge_dict.get("meta", {}),
-            )
-            continue
-
-        if operation == "replace" and path.startswith("/nodes/by_natural_key/"):
-            parts = path.split("/")
-            if len(parts) < 6:
-                raise ValueError(f"invalid replace path: {path}")
-            natural_key = parts[3]
-            meta_key = parts[5]
-            node = (
-                await session.execute(
-                    select(TwinNode).where(
-                        TwinNode.scenario_id == scenario_id,
-                        TwinNode.natural_key == natural_key,
-                    )
-                )
-            ).scalar_one_or_none()
-            if not node:
-                raise ValueError(f"node not found for patch: {natural_key}")
-            node_meta = dict(node.meta or {})
-            node_meta[meta_key] = value
-            node.meta = node_meta
-            node.updated_at = datetime.now(UTC)
-            continue
-
-        raise ValueError(f"unsupported patch operation: {json.dumps(op)}")
+        )
+    ).scalar_one_or_none()
+    if not node:
+        raise ValueError(f"node not found for patch: {natural_key}")
+    node_meta = dict(node.meta or {})
+    node_meta[meta_key] = value
+    node.meta = node_meta
+    node.updated_at = datetime.now(UTC)
 
 
 async def _get_node_id_by_key(

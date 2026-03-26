@@ -11,6 +11,46 @@ from contextmine_core.metrics.models import MetricsGateError
 from contextmine_core.semantic_snapshot.models import Snapshot
 
 
+def _accumulate_relation(
+    src_file: str | None,
+    dst_file: str | None,
+    relation: Any,
+    relevant_files: set[str],
+    coupling_in: defaultdict[str, int],
+    coupling_out: defaultdict[str, int],
+    internal_calls: defaultdict[str, int],
+    outgoing_calls: defaultdict[str, int],
+    fan_in: defaultdict[str, set[str]],
+    fan_out: defaultdict[str, set[str]],
+    inter_file_edges: set[tuple[str, str]],
+) -> None:
+    """Accumulate coupling counters for a single relation."""
+    if src_file and src_file in relevant_files:
+        outgoing_calls[src_file] += 1
+        if relation.dst_def_id:
+            fan_out[src_file].add(str(relation.dst_def_id))
+    if dst_file and dst_file in relevant_files and relation.src_def_id:
+        fan_in[dst_file].add(str(relation.src_def_id))
+
+    if src_file == dst_file:
+        if src_file and src_file in relevant_files:
+            internal_calls[src_file] += 1
+        return
+
+    if src_file and src_file in relevant_files:
+        coupling_out[src_file] += 1
+    if dst_file and dst_file in relevant_files:
+        coupling_in[dst_file] += 1
+    if (
+        src_file
+        and dst_file
+        and src_file in relevant_files
+        and dst_file in relevant_files
+        and src_file != dst_file
+    ):
+        inter_file_edges.add((src_file, dst_file))
+
+
 def _snapshot_project_root(snapshot: Snapshot, fallback: Path) -> Path:
     raw = str(snapshot.meta.get("project_root", "") or "")
     if not raw:
@@ -112,30 +152,19 @@ def compute_file_coupling_from_snapshots(
                 continue
 
             mapped_relations += 1
-            if src_file and src_file in relevant_files:
-                outgoing_calls[src_file] += 1
-                if relation.dst_def_id:
-                    fan_out[src_file].add(str(relation.dst_def_id))
-            if dst_file and dst_file in relevant_files and relation.src_def_id:
-                fan_in[dst_file].add(str(relation.src_def_id))
-
-            if src_file == dst_file:
-                if src_file and src_file in relevant_files:
-                    internal_calls[src_file] += 1
-                continue
-
-            if src_file and src_file in relevant_files:
-                coupling_out[src_file] += 1
-            if dst_file and dst_file in relevant_files:
-                coupling_in[dst_file] += 1
-            if (
-                src_file
-                and dst_file
-                and src_file in relevant_files
-                and dst_file in relevant_files
-                and src_file != dst_file
-            ):
-                inter_file_edges.add((src_file, dst_file))
+            _accumulate_relation(
+                src_file,
+                dst_file,
+                relation,
+                relevant_files,
+                coupling_in,
+                coupling_out,
+                internal_calls,
+                outgoing_calls,
+                fan_in,
+                fan_out,
+                inter_file_edges,
+            )
 
     if total_relations > 0 and mapped_relations == 0:
         raise MetricsGateError(

@@ -398,60 +398,128 @@ def _extract_js_tests(
         call_name = method_name or base_name
         lower_call = call_name.lower()
 
-        if lower_call in JS_SUITE_CALLS_LOWER:
-            suite_name = _first_string_argument(content, node) or f"suite@{line_number(node)}"
-            extraction.suites.append(
-                TestSuiteDef(
-                    name=suite_name,
-                    file_path=file_path,
-                    line=line_number(node),
-                    natural_key=f"test_suite:{file_path}:{suite_name}",
-                )
-            )
-            callback = _js_callback(node)
-            if callback is not None:
-                visit(callback, suite_stack + [suite_name])
-                return
+        if _handle_js_suite(
+            content,
+            file_path,
+            node,
+            lower_call,
+            suite_stack,
+            extraction,
+            visit,
+        ):
+            return
 
-        if lower_call in JS_FIXTURE_CALLS_LOWER:
-            fixture_name = call_name
-            scope_key = suite_stack[-1] if suite_stack else "__global__"
-            fixtures_by_scope.setdefault(scope_key, []).append(fixture_name)
-            extraction.fixtures.append(
-                TestFixtureDef(name=fixture_name, file_path=file_path, line=line_number(node))
-            )
-
-        if lower_call in JS_CASE_CALLS_LOWER:
-            case_name = _first_string_argument(content, node) or f"{call_name}@{line_number(node)}"
-            callback = _js_callback(node)
-            signal_root = callback or node
-            symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_js_case_signals(
-                content, signal_root
-            )
-            suite_name = suite_stack[-1] if suite_stack else None
-            fixture_names = list(fixtures_by_scope.get("__global__", []))
-            if suite_name:
-                fixture_names.extend(fixtures_by_scope.get(suite_name, []))
-            case = TestCaseDef(
-                name=case_name,
-                file_path=file_path,
-                line=line_number(node),
-                suite_name=suite_name,
-                fixture_names=_dedupe(fixture_names)[:8],
-                symbol_hints=symbol_hints[:12],
-                endpoint_hints=endpoint_hints[:12],
-                call_sites=call_sites[:80],
-                raw_assertions=raw_assertions[:8],
-            )
-            case.natural_key = (
-                f"test_case:{file_path}:{case_name}:{_hash(f'{file_path}:{case_name}:{case.line}')}"
-            )
-            extraction.cases.append(case)
+        _handle_js_fixture(
+            file_path,
+            node,
+            call_name,
+            lower_call,
+            suite_stack,
+            fixtures_by_scope,
+            extraction,
+        )
+        _handle_js_test_case(
+            content,
+            file_path,
+            node,
+            call_name,
+            lower_call,
+            suite_stack,
+            fixtures_by_scope,
+            extraction,
+        )
 
         for child in node.children:
             visit(child, suite_stack)
 
     visit(root, [])
+
+
+def _handle_js_suite(
+    content: str,
+    file_path: str,
+    node: Any,
+    lower_call: str,
+    suite_stack: list[str],
+    extraction: TestsExtraction,
+    visit_fn: Any,
+) -> bool:
+    """Handle a JS suite call. Returns True if children were visited via callback."""
+    if lower_call not in JS_SUITE_CALLS_LOWER:
+        return False
+    suite_name = _first_string_argument(content, node) or f"suite@{line_number(node)}"
+    extraction.suites.append(
+        TestSuiteDef(
+            name=suite_name,
+            file_path=file_path,
+            line=line_number(node),
+            natural_key=f"test_suite:{file_path}:{suite_name}",
+        )
+    )
+    callback = _js_callback(node)
+    if callback is not None:
+        visit_fn(callback, suite_stack + [suite_name])
+        return True
+    return False
+
+
+def _handle_js_fixture(
+    file_path: str,
+    node: Any,
+    call_name: str,
+    lower_call: str,
+    suite_stack: list[str],
+    fixtures_by_scope: dict[str, list[str]],
+    extraction: TestsExtraction,
+) -> None:
+    """Handle a JS fixture call."""
+    if lower_call not in JS_FIXTURE_CALLS_LOWER:
+        return
+    scope_key = suite_stack[-1] if suite_stack else "__global__"
+    fixtures_by_scope.setdefault(scope_key, []).append(call_name)
+    extraction.fixtures.append(
+        TestFixtureDef(name=call_name, file_path=file_path, line=line_number(node))
+    )
+
+
+def _handle_js_test_case(
+    content: str,
+    file_path: str,
+    node: Any,
+    call_name: str,
+    lower_call: str,
+    suite_stack: list[str],
+    fixtures_by_scope: dict[str, list[str]],
+    extraction: TestsExtraction,
+) -> None:
+    """Handle a JS test case call."""
+    if lower_call not in JS_CASE_CALLS_LOWER:
+        return
+    case_name = _first_string_argument(content, node) or f"{call_name}@{line_number(node)}"
+    callback = _js_callback(node)
+    signal_root = callback or node
+    symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_js_case_signals(
+        content, signal_root
+    )
+    suite_name = suite_stack[-1] if suite_stack else None
+    fixture_names = list(fixtures_by_scope.get("__global__", []))
+    if suite_name:
+        fixture_names.extend(fixtures_by_scope.get(suite_name, []))
+    case = TestCaseDef(
+        name=case_name,
+        file_path=file_path,
+        line=line_number(node),
+        suite_name=suite_name,
+        fixture_names=_dedupe(fixture_names)[:8],
+        symbol_hints=symbol_hints[:12],
+        endpoint_hints=endpoint_hints[:12],
+        call_sites=call_sites[:80],
+        raw_assertions=raw_assertions[:8],
+    )
+    case.natural_key = (
+        f"test_case:{file_path}:{case_name}:{_hash(f'{file_path}:{case_name}:{case.line}')}"
+    )
+    extraction.cases.append(case)
 
 
 def _collect_js_case_signals(
@@ -708,126 +776,207 @@ async def _persist_cases(
 ) -> None:
     """Persist test case nodes, fixture edges, symbol resolution, and rule matching."""
     for case in extraction.cases:
-        inferred_suite = case.suite_name not in suite_ids if case.suite_name else True
-        node_meta = {
-            "file_path": case.file_path,
-            "framework": extraction.framework,
-            "suite_name": case.suite_name,
-            "fixture_names": case.fixture_names,
-            "symbol_hints": case.symbol_hints,
-            "endpoint_hints": case.endpoint_hints,
-            "call_sites": case.call_sites,
-            "assertions": case.raw_assertions,
-            **_provenance(
-                mode="inferred" if inferred_suite else "deterministic",
+        case_id, evidence_id, node_meta = await _persist_single_case(
+            session,
+            collection_id,
+            extraction,
+            case,
+            suite_ids,
+            stats,
+        )
+        await _link_case_fixtures(
+            session,
+            collection_id,
+            case_id,
+            case,
+            fixture_ids,
+            evidence_id,
+            stats,
+        )
+        await _resolve_and_link_symbols(
+            session,
+            collection_id,
+            source_id,
+            case_id,
+            case,
+            node_meta,
+            evidence_id,
+            stats,
+        )
+        await _persist_cases_rule_edges(
+            session,
+            collection_id,
+            case_id,
+            case,
+            rules_by_token,
+            evidence_id,
+            stats,
+        )
+
+
+async def _persist_single_case(
+    session: AsyncSession,
+    collection_id: UUID,
+    extraction: TestsExtraction,
+    case: TestCaseDef,
+    suite_ids: dict[str, UUID],
+    stats: dict[str, int],
+) -> tuple[UUID, str, dict[str, Any]]:
+    """Create a test case node with evidence and return (case_id, evidence_id, node_meta)."""
+    inferred_suite = case.suite_name not in suite_ids if case.suite_name else True
+    node_meta = {
+        "file_path": case.file_path,
+        "framework": extraction.framework,
+        "suite_name": case.suite_name,
+        "fixture_names": case.fixture_names,
+        "symbol_hints": case.symbol_hints,
+        "endpoint_hints": case.endpoint_hints,
+        "call_sites": case.call_sites,
+        "assertions": case.raw_assertions,
+        **_provenance(
+            mode="inferred" if inferred_suite else "deterministic",
+            extractor="tests.v1",
+            confidence=0.87 if inferred_suite else 0.95,
+        ),
+    }
+    case_id = await _upsert_node(
+        session,
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.TEST_CASE,
+        natural_key=case.natural_key,
+        name=case.name,
+        meta=node_meta,
+    )
+    evidence_id = await _create_node_evidence(
+        session,
+        node_id=case_id,
+        file_path=case.file_path,
+        start_line=case.line,
+        end_line=case.line,
+        snippet=f"test {case.name}",
+    )
+    stats["test_cases"] += 1
+    node_meta["provenance"]["evidence_ids"] = [evidence_id]
+    await _upsert_node(
+        session,
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.TEST_CASE,
+        natural_key=case.natural_key,
+        name=case.name,
+        meta=node_meta,
+    )
+    return case_id, evidence_id, node_meta
+
+
+async def _link_case_fixtures(
+    session: AsyncSession,
+    collection_id: UUID,
+    case_id: UUID,
+    case: TestCaseDef,
+    fixture_ids: dict[str, UUID],
+    evidence_id: str,
+    stats: dict[str, int],
+) -> None:
+    """Link test case to its fixtures."""
+    for fixture_name in case.fixture_names:
+        fixture_id = fixture_ids.get(fixture_name)
+        if not fixture_id:
+            continue
+        await _upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=case_id,
+            target_node_id=fixture_id,
+            kind=KnowledgeEdgeKind.TEST_USES_FIXTURE,
+            meta=_provenance(
+                mode="deterministic",
                 extractor="tests.v1",
-                confidence=0.87 if inferred_suite else 0.95,
+                confidence=0.93,
+                evidence_ids=[evidence_id],
             ),
+        )
+        stats["test_edges"] += 1
+
+
+async def _resolve_and_link_symbols(
+    session: AsyncSession,
+    collection_id: UUID,
+    source_id: UUID | None,
+    case_id: UUID,
+    case: TestCaseDef,
+    node_meta: dict[str, Any],
+    evidence_id: str,
+    stats: dict[str, int],
+) -> None:
+    """Resolve symbol references and create edges."""
+    resolved_symbol_refs = await resolve_symbol_refs_for_calls(
+        session=session,
+        collection_id=collection_id,
+        source_id=source_id,
+        file_path=case.file_path,
+        call_sites=case.call_sites,
+        fallback_symbol_hints=case.symbol_hints,
+    )
+    node_meta["resolved_symbol_refs"] = [
+        {
+            "symbol_node_id": str(ref.symbol_node_id),
+            "symbol_name": ref.symbol_name,
+            "engine": ref.engine,
+            "confidence": ref.confidence,
         }
-        case_id = await _upsert_node(
+        for ref in resolved_symbol_refs
+    ]
+    await _upsert_node(
+        session,
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.TEST_CASE,
+        natural_key=case.natural_key,
+        name=case.name,
+        meta=node_meta,
+    )
+    for ref in resolved_symbol_refs:
+        await _upsert_edge(
             session,
             collection_id=collection_id,
-            kind=KnowledgeNodeKind.TEST_CASE,
-            natural_key=case.natural_key,
-            name=case.name,
-            meta=node_meta,
+            source_node_id=case_id,
+            target_node_id=ref.symbol_node_id,
+            kind=KnowledgeEdgeKind.TEST_CASE_COVERS_SYMBOL,
+            meta=_provenance(
+                mode="deterministic" if ref.engine.startswith("scip") else "inferred",
+                extractor=f"tests.v1.{ref.engine}",
+                confidence=ref.confidence,
+                evidence_ids=[evidence_id],
+            ),
         )
-        evidence_id = await _create_node_evidence(
-            session,
-            node_id=case_id,
-            file_path=case.file_path,
-            start_line=case.line,
-            end_line=case.line,
-            snippet=f"test {case.name}",
-        )
-        stats["test_cases"] += 1
+        stats["test_links_to_symbols"] += 1
 
-        node_meta["provenance"]["evidence_ids"] = [evidence_id]
-        await _upsert_node(
-            session,
-            collection_id=collection_id,
-            kind=KnowledgeNodeKind.TEST_CASE,
-            natural_key=case.natural_key,
-            name=case.name,
-            meta=node_meta,
-        )
 
-        for fixture_name in case.fixture_names:
-            fixture_id = fixture_ids.get(fixture_name)
-            if not fixture_id:
-                continue
-            await _upsert_edge(
-                session,
-                collection_id=collection_id,
-                source_node_id=case_id,
-                target_node_id=fixture_id,
-                kind=KnowledgeEdgeKind.TEST_USES_FIXTURE,
-                meta=_provenance(
-                    mode="deterministic",
-                    extractor="tests.v1",
-                    confidence=0.93,
-                    evidence_ids=[evidence_id],
-                ),
-            )
-            stats["test_edges"] += 1
-
-        resolved_symbol_refs = await resolve_symbol_refs_for_calls(
-            session=session,
-            collection_id=collection_id,
-            source_id=source_id,
-            file_path=case.file_path,
-            call_sites=case.call_sites,
-            fallback_symbol_hints=case.symbol_hints,
-        )
-        node_meta["resolved_symbol_refs"] = [
-            {
-                "symbol_node_id": str(ref.symbol_node_id),
-                "symbol_name": ref.symbol_name,
-                "engine": ref.engine,
-                "confidence": ref.confidence,
-            }
-            for ref in resolved_symbol_refs
-        ]
-        await _upsert_node(
+async def _persist_cases_rule_edges(
+    session: AsyncSession,
+    collection_id: UUID,
+    case_id: UUID,
+    case: TestCaseDef,
+    rules_by_token: dict[str, UUID],
+    evidence_id: str,
+    stats: dict[str, int],
+) -> None:
+    """Match assertions against business rules and create edges."""
+    joined = " ".join(case.raw_assertions).lower()
+    for token, rule_id in rules_by_token.items():
+        if not token or token not in joined:
+            continue
+        await _upsert_edge(
             session,
             collection_id=collection_id,
-            kind=KnowledgeNodeKind.TEST_CASE,
-            natural_key=case.natural_key,
-            name=case.name,
-            meta=node_meta,
+            source_node_id=case_id,
+            target_node_id=rule_id,
+            kind=KnowledgeEdgeKind.TEST_CASE_VALIDATES_RULE,
+            meta=_provenance(
+                mode="inferred",
+                extractor="tests.v1",
+                confidence=0.71,
+                evidence_ids=[evidence_id],
+            ),
         )
-
-        for ref in resolved_symbol_refs:
-            await _upsert_edge(
-                session,
-                collection_id=collection_id,
-                source_node_id=case_id,
-                target_node_id=ref.symbol_node_id,
-                kind=KnowledgeEdgeKind.TEST_CASE_COVERS_SYMBOL,
-                meta=_provenance(
-                    mode="deterministic" if ref.engine.startswith("scip") else "inferred",
-                    extractor=f"tests.v1.{ref.engine}",
-                    confidence=ref.confidence,
-                    evidence_ids=[evidence_id],
-                ),
-            )
-            stats["test_links_to_symbols"] += 1
-
-        joined = " ".join(case.raw_assertions).lower()
-        for token, rule_id in rules_by_token.items():
-            if token and token in joined:
-                await _upsert_edge(
-                    session,
-                    collection_id=collection_id,
-                    source_node_id=case_id,
-                    target_node_id=rule_id,
-                    kind=KnowledgeEdgeKind.TEST_CASE_VALIDATES_RULE,
-                    meta=_provenance(
-                        mode="inferred",
-                        extractor="tests.v1",
-                        confidence=0.71,
-                        evidence_ids=[evidence_id],
-                    ),
-                )
-                stats["test_links_to_rules"] += 1
-                break
+        stats["test_links_to_rules"] += 1
+        break

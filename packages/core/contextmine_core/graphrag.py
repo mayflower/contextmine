@@ -640,8 +640,6 @@ async def _expand_from_seeds(
     max_entities: int,
 ) -> tuple[list[EntityContext], list[EdgeContext]]:
     """Expand neighborhood from seed nodes via BFS."""
-    from contextmine_core.models import KnowledgeEdge, KnowledgeNode
-    from sqlalchemy import or_, select
 
     entities: list[EntityContext] = []
     edges: list[EdgeContext] = []
@@ -656,61 +654,103 @@ async def _expand_from_seeds(
         if not ids_to_fetch:
             break
 
-        stmt = select(KnowledgeNode).where(
-            KnowledgeNode.id.in_(list(ids_to_fetch)),
-            KnowledgeNode.collection_id.in_(collection_ids),
+        node_map = await _fetch_and_collect_nodes(
+            session,
+            ids_to_fetch,
+            collection_ids,
+            visited,
+            entities,
+            depth,
+            max_entities,
         )
 
-        result = await session.execute(stmt)
-        node_map: dict[UUID, KnowledgeNode] = {}
-
-        for node in result.scalars():
-            if node.id not in visited and len(entities) < max_entities:
-                entities.append(
-                    EntityContext(
-                        node_id=node.id,
-                        kind=node.kind.value,
-                        natural_key=node.natural_key,
-                        name=node.name,
-                        relevance_score=1.0 - (depth * 0.2),
-                    )
-                )
-                visited.add(node.id)
-                node_map[node.id] = node
-
         if depth < max_depth:
-            stmt = select(KnowledgeEdge).where(
-                KnowledgeEdge.collection_id.in_(collection_ids),
-                or_(
-                    KnowledgeEdge.source_node_id.in_(list(visited)),
-                    KnowledgeEdge.target_node_id.in_(list(visited)),
-                ),
+            current_ids = await _expand_edges(
+                session,
+                collection_ids,
+                visited,
+                node_map,
+                edges,
             )
-
-            result = await session.execute(stmt)
-            next_ids: set[UUID] = set()
-
-            for edge in result.scalars():
-                src_node = node_map.get(edge.source_node_id)
-                tgt_node = node_map.get(edge.target_node_id)
-                edges.append(
-                    EdgeContext(
-                        source_id=str(edge.source_node_id),
-                        target_id=str(edge.target_node_id),
-                        kind=edge.kind.value,
-                        source_name=src_node.name if src_node else None,
-                        target_name=tgt_node.name if tgt_node else None,
-                    )
-                )
-
-                if edge.source_node_id not in visited:
-                    next_ids.add(edge.source_node_id)
-                if edge.target_node_id not in visited:
-                    next_ids.add(edge.target_node_id)
-
-            current_ids = next_ids
+        else:
+            current_ids = set()
 
     return entities, edges
+
+
+async def _fetch_and_collect_nodes(
+    session: AsyncSession,
+    ids_to_fetch: set[UUID],
+    collection_ids: list[UUID],
+    visited: set[UUID],
+    entities: list[EntityContext],
+    depth: int,
+    max_entities: int,
+) -> dict[UUID, Any]:
+    """Fetch nodes and append to entities. Returns node_map of fetched nodes."""
+    from contextmine_core.models import KnowledgeNode
+    from sqlalchemy import select
+
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.id.in_(list(ids_to_fetch)),
+        KnowledgeNode.collection_id.in_(collection_ids),
+    )
+    result = await session.execute(stmt)
+    node_map: dict[UUID, Any] = {}
+    for node in result.scalars():
+        if node.id in visited or len(entities) >= max_entities:
+            continue
+        entities.append(
+            EntityContext(
+                node_id=node.id,
+                kind=node.kind.value,
+                natural_key=node.natural_key,
+                name=node.name,
+                relevance_score=1.0 - (depth * 0.2),
+            )
+        )
+        visited.add(node.id)
+        node_map[node.id] = node
+    return node_map
+
+
+async def _expand_edges(
+    session: AsyncSession,
+    collection_ids: list[UUID],
+    visited: set[UUID],
+    node_map: dict[UUID, Any],
+    edges: list[EdgeContext],
+) -> set[UUID]:
+    """Expand edges from visited nodes and return next frontier."""
+    from contextmine_core.models import KnowledgeEdge
+    from sqlalchemy import or_, select
+
+    stmt = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id.in_(collection_ids),
+        or_(
+            KnowledgeEdge.source_node_id.in_(list(visited)),
+            KnowledgeEdge.target_node_id.in_(list(visited)),
+        ),
+    )
+    result = await session.execute(stmt)
+    next_ids: set[UUID] = set()
+    for edge in result.scalars():
+        src_node = node_map.get(edge.source_node_id)
+        tgt_node = node_map.get(edge.target_node_id)
+        edges.append(
+            EdgeContext(
+                source_id=str(edge.source_node_id),
+                target_id=str(edge.target_node_id),
+                kind=edge.kind.value,
+                source_name=src_node.name if src_node else None,
+                target_name=tgt_node.name if tgt_node else None,
+            )
+        )
+        if edge.source_node_id not in visited:
+            next_ids.add(edge.source_node_id)
+        if edge.target_node_id not in visited:
+            next_ids.add(edge.target_node_id)
+    return next_ids
 
 
 async def _gather_citations(

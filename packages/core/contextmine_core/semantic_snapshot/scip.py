@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from contextmine_core.semantic_snapshot.models import (
     FileInfo,
@@ -174,194 +174,277 @@ class SCIPProvider:
 
             files.append(FileInfo(path=file_path, language=language))
 
-            # Process symbol definitions in this document
-            for sym_info in doc.symbols:
-                symbol_str = sym_info.symbol
-                if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
-                    continue
-                if symbol_str in seen_symbols:
-                    continue
-                seen_symbols.add(symbol_str)
+            self._process_doc_symbols(
+                doc,
+                file_path,
+                seen_symbols,
+                symbols,
+                symbol_kinds,
+                _remember_symbol,
+                _append_relation,
+            )
+            self._process_doc_occurrences(
+                doc,
+                file_path,
+                seen_symbols,
+                symbols,
+                occurrences,
+                definition_occurrences_by_file,
+                occurrence_candidates,
+                _remember_symbol,
+            )
 
-                # Parse symbol kind
-                kind = SCIP_KIND_TO_SYMBOL_KIND.get(sym_info.kind, SymbolKind.UNKNOWN)
-                inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
-                if kind == SymbolKind.UNKNOWN:
-                    kind = inferred_kind
+        self._process_external_symbols(
+            index,
+            seen_symbols,
+            symbols,
+            _remember_symbol,
+        )
+        self._infer_containment_from_metadata(symbols, symbol_kinds, _append_relation)
+        self._infer_containment_from_ranges(symbols, _append_relation)
+        self._derive_occurrence_relations(
+            occurrence_candidates,
+            symbols_by_file,
+            definition_occurrences_by_file,
+            symbol_kinds,
+            _append_relation,
+        )
 
-                # Get display name
-                name = (
-                    sym_info.display_name
-                    or inferred_name
-                    or self._extract_name_from_symbol(symbol_str)
-                )
+        return Snapshot(
+            files=files,
+            symbols=symbols,
+            occurrences=occurrences,
+            relations=relations,
+            meta={
+                "provider": "scip",
+                "tool_name": tool_name,
+                "tool_version": tool_version,
+                "project_root": index.metadata.project_root,
+            },
+        )
 
-                # Keep only relevant symbols with a resolvable kind and name.
-                # Some indexers emit unknown/blank symbol metadata; use best-effort
-                # normalization so the relation graph does not collapse.
-                if not name:
-                    name = (
-                        self._last_identifier(self._descriptor_tail(symbol_str))
-                        or self._extract_name_from_symbol(symbol_str)
-                        or symbol_str
-                    )
-                if kind == SymbolKind.UNKNOWN:
-                    kind = self._fallback_symbol_kind(symbol_str)
-                if kind not in SCIP_FALLBACK_SYMBOL_KINDS:
-                    continue
-                if kind == SymbolKind.PARAMETER:
-                    continue
+    def _resolve_symbol_kind_and_name(
+        self,
+        symbol_str: str,
+        raw_kind: int,
+        display_name: str | None,
+    ) -> tuple[SymbolKind, str] | None:
+        """Resolve kind and name for a symbol, returning None if it should be skipped."""
+        kind = SCIP_KIND_TO_SYMBOL_KIND.get(raw_kind, SymbolKind.UNKNOWN)
+        inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
+        if kind == SymbolKind.UNKNOWN:
+            kind = inferred_kind
+        name = display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
+        if not name:
+            name = (
+                self._last_identifier(self._descriptor_tail(symbol_str))
+                or self._extract_name_from_symbol(symbol_str)
+                or symbol_str
+            )
+        if kind == SymbolKind.UNKNOWN:
+            kind = self._fallback_symbol_kind(symbol_str)
+        if kind not in SCIP_FALLBACK_SYMBOL_KINDS or kind == SymbolKind.PARAMETER:
+            return None
+        return kind, name
 
-                # Find the definition occurrence for this symbol to get range
-                def_range = self._find_definition_range(doc, symbol_str)
-                if not def_range:
-                    def_range = self._find_any_symbol_range(doc, symbol_str)
-
-                if def_range:
-                    symbol = Symbol(
-                        def_id=symbol_str,
-                        kind=kind,
-                        file_path=file_path,
-                        range=def_range,
-                        name=name,
-                        container_def_id=sym_info.enclosing_symbol or None,
-                    )
-                    symbols.append(symbol)
-                    _remember_symbol(symbol)
-
-                # Process relationships
-                for rel in sym_info.relationships:
-                    if rel.is_implementation:
-                        _append_relation(
-                            Relation(
-                                src_def_id=symbol_str,
-                                kind=RelationKind.IMPLEMENTS,
-                                dst_def_id=rel.symbol,
-                                resolved=True,
-                            )
-                        )
-                    if rel.is_reference:
-                        _append_relation(
-                            Relation(
-                                src_def_id=symbol_str,
-                                kind=RelationKind.REFERENCES,
-                                dst_def_id=rel.symbol,
-                                resolved=True,
-                            )
-                        )
-                    if rel.is_type_definition:
-                        _append_relation(
-                            Relation(
-                                src_def_id=symbol_str,
-                                kind=RelationKind.EXTENDS,
-                                dst_def_id=rel.symbol,
-                                resolved=True,
-                            )
-                        )
-
-            # Process all occurrences in this document
-            for occ in doc.occurrences:
-                if not occ.symbol:
-                    continue
-
-                # Parse range
-                occ_range = self._parse_range(occ.range)
-                if not occ_range:
-                    continue
-
-                # Determine role from symbol_roles bitmask
-                is_definition = bool(occ.symbol_roles & SCIP_ROLE_DEFINITION)
-                role = OccurrenceRole.DEFINITION if is_definition else OccurrenceRole.REFERENCE
-
-                occurrences.append(
-                    Occurrence(
-                        file_path=file_path,
-                        range=occ_range,
-                        role=role,
-                        def_id=occ.symbol,
-                    )
-                )
-
-                if role == OccurrenceRole.DEFINITION and not occ.symbol.startswith(
-                    _LOCAL_SYMBOL_PREFIX
-                ):
-                    definition_occurrences_by_file.setdefault(file_path, []).append(
-                        (occ.symbol, occ_range)
-                    )
-                    if occ.symbol not in seen_symbols:
-                        seen_symbols.add(occ.symbol)
-                        inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(
-                            occ.symbol
-                        )
-                        kind = (
-                            inferred_kind
-                            if inferred_kind != SymbolKind.UNKNOWN
-                            else self._fallback_symbol_kind(occ.symbol)
-                        )
-                        if kind in SCIP_FALLBACK_SYMBOL_KINDS and kind != SymbolKind.PARAMETER:
-                            name = (
-                                inferred_name
-                                or self._extract_name_from_symbol(occ.symbol)
-                                or self._last_identifier(self._descriptor_tail(occ.symbol))
-                                or occ.symbol
-                            )
-                            symbol = Symbol(
-                                def_id=occ.symbol,
-                                kind=kind,
-                                file_path=file_path,
-                                range=self._parse_range(occ.enclosing_range) or occ_range,
-                                name=name,
-                                container_def_id=None,
-                            )
-                            symbols.append(symbol)
-                            _remember_symbol(symbol)
-
-                if role == OccurrenceRole.REFERENCE and not occ.symbol.startswith(
-                    _LOCAL_SYMBOL_PREFIX
-                ):
-                    occurrence_candidates.append(
-                        (
-                            file_path,
-                            occ_range,
-                            occ.symbol,
-                            int(occ.symbol_roles),
-                            int(occ.syntax_kind),
-                            list(occ.enclosing_range),
-                        )
-                    )
-
-        # Process external symbols (symbols defined in external packages)
-        for ext_sym in index.external_symbols:
-            symbol_str = ext_sym.symbol
-            if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
-                continue
-            if symbol_str in seen_symbols:
+    def _process_doc_symbols(
+        self,
+        doc: scip_pb2.Document,
+        file_path: str,
+        seen_symbols: set[str],
+        symbols: list[Symbol],
+        symbol_kinds: dict[str, SymbolKind],
+        _remember_symbol: Any,
+        _append_relation: Any,
+    ) -> None:
+        """Process symbol definitions in a single document."""
+        for sym_info in doc.symbols:
+            symbol_str = sym_info.symbol
+            if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX) or symbol_str in seen_symbols:
                 continue
             seen_symbols.add(symbol_str)
 
-            kind = SCIP_KIND_TO_SYMBOL_KIND.get(ext_sym.kind, SymbolKind.UNKNOWN)
-            inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(symbol_str)
-            if kind == SymbolKind.UNKNOWN:
-                kind = inferred_kind
-            name = (
-                ext_sym.display_name or inferred_name or self._extract_name_from_symbol(symbol_str)
+            resolved = self._resolve_symbol_kind_and_name(
+                symbol_str,
+                sym_info.kind,
+                sym_info.display_name,
+            )
+            if resolved is None:
+                continue
+            kind, name = resolved
+
+            def_range = self._find_definition_range(doc, symbol_str)
+            if not def_range:
+                def_range = self._find_any_symbol_range(doc, symbol_str)
+            if def_range:
+                symbol = Symbol(
+                    def_id=symbol_str,
+                    kind=kind,
+                    file_path=file_path,
+                    range=def_range,
+                    name=name,
+                    container_def_id=sym_info.enclosing_symbol or None,
+                )
+                symbols.append(symbol)
+                _remember_symbol(symbol)
+
+            self._collect_sym_info_relations(symbol_str, sym_info, _append_relation)
+
+    def _collect_sym_info_relations(
+        self,
+        symbol_str: str,
+        sym_info: Any,
+        _append_relation: Any,
+    ) -> None:
+        """Collect relations from symbol info relationships."""
+        for rel in sym_info.relationships:
+            if rel.is_implementation:
+                _append_relation(
+                    Relation(
+                        src_def_id=symbol_str,
+                        kind=RelationKind.IMPLEMENTS,
+                        dst_def_id=rel.symbol,
+                        resolved=True,
+                    )
+                )
+            if rel.is_reference:
+                _append_relation(
+                    Relation(
+                        src_def_id=symbol_str,
+                        kind=RelationKind.REFERENCES,
+                        dst_def_id=rel.symbol,
+                        resolved=True,
+                    )
+                )
+            if rel.is_type_definition:
+                _append_relation(
+                    Relation(
+                        src_def_id=symbol_str,
+                        kind=RelationKind.EXTENDS,
+                        dst_def_id=rel.symbol,
+                        resolved=True,
+                    )
+                )
+
+    def _process_doc_occurrences(
+        self,
+        doc: scip_pb2.Document,
+        file_path: str,
+        seen_symbols: set[str],
+        symbols: list[Symbol],
+        occurrences: list[Occurrence],
+        definition_occurrences_by_file: dict[str, list[tuple[str, Range]]],
+        occurrence_candidates: list[tuple[str, Range, str, int, int, list[int]]],
+        _remember_symbol: Any,
+    ) -> None:
+        """Process occurrences in a single document."""
+        for occ in doc.occurrences:
+            if not occ.symbol:
+                continue
+            occ_range = self._parse_range(occ.range)
+            if not occ_range:
+                continue
+
+            is_definition = bool(occ.symbol_roles & SCIP_ROLE_DEFINITION)
+            role = OccurrenceRole.DEFINITION if is_definition else OccurrenceRole.REFERENCE
+            occurrences.append(
+                Occurrence(
+                    file_path=file_path,
+                    range=occ_range,
+                    role=role,
+                    def_id=occ.symbol,
+                )
             )
 
-            if not name:
-                name = (
-                    self._last_identifier(self._descriptor_tail(symbol_str))
-                    or self._extract_name_from_symbol(symbol_str)
-                    or symbol_str
+            if role == OccurrenceRole.DEFINITION and not occ.symbol.startswith(
+                _LOCAL_SYMBOL_PREFIX
+            ):
+                self._handle_definition_occurrence(
+                    occ,
+                    file_path,
+                    occ_range,
+                    seen_symbols,
+                    symbols,
+                    definition_occurrences_by_file,
+                    _remember_symbol,
                 )
-            if kind == SymbolKind.UNKNOWN:
-                kind = self._fallback_symbol_kind(symbol_str)
-            if kind not in SCIP_FALLBACK_SYMBOL_KINDS:
-                continue
-            if kind == SymbolKind.PARAMETER:
-                continue
+            elif role == OccurrenceRole.REFERENCE and not occ.symbol.startswith(
+                _LOCAL_SYMBOL_PREFIX
+            ):
+                occurrence_candidates.append(
+                    (
+                        file_path,
+                        occ_range,
+                        occ.symbol,
+                        int(occ.symbol_roles),
+                        int(occ.syntax_kind),
+                        list(occ.enclosing_range),
+                    )
+                )
 
-            # External symbols don't have a file path or range in this index
-            # We still track them for reference resolution
+    def _handle_definition_occurrence(
+        self,
+        occ: Any,
+        file_path: str,
+        occ_range: Range,
+        seen_symbols: set[str],
+        symbols: list[Symbol],
+        definition_occurrences_by_file: dict[str, list[tuple[str, Range]]],
+        _remember_symbol: Any,
+    ) -> None:
+        """Handle a definition occurrence, possibly creating a new symbol."""
+        definition_occurrences_by_file.setdefault(file_path, []).append((occ.symbol, occ_range))
+        if occ.symbol in seen_symbols:
+            return
+        seen_symbols.add(occ.symbol)
+        inferred_kind, inferred_name = self._infer_kind_and_name_from_symbol(occ.symbol)
+        kind = (
+            inferred_kind
+            if inferred_kind != SymbolKind.UNKNOWN
+            else self._fallback_symbol_kind(occ.symbol)
+        )
+        if kind not in SCIP_FALLBACK_SYMBOL_KINDS or kind == SymbolKind.PARAMETER:
+            return
+        name = (
+            inferred_name
+            or self._extract_name_from_symbol(occ.symbol)
+            or self._last_identifier(self._descriptor_tail(occ.symbol))
+            or occ.symbol
+        )
+        symbol = Symbol(
+            def_id=occ.symbol,
+            kind=kind,
+            file_path=file_path,
+            range=self._parse_range(occ.enclosing_range) or occ_range,
+            name=name,
+            container_def_id=None,
+        )
+        symbols.append(symbol)
+        _remember_symbol(symbol)
+
+    def _process_external_symbols(
+        self,
+        index: scip_pb2.Index,
+        seen_symbols: set[str],
+        symbols: list[Symbol],
+        _remember_symbol: Any,
+    ) -> None:
+        """Process external symbols from the SCIP index."""
+        for ext_sym in index.external_symbols:
+            symbol_str = ext_sym.symbol
+            if symbol_str.startswith(_LOCAL_SYMBOL_PREFIX) or symbol_str in seen_symbols:
+                continue
+            seen_symbols.add(symbol_str)
+
+            resolved = self._resolve_symbol_kind_and_name(
+                symbol_str,
+                ext_sym.kind,
+                ext_sym.display_name,
+            )
+            if resolved is None:
+                continue
+            kind, name = resolved
+
             symbols.append(
                 Symbol(
                     def_id=symbol_str,
@@ -374,11 +457,15 @@ class SCIPProvider:
             )
             _remember_symbol(symbols[-1])
 
-        # Use explicit symbol container metadata to recover containment edges.
+    def _infer_containment_from_metadata(
+        self,
+        symbols: list[Symbol],
+        symbol_kinds: dict[str, SymbolKind],
+        _append_relation: Any,
+    ) -> None:
+        """Use explicit container metadata to recover containment edges."""
         for symbol in symbols:
-            if not symbol.container_def_id:
-                continue
-            if symbol.container_def_id not in symbol_kinds:
+            if not symbol.container_def_id or symbol.container_def_id not in symbol_kinds:
                 continue
             _append_relation(
                 Relation(
@@ -390,50 +477,67 @@ class SCIPProvider:
                 )
             )
 
-        # Fallback: infer containment by lexical range nesting within the same file.
-        # Some indexers omit enclosing_symbol metadata; range nesting recovers this signal.
+    def _infer_containment_from_ranges(
+        self,
+        symbols: list[Symbol],
+        _append_relation: Any,
+    ) -> None:
+        """Infer containment by lexical range nesting within the same file."""
         symbols_by_file_objects: dict[str, list[Symbol]] = {}
         for symbol in symbols:
             if symbol.file_path == _EXTERNAL_FILE_PATH or symbol.range.start_line <= 0:
                 continue
             symbols_by_file_objects.setdefault(symbol.file_path, []).append(symbol)
+
         for file_symbols in symbols_by_file_objects.values():
             for child in file_symbols:
-                parent_candidates = [
-                    candidate
-                    for candidate in file_symbols
-                    if candidate.def_id != child.def_id
-                    and candidate.range != child.range
-                    and self._range_contains(candidate.range, child.range)
-                ]
-                if not parent_candidates:
-                    continue
-                parent_candidates.sort(
-                    key=lambda candidate: (
-                        0
-                        if candidate.kind
-                        in {
-                            SymbolKind.CLASS,
-                            SymbolKind.MODULE,
-                            SymbolKind.FUNCTION,
-                            SymbolKind.METHOD,
-                        }
-                        else 1,
-                        self._range_span(candidate.range),
+                parent = self._find_tightest_parent(child, file_symbols)
+                if parent is not None:
+                    _append_relation(
+                        Relation(
+                            src_def_id=parent.def_id,
+                            kind=RelationKind.CONTAINS,
+                            dst_def_id=child.def_id,
+                            resolved=True,
+                            meta={"source": "scip.range_nesting"},
+                        )
                     )
-                )
-                parent = parent_candidates[0]
-                _append_relation(
-                    Relation(
-                        src_def_id=parent.def_id,
-                        kind=RelationKind.CONTAINS,
-                        dst_def_id=child.def_id,
-                        resolved=True,
-                        meta={"source": "scip.range_nesting"},
-                    )
-                )
 
-        # Derive reference/call/import relations from occurrence context.
+    def _find_tightest_parent(
+        self,
+        child: Symbol,
+        file_symbols: list[Symbol],
+    ) -> Symbol | None:
+        """Find the tightest containing symbol for a child."""
+        parent_candidates = [
+            c
+            for c in file_symbols
+            if c.def_id != child.def_id
+            and c.range != child.range
+            and self._range_contains(c.range, child.range)
+        ]
+        if not parent_candidates:
+            return None
+        parent_candidates.sort(
+            key=lambda c: (
+                0
+                if c.kind
+                in {SymbolKind.CLASS, SymbolKind.MODULE, SymbolKind.FUNCTION, SymbolKind.METHOD}
+                else 1,
+                self._range_span(c.range),
+            )
+        )
+        return parent_candidates[0]
+
+    def _derive_occurrence_relations(
+        self,
+        occurrence_candidates: list[tuple[str, Range, str, int, int, list[int]]],
+        symbols_by_file: dict[str, list[tuple[str, Range]]],
+        definition_occurrences_by_file: dict[str, list[tuple[str, Range]]],
+        symbol_kinds: dict[str, SymbolKind],
+        _append_relation: Any,
+    ) -> None:
+        """Derive reference/call/import relations from occurrence context."""
         for (
             file_path,
             occ_range,
@@ -457,9 +561,7 @@ class SCIPProvider:
                     symbols_by_file=symbols_by_file,
                     symbol_kinds=symbol_kinds,
                 )
-            if not caller_def_id:
-                continue
-            if target_def_id not in symbol_kinds:
+            if not caller_def_id or target_def_id not in symbol_kinds:
                 continue
 
             relation_kind = self._relation_kind_from_occurrence(
@@ -481,19 +583,6 @@ class SCIPProvider:
                     },
                 )
             )
-
-        return Snapshot(
-            files=files,
-            symbols=symbols,
-            occurrences=occurrences,
-            relations=relations,
-            meta={
-                "provider": "scip",
-                "tool_name": tool_name,
-                "tool_version": tool_version,
-                "project_root": index.metadata.project_root,
-            },
-        )
 
     def _find_definition_range(self, doc: scip_pb2.Document, symbol_str: str) -> Range | None:
         """Find the definition occurrence range for a symbol in a document."""
