@@ -291,6 +291,19 @@ async def _metric_context(
     return metrics, node_meta, path_to_natural_key
 
 
+def _classify_quadrant(investment_score: float, utilization_score: float | None) -> str:
+    """Classify an entity into an investment/utilization quadrant."""
+    if utilization_score is None:
+        return "unknown"
+    if investment_score >= 0.5 and utilization_score >= 0.5:
+        return "strength"
+    if investment_score >= 0.5:
+        return "overinvestment"
+    if utilization_score >= 0.5:
+        return "efficient_core"
+    return "opportunity_or_retire"
+
+
 async def get_investment_utilization_payload(
     session: AsyncSession,
     *,
@@ -425,16 +438,7 @@ async def get_investment_utilization_payload(
         if utilization_available and row["coverage_avg"] is not None:
             utilization_score = round(float(row["coverage_avg"]) / 100.0, 4)
 
-        if utilization_score is None:
-            quadrant = "unknown"
-        elif investment_score >= 0.5 and utilization_score >= 0.5:
-            quadrant = "strength"
-        elif investment_score >= 0.5 and utilization_score < 0.5:
-            quadrant = "overinvestment"
-        elif investment_score < 0.5 and utilization_score >= 0.5:
-            quadrant = "efficient_core"
-        else:
-            quadrant = "opportunity_or_retire"
+        quadrant = _classify_quadrant(investment_score, utilization_score)
 
         quadrants[quadrant] += 1
 
@@ -755,6 +759,108 @@ async def get_temporal_coupling_payload(
     }
 
 
+def _evaluate_ownership_findings(
+    ownership_rows: list[TwinOwnershipSnapshot],
+    churn_by_file: dict[str, float],
+    coverage_by_file: dict[str, float | None],
+    now: datetime,
+    findings: list[dict[str, Any]],
+) -> None:
+    """Evaluate FF003 (single-owner hotspot) and FF005 (stale low-utilization) rules."""
+    by_file: dict[str, list[TwinOwnershipSnapshot]] = defaultdict(list)
+    for row in ownership_rows:
+        by_file[row.node_natural_key].append(row)
+
+    churn_values = sorted(
+        float(churn_by_file.get(file_key, 0.0))
+        for file_key in by_file
+        if churn_by_file.get(file_key, 0.0) > 0
+    )
+    churn_p75 = _percentile(churn_values, 0.75)
+
+    for node_natural_key, rows in by_file.items():
+        dominant = max(rows, key=lambda row: (float(row.ownership_share), int(row.additions)))
+        dominant_share = float(dominant.ownership_share)
+        churn = float(churn_by_file.get(node_natural_key, 0.0))
+        path = _file_path_from_natural_key(node_natural_key) or node_natural_key
+
+        if dominant_share >= 0.8 and churn >= churn_p75:
+            findings.append(
+                _ff003_finding(dominant, dominant_share, churn, churn_p75, path, node_natural_key)
+            )
+
+        _maybe_add_ff005(rows, coverage_by_file, node_natural_key, path, now, findings)
+
+
+def _ff003_finding(
+    dominant: TwinOwnershipSnapshot,
+    dominant_share: float,
+    churn: float,
+    churn_p75: float,
+    path: str,
+    node_natural_key: str,
+) -> dict[str, Any]:
+    return {
+        "finding_type": "fitness.ff003_single_owner_hotspot",
+        "severity": "high" if churn >= max(churn_p75, 50.0) else "medium",
+        "confidence": "high",
+        "status": "open",
+        "filename": path,
+        "line_number": 1,
+        "message": (
+            f"Single-owner hotspot: {dominant.author_label} owns {round(dominant_share * 100, 1)}% "
+            f"with churn {round(churn, 2)}"
+        ),
+        "meta": {
+            "rule_id": "FF003_single_owner_hotspot",
+            "subject": node_natural_key,
+            "dominant_owner": dominant.author_label,
+            "dominant_share": round(dominant_share, 4),
+            "churn": round(churn, 4),
+            "churn_p75": round(churn_p75, 4),
+        },
+    }
+
+
+def _maybe_add_ff005(
+    rows: list[TwinOwnershipSnapshot],
+    coverage_by_file: dict[str, float | None],
+    node_natural_key: str,
+    path: str,
+    now: datetime,
+    findings: list[dict[str, Any]],
+) -> None:
+    coverage = coverage_by_file.get(node_natural_key)
+    last_touched = max(
+        (row.last_touched_at for row in rows if row.last_touched_at),
+        default=None,
+    )
+    if coverage is None or last_touched is None:
+        return
+    if last_touched > now - timedelta(days=180) or coverage >= 20.0:
+        return
+    findings.append(
+        {
+            "finding_type": "fitness.ff005_stale_low_utilization",
+            "severity": "medium",
+            "confidence": "medium",
+            "status": "open",
+            "filename": path,
+            "line_number": 1,
+            "message": (
+                f"Stale low-utilization file: last touched {last_touched.date().isoformat()} "
+                f"with coverage {round(coverage, 2)}"
+            ),
+            "meta": {
+                "rule_id": "FF005_stale_low_utilization",
+                "subject": node_natural_key,
+                "last_touched_at": last_touched.isoformat(),
+                "coverage": round(float(coverage), 4),
+            },
+        }
+    )
+
+
 async def evaluate_and_store_fitness_findings(
     session: AsyncSession,
     *,
@@ -897,78 +1003,13 @@ async def evaluate_and_store_fitness_findings(
     coverage_by_file = {row.node_natural_key: _coverage_value(row.coverage) for row in metrics_rows}
 
     if ownership_rows:
-        by_file: dict[str, list[TwinOwnershipSnapshot]] = defaultdict(list)
-        for row in ownership_rows:
-            by_file[row.node_natural_key].append(row)
-
-        churn_values = sorted(
-            [
-                float(churn_by_file.get(file_key, 0.0))
-                for file_key in by_file
-                if churn_by_file.get(file_key, 0.0) > 0
-            ]
+        _evaluate_ownership_findings(
+            ownership_rows,
+            churn_by_file,
+            coverage_by_file,
+            now,
+            findings,
         )
-        churn_p75 = _percentile(churn_values, 0.75)
-
-        for node_natural_key, rows in by_file.items():
-            dominant = max(rows, key=lambda row: (float(row.ownership_share), int(row.additions)))
-            dominant_share = float(dominant.ownership_share)
-            churn = float(churn_by_file.get(node_natural_key, 0.0))
-            path = _file_path_from_natural_key(node_natural_key) or node_natural_key
-
-            if dominant_share >= 0.8 and churn >= churn_p75:
-                findings.append(
-                    {
-                        "finding_type": "fitness.ff003_single_owner_hotspot",
-                        "severity": "high" if churn >= max(churn_p75, 50.0) else "medium",
-                        "confidence": "high",
-                        "status": "open",
-                        "filename": path,
-                        "line_number": 1,
-                        "message": (
-                            f"Single-owner hotspot: {dominant.author_label} owns {round(dominant_share * 100, 1)}% "
-                            f"with churn {round(churn, 2)}"
-                        ),
-                        "meta": {
-                            "rule_id": "FF003_single_owner_hotspot",
-                            "subject": node_natural_key,
-                            "dominant_owner": dominant.author_label,
-                            "dominant_share": round(dominant_share, 4),
-                            "churn": round(churn, 4),
-                            "churn_p75": round(churn_p75, 4),
-                        },
-                    }
-                )
-
-            coverage = coverage_by_file.get(node_natural_key)
-            last_touched = max(
-                (row.last_touched_at for row in rows if row.last_touched_at),
-                default=None,
-            )
-            if coverage is None or last_touched is None:
-                continue
-
-            if last_touched <= now - timedelta(days=180) and coverage < 20.0:
-                findings.append(
-                    {
-                        "finding_type": "fitness.ff005_stale_low_utilization",
-                        "severity": "medium",
-                        "confidence": "medium",
-                        "status": "open",
-                        "filename": path,
-                        "line_number": 1,
-                        "message": (
-                            f"Stale low-utilization file: last touched {last_touched.date().isoformat()} "
-                            f"with coverage {round(coverage, 2)}"
-                        ),
-                        "meta": {
-                            "rule_id": "FF005_stale_low_utilization",
-                            "subject": node_natural_key,
-                            "last_touched_at": last_touched.isoformat(),
-                            "coverage": round(float(coverage), 4),
-                        },
-                    }
-                )
     else:
         warnings.append("FF003/FF005 skipped: ownership snapshots unavailable")
 
@@ -1037,6 +1078,56 @@ async def evaluate_and_store_fitness_findings(
     }
 
 
+def _accumulate_fitness_finding(
+    row: TwinFinding,
+    rules_index: dict[str, dict[str, Any]],
+    violations: list[dict[str, Any]],
+) -> None:
+    """Accumulate a single fitness finding into rules_index and violations."""
+    meta = dict(row.meta or {})
+    rule_id = str(meta.get("rule_id") or row.finding_type)
+    summary = rules_index.setdefault(
+        rule_id,
+        {
+            "rule_id": rule_id,
+            "finding_type": row.finding_type,
+            "count": 0,
+            "open": 0,
+            "resolved": 0,
+            "highest_severity": "low",
+        },
+    )
+    summary["count"] += 1
+    if str(row.status).lower() == "resolved":
+        summary["resolved"] += 1
+    else:
+        summary["open"] += 1
+
+    severity = str(row.severity).lower()
+    if _SEVERITY_WEIGHT.get(severity, 0) > _SEVERITY_WEIGHT.get(
+        str(summary["highest_severity"]), 0
+    ):
+        summary["highest_severity"] = severity
+
+    violations.append(
+        {
+            "id": str(row.id),
+            "rule_id": rule_id,
+            "finding_type": row.finding_type,
+            "severity": row.severity,
+            "confidence": row.confidence,
+            "status": row.status,
+            "subject": meta.get("subject"),
+            "message": row.message,
+            "filename": row.filename,
+            "line_number": row.line_number,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+            "meta": meta,
+        }
+    )
+
+
 async def get_fitness_functions_payload(
     session: AsyncSession,
     *,
@@ -1057,48 +1148,7 @@ async def get_fitness_functions_payload(
     violations: list[dict[str, Any]] = []
 
     for row in rows:
-        meta = dict(row.meta or {})
-        rule_id = str(meta.get("rule_id") or row.finding_type)
-        summary = rules_index.setdefault(
-            rule_id,
-            {
-                "rule_id": rule_id,
-                "finding_type": row.finding_type,
-                "count": 0,
-                "open": 0,
-                "resolved": 0,
-                "highest_severity": "low",
-            },
-        )
-        summary["count"] += 1
-        if str(row.status).lower() == "resolved":
-            summary["resolved"] += 1
-        else:
-            summary["open"] += 1
-
-        severity = str(row.severity).lower()
-        if _SEVERITY_WEIGHT.get(severity, 0) > _SEVERITY_WEIGHT.get(
-            str(summary["highest_severity"]), 0
-        ):
-            summary["highest_severity"] = severity
-
-        violations.append(
-            {
-                "id": str(row.id),
-                "rule_id": rule_id,
-                "finding_type": row.finding_type,
-                "severity": row.severity,
-                "confidence": row.confidence,
-                "status": row.status,
-                "subject": meta.get("subject"),
-                "message": row.message,
-                "filename": row.filename,
-                "line_number": row.line_number,
-                "created_at": row.created_at.isoformat(),
-                "updated_at": row.updated_at.isoformat(),
-                "meta": meta,
-            }
-        )
+        _accumulate_fitness_finding(row, rules_index, violations)
 
     rules = sorted(
         rules_index.values(),

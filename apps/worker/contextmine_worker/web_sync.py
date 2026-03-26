@@ -118,6 +118,86 @@ def extract_markdown_with_trafilatura(html: str) -> str | None:
         return None
 
 
+def _normalize_url(url: str) -> str:
+    """Strip fragment from URL."""
+    parsed = urlparse(url)
+    return parsed._replace(fragment="").geturl()
+
+
+def _extract_links_from_html(
+    raw_html: str,
+    url: str,
+    base_url: str,
+    visited: set[str],
+    queue: deque[str],
+) -> None:
+    """Parse HTML and enqueue in-scope links for BFS crawling."""
+    try:
+        tree = lxml_html.fromstring(raw_html)
+        tree.make_links_absolute(url)
+        for element, _attr, link, _pos in tree.iterlinks():
+            if element.tag == "a":
+                clean_link = _normalize_url(link)
+                if clean_link not in visited and is_url_in_scope(clean_link, base_url):
+                    queue.append(clean_link)
+    except Exception:
+        pass
+
+
+def _extract_title_from_html(raw_html: str) -> str:
+    """Extract <title> text from HTML."""
+    try:
+        tree = lxml_html.fromstring(raw_html)
+        title_els = tree.xpath("//title/text()")
+        if title_els:
+            return str(title_els[0]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _fetch_and_extract_page(
+    client: httpx.Client,
+    url: str,
+    base_url: str,
+    visited: set[str],
+    queue: deque[str],
+) -> WebPage | None:
+    """Fetch a URL and return a WebPage, or None if not suitable."""
+    try:
+        response = client.get(url)
+        response.raise_for_status()
+    except Exception as e:
+        logger.debug("Failed to fetch %s: %s", url, e)
+        return None
+
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type:
+        return None
+
+    raw_html = response.text
+    if not raw_html or len(raw_html.encode("utf-8")) > MAX_PAGE_SIZE:
+        return None
+
+    _extract_links_from_html(raw_html, url, base_url, visited, queue)
+
+    markdown = extract_markdown_with_trafilatura(raw_html)
+    if not markdown or len(markdown.strip()) < 50:
+        return None
+
+    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    title = _extract_title_from_html(raw_html)
+
+    return WebPage(
+        url=url,
+        title=title,
+        markdown=markdown,
+        content_hash=content_hash,
+        etag=response.headers.get("etag"),
+        last_modified=response.headers.get("last-modified"),
+    )
+
+
 def _crawl_python(
     base_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
@@ -142,10 +222,7 @@ def _crawl_python(
     ) as client:
         while queue and len(pages) < max_pages:
             url = queue.popleft()
-
-            # Normalize: strip fragment
-            parsed = urlparse(url)
-            url = parsed._replace(fragment="").geturl()
+            url = _normalize_url(url)
 
             if url in visited:
                 continue
@@ -154,64 +231,11 @@ def _crawl_python(
             if not is_url_in_scope(url, base_url):
                 continue
 
-            try:
-                response = client.get(url)
-                response.raise_for_status()
-            except Exception as e:
-                logger.debug("Failed to fetch %s: %s", url, e)
-                continue
+            page = _fetch_and_extract_page(client, url, base_url, visited, queue)
+            if page is not None:
+                pages.append(page)
+                logger.info("Crawled %s (%d/%d)", url, len(pages), max_pages)
 
-            content_type = response.headers.get("content-type", "")
-            if "text/html" not in content_type:
-                continue
-
-            raw_html = response.text
-            if not raw_html or len(raw_html.encode("utf-8")) > MAX_PAGE_SIZE:
-                continue
-
-            # Extract links from HTML for BFS crawl
-            try:
-                tree = lxml_html.fromstring(raw_html)
-                tree.make_links_absolute(url)
-                for element, _attr, link, _pos in tree.iterlinks():
-                    if element.tag == "a":
-                        link_parsed = urlparse(link)
-                        clean_link = link_parsed._replace(fragment="").geturl()
-                        if clean_link not in visited and is_url_in_scope(clean_link, base_url):
-                            queue.append(clean_link)
-            except Exception:
-                pass
-
-            # Extract markdown using trafilatura
-            markdown = extract_markdown_with_trafilatura(raw_html)
-            if not markdown or len(markdown.strip()) < 50:
-                continue
-
-            content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-
-            # Extract title
-            title = ""
-            try:
-                title_els = tree.xpath("//title/text()")
-                if title_els:
-                    title = str(title_els[0]).strip()
-            except Exception:
-                pass
-
-            pages.append(
-                WebPage(
-                    url=url,
-                    title=title,
-                    markdown=markdown,
-                    content_hash=content_hash,
-                    etag=response.headers.get("etag"),
-                    last_modified=response.headers.get("last-modified"),
-                )
-            )
-
-            logger.info("Crawled %s (%d/%d)", url, len(pages), max_pages)
-
-            # Rate limiting
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
 

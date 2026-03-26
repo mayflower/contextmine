@@ -322,16 +322,13 @@ def _route_path_from_file(file_path: str) -> str | None:
         file_stem = PurePosixPath(segments[-1]).stem
         segments = segments[:-1] + [file_stem]
 
-    filtered: list[str] = []
-    for idx, segment in enumerate(segments):
-        token = segment.strip().lower()
-        if not token:
-            continue
-        if idx == 0 and token in UI_STRIP_ROUTE_SEGMENTS:
-            continue
-        if token in {"index", "."}:
-            continue
-        filtered.append(token)
+    filtered = [
+        token
+        for idx, segment in enumerate(segments)
+        if (token := segment.strip().lower())
+        and not (idx == 0 and token in UI_STRIP_ROUTE_SEGMENTS)
+        and token not in {"index", "."}
+    ]
 
     if not filtered:
         return base_prefix or "/"
@@ -662,39 +659,38 @@ def _route_from_router_call(file_path: str, content: str, node: Any) -> UIRouteD
     return UIRouteDef(path=route_path, file_path=file_path, line=line_number(node))
 
 
+def _try_extract_view_candidate(
+    content: str,
+    node: Any,
+) -> tuple[str | None, Any | None]:
+    """Try to extract a view name and signal node from an AST node."""
+    if node.type == "function_declaration":
+        ident = first_child(node, "identifier")
+        candidate = node_text(content, ident).strip()
+        if is_pascal_case(candidate):
+            return candidate, node
+    elif node.type == "class_declaration":
+        ident = first_child(node, "type_identifier") or first_child(node, "identifier")
+        candidate = node_text(content, ident).strip()
+        if is_pascal_case(candidate):
+            return candidate, node
+    elif node.type == "variable_declarator":
+        ident = first_child(node, "identifier")
+        value = node.child_by_field_name("value")
+        candidate = node_text(content, ident).strip()
+        if (
+            is_pascal_case(candidate)
+            and value is not None
+            and value.type in {"arrow_function", "function_expression"}
+        ):
+            return candidate, value
+    return None, None
+
+
 def _extract_views(file_path: str, content: str, root: Any) -> list[UIViewDef]:
     views: dict[str, UIViewDef] = {}
     for node in walk(root):
-        view_name: str | None = None
-        signal_node: Any | None = None
-        if node.type == "function_declaration":
-            ident = first_child(node, "identifier")
-            candidate = node_text(content, ident).strip()
-            if is_pascal_case(candidate):
-                view_name = candidate
-                signal_node = node
-        elif node.type == "class_declaration":
-            ident = first_child(node, "type_identifier") or first_child(node, "identifier")
-            candidate = node_text(content, ident).strip()
-            if is_pascal_case(candidate):
-                view_name = candidate
-                signal_node = node
-        elif node.type == "variable_declarator":
-            ident = first_child(node, "identifier")
-            value = node.child_by_field_name("value")
-            candidate = node_text(content, ident).strip()
-            if (
-                is_pascal_case(candidate)
-                and value is not None
-                and value.type
-                in {
-                    "arrow_function",
-                    "function_expression",
-                }
-            ):
-                view_name = candidate
-                signal_node = value
-
+        view_name, signal_node = _try_extract_view_candidate(content, node)
         if not view_name or signal_node is None:
             continue
         if not _contains_jsx(signal_node):

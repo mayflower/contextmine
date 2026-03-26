@@ -572,6 +572,28 @@ def extract_jobs(file_path: str, content: str) -> JobsExtraction:
     return result
 
 
+def _parse_github_triggers(on_config: Any) -> list[JobTriggerDef]:
+    """Parse GitHub Actions trigger configuration into trigger definitions."""
+    triggers: list[JobTriggerDef] = []
+    if isinstance(on_config, str):
+        triggers.append(JobTriggerDef(trigger_type=on_config))
+    elif isinstance(on_config, list):
+        for trigger in on_config:
+            triggers.append(JobTriggerDef(trigger_type=trigger))
+    elif isinstance(on_config, dict):
+        for trigger_type, config in on_config.items():
+            if trigger_type == "schedule" and isinstance(config, list):
+                for sched in config:
+                    if isinstance(sched, dict) and "cron" in sched:
+                        triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
+                continue
+            trigger = JobTriggerDef(trigger_type=trigger_type)
+            if isinstance(config, dict) and "cron" in config:
+                trigger.cron = config["cron"]
+            triggers.append(trigger)
+    return triggers
+
+
 def _extract_github_workflow_sync(file_path: str, content: str, result: JobsExtraction) -> None:
     """Extract GitHub Actions workflow jobs (sync)."""
     from pathlib import Path
@@ -586,30 +608,8 @@ def _extract_github_workflow_sync(file_path: str, content: str, result: JobsExtr
         workflow_name = workflow.get("name", Path(file_path).stem)
 
         # Extract triggers
-        triggers: list[JobTriggerDef] = []
         on_config = workflow.get("on") or workflow.get(True) or {}
-
-        if isinstance(on_config, str):
-            triggers.append(JobTriggerDef(trigger_type=on_config))
-        elif isinstance(on_config, list):
-            for trigger in on_config:
-                triggers.append(JobTriggerDef(trigger_type=trigger))
-        elif isinstance(on_config, dict):
-            for trigger_type, config in on_config.items():
-                trigger = JobTriggerDef(trigger_type=trigger_type)
-
-                if isinstance(config, dict) and "cron" in config:
-                    trigger.cron = config["cron"]
-
-                # Handle schedule array
-                if trigger_type == "schedule" and isinstance(config, list):
-                    for sched in config:
-                        if isinstance(sched, dict) and "cron" in sched:
-                            t = JobTriggerDef(trigger_type="schedule", cron=sched["cron"])
-                            triggers.append(t)
-                    continue
-
-                triggers.append(trigger)
+        triggers = _parse_github_triggers(on_config)
 
         # Extract jobs
         jobs = workflow.get("jobs", {})

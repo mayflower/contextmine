@@ -49,6 +49,35 @@ _canonical_file_path = canonical_file_path_from_node
 _derive_arch_group = derive_arch_group
 
 
+def _apply_scope_filter(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    c4_scope: str,
+    match_fields: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """Filter nodes/edges by scope. Returns (nodes, edges, matched)."""
+    scope = c4_scope.lower()
+    scoped_ids: set[str] = set()
+    for node in nodes:
+        match_values = {str(node.get("name") or "").lower()}
+        meta = node.get("meta") or {}
+        for field in match_fields:
+            if field != "name":
+                match_values.add(str(meta.get(field) or "").lower())
+        if scope in match_values:
+            scoped_ids.add(str(node["id"]))
+    if not scoped_ids:
+        return nodes, edges, False
+    filtered_nodes = [node for node in nodes if str(node.get("id")) in scoped_ids]
+    filtered_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in scoped_ids
+        and str(edge.get("target_node_id")) in scoped_ids
+    ]
+    return filtered_nodes, filtered_edges, True
+
+
 def _limit_nodes_by_degree(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -142,26 +171,13 @@ async def _render_container_view(
     edges = list(graph["edges"])
 
     if c4_scope:
-        scope = c4_scope.lower()
-        scoped_ids = {
-            str(node["id"])
-            for node in nodes
-            if scope
-            in {
-                str(node.get("name") or "").lower(),
-                str((node.get("meta") or {}).get("container") or "").lower(),
-                str((node.get("meta") or {}).get("domain") or "").lower(),
-            }
-        }
-        if scoped_ids:
-            nodes = [node for node in nodes if str(node.get("id")) in scoped_ids]
-            edges = [
-                edge
-                for edge in edges
-                if str(edge.get("source_node_id")) in scoped_ids
-                and str(edge.get("target_node_id")) in scoped_ids
-            ]
-        else:
+        nodes, edges, matched = _apply_scope_filter(
+            nodes,
+            edges,
+            c4_scope,
+            ("name", "container", "domain"),
+        )
+        if not matched:
             warnings.append(f'No container matched scope "{c4_scope}"; rendered all containers.')
 
     lines = ["C4Container", f'title "{_safe_text(scenario_name, "Scenario")}"']
@@ -208,27 +224,13 @@ async def _render_component_view(
     edges = list(graph["edges"])
 
     if c4_scope:
-        scope = c4_scope.lower()
-        scoped = [
-            node
-            for node in nodes
-            if scope
-            in {
-                str(node.get("name") or "").lower(),
-                str((node.get("meta") or {}).get("component") or "").lower(),
-                str((node.get("meta") or {}).get("container") or "").lower(),
-            }
-        ]
-        if scoped:
-            scoped_ids = {str(node.get("id")) for node in scoped}
-            nodes = scoped
-            edges = [
-                edge
-                for edge in edges
-                if str(edge.get("source_node_id")) in scoped_ids
-                and str(edge.get("target_node_id")) in scoped_ids
-            ]
-        else:
+        nodes, edges, matched = _apply_scope_filter(
+            nodes,
+            edges,
+            c4_scope,
+            ("name", "component", "container"),
+        )
+        if not matched:
             warnings.append(
                 f'No component/container matched scope "{c4_scope}"; rendered all components.'
             )
@@ -479,6 +481,29 @@ async def _render_context_view(
     )
 
 
+def _infer_job_container(
+    job: KnowledgeNode,
+    file_path_by_job: dict[UUID, str],
+    container_names: list[str],
+    container_name_set: set[str],
+) -> str:
+    """Infer the container for a job based on file path or name matching."""
+    file_path = file_path_by_job.get(job.id)
+    if file_path:
+        group = _derive_arch_group(file_path, {})
+        if group:
+            candidate = group[1]
+            if not container_name_set or candidate.lower() in container_name_set:
+                return candidate
+
+    name_l = str(job.name or "").lower()
+    for container_name in container_names:
+        if container_name and container_name.lower() in name_l:
+            return container_name
+
+    return "shared"
+
+
 async def _render_deployment_view(
     session: AsyncSession,
     collection_id: UUID,
@@ -550,20 +575,12 @@ async def _render_deployment_view(
     weak_mapping_count = 0
 
     def infer_container(job: KnowledgeNode) -> str:
-        file_path = file_path_by_job.get(job.id)
-        if file_path:
-            group = _derive_arch_group(file_path, {})
-            if group:
-                candidate = group[1]
-                if not container_name_set or candidate.lower() in container_name_set:
-                    return candidate
-
-        name_l = str(job.name or "").lower()
-        for container_name in container_names:
-            if container_name and container_name.lower() in name_l:
-                return container_name
-
-        return "shared"
+        return _infer_job_container(
+            job,
+            file_path_by_job,
+            container_names,
+            container_name_set,
+        )
 
     scoped_jobs: list[KnowledgeNode] = []
     if c4_scope:

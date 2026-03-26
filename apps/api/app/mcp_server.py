@@ -300,15 +300,13 @@ Examples:
 )
 
 
-@mcp.tool(name="list_collections")
-async def list_collections(
-    search: Annotated[str | None, "Optional search term to filter collections by name"] = None,
-) -> str:
-    """List available documentation collections. Usually not needed - just call get_markdown directly."""
-    user_id = get_current_user_id()
-
+async def _query_collections(
+    *,
+    user_id: uuid.UUID | None,
+    search: str | None,
+) -> list:
+    """Query accessible collections with optional search filter."""
     async with get_db_session() as db:
-        # Build query for accessible collections
         query = select(
             Collection.id,
             Collection.name,
@@ -317,7 +315,6 @@ async def list_collections(
             func.count(Source.id).label("source_count"),
         ).outerjoin(Source, Source.collection_id == Collection.id)
 
-        # Filter by visibility/ownership
         if user_id:
             query = query.where(
                 or_(
@@ -333,7 +330,6 @@ async def list_collections(
         else:
             query = query.where(Collection.visibility == CollectionVisibility.GLOBAL)
 
-        # Optional search filter
         if search:
             escaped_search = escape_like_pattern(search)
             query = query.where(
@@ -345,7 +341,16 @@ async def list_collections(
 
         query = query.group_by(Collection.id).order_by(Collection.name)
         result = await db.execute(query)
-        rows = result.all()
+        return result.all()
+
+
+@mcp.tool(name="list_collections")
+async def list_collections(
+    search: Annotated[str | None, "Optional search term to filter collections by name"] = None,
+) -> str:
+    """List available documentation collections. Usually not needed - just call get_markdown directly."""
+    user_id = get_current_user_id()
+    rows = await _query_collections(user_id=user_id, search=search)
 
     if not rows:
         return "# No Collections Found\n\nNo collections are available."
@@ -360,6 +365,52 @@ async def list_collections(
         lines.append(f"- **Visibility**: {visibility.value}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+async def _query_documents(
+    db,
+    *,
+    coll_uuid: uuid.UUID,
+    topic: str | None,
+    limit: int,
+) -> list:
+    """Query documents in a collection with optional topic filter."""
+    query = (
+        select(Document.id, Document.uri, Document.title, Source.url)
+        .join(Source, Document.source_id == Source.id)
+        .where(Source.collection_id == coll_uuid)
+    )
+    if topic:
+        escaped_topic = escape_like_pattern(topic)
+        query = query.where(
+            or_(
+                Document.title.ilike(f"%{escaped_topic}%", escape="\\"),
+                Document.uri.ilike(f"%{escaped_topic}%", escape="\\"),
+            )
+        )
+    query = query.order_by(Document.title).limit(limit)
+    result = await db.execute(query)
+    return result.all()
+
+
+def _format_document_listing(
+    rows: list,
+    *,
+    collection_name: str,
+    topic: str | None,
+    limit: int,
+) -> str:
+    """Format document listing as markdown."""
+    lines = [f"# Documents in {collection_name}\n"]
+    if topic:
+        lines.append(f"*Filtered by topic: {topic}*\n")
+    for _doc_id, uri, title, _source_url in rows:
+        lines.append(f"- **{title or 'Untitled'}**")
+        lines.append(f"  - URI: `{uri}`")
+        lines.append("")
+    if len(rows) == limit:
+        lines.append(f"*Showing first {limit} documents. Use topic filter to narrow results.*")
     return "\n".join(lines)
 
 
@@ -378,50 +429,15 @@ async def list_documents(
         return f"# Error\n\nInvalid collection_id: {collection_id}"
 
     async with get_db_session() as db:
-        # Verify access to collection
-        coll_result = await db.execute(select(Collection).where(Collection.id == coll_uuid))
-        collection = coll_result.scalar_one_or_none()
-
-        if not collection:
+        collection, error = await _resolve_collection_access(
+            db, collection_id=collection_id, user_id=user_id
+        )
+        if error:
+            return f"# Error\n\n{error}"
+        if collection is None:
             return _ERR_COLLECTION_NOT_FOUND
 
-        # Check access
-        has_access = collection.visibility == CollectionVisibility.GLOBAL
-        if user_id and not has_access:
-            if collection.owner_user_id == user_id:
-                has_access = True
-            else:
-                member_result = await db.execute(
-                    select(CollectionMember).where(
-                        CollectionMember.collection_id == coll_uuid,
-                        CollectionMember.user_id == user_id,
-                    )
-                )
-                if member_result.scalar_one_or_none():
-                    has_access = True
-
-        if not has_access:
-            return "# Error\n\nAccess denied to this collection."
-
-        # Query documents
-        query = (
-            select(Document.id, Document.uri, Document.title, Source.url)
-            .join(Source, Document.source_id == Source.id)
-            .where(Source.collection_id == coll_uuid)
-        )
-
-        if topic:
-            escaped_topic = escape_like_pattern(topic)
-            query = query.where(
-                or_(
-                    Document.title.ilike(f"%{escaped_topic}%", escape="\\"),
-                    Document.uri.ilike(f"%{escaped_topic}%", escape="\\"),
-                )
-            )
-
-        query = query.order_by(Document.title).limit(limit)
-        result = await db.execute(query)
-        rows = result.all()
+        rows = await _query_documents(db, coll_uuid=coll_uuid, topic=topic, limit=limit)
 
     if not rows:
         msg = "# No Documents Found\n\nNo documents in collection"
@@ -429,19 +445,7 @@ async def list_documents(
             msg += f" matching topic '{topic}'"
         return msg + "."
 
-    lines = [f"# Documents in {collection.name}\n"]
-    if topic:
-        lines.append(f"*Filtered by topic: {topic}*\n")
-
-    for _doc_id, uri, title, _source_url in rows:
-        lines.append(f"- **{title or 'Untitled'}**")
-        lines.append(f"  - URI: `{uri}`")
-        lines.append("")
-
-    if len(rows) == limit:
-        lines.append(f"*Showing first {limit} documents. Use topic filter to narrow results.*")
-
-    return "\n".join(lines)
+    return _format_document_listing(rows, collection_name=collection.name, topic=topic, limit=limit)
 
 
 @mcp.tool(name="get_markdown")
@@ -641,71 +645,73 @@ async def code_deep_research(
 # =============================================================================
 
 
+async def _lookup_document(session, file_path: str) -> Document | None:
+    """Look up a document by URI or partial match."""
+    result = await session.execute(
+        select(Document)
+        .where(
+            or_(
+                Document.uri == file_path,
+                Document.uri.contains(file_path),
+            )
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _format_symbol_outline(
+    file_path: str,
+    db_symbols: list,
+    include_children: bool,
+) -> str:
+    """Format database symbols into a markdown outline."""
+    lines = [f"# Outline: {file_path}\n", "*From index (fast lookup)*\n"]
+
+    top_level = [s for s in db_symbols if s.parent_name is None]
+    children_map: dict[str, list[Symbol]] = {}
+    for s in db_symbols:
+        if s.parent_name:
+            children_map.setdefault(s.parent_name, []).append(s)
+
+    for sym in top_level:
+        lines.append(f"## {sym.kind.value} `{sym.name}` (L{sym.start_line}-{sym.end_line})")
+        if sym.signature:
+            lines.append(f"```\n{sym.signature}\n```")
+        if include_children and sym.qualified_name in children_map:
+            for child in children_map[sym.qualified_name]:
+                lines.append(
+                    f"  - {child.kind.value} `{child.name}` (L{child.start_line}-{child.end_line})"
+                )
+                if child.signature:
+                    lines.append(f"    `{child.signature}`")
+        lines.append("")
+
+    lines.append(f"\n*Found {len(top_level)} top-level symbols*")
+    return "\n".join(lines)
+
+
 @mcp.tool(name="outline")
 async def code_outline(
     file_path: Annotated[str, "Document URI from search results"],
     include_children: Annotated[bool, "Include methods inside classes"] = True,
 ) -> str:
     """List all functions, classes, and methods in a file with line numbers."""
-    # First, try to get symbols from the database (for indexed documents)
     try:
         async with get_db_session() as session:
-            # Look up document by URI (for git:// URIs) or by file path in meta
+            doc = await _lookup_document(session, file_path)
+            if not doc:
+                return f"# No symbols found in {file_path}\n\nDocument exists but contains no extractable symbols."
+
             result = await session.execute(
-                select(Document)
-                .where(
-                    or_(
-                        Document.uri == file_path,
-                        Document.uri.contains(file_path),
-                    )
-                )
-                .limit(1)
+                select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
             )
-            doc = result.scalar_one_or_none()
-
-            if doc:
-                # Get symbols from database
-                result = await session.execute(
-                    select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
-                )
-                db_symbols = result.scalars().all()
-
-                if db_symbols:
-                    # Format database symbols
-                    lines = [f"# Outline: {file_path}\n"]
-                    lines.append("*From index (fast lookup)*\n")
-
-                    # Group by parent for hierarchy
-                    top_level = [s for s in db_symbols if s.parent_name is None]
-                    children_map: dict[str, list[Symbol]] = {}
-                    for s in db_symbols:
-                        if s.parent_name:
-                            children_map.setdefault(s.parent_name, []).append(s)
-
-                    for sym in top_level:
-                        lines.append(
-                            f"## {sym.kind.value} `{sym.name}` (L{sym.start_line}-{sym.end_line})"
-                        )
-                        if sym.signature:
-                            lines.append(f"```\n{sym.signature}\n```")
-
-                        if include_children and sym.qualified_name in children_map:
-                            for child in children_map[sym.qualified_name]:
-                                lines.append(
-                                    f"  - {child.kind.value} `{child.name}` "
-                                    f"(L{child.start_line}-{child.end_line})"
-                                )
-                                if child.signature:
-                                    lines.append(f"    `{child.signature}`")
-
-                        lines.append("")
-
-                    lines.append(f"\n*Found {len(top_level)} top-level symbols*")
-                    return "\n".join(lines)
+            db_symbols = result.scalars().all()
+            if db_symbols:
+                return _format_symbol_outline(file_path, db_symbols, include_children)
     except Exception as e:
         return f"# Document Not Found\n\nNo indexed document matches: `{file_path}`\n\nError: {e}"
 
-    # Document exists but has no symbols (not a code file, or unsupported language)
     return (
         f"# No symbols found in {file_path}\n\nDocument exists but contains no extractable symbols."
     )
@@ -1413,6 +1419,208 @@ async def research_data_model(
         return f"# Error\n\nFailed to research data model: {e}"
 
 
+async def _arch_section_api(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["api", "endpoint", "rest", "http"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    stmt = (
+        select(KnowledgeNode)
+        .where(
+            KnowledgeNode.collection_id.in_(collection_ids),
+            KnowledgeNode.kind == KnowledgeNodeKind.API_ENDPOINT,
+        )
+        .limit(20)
+    )
+    endpoints = (await db.execute(stmt)).scalars().all()
+    if not endpoints:
+        return
+    lines.append(f"## API Endpoints ({len(endpoints)} total)\n")
+    for ep in endpoints[:10]:
+        meta = ep.meta or {}
+        lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
+    lines.append("")
+
+
+async def _arch_section_deploy(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["deploy", "job", "ci", "cd", "workflow"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    stmt = (
+        select(KnowledgeNode)
+        .where(
+            KnowledgeNode.collection_id.in_(collection_ids),
+            KnowledgeNode.kind == KnowledgeNodeKind.JOB,
+        )
+        .limit(20)
+    )
+    jobs = (await db.execute(stmt)).scalars().all()
+    if not jobs:
+        return
+    lines.append(f"## Jobs & Workflows ({len(jobs)} total)\n")
+    for job in jobs[:10]:
+        meta = job.meta or {}
+        schedule = f" (schedule: `{meta['schedule']}`)" if meta.get("schedule") else ""
+        lines.append(f"- **{job.name}** ({meta.get('job_type', 'unknown')}){schedule}")
+    lines.append("")
+
+
+async def _arch_section_database(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["database", "data", "table", "schema"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    stmt = (
+        select(KnowledgeNode)
+        .where(
+            KnowledgeNode.collection_id.in_(collection_ids),
+            KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
+        )
+        .limit(20)
+    )
+    tables = (await db.execute(stmt)).scalars().all()
+    if not tables:
+        return
+    lines.append(f"## Database Tables ({len(tables)} total)\n")
+    for table in tables[:10]:
+        meta = table.meta or {}
+        lines.append(f"- **{table.name}**: {meta.get('column_count', '?')} columns")
+    lines.append("")
+
+
+async def _arch_section_security(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["security", "auth", "permission", "access"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id.in_(collection_ids),
+        KnowledgeNode.kind == KnowledgeNodeKind.BUSINESS_RULE,
+    )
+    auth_rules = [
+        r
+        for r in (await db.execute(stmt)).scalars().all()
+        if (r.meta or {}).get("category") in ("authorization", "authentication")
+    ]
+    if not auth_rules:
+        return
+    lines.append(f"## Security Rules ({len(auth_rules)} found)\n")
+    for rule in auth_rules[:5]:
+        meta = rule.meta or {}
+        lines.append(f"### {rule.name}")
+        if meta.get("natural_language"):
+            lines.append(f"- {meta['natural_language']}")
+        lines.append("")
+
+
+async def _arch_section_ui(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["ui", "screen", "view", "route"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    ui_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id.in_(collection_ids),
+        KnowledgeNode.kind.in_(
+            [KnowledgeNodeKind.UI_ROUTE, KnowledgeNodeKind.UI_VIEW, KnowledgeNodeKind.UI_COMPONENT]
+        ),
+    )
+    ui_rows = (await db.execute(ui_stmt)).scalars().all()
+    if not ui_rows:
+        return
+    by_kind: dict[str, int] = {}
+    for row in ui_rows:
+        key = row.kind.value
+        by_kind[key] = by_kind.get(key, 0) + 1
+    lines.append("## UI Topology\n")
+    for key, count in sorted(by_kind.items()):
+        lines.append(f"- **{key}**: {count}")
+    lines.append("")
+
+
+async def _arch_section_tests(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["test", "qa", "verification"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    test_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id.in_(collection_ids),
+        KnowledgeNode.kind.in_(
+            [
+                KnowledgeNodeKind.TEST_SUITE,
+                KnowledgeNodeKind.TEST_CASE,
+                KnowledgeNodeKind.TEST_FIXTURE,
+            ]
+        ),
+    )
+    test_rows = (await db.execute(test_stmt)).scalars().all()
+    if not test_rows:
+        return
+    lines.append("## Test Semantics\n")
+    lines.append(
+        f"- Suites: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_SUITE)}"
+    )
+    lines.append(
+        f"- Cases: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_CASE)}"
+    )
+    lines.append(
+        f"- Fixtures: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_FIXTURE)}"
+    )
+    lines.append("")
+
+
+async def _arch_section_flows(db, collection_ids, topic_lower, lines) -> None:
+    if not any(word in topic_lower for word in ["flow", "journey", "rebuild"]):
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    flow_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id.in_(collection_ids),
+        KnowledgeNode.kind.in_([KnowledgeNodeKind.USER_FLOW, KnowledgeNodeKind.FLOW_STEP]),
+    )
+    flow_rows = (await db.execute(flow_stmt)).scalars().all()
+    if not flow_rows:
+        return
+    lines.append("## User Flows\n")
+    lines.append(
+        f"- User flows: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.USER_FLOW)}"
+    )
+    lines.append(
+        f"- Flow steps: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.FLOW_STEP)}"
+    )
+    lines.append("")
+
+
+async def _arch_section_rebuild(db, collection_ids, topic_lower, lines) -> None:
+    if "rebuild" not in topic_lower:
+        return
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    critical_kinds = {
+        KnowledgeNodeKind.INTERFACE_CONTRACT,
+        KnowledgeNodeKind.USER_FLOW,
+        KnowledgeNodeKind.FLOW_STEP,
+        KnowledgeNodeKind.TEST_CASE,
+        KnowledgeNodeKind.UI_ROUTE,
+    }
+    readiness_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id.in_(collection_ids),
+        KnowledgeNode.kind.in_(list(critical_kinds)),
+    )
+    inferred_critical = 0
+    for row in (await db.execute(readiness_stmt)).scalars().all():
+        prov = (row.meta or {}).get("provenance") or {}
+        if (
+            str(prov.get("mode") or "") == "inferred"
+            and float(prov.get("confidence") or 0.0) < 0.65
+        ):
+            inferred_critical += 1
+    lines.append("## Rebuild Readiness Signals\n")
+    lines.append(f"- Critical inferred-only nodes: {inferred_critical}")
+    lines.append("- Use `export_twin_view(format='twin_manifest')` for full handoff.")
+    lines.append("")
+
+
 @mcp.tool(name="research_architecture")
 async def research_architecture(
     topic: Annotated[
@@ -1440,7 +1648,6 @@ async def research_architecture(
     user_id = get_current_user_id()
 
     try:
-        from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
         from contextmine_core.search import get_accessible_collection_ids
 
         async with get_db_session() as db:
@@ -1453,178 +1660,16 @@ async def research_architecture(
                 return _ERR_NO_COLLECTIONS
 
             topic_lower = topic.lower()
-
             lines = [f"# Architecture: {topic}\n"]
 
-            # Topic-specific knowledge
-            if any(word in topic_lower for word in ["api", "endpoint", "rest", "http"]):
-                stmt = (
-                    select(KnowledgeNode)
-                    .where(
-                        KnowledgeNode.collection_id.in_(collection_ids),
-                        KnowledgeNode.kind == KnowledgeNodeKind.API_ENDPOINT,
-                    )
-                    .limit(20)
-                )
-                result = await db.execute(stmt)
-                endpoints = result.scalars().all()
-                if endpoints:
-                    lines.append(f"## API Endpoints ({len(endpoints)} total)\n")
-                    for ep in endpoints[:10]:
-                        meta = ep.meta or {}
-                        lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
-                    lines.append("")
-
-            if any(word in topic_lower for word in ["deploy", "job", "ci", "cd", "workflow"]):
-                stmt = (
-                    select(KnowledgeNode)
-                    .where(
-                        KnowledgeNode.collection_id.in_(collection_ids),
-                        KnowledgeNode.kind == KnowledgeNodeKind.JOB,
-                    )
-                    .limit(20)
-                )
-                result = await db.execute(stmt)
-                jobs = result.scalars().all()
-                if jobs:
-                    lines.append(f"## Jobs & Workflows ({len(jobs)} total)\n")
-                    for job in jobs[:10]:
-                        meta = job.meta or {}
-                        schedule = (
-                            f" (schedule: `{meta['schedule']}`)" if meta.get("schedule") else ""
-                        )
-                        lines.append(
-                            f"- **{job.name}** ({meta.get('job_type', 'unknown')}){schedule}"
-                        )
-                    lines.append("")
-
-            if any(word in topic_lower for word in ["database", "data", "table", "schema"]):
-                stmt = (
-                    select(KnowledgeNode)
-                    .where(
-                        KnowledgeNode.collection_id.in_(collection_ids),
-                        KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
-                    )
-                    .limit(20)
-                )
-                result = await db.execute(stmt)
-                tables = result.scalars().all()
-                if tables:
-                    lines.append(f"## Database Tables ({len(tables)} total)\n")
-                    for table in tables[:10]:
-                        meta = table.meta or {}
-                        lines.append(f"- **{table.name}**: {meta.get('column_count', '?')} columns")
-                    lines.append("")
-
-            if any(word in topic_lower for word in ["security", "auth", "permission", "access"]):
-                stmt = select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id.in_(collection_ids),
-                    KnowledgeNode.kind == KnowledgeNodeKind.BUSINESS_RULE,
-                )
-                result = await db.execute(stmt)
-                auth_rules = [
-                    r
-                    for r in result.scalars().all()
-                    if (r.meta or {}).get("category") in ("authorization", "authentication")
-                ]
-                if auth_rules:
-                    lines.append(f"## Security Rules ({len(auth_rules)} found)\n")
-                    for rule in auth_rules[:5]:
-                        meta = rule.meta or {}
-                        lines.append(f"### {rule.name}")
-                        if meta.get("natural_language"):
-                            lines.append(f"- {meta['natural_language']}")
-                        lines.append("")
-
-            if any(word in topic_lower for word in ["ui", "screen", "view", "route"]):
-                ui_stmt = select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id.in_(collection_ids),
-                    KnowledgeNode.kind.in_(
-                        [
-                            KnowledgeNodeKind.UI_ROUTE,
-                            KnowledgeNodeKind.UI_VIEW,
-                            KnowledgeNodeKind.UI_COMPONENT,
-                        ]
-                    ),
-                )
-                ui_rows = (await db.execute(ui_stmt)).scalars().all()
-                if ui_rows:
-                    by_kind: dict[str, int] = {}
-                    for row in ui_rows:
-                        key = row.kind.value
-                        by_kind[key] = by_kind.get(key, 0) + 1
-                    lines.append("## UI Topology\n")
-                    for key, count in sorted(by_kind.items()):
-                        lines.append(f"- **{key}**: {count}")
-                    lines.append("")
-
-            if any(word in topic_lower for word in ["test", "qa", "verification"]):
-                test_stmt = select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id.in_(collection_ids),
-                    KnowledgeNode.kind.in_(
-                        [
-                            KnowledgeNodeKind.TEST_SUITE,
-                            KnowledgeNodeKind.TEST_CASE,
-                            KnowledgeNodeKind.TEST_FIXTURE,
-                        ]
-                    ),
-                )
-                test_rows = (await db.execute(test_stmt)).scalars().all()
-                if test_rows:
-                    lines.append("## Test Semantics\n")
-                    lines.append(
-                        f"- Suites: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_SUITE)}"
-                    )
-                    lines.append(
-                        f"- Cases: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_CASE)}"
-                    )
-                    lines.append(
-                        f"- Fixtures: {sum(1 for row in test_rows if row.kind == KnowledgeNodeKind.TEST_FIXTURE)}"
-                    )
-                    lines.append("")
-
-            if any(word in topic_lower for word in ["flow", "journey", "rebuild"]):
-                flow_stmt = select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id.in_(collection_ids),
-                    KnowledgeNode.kind.in_(
-                        [KnowledgeNodeKind.USER_FLOW, KnowledgeNodeKind.FLOW_STEP]
-                    ),
-                )
-                flow_rows = (await db.execute(flow_stmt)).scalars().all()
-                if flow_rows:
-                    lines.append("## User Flows\n")
-                    lines.append(
-                        f"- User flows: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.USER_FLOW)}"
-                    )
-                    lines.append(
-                        f"- Flow steps: {sum(1 for row in flow_rows if row.kind == KnowledgeNodeKind.FLOW_STEP)}"
-                    )
-                    lines.append("")
-
-            if "rebuild" in topic_lower:
-                inferred_critical = 0
-                critical_kinds = {
-                    KnowledgeNodeKind.INTERFACE_CONTRACT,
-                    KnowledgeNodeKind.USER_FLOW,
-                    KnowledgeNodeKind.FLOW_STEP,
-                    KnowledgeNodeKind.TEST_CASE,
-                    KnowledgeNodeKind.UI_ROUTE,
-                }
-                readiness_stmt = select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id.in_(collection_ids),
-                    KnowledgeNode.kind.in_(list(critical_kinds)),
-                )
-                for row in (await db.execute(readiness_stmt)).scalars().all():
-                    prov = (row.meta or {}).get("provenance") or {}
-                    if (
-                        str(prov.get("mode") or "") == "inferred"
-                        and float(prov.get("confidence") or 0.0) < 0.65
-                    ):
-                        inferred_critical += 1
-                lines.append("## Rebuild Readiness Signals\n")
-                lines.append(f"- Critical inferred-only nodes: {inferred_critical}")
-                lines.append("- Use `export_twin_view(format='twin_manifest')` for full handoff.")
-                lines.append("")
+            await _arch_section_api(db, collection_ids, topic_lower, lines)
+            await _arch_section_deploy(db, collection_ids, topic_lower, lines)
+            await _arch_section_database(db, collection_ids, topic_lower, lines)
+            await _arch_section_security(db, collection_ids, topic_lower, lines)
+            await _arch_section_ui(db, collection_ids, topic_lower, lines)
+            await _arch_section_tests(db, collection_ids, topic_lower, lines)
+            await _arch_section_flows(db, collection_ids, topic_lower, lines)
+            await _arch_section_rebuild(db, collection_ids, topic_lower, lines)
 
             if len(lines) == 1:
                 lines.append(f"No specific architecture information found for topic: `{topic}`\n")
@@ -1715,6 +1760,174 @@ async def mcp_trace_path(
         return f"# Error\n\nFailed to trace path: {e}"
 
 
+def _apply_scope_filter(result_pack, scope: str):  # noqa: ANN001
+    """Filter GraphRAG result pack by twin scope."""
+    if scope == "all":
+        return result_pack
+    allowed_entities = [
+        entity for entity in result_pack.entities if _node_kind_in_scope(entity.kind, scope)
+    ]
+    allowed_ids = {str(entity.node_id) for entity in allowed_entities}
+    result_pack.entities = allowed_entities
+    result_pack.edges = [
+        edge
+        for edge in result_pack.edges
+        if edge.source_id in allowed_ids and edge.target_id in allowed_ids
+    ]
+    return result_pack
+
+
+def _rebuild_mode_lines(entities, scope: str) -> list[str]:
+    """Build rebuild-mode markdown sections from entities."""
+    by_kind: dict[str, int] = {}
+    for entity in entities:
+        by_kind[entity.kind] = by_kind.get(entity.kind, 0) + 1
+    return [
+        "\n## System Boundaries",
+        f"- Entities in scope: {len(entities)} (scope: {scope})",
+        "\n## Interfaces",
+        f"- API/contract entities: {sum(by_kind.get(k, 0) for k in ['api_endpoint', 'service_rpc', 'interface_contract'])}",
+        "\n## UI Screens",
+        f"- UI entities: {sum(by_kind.get(k, 0) for k in ['ui_route', 'ui_view', 'ui_component'])}",
+        "\n## User Flows",
+        f"- Flow entities: {sum(by_kind.get(k, 0) for k in ['user_flow', 'flow_step'])}",
+        "\n## Test Obligations",
+        f"- Test entities: {sum(by_kind.get(k, 0) for k in ['test_suite', 'test_case', 'test_fixture'])}",
+        "\n## Known Gaps",
+        "- Prefer `export_twin_view(format='twin_manifest')` for full rebuild handoff.",
+    ]
+
+
+def _rebuild_sections_json(kinds: list) -> dict:
+    """Build rebuild sections dict for JSON format."""
+    return {
+        "System Boundaries": {"entity_count": len(kinds)},
+        "Interfaces": {
+            "entity_count": sum(
+                1 for kind in kinds if kind in {"api_endpoint", "service_rpc", "interface_contract"}
+            )
+        },
+        "UI Screens": {
+            "entity_count": sum(
+                1 for kind in kinds if kind in {"ui_route", "ui_view", "ui_component"}
+            )
+        },
+        "User Flows": {
+            "entity_count": sum(1 for kind in kinds if kind in {"user_flow", "flow_step"})
+        },
+        "Test Obligations": {
+            "entity_count": sum(
+                1 for kind in kinds if kind in {"test_suite", "test_case", "test_fixture"}
+            )
+        },
+        "Known Gaps": ["Use twin_manifest export for end-to-end rebuild planning."],
+    }
+
+
+async def _graph_rag_answer(
+    *,
+    query: str,
+    collection_uuid: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    max_communities: int,
+    max_entities: int,
+    scope: str,
+    rebuild_mode: bool,
+) -> str:
+    """Full GraphRAG map-reduce answering branch."""
+    from contextmine_core import get_settings
+    from contextmine_core.graphrag import graph_rag_query
+    from contextmine_core.research.llm import get_llm_provider
+
+    settings = get_settings()
+    try:
+        llm_provider = get_llm_provider(settings.default_llm_provider)
+    except Exception:
+        return "# Error\n\nNo LLM provider configured. Set DEFAULT_LLM_PROVIDER env var."
+
+    async with get_db_session() as db:
+        result = await graph_rag_query(
+            session=db,
+            query=query,
+            llm_provider=llm_provider,
+            collection_id=collection_uuid,
+            user_id=user_id,
+            max_communities=min(max_communities, 10),
+            max_entities=min(max_entities, 50),
+        )
+        if result.context:
+            result.context = _apply_scope_filter(result.context, scope)
+
+        lines = [
+            f"# GraphRAG Answer: {query}\n",
+            result.final_answer,
+            "",
+            f"*Based on {result.communities_used} communities, {len(result.partial_answers)} relevant responses*",
+        ]
+
+        if result.context and result.context.citations:
+            lines.append("\n## Key Citations")
+            for cit in result.context.citations[:5]:
+                lines.append(f"- `{cit.format()}`")
+
+        if rebuild_mode and result.context:
+            lines.extend(_rebuild_mode_lines(result.context.entities, scope))
+
+        return "\n".join(lines)
+
+
+async def _graph_rag_context(
+    *,
+    query: str,
+    collection_uuid: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    max_communities: int,
+    max_entities: int,
+    max_depth: int,
+    scope: str,
+    format: str,
+    rebuild_mode: bool,
+) -> str:
+    """Context retrieval only (no LLM) branch."""
+    from contextmine_core.graphrag import graph_rag_context
+
+    async with get_db_session() as db:
+        result = await graph_rag_context(
+            session=db,
+            query=query,
+            collection_id=collection_uuid,
+            user_id=user_id,
+            max_communities=min(max_communities, 10),
+            max_entities=min(max_entities, 50),
+            max_depth=min(max_depth, 3),
+        )
+        result = _apply_scope_filter(result, scope)
+
+        if format.lower() == "json":
+            payload = result.to_dict()
+            if rebuild_mode:
+                kinds = [entity.get("kind") for entity in payload.get("entities", [])]
+                payload["rebuild_sections"] = _rebuild_sections_json(kinds)
+            return json.dumps(payload, indent=2)
+
+        md = result.to_markdown()
+        if (
+            not md.strip()
+            or md
+            == f"# GraphRAG Context: {query}\n\nFound 0 communities, 0 entities, 0 citations.\n"
+        ):
+            return f"# No Results\n\nNo relevant content found for: {query}"
+
+        if rebuild_mode:
+            md += (
+                "\n\n## Rebuild Mode\n"
+                f"- Scope: `{scope}`\n"
+                "- Add `format='json'` for machine-consumable rebuild sections.\n"
+            )
+
+        return md
+
+
 @mcp.tool(name="graph_rag")
 async def mcp_graph_rag(
     query: Annotated[str, "Natural language query"],
@@ -1750,165 +1963,30 @@ async def mcp_graph_rag(
         if scope not in {"code", "tests", "ui", "flows", "all"}:
             return "# Error\n\nInvalid twin_scope. Use code|tests|ui|flows|all."
 
-        def apply_scope_filter(result_pack):  # noqa: ANN001
-            if scope == "all":
-                return result_pack
-            allowed_entities = [
-                entity for entity in result_pack.entities if _node_kind_in_scope(entity.kind, scope)
-            ]
-            allowed_ids = {str(entity.node_id) for entity in allowed_entities}
-            result_pack.entities = allowed_entities
-            result_pack.edges = [
-                edge
-                for edge in result_pack.edges
-                if edge.source_id in allowed_ids and edge.target_id in allowed_ids
-            ]
-            return result_pack
-
         collection_uuid = uuid.UUID(collection_id) if collection_id else None
 
         if answer:
-            # Full GraphRAG map-reduce answering
-            from contextmine_core import get_settings
-            from contextmine_core.graphrag import graph_rag_query
-            from contextmine_core.research.llm import get_llm_provider
+            return await _graph_rag_answer(
+                query=query,
+                collection_uuid=collection_uuid,
+                user_id=user_id,
+                max_communities=max_communities,
+                max_entities=max_entities,
+                scope=scope,
+                rebuild_mode=rebuild_mode,
+            )
 
-            settings = get_settings()
-
-            async with get_db_session() as db:
-                # Get LLM provider for map-reduce
-                try:
-                    llm_provider = get_llm_provider(settings.default_llm_provider)
-                except Exception:
-                    return (
-                        "# Error\n\nNo LLM provider configured. Set DEFAULT_LLM_PROVIDER env var."
-                    )
-
-                result = await graph_rag_query(
-                    session=db,
-                    query=query,
-                    llm_provider=llm_provider,
-                    collection_id=collection_uuid,
-                    user_id=user_id,
-                    max_communities=min(max_communities, 10),
-                    max_entities=min(max_entities, 50),
-                )
-                if result.context:
-                    result.context = apply_scope_filter(result.context)
-
-                # Format response
-                lines = [
-                    f"# GraphRAG Answer: {query}\n",
-                    result.final_answer,
-                    "",
-                    f"*Based on {result.communities_used} communities, {len(result.partial_answers)} relevant responses*",
-                ]
-
-                if result.context and result.context.citations:
-                    lines.append("\n## Key Citations")
-                    for cit in result.context.citations[:5]:
-                        lines.append(f"- `{cit.format()}`")
-
-                if rebuild_mode and result.context:
-                    entities = result.context.entities
-                    by_kind: dict[str, int] = {}
-                    for entity in entities:
-                        by_kind[entity.kind] = by_kind.get(entity.kind, 0) + 1
-                    lines.append("\n## System Boundaries")
-                    lines.append(f"- Entities in scope: {len(entities)} (scope: {scope})")
-                    lines.append("\n## Interfaces")
-                    lines.append(
-                        f"- API/contract entities: {sum(by_kind.get(k, 0) for k in ['api_endpoint', 'service_rpc', 'interface_contract'])}"
-                    )
-                    lines.append("\n## UI Screens")
-                    lines.append(
-                        f"- UI entities: {sum(by_kind.get(k, 0) for k in ['ui_route', 'ui_view', 'ui_component'])}"
-                    )
-                    lines.append("\n## User Flows")
-                    lines.append(
-                        f"- Flow entities: {sum(by_kind.get(k, 0) for k in ['user_flow', 'flow_step'])}"
-                    )
-                    lines.append("\n## Test Obligations")
-                    lines.append(
-                        f"- Test entities: {sum(by_kind.get(k, 0) for k in ['test_suite', 'test_case', 'test_fixture'])}"
-                    )
-                    lines.append("\n## Known Gaps")
-                    lines.append(
-                        "- Prefer `export_twin_view(format='twin_manifest')` for full rebuild handoff."
-                    )
-
-                return "\n".join(lines)
-
-        else:
-            # Context retrieval only (no LLM)
-            from contextmine_core.graphrag import graph_rag_context
-
-            async with get_db_session() as db:
-                result = await graph_rag_context(
-                    session=db,
-                    query=query,
-                    collection_id=collection_uuid,
-                    user_id=user_id,
-                    max_communities=min(max_communities, 10),
-                    max_entities=min(max_entities, 50),
-                    max_depth=min(max_depth, 3),
-                )
-                result = apply_scope_filter(result)
-
-                if format.lower() == "json":
-                    payload = result.to_dict()
-                    if rebuild_mode:
-                        kinds = [entity.get("kind") for entity in payload.get("entities", [])]
-                        payload["rebuild_sections"] = {
-                            "System Boundaries": {"entity_count": len(payload.get("entities", []))},
-                            "Interfaces": {
-                                "entity_count": sum(
-                                    1
-                                    for kind in kinds
-                                    if kind in {"api_endpoint", "service_rpc", "interface_contract"}
-                                )
-                            },
-                            "UI Screens": {
-                                "entity_count": sum(
-                                    1
-                                    for kind in kinds
-                                    if kind in {"ui_route", "ui_view", "ui_component"}
-                                )
-                            },
-                            "User Flows": {
-                                "entity_count": sum(
-                                    1 for kind in kinds if kind in {"user_flow", "flow_step"}
-                                )
-                            },
-                            "Test Obligations": {
-                                "entity_count": sum(
-                                    1
-                                    for kind in kinds
-                                    if kind in {"test_suite", "test_case", "test_fixture"}
-                                )
-                            },
-                            "Known Gaps": [
-                                "Use twin_manifest export for end-to-end rebuild planning."
-                            ],
-                        }
-                    return json.dumps(payload, indent=2)
-
-                md = result.to_markdown()
-                if (
-                    not md.strip()
-                    or md
-                    == f"# GraphRAG Context: {query}\n\nFound 0 communities, 0 entities, 0 citations.\n"
-                ):
-                    return f"# No Results\n\nNo relevant content found for: {query}"
-
-                if rebuild_mode:
-                    md += (
-                        "\n\n## Rebuild Mode\n"
-                        f"- Scope: `{scope}`\n"
-                        "- Add `format='json'` for machine-consumable rebuild sections.\n"
-                    )
-
-                return md
+        return await _graph_rag_context(
+            query=query,
+            collection_uuid=collection_uuid,
+            user_id=user_id,
+            max_communities=max_communities,
+            max_entities=max_entities,
+            max_depth=max_depth,
+            scope=scope,
+            format=format,
+            rebuild_mode=rebuild_mode,
+        )
 
     except Exception as e:
         return f"# Error\n\nGraphRAG query failed: {e}"
@@ -2219,6 +2297,166 @@ async def mcp_refresh_twin(
         return f"# Error\n\nFailed to refresh twin: {e}"
 
 
+async def _resolve_arc42_scenario(db, collection, scenario_id, user_id):
+    """Resolve scenario for arc42 tool, returning (scenario, error_str)."""
+    from contextmine_core.models import TwinScenario
+    from contextmine_core.twin import get_or_create_as_is_scenario
+
+    if scenario_id:
+        scenario = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == uuid.UUID(scenario_id),
+                    TwinScenario.collection_id == collection.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not scenario:
+            return None, _ERR_SCENARIO_NOT_FOUND
+        return scenario, None
+
+    scenario = (
+        await db.execute(
+            select(TwinScenario)
+            .where(
+                TwinScenario.collection_id == collection.id,
+                TwinScenario.is_as_is.is_(True),
+            )
+            .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if scenario is None:
+        scenario = await get_or_create_as_is_scenario(db, collection.id, user_id=user_id)
+    return scenario, None
+
+
+async def _fetch_arc42_artifact(db, collection_id, scenario_id):
+    """Fetch existing arc42 artifact from DB."""
+    from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind
+
+    artifact_name = f"{scenario_id}.arc42.md"
+    return (
+        await db.execute(
+            select(KnowledgeArtifact).where(
+                KnowledgeArtifact.collection_id == collection_id,
+                KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                KnowledgeArtifact.name == artifact_name,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _arc42_cached_response(existing, collection, scenario, section_key) -> str:
+    """Build cached arc42 JSON response."""
+    from contextmine_core.architecture import SECTION_TITLES
+
+    meta = existing.meta or {}
+    sections = meta.get("sections", {})
+
+    base_payload = {
+        "collection_id": str(collection.id),
+        "scenario_id": str(scenario.id),
+        "section": section_key,
+        "cached": True,
+        "facts_hash": meta.get("facts_hash"),
+        "warnings": meta.get("warnings", []),
+    }
+
+    if section_key and isinstance(sections, dict):
+        filtered = {section_key: sections.get(section_key, "")}
+        markdown = (
+            f"# arc42 - {scenario.name}\n\n"
+            f"## {SECTION_TITLES.get(section_key, section_key)}\n"
+            f"{filtered[section_key]}\n"
+        )
+        base_payload["sections"] = filtered
+        base_payload["markdown"] = markdown
+        return json.dumps(base_payload, indent=2)
+
+    base_payload["sections"] = meta.get("sections", {})
+    base_payload["markdown"] = existing.content
+    return json.dumps(base_payload, indent=2)
+
+
+def _arc42_artifact_meta(scenario_id, full_doc, content_hash, sdk_meta) -> dict:
+    """Build artifact meta dict for arc42."""
+    return {
+        "scenario_id": str(scenario_id),
+        "generated_at": full_doc.generated_at.isoformat(),
+        "facts_hash": content_hash,
+        "confidence_summary": full_doc.confidence_summary,
+        "section_coverage": full_doc.section_coverage,
+        "warnings": full_doc.warnings,
+        "sections": full_doc.sections,
+        "generation_engine": "claude_agent_sdk",
+        "sdk": sdk_meta,
+    }
+
+
+async def _arc42_regenerate(db, collection, scenario, existing, section_key, settings) -> str:
+    """Regenerate arc42 artifact and persist it."""
+    from contextmine_core.architecture import SECTION_TITLES
+    from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind
+
+    _source, repo_path = await _resolve_arc42_repo_checkout(db, collection_id=collection.id)
+    try:
+        full_doc, sdk_meta = await generate_arc42_with_claude_sdk(
+            collection_id=collection.id,
+            scenario_id=scenario.id,
+            scenario_name=scenario.name,
+            repo_path=repo_path,
+            section=section_key,
+            model=settings.arch_docs_agent_sdk_model,
+            max_turns=int(settings.arch_docs_agent_sdk_max_turns),
+            permission_mode=settings.arch_docs_agent_sdk_permission_mode,
+        )
+    except ClaudeAgentSdkUnavailableError as exc:
+        return f"# Error\n\n{exc}"
+
+    if section_key:
+        selected_sections = {section_key: full_doc.sections.get(section_key, "")}
+        selected_markdown = (
+            f"# {full_doc.title}\n\n"
+            f"## {SECTION_TITLES.get(section_key, section_key)}\n"
+            f"{selected_sections.get(section_key, '')}\n"
+        )
+    else:
+        selected_sections = full_doc.sections
+        selected_markdown = full_doc.markdown
+
+    content_hash = _sha256_text(full_doc.markdown)
+    meta = _arc42_artifact_meta(scenario.id, full_doc, content_hash, sdk_meta)
+
+    if existing:
+        existing.content = full_doc.markdown
+        existing.meta = meta
+        artifact = existing
+    else:
+        artifact = KnowledgeArtifact(
+            collection_id=collection.id,
+            kind=KnowledgeArtifactKind.ARC42,
+            name=f"{scenario.id}.arc42.md",
+            content=full_doc.markdown,
+            meta=meta,
+        )
+        db.add(artifact)
+
+    await db.commit()
+    payload = {
+        "collection_id": str(collection.id),
+        "scenario_id": str(scenario.id),
+        "artifact_id": str(artifact.id),
+        "section": section_key,
+        "cached": False,
+        "facts_hash": content_hash,
+        "warnings": list(full_doc.warnings),
+        "sections": selected_sections,
+        "markdown": selected_markdown,
+    }
+    return json.dumps(payload, indent=2)
+
+
 @mcp.tool(name="get_arc42")
 async def mcp_get_arc42(
     collection_id: Annotated[str | None, "Optional collection UUID"] = None,
@@ -2228,9 +2466,7 @@ async def mcp_get_arc42(
 ) -> str:
     """Generate/read arc42 document for a collection scenario."""
     try:
-        from contextmine_core.architecture import SECTION_TITLES, normalize_arc42_section_key
-        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
-        from contextmine_core.twin import get_or_create_as_is_scenario
+        from contextmine_core.architecture import normalize_arc42_section_key
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
@@ -2252,78 +2488,14 @@ async def mcp_get_arc42(
             if collection is None:
                 return _ERR_COLLECTION_NOT_FOUND
 
-            if scenario_id:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario).where(
-                            TwinScenario.id == uuid.UUID(scenario_id),
-                            TwinScenario.collection_id == collection.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if not scenario:
-                    return _ERR_SCENARIO_NOT_FOUND
-            else:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario)
-                        .where(
-                            TwinScenario.collection_id == collection.id,
-                            TwinScenario.is_as_is.is_(True),
-                        )
-                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if scenario is None:
-                    scenario = await get_or_create_as_is_scenario(
-                        db, collection.id, user_id=user_id
-                    )
+            scenario, err = await _resolve_arc42_scenario(db, collection, scenario_id, user_id)
+            if err:
+                return err
 
-            artifact_name = f"{scenario.id}.arc42.md"
-            existing = (
-                await db.execute(
-                    select(KnowledgeArtifact).where(
-                        KnowledgeArtifact.collection_id == collection.id,
-                        KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
-                        KnowledgeArtifact.name == artifact_name,
-                    )
-                )
-            ).scalar_one_or_none()
+            existing = await _fetch_arc42_artifact(db, collection.id, scenario.id)
 
             if existing and not regenerate:
-                meta = existing.meta or {}
-                sections = meta.get("sections", {})
-                if section_key and isinstance(sections, dict):
-                    filtered = {section_key: sections.get(section_key, "")}
-                    markdown = (
-                        f"# arc42 - {scenario.name}\n\n"
-                        f"## {SECTION_TITLES.get(section_key, section_key)}\n"
-                        f"{filtered[section_key]}\n"
-                    )
-                    payload = {
-                        "collection_id": str(collection.id),
-                        "scenario_id": str(scenario.id),
-                        "section": section_key,
-                        "cached": True,
-                        "facts_hash": meta.get("facts_hash"),
-                        "warnings": meta.get("warnings", []),
-                        "sections": filtered,
-                        "markdown": markdown,
-                    }
-                    return json.dumps(payload, indent=2)
-
-                payload = {
-                    "collection_id": str(collection.id),
-                    "scenario_id": str(scenario.id),
-                    "section": section_key,
-                    "cached": True,
-                    "facts_hash": meta.get("facts_hash"),
-                    "warnings": meta.get("warnings", []),
-                    "sections": meta.get("sections", {}),
-                    "markdown": existing.content,
-                }
-                return json.dumps(payload, indent=2)
+                return _arc42_cached_response(existing, collection, scenario, section_key)
 
             if not regenerate:
                 return (
@@ -2332,81 +2504,14 @@ async def mcp_get_arc42(
                     "`regenerate=true`."
                 )
 
-            _source, repo_path = await _resolve_arc42_repo_checkout(db, collection_id=collection.id)
-            try:
-                full_doc, sdk_meta = await generate_arc42_with_claude_sdk(
-                    collection_id=collection.id,
-                    scenario_id=scenario.id,
-                    scenario_name=scenario.name,
-                    repo_path=repo_path,
-                    section=section_key,
-                    model=settings.arch_docs_agent_sdk_model,
-                    max_turns=int(settings.arch_docs_agent_sdk_max_turns),
-                    permission_mode=settings.arch_docs_agent_sdk_permission_mode,
-                )
-            except ClaudeAgentSdkUnavailableError as exc:
-                return f"# Error\n\n{exc}"
-
-            if section_key:
-                selected_sections = {section_key: full_doc.sections.get(section_key, "")}
-                selected_markdown = (
-                    f"# {full_doc.title}\n\n"
-                    f"## {SECTION_TITLES.get(section_key, section_key)}\n"
-                    f"{selected_sections.get(section_key, '')}\n"
-                )
-            else:
-                selected_sections = full_doc.sections
-                selected_markdown = full_doc.markdown
-
-            content_hash = _sha256_text(full_doc.markdown)
-
-            if existing:
-                existing.content = full_doc.markdown
-                existing.meta = {
-                    "scenario_id": str(scenario.id),
-                    "generated_at": full_doc.generated_at.isoformat(),
-                    "facts_hash": content_hash,
-                    "confidence_summary": full_doc.confidence_summary,
-                    "section_coverage": full_doc.section_coverage,
-                    "warnings": full_doc.warnings,
-                    "sections": full_doc.sections,
-                    "generation_engine": "claude_agent_sdk",
-                    "sdk": sdk_meta,
-                }
-                artifact = existing
-            else:
-                artifact = KnowledgeArtifact(
-                    collection_id=collection.id,
-                    kind=KnowledgeArtifactKind.ARC42,
-                    name=artifact_name,
-                    content=full_doc.markdown,
-                    meta={
-                        "scenario_id": str(scenario.id),
-                        "generated_at": full_doc.generated_at.isoformat(),
-                        "facts_hash": content_hash,
-                        "confidence_summary": full_doc.confidence_summary,
-                        "section_coverage": full_doc.section_coverage,
-                        "warnings": full_doc.warnings,
-                        "sections": full_doc.sections,
-                        "generation_engine": "claude_agent_sdk",
-                        "sdk": sdk_meta,
-                    },
-                )
-                db.add(artifact)
-
-            await db.commit()
-            payload = {
-                "collection_id": str(collection.id),
-                "scenario_id": str(scenario.id),
-                "artifact_id": str(artifact.id),
-                "section": section_key,
-                "cached": False,
-                "facts_hash": content_hash,
-                "warnings": list(full_doc.warnings),
-                "sections": selected_sections,
-                "markdown": selected_markdown,
-            }
-            return json.dumps(payload, indent=2)
+            return await _arc42_regenerate(
+                db,
+                collection,
+                scenario,
+                existing,
+                section_key,
+                settings,
+            )
     except Exception as e:
         return f"# Error\n\nFailed to get arc42: {e}"
 
@@ -3015,6 +3120,56 @@ async def mcp_export_sarif(
         return f"# Error\n\nFailed to export SARIF: {e}"
 
 
+async def _run_export(db, scenario, format_name: str):
+    """Run export for a given format, returning (content, kind, name) or error string."""
+    from contextmine_core.exports import (
+        export_codecharta_json,
+        export_cx2,
+        export_jgf,
+        export_lpg_jsonl,
+        export_mermaid_c4,
+        export_twin_manifest,
+    )
+    from contextmine_core.models import KnowledgeArtifactKind
+    from contextmine_core.twin import GraphProjection
+
+    dispatch = {
+        "lpg_jsonl": (export_lpg_jsonl, KnowledgeArtifactKind.LPG_JSONL, "lpg.jsonl"),
+        "cx2": (export_cx2, KnowledgeArtifactKind.CX2, "cx2.json"),
+        "jgf": (export_jgf, KnowledgeArtifactKind.JGF, "jgf.json"),
+        "twin_manifest": (
+            export_twin_manifest,
+            KnowledgeArtifactKind.TWIN_MANIFEST,
+            "twin_manifest.json",
+        ),
+    }
+
+    if format_name in dispatch:
+        export_fn, kind, suffix = dispatch[format_name]
+        content = await export_fn(db, scenario.id)
+        return content, kind, f"{scenario.name}.{suffix}"
+
+    if format_name == "cc_json":
+        content = await export_codecharta_json(
+            db,
+            scenario.id,
+            projection=GraphProjection.ARCHITECTURE,
+            entity_level="container",
+        )
+        return content, KnowledgeArtifactKind.CC_JSON, f"{scenario.name}.cc.json"
+
+    if format_name == "mermaid_c4":
+        content = await export_mermaid_c4(db, scenario.id)
+        kind = (
+            KnowledgeArtifactKind.MERMAID_C4_ASIS
+            if scenario.is_as_is
+            else KnowledgeArtifactKind.MERMAID_C4_TOBE
+        )
+        return content, kind, f"{scenario.name}.mmd"
+
+    return "# Error\n\nUnsupported export format."
+
+
 @mcp.tool(name="export_twin_view")
 async def mcp_export_twin_view(
     scenario_id: Annotated[str, "Scenario UUID"],
@@ -3022,16 +3177,7 @@ async def mcp_export_twin_view(
 ) -> str:
     """Generate and persist an export artifact for a scenario."""
     try:
-        from contextmine_core.exports import (
-            export_codecharta_json,
-            export_cx2,
-            export_jgf,
-            export_lpg_jsonl,
-            export_mermaid_c4,
-            export_twin_manifest,
-        )
-        from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
-        from contextmine_core.twin import GraphProjection
+        from contextmine_core.models import KnowledgeArtifact, TwinScenario
 
         scenario_uuid = uuid.UUID(scenario_id)
 
@@ -3042,41 +3188,10 @@ async def mcp_export_twin_view(
             if not scenario:
                 return _ERR_SCENARIO_NOT_FOUND_SHORT
 
-            if format == "lpg_jsonl":
-                content = await export_lpg_jsonl(db, scenario.id)
-                kind = KnowledgeArtifactKind.LPG_JSONL
-                name = f"{scenario.name}.lpg.jsonl"
-            elif format == "cc_json":
-                content = await export_codecharta_json(
-                    db,
-                    scenario.id,
-                    projection=GraphProjection.ARCHITECTURE,
-                    entity_level="container",
-                )
-                kind = KnowledgeArtifactKind.CC_JSON
-                name = f"{scenario.name}.cc.json"
-            elif format == "cx2":
-                content = await export_cx2(db, scenario.id)
-                kind = KnowledgeArtifactKind.CX2
-                name = f"{scenario.name}.cx2.json"
-            elif format == "jgf":
-                content = await export_jgf(db, scenario.id)
-                kind = KnowledgeArtifactKind.JGF
-                name = f"{scenario.name}.jgf.json"
-            elif format == "mermaid_c4":
-                content = await export_mermaid_c4(db, scenario.id)
-                kind = (
-                    KnowledgeArtifactKind.MERMAID_C4_ASIS
-                    if scenario.is_as_is
-                    else KnowledgeArtifactKind.MERMAID_C4_TOBE
-                )
-                name = f"{scenario.name}.mmd"
-            elif format == "twin_manifest":
-                content = await export_twin_manifest(db, scenario.id)
-                kind = KnowledgeArtifactKind.TWIN_MANIFEST
-                name = f"{scenario.name}.twin_manifest.json"
-            else:
-                return "# Error\n\nUnsupported export format."
+            result = await _run_export(db, scenario, format)
+            if isinstance(result, str):
+                return result
+            content, kind, name = result
 
             artifact = KnowledgeArtifact(
                 id=uuid.uuid4(),

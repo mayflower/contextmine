@@ -76,6 +76,15 @@ def _kind_allowed(
     return not (exclude_kinds and norm in exclude_kinds)
 
 
+def _resolve_projected_node_name(stat: dict[str, Any]) -> str:
+    """Resolve display name for a projected architecture node."""
+    if stat["kind"] == "container" and stat["container"]:
+        return str(stat["container"])
+    if stat["kind"] == "component" and stat["component"]:
+        return str(stat["component"])
+    return stat["domain"]
+
+
 def build_architecture_projection(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -142,11 +151,7 @@ def build_architecture_projection(
     ):
         node_id = f"arch:{level}:{idx}"
         key_to_node_id[key] = node_id
-        name = stat["domain"]
-        if stat["kind"] == "container" and stat["container"]:
-            name = str(stat["container"])
-        elif stat["kind"] == "component" and stat["component"]:
-            name = str(stat["component"])
+        name = _resolve_projected_node_name(stat)
 
         projected_nodes.append(
             ArchitectureProjectionNode(
@@ -413,6 +418,48 @@ def build_ui_map_projection(
     }
 
 
+_TEST_EDGE_KIND_TO_FIELD = {
+    "test_case_covers_symbol": "covers_symbols",
+    "test_case_validates_rule": "validates_rules",
+    "test_uses_fixture": "fixtures",
+    "test_case_verifies_flow": "verifies_flows",
+}
+
+
+def _classify_test_edge(
+    edge: dict[str, Any],
+    node_by_id: dict[str, dict[str, Any]],
+    rows: dict[str, dict[str, Any]],
+) -> None:
+    """Classify a test edge into the test matrix rows."""
+    src = str(edge.get("source_node_id"))
+    dst = str(edge.get("target_node_id"))
+    src_node = node_by_id.get(src) or {}
+    dst_node = node_by_id.get(dst) or {}
+    if str(src_node.get("kind")) != "test_case":
+        return
+    case_key = str(src_node.get("natural_key") or src)
+    row = rows.setdefault(
+        case_key,
+        {
+            "test_case_id": src,
+            "test_case_key": case_key,
+            "test_case_name": str(src_node.get("name") or ""),
+            "covers_symbols": [],
+            "validates_rules": [],
+            "fixtures": [],
+            "verifies_flows": [],
+            "evidence_ids": list(
+                ((src_node.get("meta") or {}).get("provenance") or {}).get("evidence_ids") or []
+            ),
+        },
+    )
+    target_name = str(dst_node.get("name") or "")
+    field = _TEST_EDGE_KIND_TO_FIELD.get(str(edge.get("kind") or ""))
+    if field:
+        row[field].append(target_name)
+
+
 def build_test_matrix_projection(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -433,38 +480,7 @@ def build_test_matrix_projection(
     node_by_id = {str(node.get("id")): node for node in test_nodes}
     rows: dict[str, dict[str, Any]] = {}
     for edge in test_edges:
-        src = str(edge.get("source_node_id"))
-        dst = str(edge.get("target_node_id"))
-        src_node = node_by_id.get(src) or {}
-        dst_node = node_by_id.get(dst) or {}
-        if str(src_node.get("kind")) != "test_case":
-            continue
-        case_key = str(src_node.get("natural_key") or src)
-        row = rows.setdefault(
-            case_key,
-            {
-                "test_case_id": src,
-                "test_case_key": case_key,
-                "test_case_name": str(src_node.get("name") or ""),
-                "covers_symbols": [],
-                "validates_rules": [],
-                "fixtures": [],
-                "verifies_flows": [],
-                "evidence_ids": list(
-                    ((src_node.get("meta") or {}).get("provenance") or {}).get("evidence_ids") or []
-                ),
-            },
-        )
-        target_name = str(dst_node.get("name") or "")
-        kind = str(edge.get("kind") or "")
-        if kind == "test_case_covers_symbol":
-            row["covers_symbols"].append(target_name)
-        elif kind == "test_case_validates_rule":
-            row["validates_rules"].append(target_name)
-        elif kind == "test_uses_fixture":
-            row["fixtures"].append(target_name)
-        elif kind == "test_case_verifies_flow":
-            row["verifies_flows"].append(target_name)
+        _classify_test_edge(edge, node_by_id, rows)
 
     matrix_rows = []
     for row in rows.values():
@@ -497,6 +513,38 @@ def build_test_matrix_projection(
     }
 
 
+def _classify_flow_edge(
+    edge: dict[str, Any],
+    node_by_id: dict[str, dict[str, Any]],
+    steps_by_flow: dict[str, list[dict[str, Any]]],
+    endpoint_by_step: dict[str, list[str]],
+    tests_by_flow: dict[str, list[str]],
+) -> None:
+    """Classify a single flow edge into steps, endpoints, or test links."""
+    src = str(edge.get("source_node_id"))
+    dst = str(edge.get("target_node_id"))
+    kind = str(edge.get("kind") or "")
+    src_node = node_by_id.get(src) or {}
+    dst_node = node_by_id.get(dst) or {}
+    if kind == "user_flow_has_step" and str(src_node.get("kind")) == "user_flow":
+        step_meta = dst_node.get("meta") or {}
+        steps_by_flow.setdefault(src, []).append(
+            {
+                "step_id": dst,
+                "name": str(dst_node.get("name") or ""),
+                "order": int(step_meta.get("order") or 0),
+                "endpoint_hints": list(step_meta.get("endpoint_hints") or []),
+                "evidence_ids": list((step_meta.get("provenance") or {}).get("evidence_ids") or []),
+            }
+        )
+    elif kind == "flow_step_calls_endpoint" and str(src_node.get("kind")) == "flow_step":
+        endpoint_by_step[src].append(
+            str(dst_node.get("name") or dst_node.get("natural_key") or dst)
+        )
+    elif kind == "test_case_verifies_flow" and str(dst_node.get("kind")) == "user_flow":
+        tests_by_flow[dst].append(str(src_node.get("name") or src_node.get("natural_key") or src))
+
+
 def build_user_flows_projection(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -519,32 +567,13 @@ def build_user_flows_projection(
     tests_by_flow: dict[str, list[str]] = defaultdict(list)
 
     for edge in flow_edges:
-        src = str(edge.get("source_node_id"))
-        dst = str(edge.get("target_node_id"))
-        kind = str(edge.get("kind") or "")
-        src_node = node_by_id.get(src) or {}
-        dst_node = node_by_id.get(dst) or {}
-        if kind == "user_flow_has_step" and str(src_node.get("kind")) == "user_flow":
-            step_meta = dst_node.get("meta") or {}
-            steps_by_flow.setdefault(src, []).append(
-                {
-                    "step_id": dst,
-                    "name": str(dst_node.get("name") or ""),
-                    "order": int(step_meta.get("order") or 0),
-                    "endpoint_hints": list(step_meta.get("endpoint_hints") or []),
-                    "evidence_ids": list(
-                        (step_meta.get("provenance") or {}).get("evidence_ids") or []
-                    ),
-                }
-            )
-        elif kind == "flow_step_calls_endpoint" and str(src_node.get("kind")) == "flow_step":
-            endpoint_by_step[src].append(
-                str(dst_node.get("name") or dst_node.get("natural_key") or dst)
-            )
-        elif kind == "test_case_verifies_flow" and str(dst_node.get("kind")) == "user_flow":
-            tests_by_flow[dst].append(
-                str(src_node.get("name") or src_node.get("natural_key") or src)
-            )
+        _classify_flow_edge(
+            edge,
+            node_by_id,
+            steps_by_flow,
+            endpoint_by_step,
+            tests_by_flow,
+        )
 
     flows_payload: list[dict[str, Any]] = []
     for node in flow_nodes:
@@ -585,6 +614,31 @@ def build_user_flows_projection(
     }
 
 
+def _collect_critical_inferred_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collect critical nodes that are inferred-only with low confidence."""
+    critical_kinds = {"interface_contract", "user_flow", "flow_step", "ui_route", "test_case"}
+    result: list[dict[str, Any]] = []
+    for node in nodes:
+        kind = str(node.get("kind") or "")
+        if kind not in critical_kinds:
+            continue
+        provenance = (node.get("meta") or {}).get("provenance") or {}
+        mode = str(provenance.get("mode") or "")
+        confidence = float(provenance.get("confidence") or 0.0)
+        if mode != "inferred" or confidence >= 0.65:
+            continue
+        result.append(
+            {
+                "node_id": str(node.get("id")),
+                "kind": kind,
+                "name": str(node.get("name") or ""),
+                "confidence": round(confidence, 4),
+                "evidence_ids": list(provenance.get("evidence_ids") or []),
+            }
+        )
+    return result
+
+
 def compute_rebuild_readiness(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -611,27 +665,16 @@ def compute_rebuild_readiness(
     flow_step_count = 0
     ui_routed_views: set[str] = set()
     views_with_endpoint_calls: set[str] = set()
-    critical_inferred_only: list[dict[str, Any]] = []
+    critical_inferred_only = _collect_critical_inferred_nodes(nodes)
 
-    critical_kinds = {"interface_contract", "user_flow", "flow_step", "ui_route", "test_case"}
-    for node in nodes:
-        kind = str(node.get("kind") or "")
-        if kind not in critical_kinds:
-            continue
-        provenance = (node.get("meta") or {}).get("provenance") or {}
-        mode = str(provenance.get("mode") or "")
-        confidence = float(provenance.get("confidence") or 0.0)
-        if mode == "inferred" and confidence < 0.65:
-            critical_inferred_only.append(
-                {
-                    "node_id": str(node.get("id")),
-                    "kind": kind,
-                    "name": str(node.get("name") or ""),
-                    "confidence": round(confidence, 4),
-                    "evidence_ids": list(provenance.get("evidence_ids") or []),
-                }
-            )
-
+    # Pre-compute flow-step endpoint targets for test_case_verifies_flow edges
+    _flow_endpoint_targets = {
+        str(fe.get("target_node_id"))
+        for fe in edges
+        if str(fe.get("kind") or "") == "flow_step_calls_endpoint"
+        and str(fe.get("source_node_id")) in flow_step_ids
+        and str((node_by_id.get(str(fe.get("source_node_id"))) or {}).get("kind")) == "flow_step"
+    }
     for edge in edges:
         kind = str(edge.get("kind") or "")
         src = str(edge.get("source_node_id"))
@@ -641,18 +684,7 @@ def compute_rebuild_readiness(
         if kind == "flow_step_calls_endpoint" and src in flow_step_ids and dst in endpoint_ids:
             tested_endpoints.add(dst)
         if kind == "test_case_verifies_flow" and src in test_case_ids and dst in flow_ids:
-            tested_endpoints.update(
-                {
-                    str(flow_edge.get("target_node_id"))
-                    for flow_edge in edges
-                    if str(flow_edge.get("kind") or "") == "flow_step_calls_endpoint"
-                    and str(flow_edge.get("source_node_id")) in flow_step_ids
-                    and str(
-                        (node_by_id.get(str(flow_edge.get("source_node_id"))) or {}).get("kind")
-                    )
-                    == "flow_step"
-                }
-            )
+            tested_endpoints.update(_flow_endpoint_targets)
         if kind == "ui_route_renders_view" and src in ui_route_ids:
             ui_routed_views.add(dst)
         if kind == "flow_step_calls_endpoint":

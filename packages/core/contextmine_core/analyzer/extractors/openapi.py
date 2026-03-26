@@ -153,52 +153,8 @@ def _parse_endpoint(
         handler_hints=_extract_handler_hints(operation),
     )
 
-    if is_swagger2:
-        parameters = operation.get("parameters", [])
-        if isinstance(parameters, list):
-            for param in parameters:
-                if not isinstance(param, dict):
-                    continue
-                if param.get("in") != "body":
-                    continue
-                schema = param.get("schema")
-                if isinstance(schema, dict) and "$ref" in schema:
-                    endpoint.request_body_ref = _extract_ref_name(schema["$ref"])
-                    break
-    else:
-        # Parse OpenAPI 3 request body
-        request_body = operation.get("requestBody", {})
-        if isinstance(request_body, dict):
-            content = request_body.get("content", {})
-            if isinstance(content, dict):
-                for _media_type, media_def in content.items():
-                    if isinstance(media_def, dict) and "schema" in media_def:
-                        schema = media_def["schema"]
-                        if isinstance(schema, dict) and "$ref" in schema:
-                            endpoint.request_body_ref = _extract_ref_name(schema["$ref"])
-                        break
-
-    # Parse responses
-    responses = operation.get("responses", {})
-    if isinstance(responses, dict):
-        for status, response in responses.items():
-            if not isinstance(response, dict):
-                continue
-            if is_swagger2:
-                schema = response.get("schema")
-                if isinstance(schema, dict) and "$ref" in schema:
-                    endpoint.response_refs[str(status)] = _extract_ref_name(schema["$ref"])
-                continue
-
-            content = response.get("content", {})
-            if not isinstance(content, dict):
-                continue
-            for _media_type, media_def in content.items():
-                if isinstance(media_def, dict) and "schema" in media_def:
-                    schema = media_def["schema"]
-                    if isinstance(schema, dict) and "$ref" in schema:
-                        endpoint.response_refs[str(status)] = _extract_ref_name(schema["$ref"])
-                    break
+    endpoint.request_body_ref = _parse_request_body_ref(operation, is_swagger2=is_swagger2)
+    endpoint.response_refs = _parse_response_refs(operation, is_swagger2=is_swagger2)
 
     # Parse parameters
     params = operation.get("parameters", [])
@@ -209,6 +165,77 @@ def _parse_endpoint(
     endpoint.security = security if isinstance(security, list) else []
 
     return endpoint
+
+
+def _parse_request_body_ref(operation: dict[str, Any], *, is_swagger2: bool) -> str | None:
+    """Extract request body schema ref from an operation."""
+    if is_swagger2:
+        return _parse_swagger2_body_ref(operation)
+    return _parse_openapi3_body_ref(operation)
+
+
+def _parse_swagger2_body_ref(operation: dict[str, Any]) -> str | None:
+    parameters = operation.get("parameters", [])
+    if not isinstance(parameters, list):
+        return None
+    for param in parameters:
+        if not isinstance(param, dict) or param.get("in") != "body":
+            continue
+        schema = param.get("schema")
+        if isinstance(schema, dict) and "$ref" in schema:
+            return _extract_ref_name(schema["$ref"])
+    return None
+
+
+def _parse_openapi3_body_ref(operation: dict[str, Any]) -> str | None:
+    request_body = operation.get("requestBody", {})
+    if not isinstance(request_body, dict):
+        return None
+    content = request_body.get("content", {})
+    if not isinstance(content, dict):
+        return None
+    for _media_type, media_def in content.items():
+        if not isinstance(media_def, dict) or "schema" not in media_def:
+            continue
+        schema = media_def["schema"]
+        if isinstance(schema, dict) and "$ref" in schema:
+            return _extract_ref_name(schema["$ref"])
+        break
+    return None
+
+
+def _parse_response_refs(operation: dict[str, Any], *, is_swagger2: bool) -> dict[str, str]:
+    """Extract response schema refs from an operation."""
+    refs: dict[str, str] = {}
+    responses = operation.get("responses", {})
+    if not isinstance(responses, dict):
+        return refs
+    for status, response in responses.items():
+        if not isinstance(response, dict):
+            continue
+        ref = _parse_single_response_ref(response, is_swagger2=is_swagger2)
+        if ref:
+            refs[str(status)] = ref
+    return refs
+
+
+def _parse_single_response_ref(response: dict[str, Any], *, is_swagger2: bool) -> str | None:
+    if is_swagger2:
+        schema = response.get("schema")
+        if isinstance(schema, dict) and "$ref" in schema:
+            return _extract_ref_name(schema["$ref"])
+        return None
+    content = response.get("content", {})
+    if not isinstance(content, dict):
+        return None
+    for _media_type, media_def in content.items():
+        if not isinstance(media_def, dict) or "schema" not in media_def:
+            continue
+        schema = media_def["schema"]
+        if isinstance(schema, dict) and "$ref" in schema:
+            return _extract_ref_name(schema["$ref"])
+        break
+    return None
 
 
 def _extract_handler_hints(operation: dict[str, Any]) -> list[str]:

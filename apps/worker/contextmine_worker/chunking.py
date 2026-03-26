@@ -78,6 +78,38 @@ def extract_code_blocks(text: str) -> list[tuple[int, int, str]]:
     return blocks
 
 
+def _append_code_block(current_chunk: str, block: str, chunk_size: int) -> tuple[str, str | None]:
+    """Append a code block to the current chunk, flushing if needed.
+
+    Returns:
+        (new_current_chunk, flushed_chunk_or_None)
+    """
+    if current_chunk and len(current_chunk) + len(block) > chunk_size:
+        flushed = current_chunk.strip() or None
+        return block, flushed
+    return current_chunk + block, None
+
+
+def _merge_text_sub_chunks(
+    chunks: list[str],
+    current_chunk: str,
+    sub_chunks: list[str],
+    chunk_size: int,
+) -> str:
+    """Merge text sub-chunks into the running chunk list.
+
+    Returns the updated current_chunk.
+    """
+    for i, sub_chunk in enumerate(sub_chunks):
+        if i == 0 and current_chunk and len(current_chunk) + len(sub_chunk) <= chunk_size:
+            current_chunk += sub_chunk
+            continue
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        current_chunk = sub_chunk
+    return current_chunk
+
+
 def split_markdown_preserving_code_fences(
     text: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -127,34 +159,14 @@ def split_markdown_preserving_code_fences(
 
     for content, is_code_block in segments:
         if is_code_block:
-            # Code blocks are never split
-            # Check if adding it to current chunk exceeds limit
-            if current_chunk and len(current_chunk) + len(content) > chunk_size:
-                # Flush current chunk
-                if current_chunk.strip():
-                    chunks.append(current_chunk.strip())
-                current_chunk = content
-            else:
-                current_chunk += content
+            current_chunk, flushed = _append_code_block(current_chunk, content, chunk_size)
+            if flushed:
+                chunks.append(flushed)
         else:
-            # Split text segment
             if not content.strip():
                 continue
-
             sub_chunks = text_splitter.split_text(content)
-            for i, sub_chunk in enumerate(sub_chunks):
-                if i == 0 and current_chunk:
-                    # Try to append to current chunk
-                    if len(current_chunk) + len(sub_chunk) <= chunk_size:
-                        current_chunk += sub_chunk
-                    else:
-                        if current_chunk.strip():
-                            chunks.append(current_chunk.strip())
-                        current_chunk = sub_chunk
-                else:
-                    if current_chunk.strip():
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sub_chunk
+            current_chunk = _merge_text_sub_chunks(chunks, current_chunk, sub_chunks, chunk_size)
 
     # Flush remaining
     if current_chunk.strip():
@@ -248,6 +260,89 @@ def chunk_document(
     return results
 
 
+def _chunk_symbol(
+    results: list[ChunkResult],
+    symbol: object,
+    symbol_content: str,
+    file_path: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_index: int,
+) -> int:
+    """Chunk a single symbol, appending results. Returns updated chunk_index."""
+    base_meta = {
+        "file_path": file_path,
+        "symbol_name": symbol.name,  # type: ignore[attr-defined]
+        "symbol_kind": symbol.kind.value,  # type: ignore[attr-defined]
+        "start_line": symbol.start_line,  # type: ignore[attr-defined]
+        "end_line": symbol.end_line,  # type: ignore[attr-defined]
+    }
+    if len(symbol_content) <= chunk_size:
+        chunk_hash = compute_chunk_hash(symbol_content)
+        results.append(
+            ChunkResult(
+                content=symbol_content,
+                chunk_index=chunk_index,
+                chunk_hash=chunk_hash,
+                meta=base_meta,
+            )
+        )
+        return chunk_index + 1
+
+    sub_chunks = split_code_file(symbol_content, file_path, chunk_size, chunk_overlap)
+    for i, sub_chunk in enumerate(sub_chunks):
+        if not sub_chunk.strip():
+            continue
+        chunk_hash = compute_chunk_hash(sub_chunk)
+        results.append(
+            ChunkResult(
+                content=sub_chunk,
+                chunk_index=chunk_index,
+                chunk_hash=chunk_hash,
+                meta={**base_meta, "sub_chunk": i},
+            )
+        )
+        chunk_index += 1
+    return chunk_index
+
+
+def _collect_uncovered_text(content: str, covered_lines: set[int]) -> str:
+    """Return text from lines not covered by any symbol."""
+    lines = content.split("\n")
+    uncovered = [line for i, line in enumerate(lines, 1) if i not in covered_lines]
+    return "\n".join(uncovered).strip()
+
+
+def _chunk_uncovered(
+    results: list[ChunkResult],
+    uncovered_text: str,
+    file_path: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_index: int,
+) -> int:
+    """Chunk uncovered (module-level) content. Returns updated chunk_index."""
+    uncovered_chunks = split_code_file(uncovered_text, file_path, chunk_size, chunk_overlap)
+    for uc in uncovered_chunks:
+        if not uc.strip():
+            continue
+        chunk_hash = compute_chunk_hash(uc)
+        results.append(
+            ChunkResult(
+                content=uc,
+                chunk_index=chunk_index,
+                chunk_hash=chunk_hash,
+                meta={
+                    "file_path": file_path,
+                    "symbol_name": "__module__",
+                    "symbol_kind": "module",
+                },
+            )
+        )
+        chunk_index += 1
+    return chunk_index
+
+
 def symbol_aware_chunk_document(
     content: str,
     file_path: str,
@@ -290,87 +385,32 @@ def symbol_aware_chunk_document(
         symbols.sort(key=lambda s: s.start_line)
 
         for symbol in symbols:
-            # Get symbol content
             symbol_content = get_symbol_content(symbol, content)
-
             if not symbol_content.strip():
                 continue
-
-            # Track which lines are covered by symbols
             for line in range(symbol.start_line, symbol.end_line + 1):
                 covered_lines.add(line)
-
-            if len(symbol_content) <= chunk_size:
-                # Symbol fits in one chunk
-                chunk_hash = compute_chunk_hash(symbol_content)
-                results.append(
-                    ChunkResult(
-                        content=symbol_content,
-                        chunk_index=chunk_index,
-                        chunk_hash=chunk_hash,
-                        meta={
-                            "file_path": file_path,
-                            "symbol_name": symbol.name,
-                            "symbol_kind": symbol.kind.value,
-                            "start_line": symbol.start_line,
-                            "end_line": symbol.end_line,
-                        },
-                    )
-                )
-                chunk_index += 1
-            else:
-                # Symbol too large, split it
-                sub_chunks = split_code_file(symbol_content, file_path, chunk_size, chunk_overlap)
-                for i, sub_chunk in enumerate(sub_chunks):
-                    if sub_chunk.strip():
-                        chunk_hash = compute_chunk_hash(sub_chunk)
-                        results.append(
-                            ChunkResult(
-                                content=sub_chunk,
-                                chunk_index=chunk_index,
-                                chunk_hash=chunk_hash,
-                                meta={
-                                    "file_path": file_path,
-                                    "symbol_name": symbol.name,
-                                    "symbol_kind": symbol.kind.value,
-                                    "start_line": symbol.start_line,
-                                    "end_line": symbol.end_line,
-                                    "sub_chunk": i,
-                                },
-                            )
-                        )
-                        chunk_index += 1
+            chunk_index = _chunk_symbol(
+                results,
+                symbol,
+                symbol_content,
+                file_path,
+                chunk_size,
+                chunk_overlap,
+                chunk_index,
+            )
 
         # Handle any content not covered by symbols (imports, module-level code)
-        lines = content.split("\n")
-        uncovered_content = []
-        for i, line in enumerate(lines, 1):
-            if i not in covered_lines:
-                uncovered_content.append(line)
-
-        if uncovered_content:
-            uncovered_text = "\n".join(uncovered_content).strip()
-            if uncovered_text:
-                # Chunk the uncovered content
-                uncovered_chunks = split_code_file(
-                    uncovered_text, file_path, chunk_size, chunk_overlap
-                )
-                for uc in uncovered_chunks:
-                    if uc.strip():
-                        chunk_hash = compute_chunk_hash(uc)
-                        results.append(
-                            ChunkResult(
-                                content=uc,
-                                chunk_index=chunk_index,
-                                chunk_hash=chunk_hash,
-                                meta={
-                                    "file_path": file_path,
-                                    "symbol_name": "__module__",
-                                    "symbol_kind": "module",
-                                },
-                            )
-                        )
-                        chunk_index += 1
+        uncovered_text = _collect_uncovered_text(content, covered_lines)
+        if uncovered_text:
+            chunk_index = _chunk_uncovered(
+                results,
+                uncovered_text,
+                file_path,
+                chunk_size,
+                chunk_overlap,
+                chunk_index,
+            )
 
         return results
 

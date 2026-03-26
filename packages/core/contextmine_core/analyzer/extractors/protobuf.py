@@ -248,11 +248,11 @@ def _parse_service(content: str, service_node: object) -> ProtoServiceDef | None
     return service
 
 
-def _parse_rpc(content: str, rpc_node: Any) -> ProtoRPCDef | None:
-    name = node_text(content, first_child(first_child(rpc_node, "rpc_name"), "identifier")).strip()
-    if not name:
-        return None
-
+def _parse_rpc_types(
+    content: str,
+    rpc_node: Any,
+) -> tuple[str, bool, str, bool]:
+    """Parse request/response types from an RPC node."""
     request_type = ""
     response_type = ""
     request_stream = False
@@ -263,27 +263,59 @@ def _parse_rpc(content: str, rpc_node: Any) -> ProtoRPCDef | None:
         if stage == "seek_request":
             if child.type == "(":
                 stage = "request"
-            continue
-        if stage == "request":
-            if child.type == "stream":
-                request_stream = True
-            elif child.type == "message_or_enum_type":
-                request_type = node_text(content, child).strip()
-            elif child.type == ")":
-                stage = "seek_response"
-            continue
-        if stage == "seek_response":
+        elif stage == "request":
+            request_type, request_stream, stage = _advance_rpc_type_group(
+                content,
+                child,
+                request_type,
+                request_stream,
+                stage,
+                "seek_response",
+            )
+        elif stage == "seek_response":
             if child.type == "(":
                 stage = "response"
-            continue
-        if stage == "response":
-            if child.type == "stream":
-                response_stream = True
-            elif child.type == "message_or_enum_type":
-                response_type = node_text(content, child).strip()
-            elif child.type == ")":
+        elif stage == "response":
+            response_type, response_stream, stage = _advance_rpc_type_group(
+                content,
+                child,
+                response_type,
+                response_stream,
+                stage,
+                "done",
+            )
+            if stage == "done":
                 break
+    return request_type, request_stream, response_type, response_stream
 
+
+def _advance_rpc_type_group(
+    content: str,
+    child: Any,
+    current_type: str,
+    is_stream: bool,
+    current_stage: str,
+    next_stage: str,
+) -> tuple[str, bool, str]:
+    """Advance parsing of a single type group (request or response)."""
+    if child.type == "stream":
+        return current_type, True, current_stage
+    if child.type == "message_or_enum_type":
+        return node_text(content, child).strip(), is_stream, current_stage
+    if child.type == ")":
+        return current_type, is_stream, next_stage
+    return current_type, is_stream, current_stage
+
+
+def _parse_rpc(content: str, rpc_node: Any) -> ProtoRPCDef | None:
+    name = node_text(content, first_child(first_child(rpc_node, "rpc_name"), "identifier")).strip()
+    if not name:
+        return None
+
+    request_type, request_stream, response_type, response_stream = _parse_rpc_types(
+        content,
+        rpc_node,
+    )
     if not request_type or not response_type:
         return None
     return ProtoRPCDef(

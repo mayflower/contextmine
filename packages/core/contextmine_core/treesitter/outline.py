@@ -335,6 +335,53 @@ def _extract_with_traversal(
     return [s for s in symbols if s.parent is None]
 
 
+_JS_TS_SYMBOL_TYPES: dict[str, SymbolKind] = {
+    "function_declaration": SymbolKind.FUNCTION,
+    "class_declaration": SymbolKind.CLASS,
+    "method_definition": SymbolKind.METHOD,
+    "interface_declaration": SymbolKind.INTERFACE,
+    "type_alias_declaration": SymbolKind.TYPE,
+}
+
+_GENERIC_SYMBOL_TYPES: dict[str, SymbolKind] = {
+    "function_definition": SymbolKind.FUNCTION,
+    "function_declaration": SymbolKind.FUNCTION,
+    "class_definition": SymbolKind.CLASS,
+    "class_declaration": SymbolKind.CLASS,
+    "method_definition": SymbolKind.METHOD,
+    "method_declaration": SymbolKind.METHOD,
+}
+
+_SYMBOL_TYPES_BY_LANGUAGE: dict[TreeSitterLanguage, dict[str, SymbolKind]] = {
+    TreeSitterLanguage.PYTHON: {
+        "function_definition": SymbolKind.FUNCTION,
+        "class_definition": SymbolKind.CLASS,
+        "decorated_definition": SymbolKind.FUNCTION,
+    },
+    TreeSitterLanguage.TYPESCRIPT: _JS_TS_SYMBOL_TYPES,
+    TreeSitterLanguage.TSX: _JS_TS_SYMBOL_TYPES,
+    TreeSitterLanguage.JAVASCRIPT: _JS_TS_SYMBOL_TYPES,
+    TreeSitterLanguage.RUST: {
+        "function_item": SymbolKind.FUNCTION,
+        "struct_item": SymbolKind.STRUCT,
+        "enum_item": SymbolKind.ENUM,
+        "impl_item": SymbolKind.IMPL,
+        "trait_item": SymbolKind.TRAIT,
+    },
+    TreeSitterLanguage.GO: {
+        "function_declaration": SymbolKind.FUNCTION,
+        "method_declaration": SymbolKind.METHOD,
+        "type_declaration": SymbolKind.TYPE,
+    },
+    TreeSitterLanguage.JAVA: {
+        "method_declaration": SymbolKind.METHOD,
+        "class_declaration": SymbolKind.CLASS,
+        "interface_declaration": SymbolKind.INTERFACE,
+        "enum_declaration": SymbolKind.ENUM,
+    },
+}
+
+
 def _get_symbol_node_types(language: TreeSitterLanguage) -> dict[str, SymbolKind]:
     """Get node types that represent symbols for a language.
 
@@ -344,55 +391,7 @@ def _get_symbol_node_types(language: TreeSitterLanguage) -> dict[str, SymbolKind
     Returns:
         Mapping of node type to SymbolKind
     """
-    if language == TreeSitterLanguage.PYTHON:
-        return {
-            "function_definition": SymbolKind.FUNCTION,
-            "class_definition": SymbolKind.CLASS,
-            "decorated_definition": SymbolKind.FUNCTION,  # Will be refined
-        }
-    elif language in (
-        TreeSitterLanguage.TYPESCRIPT,
-        TreeSitterLanguage.TSX,
-        TreeSitterLanguage.JAVASCRIPT,
-    ):
-        return {
-            "function_declaration": SymbolKind.FUNCTION,
-            "class_declaration": SymbolKind.CLASS,
-            "method_definition": SymbolKind.METHOD,
-            "interface_declaration": SymbolKind.INTERFACE,
-            "type_alias_declaration": SymbolKind.TYPE,
-        }
-    elif language == TreeSitterLanguage.RUST:
-        return {
-            "function_item": SymbolKind.FUNCTION,
-            "struct_item": SymbolKind.STRUCT,
-            "enum_item": SymbolKind.ENUM,
-            "impl_item": SymbolKind.IMPL,
-            "trait_item": SymbolKind.TRAIT,
-        }
-    elif language == TreeSitterLanguage.GO:
-        return {
-            "function_declaration": SymbolKind.FUNCTION,
-            "method_declaration": SymbolKind.METHOD,
-            "type_declaration": SymbolKind.TYPE,
-        }
-    elif language == TreeSitterLanguage.JAVA:
-        return {
-            "method_declaration": SymbolKind.METHOD,
-            "class_declaration": SymbolKind.CLASS,
-            "interface_declaration": SymbolKind.INTERFACE,
-            "enum_declaration": SymbolKind.ENUM,
-        }
-    else:
-        # Generic fallback
-        return {
-            "function_definition": SymbolKind.FUNCTION,
-            "function_declaration": SymbolKind.FUNCTION,
-            "class_definition": SymbolKind.CLASS,
-            "class_declaration": SymbolKind.CLASS,
-            "method_definition": SymbolKind.METHOD,
-            "method_declaration": SymbolKind.METHOD,
-        }
+    return _SYMBOL_TYPES_BY_LANGUAGE.get(language, _GENERIC_SYMBOL_TYPES)
 
 
 def _extract_name_from_node(node: Any, language: TreeSitterLanguage) -> str | None:

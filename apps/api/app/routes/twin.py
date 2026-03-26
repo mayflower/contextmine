@@ -3297,6 +3297,102 @@ def _assign_orphan_columns(
             columns_by_table[maybe_table.id].append(column)
 
 
+async def _assemble_erm_payload(
+    db,
+    *,
+    collection_uuid: uuid.UUID,
+    table_nodes: list,
+    column_nodes: list,
+    include_mermaid: bool,
+) -> dict[str, Any]:
+    """Assemble the ERM view payload from DB nodes and edges."""
+    table_by_id = {node.id: node for node in table_nodes}
+    table_by_name = {str(node.name).strip(): node for node in table_nodes}
+    column_by_id = {node.id: node for node in column_nodes}
+
+    edges = (
+        (
+            await db.execute(
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_uuid,
+                    KnowledgeEdge.kind.in_(
+                        [KnowledgeEdgeKind.TABLE_HAS_COLUMN, KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN]
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    columns_by_table, fk_rows = _process_erm_edges(edges, table_by_id, column_by_id)
+    _assign_orphan_columns(column_nodes, table_by_name, columns_by_table)
+
+    serialized_tables: list[dict[str, Any]] = []
+    total_columns = 0
+    for table in sorted(table_nodes, key=lambda row: str(row.name).lower()):
+        serialized_columns = sorted(
+            [_serialize_erm_column(col) for col in columns_by_table.get(table.id, [])],
+            key=lambda row: str(row.get("name") or "").lower(),
+        )
+        total_columns += len(serialized_columns)
+        serialized_tables.append(_serialize_erm_table(table, serialized_columns))
+
+    fk_rows = sorted(
+        fk_rows,
+        key=lambda row: (
+            str(row.get("source_table") or ""),
+            str(row.get("source_column") or ""),
+            str(row.get("target_table") or ""),
+            str(row.get("target_column") or ""),
+        ),
+    )
+
+    mermaid_payload = await _load_mermaid_erd(db, collection_uuid) if include_mermaid else None
+
+    warnings: list[str] = []
+    if not serialized_tables:
+        warnings.append("No DB_TABLE nodes found; ERM extraction may be incomplete.")
+    if include_mermaid and mermaid_payload is None:
+        warnings.append("No MERMAID_ERD artifact found; showing relational fallback only.")
+
+    return {
+        "summary": {
+            "tables": len(serialized_tables),
+            "columns": total_columns,
+            "foreign_keys": len(fk_rows),
+            "has_mermaid": mermaid_payload is not None,
+        },
+        "tables": serialized_tables,
+        "foreign_keys": fk_rows,
+        "mermaid": mermaid_payload,
+        "warnings": warnings,
+    }
+
+
+async def _load_mermaid_erd(db, collection_uuid: uuid.UUID) -> dict[str, Any] | None:
+    """Load the latest MERMAID_ERD artifact for a collection."""
+    erd_artifact = (
+        await db.execute(
+            select(KnowledgeArtifact)
+            .where(
+                KnowledgeArtifact.collection_id == collection_uuid,
+                KnowledgeArtifact.kind == KnowledgeArtifactKind.MERMAID_ERD,
+            )
+            .order_by(KnowledgeArtifact.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not erd_artifact:
+        return None
+    return {
+        "artifact_id": str(erd_artifact.id),
+        "name": erd_artifact.name,
+        "content": erd_artifact.content,
+        "meta": erd_artifact.meta or {},
+    }
+
+
 @router.get(
     "/collections/{collection_id}/views/erm",
     responses={
@@ -3349,91 +3445,18 @@ async def erm_view(
             .all()
         )
 
-        table_by_id = {node.id: node for node in table_nodes}
-        table_by_name = {str(node.name).strip(): node for node in table_nodes}
-        column_by_id = {node.id: node for node in column_nodes}
-
-        edges = (
-            (
-                await db.execute(
-                    select(KnowledgeEdge).where(
-                        KnowledgeEdge.collection_id == collection_uuid,
-                        KnowledgeEdge.kind.in_(
-                            [
-                                KnowledgeEdgeKind.TABLE_HAS_COLUMN,
-                                KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN,
-                            ]
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        erm_result = await _assemble_erm_payload(
+            db,
+            collection_uuid=collection_uuid,
+            table_nodes=table_nodes,
+            column_nodes=column_nodes,
+            include_mermaid=include_mermaid,
         )
-
-        columns_by_table, fk_rows = _process_erm_edges(edges, table_by_id, column_by_id)
-        _assign_orphan_columns(column_nodes, table_by_name, columns_by_table)
-
-        serialized_tables: list[dict[str, Any]] = []
-        total_columns = 0
-        for table in sorted(table_nodes, key=lambda row: str(row.name).lower()):
-            serialized_columns = sorted(
-                [_serialize_erm_column(col) for col in columns_by_table.get(table.id, [])],
-                key=lambda row: str(row.get("name") or "").lower(),
-            )
-            total_columns += len(serialized_columns)
-            serialized_tables.append(_serialize_erm_table(table, serialized_columns))
-
-        fk_rows = sorted(
-            fk_rows,
-            key=lambda row: (
-                str(row.get("source_table") or ""),
-                str(row.get("source_column") or ""),
-                str(row.get("target_table") or ""),
-                str(row.get("target_column") or ""),
-            ),
-        )
-
-        mermaid_payload: dict[str, Any] | None = None
-        if include_mermaid:
-            erd_artifact = (
-                await db.execute(
-                    select(KnowledgeArtifact)
-                    .where(
-                        KnowledgeArtifact.collection_id == collection_uuid,
-                        KnowledgeArtifact.kind == KnowledgeArtifactKind.MERMAID_ERD,
-                    )
-                    .order_by(KnowledgeArtifact.created_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if erd_artifact:
-                mermaid_payload = {
-                    "artifact_id": str(erd_artifact.id),
-                    "name": erd_artifact.name,
-                    "content": erd_artifact.content,
-                    "meta": erd_artifact.meta or {},
-                }
-
-        warnings: list[str] = []
-        if not serialized_tables:
-            warnings.append("No DB_TABLE nodes found; ERM extraction may be incomplete.")
-        if include_mermaid and mermaid_payload is None:
-            warnings.append("No MERMAID_ERD artifact found; showing relational fallback only.")
 
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
-            "summary": {
-                "tables": len(serialized_tables),
-                "columns": total_columns,
-                "foreign_keys": len(fk_rows),
-                "has_mermaid": mermaid_payload is not None,
-            },
-            "tables": serialized_tables,
-            "foreign_keys": fk_rows,
-            "mermaid": mermaid_payload,
-            "warnings": warnings,
+            **erm_result,
         }
 
 
@@ -3490,6 +3513,69 @@ async def topology_view(
         }
 
 
+async def _build_callgraph_page(
+    db,
+    scenario,
+    layer_enum,
+    projection_enum,
+    *,
+    entity_level,
+    include_kinds,
+    exclude_kinds,
+    edge_kinds,
+    page: int,
+    limit: int,
+) -> dict:
+    """Build a paginated callgraph view sorted by node degree."""
+    full_graph = await get_full_scenario_graph(
+        db,
+        scenario.id,
+        layer_enum,
+        projection=projection_enum,
+        entity_level=entity_level or "symbol",
+        include_kinds=_parse_kind_filter(include_kinds),
+        exclude_kinds=_parse_kind_filter(exclude_kinds),
+        include_edge_kinds=edge_kinds,
+    )
+    all_edges = list(full_graph["edges"])
+    connected_node_ids = {str(edge.get("source_node_id")) for edge in all_edges} | {
+        str(edge.get("target_node_id")) for edge in all_edges
+    }
+    connected_nodes = [
+        node for node in full_graph["nodes"] if str(node.get("id")) in connected_node_ids
+    ]
+    degree_by_node_id: dict[str, int] = defaultdict(int)
+    for edge in all_edges:
+        degree_by_node_id[str(edge.get("source_node_id"))] += 1
+        degree_by_node_id[str(edge.get("target_node_id"))] += 1
+    connected_nodes.sort(
+        key=lambda node: (
+            -degree_by_node_id.get(str(node.get("id")), 0),
+            str(node.get("natural_key") or node.get("id")),
+        )
+    )
+    start = page * limit
+    page_nodes = connected_nodes[start : start + limit]
+    page_ids = {str(node.get("id")) for node in page_nodes}
+    page_edges = [
+        edge
+        for edge in all_edges
+        if str(edge.get("source_node_id")) in page_ids
+        and str(edge.get("target_node_id")) in page_ids
+    ]
+    return {
+        "nodes": page_nodes,
+        "edges": page_edges,
+        "page": page,
+        "limit": limit,
+        "total_nodes": len(connected_nodes),
+        "projection": full_graph["projection"],
+        "entity_level": full_graph["entity_level"],
+        "grouping_strategy": full_graph["grouping_strategy"],
+        "excluded_kinds": full_graph["excluded_kinds"],
+    }
+
+
 @router.get(
     "/collections/{collection_id}/views/deep-dive",
     responses={
@@ -3538,54 +3624,18 @@ async def deep_dive_view(
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
         if mode == "symbol_callgraph":
-            full_graph = await get_full_scenario_graph(
+            graph = await _build_callgraph_page(
                 db,
-                scenario.id,
+                scenario,
                 layer_enum,
-                projection=projection_enum,
-                entity_level=entity_level or "symbol",
-                include_kinds=_parse_kind_filter(include_kinds),
-                exclude_kinds=_parse_kind_filter(exclude_kinds),
-                include_edge_kinds=edge_kinds,
+                projection_enum,
+                entity_level=entity_level,
+                include_kinds=include_kinds,
+                exclude_kinds=exclude_kinds,
+                edge_kinds=edge_kinds,
+                page=page,
+                limit=limit,
             )
-            all_edges = list(full_graph["edges"])
-            connected_node_ids = {str(edge.get("source_node_id")) for edge in all_edges} | {
-                str(edge.get("target_node_id")) for edge in all_edges
-            }
-            connected_nodes = [
-                node for node in full_graph["nodes"] if str(node.get("id")) in connected_node_ids
-            ]
-            degree_by_node_id: dict[str, int] = defaultdict(int)
-            for edge in all_edges:
-                degree_by_node_id[str(edge.get("source_node_id"))] += 1
-                degree_by_node_id[str(edge.get("target_node_id"))] += 1
-            connected_nodes.sort(
-                key=lambda node: (
-                    -degree_by_node_id.get(str(node.get("id")), 0),
-                    str(node.get("natural_key") or node.get("id")),
-                )
-            )
-            start = page * limit
-            end = start + limit
-            page_nodes = connected_nodes[start:end]
-            page_ids = {str(node.get("id")) for node in page_nodes}
-            page_edges = [
-                edge
-                for edge in all_edges
-                if str(edge.get("source_node_id")) in page_ids
-                and str(edge.get("target_node_id")) in page_ids
-            ]
-            graph = {
-                "nodes": page_nodes,
-                "edges": page_edges,
-                "page": page,
-                "limit": limit,
-                "total_nodes": len(connected_nodes),
-                "projection": full_graph["projection"],
-                "entity_level": full_graph["entity_level"],
-                "grouping_strategy": full_graph["grouping_strategy"],
-                "excluded_kinds": full_graph["excluded_kinds"],
-            }
         else:
             graph = await get_scenario_graph(
                 db,
@@ -3801,6 +3851,16 @@ async def user_flows_view(
         }
 
 
+def _collect_evidence_handles(critical_items: list[dict]) -> list[dict[str, Any]]:
+    """Extract evidence handles from critical inferred-only items."""
+    handles: list[dict[str, Any]] = []
+    for item in critical_items:
+        node_id = item.get("node_id")
+        for evidence_id in item.get("evidence_ids") or []:
+            handles.append({"kind": "evidence", "ref": str(evidence_id), "node_id": node_id})
+    return handles
+
+
 @router.get(
     "/collections/{collection_id}/views/rebuild-readiness",
     responses={
@@ -3833,16 +3893,7 @@ async def rebuild_readiness_view(
             collection_id=collection_uuid,
             scenario_id=scenario_uuid,
         )
-        evidence_handles: list[dict[str, Any]] = []
-        for item in readiness.get("critical_inferred_only") or []:
-            for evidence_id in item.get("evidence_ids") or []:
-                evidence_handles.append(
-                    {
-                        "kind": "evidence",
-                        "ref": str(evidence_id),
-                        "node_id": item.get("node_id"),
-                    }
-                )
+        evidence_handles = _collect_evidence_handles(readiness.get("critical_inferred_only") or [])
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -3860,6 +3911,64 @@ async def rebuild_readiness_view(
             "scip_failed_projects": status.get("scip_failed_projects") or [],
             "metrics_gate": status.get("metrics_gate") or {},
         }
+
+
+async def _load_graphrag_edges(
+    db,
+    *,
+    collection_uuid: uuid.UUID,
+    page_node_ids: set[uuid.UUID],
+    include_edge_kinds: set[KnowledgeEdgeKind] | None,
+    edge_kinds_requested: bool,
+    total_nodes: int,
+) -> tuple[list[KnowledgeEdge], list[str]]:
+    """Load edges for graphrag view with recovery fallback."""
+    warnings: list[str] = []
+    if not page_node_ids:
+        return [], warnings
+
+    edge_query = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id == collection_uuid,
+        KnowledgeEdge.source_node_id.in_(page_node_ids),
+        KnowledgeEdge.target_node_id.in_(page_node_ids),
+    )
+    if include_edge_kinds:
+        edge_query = edge_query.where(KnowledgeEdge.kind.in_(include_edge_kinds))
+    edges = (await db.execute(edge_query.order_by(KnowledgeEdge.kind))).scalars().all()
+
+    if edges or total_nodes == 0 or edge_kinds_requested:
+        return edges, warnings
+
+    recovery_edge_kinds = set(include_edge_kinds or set()) | GRAPHRAG_RECOVERY_EDGE_KINDS
+    recovered_edge_query = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id == collection_uuid,
+        KnowledgeEdge.source_node_id.in_(page_node_ids),
+        KnowledgeEdge.target_node_id.in_(page_node_ids),
+        KnowledgeEdge.kind.in_(recovery_edge_kinds),
+    )
+    edges = (await db.execute(recovered_edge_query.order_by(KnowledgeEdge.kind))).scalars().all()
+    if edges:
+        warnings.append(
+            "Graph recovered by widening edge scope to architecture/UI/flow/code links."
+        )
+    return edges, warnings
+
+
+def _graphrag_status(
+    total_nodes: int,
+    page_node_ids: set,
+    edges: list,
+    warnings: list[str],
+) -> dict[str, str]:
+    """Compute graphrag view status."""
+    if total_nodes == 0:
+        return {"status": "unavailable", "reason": "no_graphrag_semantic_graph"}
+    if page_node_ids and not edges:
+        warnings.append(
+            "Selected page has no connected edges. Try another page or include explicit edge_kinds."
+        )
+        return {"status": "ready", "reason": "degraded_no_edges"}
+    return {"status": "ready", "reason": "ok"}
 
 
 @router.get(
@@ -3961,43 +4070,16 @@ async def graphrag_view(
         )
         page_node_ids = {node.id for node in paged_nodes}
 
-        edges: list[KnowledgeEdge] = []
-        warnings: list[str] = []
-        if page_node_ids:
-            edge_query = select(KnowledgeEdge).where(
-                KnowledgeEdge.collection_id == collection_uuid,
-                KnowledgeEdge.source_node_id.in_(page_node_ids),
-                KnowledgeEdge.target_node_id.in_(page_node_ids),
-            )
-            if include_edge_kinds:
-                edge_query = edge_query.where(KnowledgeEdge.kind.in_(include_edge_kinds))
-            edges = (await db.execute(edge_query.order_by(KnowledgeEdge.kind))).scalars().all()
-            if not edges and total_nodes > 0 and not edge_kinds_requested:
-                recovery_edge_kinds = set(include_edge_kinds) | GRAPHRAG_RECOVERY_EDGE_KINDS
-                recovered_edge_query = select(KnowledgeEdge).where(
-                    KnowledgeEdge.collection_id == collection_uuid,
-                    KnowledgeEdge.source_node_id.in_(page_node_ids),
-                    KnowledgeEdge.target_node_id.in_(page_node_ids),
-                    KnowledgeEdge.kind.in_(recovery_edge_kinds),
-                )
-                edges = (
-                    (await db.execute(recovered_edge_query.order_by(KnowledgeEdge.kind)))
-                    .scalars()
-                    .all()
-                )
-                if edges:
-                    warnings.append(
-                        "Graph recovered by widening edge scope to architecture/UI/flow/code links."
-                    )
+        edges, warnings = await _load_graphrag_edges(
+            db,
+            collection_uuid=collection_uuid,
+            page_node_ids=page_node_ids,
+            include_edge_kinds=include_edge_kinds,
+            edge_kinds_requested=edge_kinds_requested,
+            total_nodes=total_nodes,
+        )
 
-        status = {"status": "ready", "reason": "ok"}
-        if total_nodes == 0:
-            status = {"status": "unavailable", "reason": "no_graphrag_semantic_graph"}
-        elif page_node_ids and not edges:
-            status = {"status": "ready", "reason": "degraded_no_edges"}
-            warnings.append(
-                "Selected page has no connected edges. Try another page or include explicit edge_kinds."
-            )
+        status = _graphrag_status(total_nodes, page_node_ids, edges, warnings)
 
         return {
             "collection_id": str(collection_uuid),

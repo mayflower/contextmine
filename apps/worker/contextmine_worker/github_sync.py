@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
+from typing import Any
 
 from git import Repo
 from git.exc import GitCommandError
@@ -369,6 +370,52 @@ def get_changed_files(
     return changed, deleted
 
 
+def _compute_since_dt(since_days: int | None) -> datetime | None:
+    """Compute the cutoff datetime for a rolling window."""
+    if since_days and int(since_days) > 0:
+        return datetime.now(UTC) - timedelta(days=int(since_days))
+    return None
+
+
+def _get_commit_iterator(repo: Repo, since_dt: datetime | None) -> Any:
+    """Return a commit iterator, falling back when since filtering fails."""
+    if since_dt is not None:
+        try:
+            return repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat())
+        except Exception:  # noqa: BLE001
+            pass
+    return repo.iter_commits("HEAD", no_merges=True)
+
+
+def _commit_in_window(commit: object, since_dt: datetime | None) -> bool:
+    """Check whether a commit falls within the time window."""
+    if since_dt is None:
+        return True
+    commit_dt = commit.authored_datetime  # type: ignore[attr-defined]
+    if commit_dt.tzinfo is None:
+        commit_dt = commit_dt.replace(tzinfo=UTC)
+    else:
+        commit_dt = commit_dt.astimezone(UTC)
+    return commit_dt >= since_dt
+
+
+def _accumulate_commit_metrics(
+    files: dict,
+    metrics: dict[str, dict[str, int]],
+) -> None:
+    """Accumulate per-file change metrics from a single commit."""
+    for file_path, file_stats in files.items():
+        if file_path not in metrics:
+            continue
+        insertions = int(file_stats.get("insertions", 0) or 0)
+        deletions = int(file_stats.get("deletions", 0) or 0)
+        entry = metrics[file_path]
+        entry["change_frequency"] += 1
+        entry["insertions"] += insertions
+        entry["deletions"] += deletions
+        entry["churn"] += insertions + deletions
+
+
 def compute_git_change_metrics(
     repo: Repo,
     target_files: set[str],
@@ -410,39 +457,13 @@ def compute_git_change_metrics(
         return metrics
 
     try:
-        commit_iter = None
-        since_dt: datetime | None = None
-        if since_days and int(since_days) > 0:
-            since_dt = datetime.now(UTC) - timedelta(days=int(since_days))
-            try:
-                commit_iter = repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat())
-            except Exception:  # noqa: BLE001
-                commit_iter = None
-        if commit_iter is None:
-            commit_iter = repo.iter_commits("HEAD", no_merges=True)
+        since_dt = _compute_since_dt(since_days)
+        commit_iter = _get_commit_iterator(repo, since_dt)
 
         for commit in commit_iter:
-            if since_dt is not None:
-                commit_dt = commit.authored_datetime
-                if commit_dt.tzinfo is None:
-                    commit_dt = commit_dt.replace(tzinfo=UTC)
-                else:
-                    commit_dt = commit_dt.astimezone(UTC)
-                if commit_dt < since_dt:
-                    continue
-            files = commit.stats.files or {}
-            for file_path, file_stats in files.items():
-                if file_path not in metrics:
-                    continue
-
-                insertions = int(file_stats.get("insertions", 0) or 0)
-                deletions = int(file_stats.get("deletions", 0) or 0)
-
-                entry = metrics[file_path]
-                entry["change_frequency"] += 1
-                entry["insertions"] += insertions
-                entry["deletions"] += deletions
-                entry["churn"] += insertions + deletions
+            if not _commit_in_window(commit, since_dt):
+                continue
+            _accumulate_commit_metrics(commit.stats.files or {}, metrics)
     except Exception:
         logger.warning("Failed to compute git change metrics; defaulting to zeros", exc_info=True)
         return {
@@ -620,6 +641,112 @@ def compute_git_evolution_snapshots(
         except Exception:  # noqa: BLE001
             return []
 
+    def _accumulate_ownership(
+        path: str,
+        additions: int,
+        deletions: int,
+        author_key: str,
+        author_label: str,
+        commit_dt: datetime,
+    ) -> None:
+        """Accumulate ownership and change stats for a single file touch."""
+        file_change_counts[path] += 1
+        key = (path, author_key)
+        current = ownership_acc.get(key)
+        if current is None:
+            current = {
+                "node_natural_key": f"file:{path}",
+                "author_key": author_key,
+                "author_label": author_label,
+                "additions": 0,
+                "deletions": 0,
+                "touches": 0,
+                "last_touched_at": commit_dt,
+                "window_days": int(window_days),
+            }
+            ownership_acc[key] = current
+        current["additions"] = int(current["additions"]) + additions
+        current["deletions"] = int(current["deletions"]) + deletions
+        current["touches"] = int(current["touches"]) + 1
+        last = current.get("last_touched_at")
+        if isinstance(last, datetime) and commit_dt > last:
+            current["last_touched_at"] = commit_dt
+        file_to_container[path] = _entity_for(path, "container")
+
+    def _accumulate_pairings(
+        touched: list[str],
+        file_stats_by_path: dict[str, object],
+    ) -> None:
+        """Accumulate file, container, and component co-change pairs."""
+        nonlocal pairing_truncated_commits
+        pairing_paths, pairing_truncated = _limit_paths_for_pairing(
+            touched,
+            file_stats_by_path=file_stats_by_path,
+        )
+        if pairing_truncated:
+            pairing_truncated_commits += 1
+        for source, target in combinations(pairing_paths, 2):
+            file_pair_counts[tuple(sorted((source, target)))] += 1
+
+        pairing_set = set(pairing_paths)
+        container_entities = sorted(
+            {v for v in (_entity_for(p, "container") for p in pairing_set) if v}
+        )
+        component_entities = sorted(
+            {v for v in (_entity_for(p, "component") for p in pairing_set) if v}
+        )
+        for container in container_entities:
+            container_change_counts[container] += 1
+        for component in component_entities:
+            component_change_counts[component] += 1
+        for source, target in combinations(container_entities, 2):
+            container_pair_counts[tuple(sorted((source, target)))] += 1
+        for source, target in combinations(component_entities, 2):
+            component_pair_counts[tuple(sorted((source, target)))] += 1
+
+    def _process_fast_path_commit(commit: _GitCommitTouch) -> None:
+        """Process a single _GitCommitTouch from the numstat fast path."""
+        nonlocal commits_scanned
+        touched = sorted(commit.files.keys())
+        if not touched:
+            return
+        commits_scanned += 1
+        commit_dt = _canonical_utc(commit.authored_at)
+        author_label = (commit.author_name or commit.author_email or "unknown").strip() or "unknown"
+        ak = _author_key(commit.author_name or "", commit.author_email or "")
+        for path in set(touched):
+            ins, dels = commit.files.get(path, (0, 0))
+            _accumulate_ownership(path, int(ins or 0), int(dels or 0), ak, author_label, commit_dt)
+        _accumulate_pairings(touched, dict(commit.files.items()))
+
+    def _process_slow_path_commit(commit: object) -> None:
+        """Process a single GitPython commit object."""
+        nonlocal commits_scanned
+        files = commit.stats.files or {}  # type: ignore[attr-defined]
+        touched = sorted(path for path in files if path in target_files)
+        if not touched:
+            return
+        commits_scanned += 1
+        commit_dt = _canonical_utc(commit.authored_datetime)  # type: ignore[attr-defined]
+        author_label = (
+            commit.author.name or commit.author.email or "unknown"  # type: ignore[attr-defined]
+        ).strip() or "unknown"
+        ak = _author_key(
+            commit.author.name or "",  # type: ignore[attr-defined]
+            commit.author.email or "",  # type: ignore[attr-defined]
+        )
+        for path in set(touched):
+            stats = files.get(path) or {}
+            _accumulate_ownership(
+                path,
+                int(stats.get("insertions", 0) or 0),
+                int(stats.get("deletions", 0) or 0),
+                ak,
+                author_label,
+                commit_dt,
+            )
+        _accumulate_pairings(touched, dict(files.items()))
+
     try:
         fast_path = _load_git_numstat_commits(repo, target_files, since_days=window_days)
         if fast_path is not None:
@@ -628,173 +755,12 @@ def compute_git_evolution_snapshots(
                 warnings.append("git_since_filter_fallback_used")
             commits_considered = len(window_commits)
             for commit in window_commits:
-                touched = sorted(commit.files.keys())
-                if not touched:
-                    continue
-
-                commits_scanned += 1
-                commit_dt = _canonical_utc(commit.authored_at)
-                author_label = (commit.author_name or commit.author_email or "unknown").strip()
-                if not author_label:
-                    author_label = "unknown"
-                author_key = _author_key(commit.author_name or "", commit.author_email or "")
-
-                touched_set = set(touched)
-                for path in touched_set:
-                    file_change_counts[path] += 1
-                    insertions, deletions = commit.files.get(path, (0, 0))
-                    additions = int(insertions or 0)
-                    deletions = int(deletions or 0)
-                    key = (path, author_key)
-                    current = ownership_acc.get(key)
-                    if current is None:
-                        current = {
-                            "node_natural_key": f"file:{path}",
-                            "author_key": author_key,
-                            "author_label": author_label,
-                            "additions": 0,
-                            "deletions": 0,
-                            "touches": 0,
-                            "last_touched_at": commit_dt,
-                            "window_days": int(window_days),
-                        }
-                        ownership_acc[key] = current
-
-                    current["additions"] = int(current["additions"]) + additions
-                    current["deletions"] = int(current["deletions"]) + deletions
-                    current["touches"] = int(current["touches"]) + 1
-                    last = current.get("last_touched_at")
-                    if isinstance(last, datetime) and commit_dt > last:
-                        current["last_touched_at"] = commit_dt
-
-                    container_key = _entity_for(path, "container")
-                    if container_key:
-                        file_to_container[path] = container_key
-                    else:
-                        file_to_container[path] = None
-
-                pairing_paths, pairing_truncated = _limit_paths_for_pairing(
-                    touched,
-                    file_stats_by_path=dict(commit.files.items()),
-                )
-                if pairing_truncated:
-                    pairing_truncated_commits += 1
-
-                for source, target in combinations(pairing_paths, 2):
-                    pair = tuple(sorted((source, target)))
-                    file_pair_counts[pair] += 1
-
-                pairing_set = set(pairing_paths)
-                container_entities = sorted(
-                    {
-                        value
-                        for value in (_entity_for(path, "container") for path in pairing_set)
-                        if value
-                    }
-                )
-                component_entities = sorted(
-                    {
-                        value
-                        for value in (_entity_for(path, "component") for path in pairing_set)
-                        if value
-                    }
-                )
-
-                for container in container_entities:
-                    container_change_counts[container] += 1
-                for component in component_entities:
-                    component_change_counts[component] += 1
-
-                for source, target in combinations(container_entities, 2):
-                    container_pair_counts[tuple(sorted((source, target)))] += 1
-                for source, target in combinations(component_entities, 2):
-                    component_pair_counts[tuple(sorted((source, target)))] += 1
+                _process_fast_path_commit(commit)
         else:
             window_commits = _iter_window_commits()
             commits_considered = len(window_commits)
             for commit in window_commits:
-                files = commit.stats.files or {}
-                touched = sorted(path for path in files if path in target_files)
-                if not touched:
-                    continue
-
-                commits_scanned += 1
-                commit_dt = _canonical_utc(commit.authored_datetime)
-                author_label = (
-                    commit.author.name or commit.author.email or "unknown"
-                ).strip() or "unknown"
-                author_key = _author_key(commit.author.name or "", commit.author.email or "")
-
-                touched_set = set(touched)
-                for path in touched_set:
-                    file_change_counts[path] += 1
-                    stats = files.get(path) or {}
-                    additions = int(stats.get("insertions", 0) or 0)
-                    deletions = int(stats.get("deletions", 0) or 0)
-                    key = (path, author_key)
-                    current = ownership_acc.get(key)
-                    if current is None:
-                        current = {
-                            "node_natural_key": f"file:{path}",
-                            "author_key": author_key,
-                            "author_label": author_label,
-                            "additions": 0,
-                            "deletions": 0,
-                            "touches": 0,
-                            "last_touched_at": commit_dt,
-                            "window_days": int(window_days),
-                        }
-                        ownership_acc[key] = current
-
-                    current["additions"] = int(current["additions"]) + additions
-                    current["deletions"] = int(current["deletions"]) + deletions
-                    current["touches"] = int(current["touches"]) + 1
-                    last = current.get("last_touched_at")
-                    if isinstance(last, datetime) and commit_dt > last:
-                        current["last_touched_at"] = commit_dt
-
-                    container_key = _entity_for(path, "container")
-                    if container_key:
-                        file_to_container[path] = container_key
-                    else:
-                        file_to_container[path] = None
-
-                pairing_paths, pairing_truncated = _limit_paths_for_pairing(
-                    touched,
-                    file_stats_by_path=dict(files.items()),
-                )
-                if pairing_truncated:
-                    pairing_truncated_commits += 1
-
-                for source, target in combinations(pairing_paths, 2):
-                    pair = tuple(sorted((source, target)))
-                    file_pair_counts[pair] += 1
-
-                pairing_set = set(pairing_paths)
-                container_entities = sorted(
-                    {
-                        value
-                        for value in (_entity_for(path, "container") for path in pairing_set)
-                        if value
-                    }
-                )
-                component_entities = sorted(
-                    {
-                        value
-                        for value in (_entity_for(path, "component") for path in pairing_set)
-                        if value
-                    }
-                )
-
-                for container in container_entities:
-                    container_change_counts[container] += 1
-                for component in component_entities:
-                    component_change_counts[component] += 1
-
-                for source, target in combinations(container_entities, 2):
-                    container_pair_counts[tuple(sorted((source, target)))] += 1
-                for source, target in combinations(component_entities, 2):
-                    component_pair_counts[tuple(sorted((source, target)))] += 1
+                _process_slow_path_commit(commit)
     except Exception:
         logger.warning("Failed to compute git evolution snapshots", exc_info=True)
         return {

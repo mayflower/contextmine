@@ -254,6 +254,186 @@ async def invalidate_analysis_cache_for_scenario(
     return int(rowcount or 0)
 
 
+async def _build_source_status_row(
+    session: AsyncSession,
+    source: Source,
+    collection_id: UUID,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build a single source status row for the twin status payload."""
+    latest = (
+        await session.execute(
+            select(TwinSourceVersion)
+            .where(TwinSourceVersion.source_id == source.id)
+            .order_by(TwinSourceVersion.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    status = latest.status if latest else "queued"
+    revision_key = latest.revision_key if latest else None
+    finished_at = latest.finished_at if latest else None
+    started_at = latest.started_at if latest else None
+    lag_seconds: int | None = None
+    if finished_at:
+        lag_seconds = int((now - finished_at).total_seconds())
+    elif started_at:
+        lag_seconds = int((now - started_at).total_seconds())
+
+    last_error_event = (
+        await session.execute(
+            select(TwinEvent)
+            .where(
+                TwinEvent.collection_id == collection_id,
+                TwinEvent.source_id == source.id,
+                TwinEvent.status == "failed",
+            )
+            .order_by(TwinEvent.event_ts.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return {
+        "row": {
+            "source_id": str(source.id),
+            "revision_key": revision_key,
+            "status": status,
+            "lag_seconds": lag_seconds,
+            "last_error": last_error_event.error if last_error_event else None,
+            "source_version_id": str(latest.id) if latest else None,
+        },
+        "status": status,
+        "finished_at": finished_at,
+        "latest": latest,
+    }
+
+
+def _accumulate_behavioral_stats(
+    latest_stats: dict[str, Any],
+    behavioral_status_values: list[str],
+    deep_warnings: list[str],
+) -> None:
+    """Accumulate behavioral layer stats from a source version."""
+    behavioral_status = str(latest_stats.get("behavioral_layers_status") or "").strip()
+    if behavioral_status:
+        behavioral_status_values.append(behavioral_status)
+    warnings = latest_stats.get("deep_warnings")
+    if isinstance(warnings, list):
+        deep_warnings.extend(str(item) for item in warnings if str(item).strip())
+
+
+def _parse_behavioral_ts(
+    latest_stats: dict[str, Any],
+    current_max: datetime | None,
+) -> datetime | None:
+    """Parse and update behavioral materialized_at timestamp."""
+    behavioral_ts_raw = latest_stats.get("last_behavioral_materialized_at")
+    if not isinstance(behavioral_ts_raw, str) or not behavioral_ts_raw.strip():
+        return current_max
+    try:
+        parsed = datetime.fromisoformat(behavioral_ts_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return current_max
+    if current_max is None or parsed > current_max:
+        return parsed
+    return current_max
+
+
+def _accumulate_scip_stats(
+    latest_stats: dict[str, Any],
+    scip_projects_by_language: dict[str, int],
+    scip_failed_projects: list[dict[str, Any]],
+) -> None:
+    """Accumulate SCIP project stats from a source version."""
+    projects_by_language = latest_stats.get("scip_projects_by_language")
+    if isinstance(projects_by_language, dict):
+        for language, count in projects_by_language.items():
+            normalized_language = str(language).strip().lower()
+            if not normalized_language:
+                continue
+            try:
+                scip_projects_by_language[normalized_language] += int(count or 0)
+            except (TypeError, ValueError):
+                continue
+    failed_projects = latest_stats.get("scip_failed_projects")
+    if isinstance(failed_projects, list):
+        for failed in failed_projects[:100]:
+            if isinstance(failed, dict):
+                scip_failed_projects.append(dict(failed))
+
+
+def _accumulate_metrics_stats(
+    latest_stats: dict[str, Any],
+    metrics_requested_files: int,
+    metrics_mapped_files: int,
+    metrics_gate_failed: bool,
+    metrics_unmapped_sample: set[str],
+) -> tuple[int, int, bool]:
+    """Accumulate metrics gate stats; returns updated counters."""
+    requested = int(latest_stats.get("metrics_requested_files", 0) or 0)
+    mapped = int(latest_stats.get("metrics_mapped_files", 0) or 0)
+    metrics_requested_files += requested
+    metrics_mapped_files += mapped
+    if requested > 0 and mapped < requested:
+        metrics_gate_failed = True
+    if str(latest_stats.get("metrics_gate", "")).strip().lower() == "fail":
+        metrics_gate_failed = True
+    unmapped = latest_stats.get("metrics_unmapped_sample")
+    if isinstance(unmapped, list):
+        for item in unmapped:
+            value = str(item).strip()
+            if value:
+                metrics_unmapped_sample.add(value)
+    return metrics_requested_files, metrics_mapped_files, metrics_gate_failed
+
+
+def _resolve_freshness(
+    sources: list[Any],
+    ready_count: int,
+    failed_count: int,
+    in_progress_count: int,
+) -> str:
+    """Determine freshness status from source counts."""
+    if failed_count > 0:
+        return "degraded"
+    if in_progress_count > 0:
+        return "materializing"
+    if sources and ready_count == len(sources):
+        return "ready"
+    if not sources:
+        return "failed"
+    return "materializing"
+
+
+def _resolve_behavioral_layers_status(behavioral_status_values: list[str]) -> str:
+    """Determine behavioral layers status from collected values."""
+    if not behavioral_status_values:
+        return "pending"
+    if any(s == "failed" for s in behavioral_status_values):
+        return "failed"
+    if any(s in {"materializing", "queued"} for s in behavioral_status_values):
+        return "materializing"
+    if all(s == "ready" for s in behavioral_status_values):
+        return "ready"
+    if all(s == "disabled" for s in behavioral_status_values):
+        return "disabled"
+    return "pending"
+
+
+def _resolve_scip_status(
+    scip_projects_detected: int,
+    scip_projects_indexed: int,
+    scip_projects_failed: int,
+    scip_has_degraded: bool,
+) -> str:
+    """Determine SCIP index status."""
+    if scip_projects_detected <= 0 or scip_projects_indexed <= 0:
+        return "failed"
+    if scip_projects_failed > 0 or scip_has_degraded:
+        return "degraded"
+    return "ready"
+
+
 async def _resolve_status_scenario(
     session: AsyncSession,
     *,
@@ -319,27 +499,13 @@ async def get_collection_twin_status(
     metrics_unmapped_sample: set[str] = set()
 
     for source in sources:
-        latest = (
-            await session.execute(
-                select(TwinSourceVersion)
-                .where(TwinSourceVersion.source_id == source.id)
-                .order_by(TwinSourceVersion.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        row_info = await _build_source_status_row(session, source, collection_id, now)
+        source_rows.append(row_info["row"])
 
-        status = latest.status if latest else "queued"
-        revision_key = latest.revision_key if latest else None
-        finished_at = latest.finished_at if latest else None
-        started_at = latest.started_at if latest else None
-        lag_seconds: int | None = None
-        if finished_at:
-            lag_seconds = int((now - finished_at).total_seconds())
-        elif started_at:
-            lag_seconds = int((now - started_at).total_seconds())
-
+        status = row_info["status"]
         if status == "ready":
             ready_count += 1
+            finished_at = row_info.get("finished_at")
             if finished_at and (materialized_at is None or finished_at > materialized_at):
                 materialized_at = finished_at
         elif status == "failed":
@@ -347,85 +513,28 @@ async def get_collection_twin_status(
         elif status in {"queued", "materializing", "loading", "generating"}:
             in_progress_count += 1
 
-        last_error_event = (
-            await session.execute(
-                select(TwinEvent)
-                .where(
-                    TwinEvent.collection_id == collection_id,
-                    TwinEvent.source_id == source.id,
-                    TwinEvent.status == "failed",
-                )
-                .order_by(TwinEvent.event_ts.desc())
-                .limit(1)
+        latest = row_info.get("latest")
+        if not latest:
+            continue
+
+        latest_stats = dict(latest.stats or {})
+        _accumulate_behavioral_stats(latest_stats, behavioral_status_values, deep_warnings)
+        behavioral_materialized_at = _parse_behavioral_ts(latest_stats, behavioral_materialized_at)
+        _accumulate_scip_stats(latest_stats, scip_projects_by_language, scip_failed_projects)
+        scip_projects_detected += int(latest_stats.get("scip_projects_detected", 0) or 0)
+        scip_projects_indexed += int(latest_stats.get("scip_projects_indexed", 0) or 0)
+        scip_projects_failed += int(latest_stats.get("scip_projects_failed", 0) or 0)
+        if bool(latest_stats.get("scip_degraded", False)):
+            scip_has_degraded = True
+        metrics_requested_files, metrics_mapped_files, metrics_gate_failed = (
+            _accumulate_metrics_stats(
+                latest_stats,
+                metrics_requested_files,
+                metrics_mapped_files,
+                metrics_gate_failed,
+                metrics_unmapped_sample,
             )
-        ).scalar_one_or_none()
-
-        source_rows.append(
-            {
-                "source_id": str(source.id),
-                "revision_key": revision_key,
-                "status": status,
-                "lag_seconds": lag_seconds,
-                "last_error": last_error_event.error if last_error_event else None,
-                "source_version_id": str(latest.id) if latest else None,
-            }
         )
-        if latest:
-            latest_stats = dict(latest.stats or {})
-            behavioral_status = str(latest_stats.get("behavioral_layers_status") or "").strip()
-            if behavioral_status:
-                behavioral_status_values.append(behavioral_status)
-
-            behavioral_ts_raw = latest_stats.get("last_behavioral_materialized_at")
-            if isinstance(behavioral_ts_raw, str) and behavioral_ts_raw.strip():
-                try:
-                    parsed = datetime.fromisoformat(behavioral_ts_raw.replace("Z", "+00:00"))
-                    if behavioral_materialized_at is None or parsed > behavioral_materialized_at:
-                        behavioral_materialized_at = parsed
-                except ValueError:
-                    pass
-
-            warnings = latest_stats.get("deep_warnings")
-            if isinstance(warnings, list):
-                deep_warnings.extend(str(item) for item in warnings if str(item).strip())
-
-            scip_projects_detected += int(latest_stats.get("scip_projects_detected", 0) or 0)
-            scip_projects_indexed += int(latest_stats.get("scip_projects_indexed", 0) or 0)
-            scip_projects_failed += int(latest_stats.get("scip_projects_failed", 0) or 0)
-            if bool(latest_stats.get("scip_degraded", False)):
-                scip_has_degraded = True
-
-            projects_by_language = latest_stats.get("scip_projects_by_language")
-            if isinstance(projects_by_language, dict):
-                for language, count in projects_by_language.items():
-                    normalized_language = str(language).strip().lower()
-                    if not normalized_language:
-                        continue
-                    try:
-                        scip_projects_by_language[normalized_language] += int(count or 0)
-                    except (TypeError, ValueError):
-                        continue
-
-            failed_projects = latest_stats.get("scip_failed_projects")
-            if isinstance(failed_projects, list):
-                for failed in failed_projects[:100]:
-                    if isinstance(failed, dict):
-                        scip_failed_projects.append(dict(failed))
-
-            requested = int(latest_stats.get("metrics_requested_files", 0) or 0)
-            mapped = int(latest_stats.get("metrics_mapped_files", 0) or 0)
-            metrics_requested_files += requested
-            metrics_mapped_files += mapped
-            if requested > 0 and mapped < requested:
-                metrics_gate_failed = True
-            if str(latest_stats.get("metrics_gate", "")).strip().lower() == "fail":
-                metrics_gate_failed = True
-            unmapped = latest_stats.get("metrics_unmapped_sample")
-            if isinstance(unmapped, list):
-                for item in unmapped:
-                    value = str(item).strip()
-                    if value:
-                        metrics_unmapped_sample.add(value)
 
     events = (
         (
@@ -446,36 +555,14 @@ async def get_collection_twin_status(
         if isinstance(duration, (int, float)):
             stage_timings[event.event_type] += float(duration)
 
-    if failed_count > 0:
-        freshness = "degraded"
-    elif in_progress_count > 0:
-        freshness = "materializing"
-    elif sources and ready_count == len(sources):
-        freshness = "ready"
-    elif not sources:
-        freshness = "failed"
-    else:
-        freshness = "materializing"
-
-    if not behavioral_status_values:
-        behavioral_layers_status = "pending"
-    elif any(status == "failed" for status in behavioral_status_values):
-        behavioral_layers_status = "failed"
-    elif any(status in {"materializing", "queued"} for status in behavioral_status_values):
-        behavioral_layers_status = "materializing"
-    elif all(status == "ready" for status in behavioral_status_values):
-        behavioral_layers_status = "ready"
-    elif all(status == "disabled" for status in behavioral_status_values):
-        behavioral_layers_status = "disabled"
-    else:
-        behavioral_layers_status = "pending"
-
-    if scip_projects_detected <= 0 or scip_projects_indexed <= 0:
-        scip_status = "failed"
-    elif scip_projects_failed > 0 or scip_has_degraded:
-        scip_status = "degraded"
-    else:
-        scip_status = "ready"
+    freshness = _resolve_freshness(sources, ready_count, failed_count, in_progress_count)
+    behavioral_layers_status = _resolve_behavioral_layers_status(behavioral_status_values)
+    scip_status = _resolve_scip_status(
+        scip_projects_detected,
+        scip_projects_indexed,
+        scip_projects_failed,
+        scip_has_degraded,
+    )
 
     return {
         "collection_id": str(collection_id),

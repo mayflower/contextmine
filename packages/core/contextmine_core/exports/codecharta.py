@@ -281,16 +281,24 @@ def _node_path_segments(
     entity_level: str,
 ) -> list[str]:
     if projection == GraphProjection.CODE_FILE:
-        meta = node.get("meta") or {}
-        file_path = meta.get("file_path")
-        if isinstance(file_path, str) and file_path.strip():
-            return [part for part in file_path.strip("/").split("/") if part]
-        natural_key = str(node.get("natural_key") or "")
-        if natural_key.startswith("file:"):
-            return [part for part in natural_key.split(":", 1)[1].strip("/").split("/") if part]
-        name = str(node.get("name") or "unknown")
-        return [name]
+        return _file_path_segments(node)
+    return _arch_path_segments(node, entity_level)
 
+
+def _file_path_segments(node: dict) -> list[str]:
+    """Resolve path segments for a code-file projection node."""
+    meta = node.get("meta") or {}
+    file_path = meta.get("file_path")
+    if isinstance(file_path, str) and file_path.strip():
+        return [part for part in file_path.strip("/").split("/") if part]
+    natural_key = str(node.get("natural_key") or "")
+    if natural_key.startswith("file:"):
+        return [part for part in natural_key.split(":", 1)[1].strip("/").split("/") if part]
+    return [str(node.get("name") or "unknown")]
+
+
+def _arch_path_segments(node: dict, entity_level: str) -> list[str]:
+    """Resolve path segments for an architecture projection node."""
     meta = node.get("meta") or {}
     domain = str(meta.get("domain") or "").strip()
     container = str(meta.get("container") or "").strip()

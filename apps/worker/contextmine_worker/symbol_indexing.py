@@ -76,6 +76,58 @@ def _map_symbol_kind(ts_kind: str) -> SymbolKind:
     return kind_map.get(ts_kind, SymbolKind.FUNCTION)
 
 
+type _SymbolTuple = tuple[str, str, str, int, int, str | None, str | None, dict]
+
+
+def _flatten_symbols(
+    syms: list,
+    parent_qualified: str | None = None,
+) -> list[_SymbolTuple]:
+    """Flatten nested symbols into a list with qualified names."""
+    result: list[_SymbolTuple] = []
+    for sym in syms:
+        qualified = f"{parent_qualified}.{sym.name}" if parent_qualified else sym.name
+        result.append(
+            (
+                qualified,
+                sym.name,
+                sym.kind.value,
+                sym.start_line,
+                sym.end_line,
+                sym.signature,
+                parent_qualified,
+                {
+                    "docstring": sym.docstring,
+                    "start_column": sym.start_column,
+                    "end_column": sym.end_column,
+                },
+            )
+        )
+        if sym.children:
+            result.extend(_flatten_symbols(sym.children, qualified))
+    return result
+
+
+def _deduplicate_symbols(
+    flattened: list[_SymbolTuple],
+) -> list[_SymbolTuple]:
+    """Deduplicate symbols by qualified_name, disambiguating with line numbers."""
+    seen: set[str] = set()
+    unique: list[_SymbolTuple] = []
+    for item in flattened:
+        qualified_name = item[0]
+        if qualified_name not in seen:
+            seen.add(qualified_name)
+            unique.append(item)
+            continue
+        # Make unique by appending line number
+        unique_qualified = f"{qualified_name}@L{item[3]}"
+        if unique_qualified not in seen:
+            seen.add(unique_qualified)
+            unique.append((unique_qualified, *item[1:]))
+    return unique
+
+
 async def extract_symbols_for_document(
     db: AsyncSession,
     document: Document,
@@ -122,59 +174,8 @@ async def extract_symbols_for_document(
     if not symbols:
         return 0
 
-    # Flatten symbols into a list with proper qualified names
-    def flatten_symbols(
-        syms: list,
-        parent_qualified: str | None = None,
-    ) -> list[tuple[str, str, str, int, int, str | None, str | None, dict]]:
-        """Flatten nested symbols into a list with qualified names."""
-        result = []
-        for sym in syms:
-            # Build qualified name
-            qualified = f"{parent_qualified}.{sym.name}" if parent_qualified else sym.name
-
-            result.append(
-                (
-                    qualified,  # qualified_name
-                    sym.name,  # name
-                    sym.kind.value,  # kind
-                    sym.start_line,  # start_line
-                    sym.end_line,  # end_line
-                    sym.signature,  # signature
-                    parent_qualified,  # parent_name
-                    {
-                        "docstring": sym.docstring,
-                        "start_column": sym.start_column,
-                        "end_column": sym.end_column,
-                    },  # meta
-                )
-            )
-
-            # Recursively process children
-            if sym.children:
-                result.extend(flatten_symbols(sym.children, qualified))
-
-        return result
-
-    flattened = flatten_symbols(symbols)
-
-    # Deduplicate by qualified_name (keep first occurrence)
-    # This handles cases like multiple functions with the same name in a file
-    seen_qualified: set[str] = set()
-    unique_symbols = []
-    for item in flattened:
-        qualified_name = item[0]
-        if qualified_name not in seen_qualified:
-            seen_qualified.add(qualified_name)
-            unique_symbols.append(item)
-        else:
-            # Make unique by appending line number
-            start_line = item[3]
-            unique_qualified = f"{qualified_name}@L{start_line}"
-            if unique_qualified not in seen_qualified:
-                seen_qualified.add(unique_qualified)
-                # Create new tuple with modified qualified_name
-                unique_symbols.append((unique_qualified, *item[1:]))
+    flattened = _flatten_symbols(symbols)
+    unique_symbols = _deduplicate_symbols(flattened)
 
     # Create Symbol records
     created = 0

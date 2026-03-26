@@ -10,6 +10,7 @@ Features:
 import asyncio
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -179,6 +180,145 @@ def _is_ignored_repo_path(file_path: str) -> bool:
         return True
     marker_path = f"/{normalized}/"
     return "/src/libs/" in marker_path
+
+
+@dataclass
+class _DocProcessingAccumulator:
+    """Accumulates stats from the per-document chunk/symbol/embed loop."""
+
+    chunks_created: int = 0
+    chunks_deleted: int = 0
+    chunks_embedded: int = 0
+    chunks_deduplicated: int = 0
+    tokens_used: int = 0
+    symbols_created: int = 0
+    symbols_deleted: int = 0
+    processing_failures: int = 0
+    processing_timeouts: int = 0
+    error_samples: list = field(default_factory=list)  # type: ignore[assignment]
+
+    def record_error(self, value: str) -> None:
+        if len(self.error_samples) < 100:
+            self.error_samples.append(value)
+
+
+async def _process_single_document(
+    acc: _DocProcessingAccumulator,
+    doc_id: str,
+    content: str,
+    file_path: str | None,
+    collection_id_str: str,
+    per_doc_timeout_seconds: int,
+) -> None:
+    """Run chunk, symbol, and embed steps for a single document."""
+    import uuid as uuid_module
+
+    # Chunk
+    try:
+        chunk_stats = await asyncio.wait_for(
+            maintain_chunks_for_document(doc_id, content, file_path),
+            timeout=per_doc_timeout_seconds,
+        )
+    except TimeoutError:
+        acc.processing_timeouts += 1
+        acc.processing_failures += 1
+        acc.record_error(f"{doc_id}:chunk_timeout")
+        return
+    except Exception as exc:  # noqa: BLE001
+        acc.processing_failures += 1
+        acc.record_error(f"{doc_id}:chunk_error:{exc}")
+        return
+    acc.chunks_created += chunk_stats["chunks_created"]
+    acc.chunks_deleted += chunk_stats["chunks_deleted"]
+
+    # Symbol extraction
+    try:
+        async with get_session() as session:
+            sym_created, sym_deleted = await asyncio.wait_for(
+                maintain_symbols_for_document(session, uuid_module.UUID(doc_id)),
+                timeout=per_doc_timeout_seconds,
+            )
+            acc.symbols_created += sym_created
+            acc.symbols_deleted += sym_deleted
+            await session.commit()
+    except TimeoutError:
+        acc.processing_timeouts += 1
+        acc.record_error(f"{doc_id}:symbol_timeout")
+    except Exception as exc:  # noqa: BLE001
+        acc.processing_failures += 1
+        acc.record_error(f"{doc_id}:symbol_error:{exc}")
+
+    # Embed
+    try:
+        embed_stats = await asyncio.wait_for(
+            embed_document(doc_id, collection_id_str),
+            timeout=per_doc_timeout_seconds,
+        )
+    except TimeoutError:
+        acc.processing_timeouts += 1
+        acc.record_error(f"{doc_id}:embed_timeout")
+        return
+    except Exception as exc:  # noqa: BLE001
+        acc.processing_failures += 1
+        acc.record_error(f"{doc_id}:embed_error:{exc}")
+        return
+    acc.chunks_embedded += embed_stats["chunks_embedded"]
+    acc.chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
+    acc.tokens_used += embed_stats["tokens_used"]
+
+
+async def _process_document_batch(
+    docs_to_chunk: list[tuple[str, str, str | None]],
+    collection_id_str: str,
+    progress_id: object,
+) -> _DocProcessingAccumulator:
+    """Process a batch of documents: chunk, extract symbols, embed."""
+    acc = _DocProcessingAccumulator()
+    docs_limit = _sync_documents_per_run_limit()
+    total_candidate = len(docs_to_chunk)
+    docs_deferred = 0
+    if docs_limit and total_candidate > docs_limit:
+        docs_to_chunk = docs_to_chunk[:docs_limit]
+        docs_deferred = total_candidate - len(docs_to_chunk)
+
+    total_docs = len(docs_to_chunk)
+    per_doc_timeout = _sync_document_step_timeout_seconds()
+
+    if docs_deferred > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id,
+            progress=49,
+            description=f"Deferring {docs_deferred} documents to later runs (limit={docs_limit} docs/run).",
+        )
+    if total_docs > 0:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id,
+            progress=50,
+            description=f"Chunking and embedding {total_docs} documents...",
+        )
+
+    for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
+        if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
+            pct = 50 + int((i + 1) / total_docs * 45)
+            await update_progress_artifact(  # type: ignore[misc]
+                progress_id,
+                progress=pct,
+                description=f"Processing document {i + 1}/{total_docs}...",
+            )
+        await _process_single_document(
+            acc,
+            doc_id,
+            content,
+            file_path,
+            collection_id_str,
+            per_doc_timeout,
+        )
+
+    # Stash batch metadata for callers
+    acc._docs_deferred = docs_deferred  # type: ignore[attr-defined]
+    acc._total_candidate = total_candidate  # type: ignore[attr-defined]
+    acc._changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]  # type: ignore[attr-defined]
+    return acc
 
 
 async def materialize_surface_catalog_for_source(
@@ -586,6 +726,194 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
     return await embed_chunks_for_document(document_id, embedding_model)
 
 
+_SCHEMA_EXTENSIONS = (".sql", ".ddl", ".prisma", ".php", ".py", ".ts", ".js", ".java", ".rb")
+_SCHEMA_TOKENS = (
+    "schema",
+    "migration",
+    "migrate",
+    "database",
+    "db",
+    "sql",
+    "doctrine",
+    "entity",
+    "model",
+    "prisma",
+)
+
+
+def _is_schema_candidate(file_path: str) -> bool:
+    """Check if a file path is a potential schema file."""
+    normalized = file_path.lower()
+    return normalized.endswith(_SCHEMA_EXTENSIONS) and any(
+        token in normalized for token in _SCHEMA_TOKENS
+    )
+
+
+async def _kg_extract_erm(
+    source_uuid: object,
+    collection_uuid: object,
+    research_llm: object,
+) -> int:
+    """Extract ERM tables from Alembic migrations or generic schema files. Returns tables found."""
+    from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
+    from contextmine_core.analyzer.extractors.erm import (
+        ERMExtractor,
+        build_erm_graph,
+        save_erd_artifact,
+    )
+    from contextmine_core.analyzer.extractors.schema import (
+        build_schema_graph,
+    )
+    from contextmine_core.analyzer.extractors.schema import (
+        save_erd_artifact as save_generic_erd_artifact,
+    )
+    from contextmine_core.models import Document
+
+    erm_extractor = ERMExtractor()
+    schema_candidates: list[tuple[str, str]] = []
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Document.uri, Document.content_markdown).where(Document.source_id == source_uuid)
+        )
+        docs = result.all()
+
+        for uri, content in docs:
+            if not content:
+                continue
+            file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+            if _is_ignored_repo_path(file_path):
+                continue
+            if _is_schema_candidate(file_path):
+                schema_candidates.append((file_path, content))
+            if "alembic/versions" in file_path and file_path.endswith(".py"):
+                try:
+                    extraction = extract_from_alembic(file_path, content)
+                    erm_extractor.add_alembic_extraction(extraction)
+                except Exception as e:
+                    logger.debug("ERM extraction failed for %s: %s", file_path, e)
+
+        if erm_extractor.schema.tables:
+            erm_stats = await build_erm_graph(session, collection_uuid, erm_extractor.schema)
+            await save_erd_artifact(session, collection_uuid, erm_extractor.schema)
+            await session.commit()
+            tables = erm_stats.get("table_nodes_created", 0)
+            logger.info("Extracted %d database tables", tables)
+            return tables
+
+        if not schema_candidates:
+            return 0
+
+        aggregated = await _extract_schema_fallback(schema_candidates, research_llm)
+        if aggregated and aggregated.tables:
+            schema_stats = await build_schema_graph(session, collection_uuid, aggregated)
+            await save_generic_erd_artifact(session, collection_uuid, aggregated)
+            await session.commit()
+            tables = schema_stats.get("table_nodes_created", 0)
+            logger.info("Extracted %d database tables via generic schema extraction", tables)
+            return tables
+    return 0
+
+
+async def _extract_schema_fallback(
+    schema_candidates: list[tuple[str, str]],
+    research_llm: object,
+) -> object | None:
+    """Try deterministic SQL extraction, then LLM-based fallback."""
+    from contextmine_core.analyzer.extractors.schema import (
+        aggregate_schema_extractions,
+        extract_schema_from_file,
+        extract_schema_from_files,
+    )
+
+    deterministic_extractions = []
+    for candidate_path, candidate_content in schema_candidates[:250]:
+        if not candidate_path.lower().endswith((".sql", ".ddl")):
+            continue
+        try:
+            extraction = await extract_schema_from_file(
+                candidate_path, candidate_content, research_llm
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Deterministic SQL schema extraction failed for %s: %s", candidate_path, e)
+            continue
+        if extraction.tables or extraction.foreign_keys:
+            deterministic_extractions.append(extraction)
+
+    if deterministic_extractions:
+        return aggregate_schema_extractions(deterministic_extractions)
+
+    try:
+        extractions = await extract_schema_from_files(
+            files=schema_candidates[:250], provider=research_llm
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Generic schema extraction failed: %s", e)
+        extractions = []
+    return aggregate_schema_extractions(extractions)
+
+
+async def _kg_extract_business_rules(
+    source_uuid: object,
+    collection_uuid: object,
+    changed_doc_ids: list[str] | None,
+    research_llm: object,
+) -> int:
+    """Extract business rules from code files using LLM. Returns rules created count."""
+    import uuid as uuid_module
+
+    from contextmine_core.analyzer.extractors.rules import (
+        build_rules_graph,
+        extract_rules_from_file,
+    )
+    from contextmine_core.models import Document
+    from contextmine_core.treesitter.languages import detect_language
+
+    if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+        logger.info("No changed documents - skipping business rule extraction")
+        return 0
+
+    all_extractions = []
+    async with get_session() as session:
+        if changed_doc_ids:
+            result = await session.execute(
+                select(Document.id, Document.uri, Document.content_markdown).where(
+                    Document.id.in_([uuid_module.UUID(d) for d in changed_doc_ids])
+                )
+            )
+        else:
+            result = await session.execute(
+                select(Document.id, Document.uri, Document.content_markdown).where(
+                    Document.source_id == source_uuid
+                )
+            )
+        docs = result.all()
+        logger.info("Extracting business rules from %d documents", len(docs))
+
+        for _doc_id, uri, content in docs:
+            if not content:
+                continue
+            file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+            if _is_ignored_repo_path(file_path):
+                continue
+            if detect_language(file_path) is None:
+                continue
+            try:
+                rule_result = await extract_rules_from_file(file_path, content, research_llm)
+                if rule_result.rules:
+                    all_extractions.append(rule_result)
+            except Exception as e:
+                logger.debug("Rule extraction failed for %s: %s", file_path, e)
+
+        if all_extractions:
+            rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
+            await session.commit()
+            rules_created = rule_stats.get("rules_created", 0)
+            logger.info("Extracted %d business rules", rules_created)
+            return rules_created
+    return 0
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -695,181 +1023,26 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"file_symbol: {e}")
 
     # Step 2: Extract business rules from code files using LLM (INCREMENTAL)
-    # Only processes documents that were created/updated in this sync run
     try:
-        from contextmine_core.analyzer.extractors.rules import (
-            build_rules_graph,
-            extract_rules_from_file,
+        rules_count = await _kg_extract_business_rules(
+            source_uuid,
+            collection_uuid,
+            changed_doc_ids,
+            research_llm,
         )
-        from contextmine_core.treesitter.languages import detect_language
-
-        all_extractions = []
-
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-            logger.info("No changed documents - skipping business rule extraction")
-        else:
-            async with get_session() as session:
-                # Get documents that need rule extraction
-                if changed_doc_ids:
-                    # Incremental: only changed documents
-                    result = await session.execute(
-                        select(Document.id, Document.uri, Document.content_markdown).where(
-                            Document.id.in_([uuid_module.UUID(d) for d in changed_doc_ids])
-                        )
-                    )
-                else:
-                    # First run: all documents for this source
-                    result = await session.execute(
-                        select(Document.id, Document.uri, Document.content_markdown).where(
-                            Document.source_id == source_uuid
-                        )
-                    )
-                docs = result.all()
-                logger.info("Extracting business rules from %d documents", len(docs))
-
-                for _doc_id, uri, content in docs:
-                    if not content:
-                        continue
-                    # Extract file path from URI
-                    file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                    if _is_ignored_repo_path(file_path):
-                        continue
-                    # Process all files with supported Tree-sitter languages
-                    if detect_language(file_path) is not None:
-                        try:
-                            rule_result = await extract_rules_from_file(
-                                file_path, content, research_llm
-                            )
-                            if rule_result.rules:
-                                all_extractions.append(rule_result)
-                        except Exception as e:
-                            logger.debug("Rule extraction failed for %s: %s", file_path, e)
-
-                # Build graph nodes for all business rules
-                if all_extractions:
-                    rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
-                    stats["kg_business_rules"] = rule_stats.get("rules_created", 0)
-                    await session.commit()
-                    logger.info("Extracted %d business rules", stats["kg_business_rules"])
-
+        stats["kg_business_rules"] = rules_count
     except Exception as e:
         logger.warning("Failed to extract business rules: %s", e)
         stats["kg_errors"].append(f"rules: {e}")
 
     # Step 3: Extract ERM from Alembic migrations
     try:
-        from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
-        from contextmine_core.analyzer.extractors.erm import (
-            ERMExtractor,
-            build_erm_graph,
-            save_erd_artifact,
+        tables_found = await _kg_extract_erm(
+            source_uuid,
+            collection_uuid,
+            research_llm,
         )
-        from contextmine_core.analyzer.extractors.schema import (
-            aggregate_schema_extractions,
-            build_schema_graph,
-            extract_schema_from_file,
-            extract_schema_from_files,
-        )
-        from contextmine_core.analyzer.extractors.schema import (
-            save_erd_artifact as save_generic_erd_artifact,
-        )
-
-        erm_extractor = ERMExtractor()
-        schema_candidates: list[tuple[str, str]] = []
-
-        async with get_session() as session:
-            result = await session.execute(
-                select(Document.uri, Document.content_markdown).where(
-                    Document.source_id == source_uuid
-                )
-            )
-            docs = result.all()
-
-            for uri, content in docs:
-                if not content:
-                    continue
-                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                if _is_ignored_repo_path(file_path):
-                    continue
-                normalized_path = file_path.lower()
-                if normalized_path.endswith(
-                    (".sql", ".ddl", ".prisma", ".php", ".py", ".ts", ".js", ".java", ".rb")
-                ) and any(
-                    token in normalized_path
-                    for token in (
-                        "schema",
-                        "migration",
-                        "migrate",
-                        "database",
-                        "db",
-                        "sql",
-                        "doctrine",
-                        "entity",
-                        "model",
-                        "prisma",
-                    )
-                ):
-                    schema_candidates.append((file_path, content))
-
-                # Detect Alembic migrations
-                if "alembic/versions" in file_path and file_path.endswith(".py"):
-                    try:
-                        extraction = extract_from_alembic(file_path, content)
-                        erm_extractor.add_alembic_extraction(extraction)
-                    except Exception as e:
-                        logger.debug("ERM extraction failed for %s: %s", file_path, e)
-
-            # Build graph and save ERD if we found tables
-            if erm_extractor.schema.tables:
-                erm_stats = await build_erm_graph(session, collection_uuid, erm_extractor.schema)
-                stats["kg_tables"] = erm_stats.get("table_nodes_created", 0)
-                await save_erd_artifact(session, collection_uuid, erm_extractor.schema)
-                await session.commit()
-                logger.info("Extracted %d database tables", stats["kg_tables"])
-            elif schema_candidates:
-                # Polyglot fallback (PHP/TS/SQL/etc.) when deterministic Alembic extraction is empty.
-                deterministic_extractions = []
-                for candidate_path, candidate_content in schema_candidates[:250]:
-                    if not candidate_path.lower().endswith((".sql", ".ddl")):
-                        continue
-                    try:
-                        extraction = await extract_schema_from_file(
-                            candidate_path,
-                            candidate_content,
-                            research_llm,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.debug(
-                            "Deterministic SQL schema extraction failed for %s: %s",
-                            candidate_path,
-                            e,
-                        )
-                        continue
-                    if extraction.tables or extraction.foreign_keys:
-                        deterministic_extractions.append(extraction)
-
-                if deterministic_extractions:
-                    aggregated = aggregate_schema_extractions(deterministic_extractions)
-                else:
-                    try:
-                        extractions = await extract_schema_from_files(
-                            files=schema_candidates[:250],
-                            provider=research_llm,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("Generic schema extraction failed: %s", e)
-                        extractions = []
-                    aggregated = aggregate_schema_extractions(extractions)
-                if aggregated.tables:
-                    schema_stats = await build_schema_graph(session, collection_uuid, aggregated)
-                    stats["kg_tables"] = schema_stats.get("table_nodes_created", 0)
-                    await save_generic_erd_artifact(session, collection_uuid, aggregated)
-                    await session.commit()
-                    logger.info(
-                        "Extracted %d database tables via generic schema extraction",
-                        stats["kg_tables"],
-                    )
-
+        stats["kg_tables"] = tables_found
     except Exception as e:
         logger.warning("Failed to extract ERM: %s", e)
         stats["kg_errors"].append(f"erm: {e}")
@@ -2733,109 +2906,25 @@ async def sync_github_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
-    total_docs_candidate = len(docs_to_chunk)
-    docs_deferred = 0
-    docs_limit = _sync_documents_per_run_limit()
-    if docs_limit and total_docs_candidate > docs_limit:
-        docs_to_chunk = docs_to_chunk[:docs_limit]
-        docs_deferred = total_docs_candidate - len(docs_to_chunk)
-
-    total_docs = len(docs_to_chunk)
-    per_doc_timeout_seconds = _sync_document_step_timeout_seconds()
-    docs_processing_failures = 0
-    docs_processing_timeouts = 0
-    docs_processing_error_samples: list[str] = []
-
-    def _record_doc_error(value: str) -> None:
-        if len(docs_processing_error_samples) < 100:
-            docs_processing_error_samples.append(value)
-
-    if docs_deferred > 0:
-        await update_progress_artifact(  # type: ignore[misc]
-            progress_id,
-            progress=49,
-            description=(
-                f"Deferring {docs_deferred} documents to later runs (limit={docs_limit} docs/run)."
-            ),
-        )
-
-    if total_docs > 0:
-        await update_progress_artifact(  # type: ignore[misc]
-            progress_id,
-            progress=50,
-            description=f"Chunking and embedding {total_docs} documents...",
-        )
-
-    import uuid as uuid_module
-
-    for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
-        # Update progress every 5 documents or on last document
-        if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
-            pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
-            await update_progress_artifact(  # type: ignore[misc]
-                progress_id,
-                progress=pct,
-                description=f"Processing document {i + 1}/{total_docs}...",
-            )
-
-        try:
-            chunk_stats = await asyncio.wait_for(
-                maintain_chunks_for_document(doc_id, content, file_path),
-                timeout=per_doc_timeout_seconds,
-            )
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:chunk_timeout")
-            continue
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:chunk_error:{exc}")
-            continue
-
-        total_chunks_created += chunk_stats["chunks_created"]
-        total_chunks_deleted += chunk_stats["chunks_deleted"]
-
-        # Extract symbols for code files (using tree-sitter)
-        try:
-            async with get_session() as session:
-                sym_created, sym_deleted = await asyncio.wait_for(
-                    maintain_symbols_for_document(session, uuid_module.UUID(doc_id)),
-                    timeout=per_doc_timeout_seconds,
-                )
-                total_symbols_created += sym_created
-                total_symbols_deleted += sym_deleted
-                await session.commit()
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            _record_doc_error(f"{doc_id}:symbol_timeout")
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:symbol_error:{exc}")
-
-        # Embed new/updated chunks (using collection's embedding config)
-        try:
-            embed_stats = await asyncio.wait_for(
-                embed_document(doc_id, collection_id_str),
-                timeout=per_doc_timeout_seconds,
-            )
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            _record_doc_error(f"{doc_id}:embed_timeout")
-            continue
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:embed_error:{exc}")
-            continue
-        total_chunks_embedded += embed_stats["chunks_embedded"]
-        total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
-        total_tokens_used += embed_stats["tokens_used"]
+    doc_acc = await _process_document_batch(docs_to_chunk, collection_id_str, progress_id)
+    total_chunks_created = doc_acc.chunks_created
+    total_chunks_deleted = doc_acc.chunks_deleted
+    total_chunks_embedded = doc_acc.chunks_embedded
+    total_chunks_deduplicated = doc_acc.chunks_deduplicated
+    total_tokens_used = doc_acc.tokens_used
+    total_symbols_created = doc_acc.symbols_created
+    total_symbols_deleted = doc_acc.symbols_deleted
+    docs_processing_failures = doc_acc.processing_failures
+    docs_processing_timeouts = doc_acc.processing_timeouts
+    docs_processing_error_samples = doc_acc.error_samples
+    total_docs_candidate = doc_acc._total_candidate  # type: ignore[attr-defined]
+    docs_deferred = doc_acc._docs_deferred  # type: ignore[attr-defined]
 
     # Build Knowledge Graph (FILE/SYMBOL + semantic entities + communities).
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=94, description="Building knowledge graph..."
     )
-    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
+    changed_doc_ids = doc_acc._changed_doc_ids  # type: ignore[attr-defined]
     try:
         kg_timeout_seconds = _knowledge_graph_build_timeout_seconds()
         kg_stats = await asyncio.wait_for(
@@ -3370,103 +3459,19 @@ async def sync_web_source(
 
     # Run chunk maintenance and embedding for changed/new/unchunked documents
     collection_id_str = str(source.collection_id)
-    total_docs_candidate = len(docs_to_chunk)
-    docs_deferred = 0
-    docs_limit = _sync_documents_per_run_limit()
-    if docs_limit and total_docs_candidate > docs_limit:
-        docs_to_chunk = docs_to_chunk[:docs_limit]
-        docs_deferred = total_docs_candidate - len(docs_to_chunk)
-
-    total_docs = len(docs_to_chunk)
-    per_doc_timeout_seconds = _sync_document_step_timeout_seconds()
-    docs_processing_failures = 0
-    docs_processing_timeouts = 0
-    docs_processing_error_samples: list[str] = []
-
-    def _record_doc_error(value: str) -> None:
-        if len(docs_processing_error_samples) < 100:
-            docs_processing_error_samples.append(value)
-
-    if docs_deferred > 0:
-        await update_progress_artifact(  # type: ignore[misc]
-            progress_id,
-            progress=49,
-            description=(
-                f"Deferring {docs_deferred} documents to later runs (limit={docs_limit} docs/run)."
-            ),
-        )
-
-    if total_docs > 0:
-        await update_progress_artifact(  # type: ignore[misc]
-            progress_id,
-            progress=50,
-            description=f"Chunking and embedding {total_docs} documents...",
-        )
-
-    import uuid as uuid_module
-
-    for i, (doc_id, content, file_path) in enumerate(docs_to_chunk):
-        # Update progress every 5 documents or on last document
-        if total_docs > 0 and (i % 5 == 0 or i == total_docs - 1):
-            pct = 50 + int((i + 1) / total_docs * 45)  # 50% to 95%
-            await update_progress_artifact(  # type: ignore[misc]
-                progress_id,
-                progress=pct,
-                description=f"Processing document {i + 1}/{total_docs}...",
-            )
-
-        try:
-            chunk_stats = await asyncio.wait_for(
-                maintain_chunks_for_document(doc_id, content, file_path),
-                timeout=per_doc_timeout_seconds,
-            )
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:chunk_timeout")
-            continue
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:chunk_error:{exc}")
-            continue
-
-        total_chunks_created += chunk_stats["chunks_created"]
-        total_chunks_deleted += chunk_stats["chunks_deleted"]
-
-        # Extract symbols for code files (using tree-sitter)
-        try:
-            async with get_session() as session:
-                sym_created, sym_deleted = await asyncio.wait_for(
-                    maintain_symbols_for_document(session, uuid_module.UUID(doc_id)),
-                    timeout=per_doc_timeout_seconds,
-                )
-                total_symbols_created += sym_created
-                total_symbols_deleted += sym_deleted
-                await session.commit()
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            _record_doc_error(f"{doc_id}:symbol_timeout")
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:symbol_error:{exc}")
-
-        # Embed new/updated chunks (using collection's embedding config)
-        try:
-            embed_stats = await asyncio.wait_for(
-                embed_document(doc_id, collection_id_str),
-                timeout=per_doc_timeout_seconds,
-            )
-        except TimeoutError:
-            docs_processing_timeouts += 1
-            _record_doc_error(f"{doc_id}:embed_timeout")
-            continue
-        except Exception as exc:  # noqa: BLE001
-            docs_processing_failures += 1
-            _record_doc_error(f"{doc_id}:embed_error:{exc}")
-            continue
-        total_chunks_embedded += embed_stats["chunks_embedded"]
-        total_chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
-        total_tokens_used += embed_stats["tokens_used"]
+    doc_acc = await _process_document_batch(docs_to_chunk, collection_id_str, progress_id)
+    total_chunks_created = doc_acc.chunks_created
+    total_chunks_deleted = doc_acc.chunks_deleted
+    total_chunks_embedded = doc_acc.chunks_embedded
+    total_chunks_deduplicated = doc_acc.chunks_deduplicated
+    total_tokens_used = doc_acc.tokens_used
+    total_symbols_created = doc_acc.symbols_created
+    total_symbols_deleted = doc_acc.symbols_deleted
+    docs_processing_failures = doc_acc.processing_failures
+    docs_processing_timeouts = doc_acc.processing_timeouts
+    docs_processing_error_samples = doc_acc.error_samples
+    total_docs_candidate = doc_acc._total_candidate  # type: ignore[attr-defined]
+    docs_deferred = doc_acc._docs_deferred  # type: ignore[attr-defined]
 
     # Materialize deterministic interface/spec surfaces (OpenAPI/GraphQL/Protobuf/jobs)
     surface_stats: dict[str, int] = {}
@@ -3489,7 +3494,7 @@ async def sync_web_source(
     await update_progress_artifact(  # type: ignore[misc]
         progress_id, progress=96, description="Building digital twin..."
     )
-    changed_doc_ids = [doc_id for doc_id, _, _ in docs_to_chunk]
+    changed_doc_ids = doc_acc._changed_doc_ids  # type: ignore[attr-defined]
     twin_timeout_seconds = _twin_graph_build_timeout_seconds()
     try:
         twin_stats = await asyncio.wait_for(
@@ -3568,6 +3573,49 @@ async def sync_web_source(
     await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 
     return stats
+
+
+def _build_failure_stats(sync_run_id: str, error_message: str) -> dict[str, object]:
+    """Parse gate-failure error messages into structured stats."""
+    failure_stats: dict[str, object] = {
+        "sync_run_id": sync_run_id,
+        "error": error_message,
+    }
+    if "METRICS_GATE_FAILED" in error_message:
+        failure_stats["metrics_gate"] = "fail"
+        _parse_metrics_gate_details(failure_stats, error_message)
+    if "SCIP_GATE_FAILED" in error_message:
+        failure_stats["scip_gate"] = "fail"
+        _parse_scip_gate_details(failure_stats, error_message)
+    return failure_stats
+
+
+def _parse_metrics_gate_details(stats: dict[str, object], text: str) -> None:
+    if "(mapped=" not in text or ", metrics=" not in text:
+        return
+    try:
+        mapped_part = text.split("(mapped=", 1)[1]
+        stats["metrics_mapped_files"] = int(mapped_part.split(",", 1)[0])
+        stats["metrics_requested_files"] = int(mapped_part.split("metrics=", 1)[1].split(")", 1)[0])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _parse_scip_gate_details(stats: dict[str, object], text: str) -> None:
+    if "(missing=" in text:
+        try:
+            missing_raw = text.split("(missing=", 1)[1].split(")", 1)[0]
+            stats["scip_missing_languages"] = [lang for lang in missing_raw.split(",") if lang]
+        except Exception:  # noqa: BLE001
+            pass
+    if "(missing_relations=" in text:
+        try:
+            missing_rel_raw = text.split("(missing_relations=", 1)[1].split(")", 1)[0]
+            stats["scip_missing_relation_languages"] = [
+                lang for lang in missing_rel_raw.split(",") if lang
+            ]
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @traced_task()
@@ -3678,42 +3726,7 @@ async def sync_source(source: Source) -> SyncRun | None:
                 )
             ).scalar_one_or_none()
             if failed_source_version:
-                failure_stats: dict[str, object] = {
-                    "sync_run_id": str(sync_run.id),
-                    "error": error_message,
-                }
-                error_text = error_message
-                if "METRICS_GATE_FAILED" in error_text:
-                    failure_stats["metrics_gate"] = "fail"
-                    if "(mapped=" in error_text and ", metrics=" in error_text:
-                        try:
-                            mapped_part = error_text.split("(mapped=", 1)[1]
-                            mapped_raw = mapped_part.split(",", 1)[0]
-                            metrics_raw = mapped_part.split("metrics=", 1)[1].split(")", 1)[0]
-                            failure_stats["metrics_mapped_files"] = int(mapped_raw)
-                            failure_stats["metrics_requested_files"] = int(metrics_raw)
-                        except Exception:  # noqa: BLE001
-                            pass
-                if "SCIP_GATE_FAILED" in error_text:
-                    failure_stats["scip_gate"] = "fail"
-                    if "(missing=" in error_text:
-                        try:
-                            missing_raw = error_text.split("(missing=", 1)[1].split(")", 1)[0]
-                            failure_stats["scip_missing_languages"] = [
-                                language for language in missing_raw.split(",") if language
-                            ]
-                        except Exception:  # noqa: BLE001
-                            pass
-                    if "(missing_relations=" in error_text:
-                        try:
-                            missing_rel_raw = error_text.split("(missing_relations=", 1)[1].split(
-                                ")", 1
-                            )[0]
-                            failure_stats["scip_missing_relation_languages"] = [
-                                language for language in missing_rel_raw.split(",") if language
-                            ]
-                        except Exception:  # noqa: BLE001
-                            pass
+                failure_stats = _build_failure_stats(str(sync_run.id), error_message)
                 await set_source_version_status(
                     session,
                     source_version_id=failed_source_version.id,

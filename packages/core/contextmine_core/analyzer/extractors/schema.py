@@ -195,31 +195,48 @@ def _split_sql_items(body: str) -> list[str]:
     in_backtick = False
 
     for char in body:
-        if char == "'" and not in_double and not in_backtick:
-            in_single = not in_single
-        elif char == '"' and not in_single and not in_backtick:
-            in_double = not in_double
-        elif char == "`" and not in_single and not in_double:
-            in_backtick = not in_backtick
-        elif not in_single and not in_double and not in_backtick:
-            if char == "(":
-                depth += 1
-            elif char == ")" and depth > 0:
-                depth -= 1
-
-        if char == "," and depth == 0 and not in_single and not in_double and not in_backtick:
+        in_single, in_double, in_backtick, depth = _update_sql_quote_state(
+            char,
+            in_single,
+            in_double,
+            in_backtick,
+            depth,
+        )
+        in_quoted = in_single or in_double or in_backtick
+        if char == "," and depth == 0 and not in_quoted:
             item = "".join(current).strip()
             if item:
                 items.append(item)
             current = []
             continue
-
         current.append(char)
 
     tail = "".join(current).strip()
     if tail:
         items.append(tail)
     return items
+
+
+def _update_sql_quote_state(
+    char: str,
+    in_single: bool,
+    in_double: bool,
+    in_backtick: bool,
+    depth: int,
+) -> tuple[bool, bool, bool, int]:
+    """Update SQL quote/paren tracking state for a single character."""
+    if char == "'" and not in_double and not in_backtick:
+        in_single = not in_single
+    elif char == '"' and not in_single and not in_backtick:
+        in_double = not in_double
+    elif char == "`" and not in_single and not in_double:
+        in_backtick = not in_backtick
+    elif not in_single and not in_double and not in_backtick:
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth > 0:
+            depth -= 1
+    return in_single, in_double, in_backtick, depth
 
 
 def _normalize_sql_type(raw_type: str) -> str:
@@ -257,6 +274,90 @@ def _normalize_sql_type(raw_type: str) -> str:
     return raw_type.strip()[:64]
 
 
+def _process_sql_ddl_item(
+    item: str,
+    table: TableDef,
+    table_name: str,
+    extraction: SchemaExtraction,
+) -> None:
+    """Process a single item from a SQL CREATE TABLE body."""
+    line = item.strip()
+    if not line:
+        return
+    line_upper = line.upper()
+
+    pk_match = SQL_PRIMARY_KEY_RE.search(line)
+    if pk_match:
+        for pk_col in (
+            _strip_sql_identifier(col) for col in pk_match.group(1).split(",") if col.strip()
+        ):
+            if pk_col and pk_col not in table.primary_keys:
+                table.primary_keys.append(pk_col)
+
+    fk_match = SQL_FOREIGN_KEY_RE.search(line)
+    if fk_match:
+        _collect_sql_fk(fk_match, table_name, extraction)
+
+    if line_upper.startswith(
+        ("CONSTRAINT ", "PRIMARY KEY", "FOREIGN KEY", "UNIQUE ", "KEY ", "INDEX ", "CHECK ")
+    ):
+        return
+
+    parts = line.split(None, 2)
+    if len(parts) < 2:
+        return
+
+    column = _parse_sql_column_def(parts, line, line_upper)
+    table.columns.append(column)
+    if column.primary_key and column.name not in table.primary_keys:
+        table.primary_keys.append(column.name)
+
+
+def _collect_sql_fk(
+    fk_match: re.Match[str],
+    table_name: str,
+    extraction: SchemaExtraction,
+) -> None:
+    """Handle a FOREIGN KEY constraint match."""
+    source_columns = [
+        _strip_sql_identifier(col) for col in fk_match.group(1).split(",") if col.strip()
+    ]
+    target_table = _strip_sql_identifier(fk_match.group(2))
+    target_columns = [
+        _strip_sql_identifier(col) for col in fk_match.group(3).split(",") if col.strip()
+    ]
+    if source_columns and target_table and target_columns:
+        extraction.foreign_keys.append(
+            ForeignKeyDef(
+                name=None,
+                source_table=table_name,
+                source_columns=source_columns,
+                target_table=target_table,
+                target_columns=target_columns,
+            )
+        )
+
+
+def _parse_sql_column_def(parts: list[str], line: str, line_upper: str) -> ColumnDef:
+    """Parse a SQL column definition from split parts."""
+    column_name = _strip_sql_identifier(parts[0])
+    raw_type = parts[1]
+    inline_fk = SQL_INLINE_REFERENCE_RE.search(line)
+    foreign_key = None
+    if inline_fk:
+        target_table = _strip_sql_identifier(inline_fk.group(1))
+        target_column = _strip_sql_identifier(inline_fk.group(2))
+        if target_table and target_column:
+            foreign_key = f"{target_table}.{target_column}"
+    return ColumnDef(
+        name=column_name,
+        type_name=_normalize_sql_type(raw_type),
+        nullable="NOT NULL" not in line_upper,
+        primary_key="PRIMARY KEY" in line_upper,
+        foreign_key=foreign_key,
+    )
+
+
 def _extract_schema_from_sql_ddl(file_path: str, content: str) -> SchemaExtraction:
     extraction = SchemaExtraction(file_path=file_path, framework="sql")
     matches = list(SQL_CREATE_TABLE_RE.finditer(content))
@@ -272,82 +373,7 @@ def _extract_schema_from_sql_ddl(file_path: str, content: str) -> SchemaExtracti
         items = _split_sql_items(body)
 
         for item in items:
-            line = item.strip()
-            if not line:
-                continue
-            line_upper = line.upper()
-
-            pk_match = SQL_PRIMARY_KEY_RE.search(line)
-            if pk_match:
-                pk_columns = [
-                    _strip_sql_identifier(col)
-                    for col in pk_match.group(1).split(",")
-                    if col.strip()
-                ]
-                for pk_col in pk_columns:
-                    if pk_col and pk_col not in table.primary_keys:
-                        table.primary_keys.append(pk_col)
-
-            fk_match = SQL_FOREIGN_KEY_RE.search(line)
-            if fk_match:
-                source_columns = [
-                    _strip_sql_identifier(col)
-                    for col in fk_match.group(1).split(",")
-                    if col.strip()
-                ]
-                target_table = _strip_sql_identifier(fk_match.group(2))
-                target_columns = [
-                    _strip_sql_identifier(col)
-                    for col in fk_match.group(3).split(",")
-                    if col.strip()
-                ]
-                if source_columns and target_table and target_columns:
-                    extraction.foreign_keys.append(
-                        ForeignKeyDef(
-                            name=None,
-                            source_table=table_name,
-                            source_columns=source_columns,
-                            target_table=target_table,
-                            target_columns=target_columns,
-                        )
-                    )
-
-            if line_upper.startswith(
-                (
-                    "CONSTRAINT ",
-                    "PRIMARY KEY",
-                    "FOREIGN KEY",
-                    "UNIQUE ",
-                    "KEY ",
-                    "INDEX ",
-                    "CHECK ",
-                )
-            ):
-                continue
-
-            parts = line.split(None, 2)
-            if len(parts) < 2:
-                continue
-            column_name = _strip_sql_identifier(parts[0])
-            raw_type = parts[1]
-            inline_fk = SQL_INLINE_REFERENCE_RE.search(line)
-            foreign_key = None
-            if inline_fk:
-                target_table = _strip_sql_identifier(inline_fk.group(1))
-                target_column = _strip_sql_identifier(inline_fk.group(2))
-                if target_table and target_column:
-                    foreign_key = f"{target_table}.{target_column}"
-
-            column = ColumnDef(
-                name=column_name,
-                type_name=_normalize_sql_type(raw_type),
-                nullable="NOT NULL" not in line_upper,
-                primary_key="PRIMARY KEY" in line_upper,
-                foreign_key=foreign_key,
-            )
-            table.columns.append(column)
-            if column.primary_key and column.name not in table.primary_keys:
-                table.primary_keys.append(column.name)
+            _process_sql_ddl_item(item, table, table_name, extraction)
 
         if table.primary_keys:
             for col in table.columns:
