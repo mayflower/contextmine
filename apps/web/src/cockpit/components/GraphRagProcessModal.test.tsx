@@ -1,11 +1,24 @@
 /**
- * Tests for GraphRagProcessModal pure helper functions.
- * The component uses mermaid rendering which requires DOM setup,
- * so we test the pure toMermaid function.
+ * Tests for GraphRagProcessModal rendering + pure helper functions.
  */
-import { describe, expect, it } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { GraphRagProcessDetailPayload, ViewScenario } from '../types'
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn().mockResolvedValue({ svg: '<svg></svg>', bindFunctions: undefined }),
+  },
+}))
+
+vi.mock('../utils/mermaidUtils', () => ({
+  renderMermaidSvg: vi.fn(),
+}))
+
+import GraphRagProcessModal from './GraphRagProcessModal'
 
 // Replicated from GraphRagProcessModal.tsx (lines 15-37)
 function toMermaid(detail: GraphRagProcessDetailPayload): string {
@@ -40,6 +53,8 @@ const scenario: ViewScenario = {
   is_as_is: true,
   base_scenario_id: null,
 }
+
+// --- Pure helper tests ---
 
 describe('toMermaid', () => {
   it('generates flowchart TD header', () => {
@@ -159,5 +174,112 @@ describe('toMermaid', () => {
 
     const result = toMermaid(detail)
     expect(result).not.toContain('-->')
+  })
+})
+
+// --- Rendering tests ---
+
+const mockDetail: GraphRagProcessDetailPayload = {
+  collection_id: 'c1',
+  scenario,
+  process: {
+    id: 'p1',
+    label: 'Authentication Flow',
+    process_type: 'cross_community',
+    step_count: 3,
+    community_ids: ['c1', 'c2'],
+    entry_node_id: 'n1',
+    terminal_node_id: 'n3',
+  },
+  steps: [
+    { step: 1, node_id: 'n1', node_name: 'Login Handler', node_kind: 'SYMBOL', node_natural_key: 'sym:login' },
+    { step: 2, node_id: 'n2', node_name: 'Token Validator', node_kind: 'SYMBOL', node_natural_key: 'sym:validate' },
+    { step: 3, node_id: 'n3', node_name: 'Session Creator', node_kind: 'SYMBOL', node_natural_key: 'sym:session' },
+  ],
+  edges: [
+    { id: 'e1', source_node_id: 'n1', target_node_id: 'n2', kind: 'CALLS', meta: {} },
+    { id: 'e2', source_node_id: 'n2', target_node_id: 'n3', kind: 'CALLS', meta: {} },
+  ],
+}
+
+function makeProps(overrides: Partial<Parameters<typeof GraphRagProcessModal>[0]> = {}) {
+  return {
+    detail: mockDetail,
+    focused: false,
+    onClose: vi.fn(),
+    onSelectNodeId: vi.fn(),
+    onToggleFocus: vi.fn(),
+    ...overrides,
+  }
+}
+
+describe('GraphRagProcessModal rendering', () => {
+  it('renders the modal dialog', () => {
+    render(<GraphRagProcessModal {...makeProps()} />)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('Process flow')).toBeInTheDocument()
+  })
+
+  it('renders the process label as heading', () => {
+    render(<GraphRagProcessModal {...makeProps()} />)
+    expect(screen.getByText('Authentication Flow')).toBeInTheDocument()
+  })
+
+  it('renders process type and step count', () => {
+    render(<GraphRagProcessModal {...makeProps()} />)
+    expect(screen.getByText(/Cross-community process/)).toBeInTheDocument()
+    expect(screen.getByText(/Steps: 3/)).toBeInTheDocument()
+  })
+
+  it('renders close button and calls onClose', async () => {
+    const onClose = vi.fn()
+    render(<GraphRagProcessModal {...makeProps({ onClose })} />)
+    await userEvent.click(screen.getByText('Close'))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('renders Focus in graph button when not focused', () => {
+    render(<GraphRagProcessModal {...makeProps({ focused: false })} />)
+    expect(screen.getByText('Focus in graph')).toBeInTheDocument()
+  })
+
+  it('renders Clear focus button when focused', () => {
+    render(<GraphRagProcessModal {...makeProps({ focused: true })} />)
+    expect(screen.getByText('Clear focus')).toBeInTheDocument()
+  })
+
+  it('calls onToggleFocus when focus button is clicked', async () => {
+    const onToggleFocus = vi.fn()
+    render(<GraphRagProcessModal {...makeProps({ onToggleFocus })} />)
+    await userEvent.click(screen.getByText('Focus in graph'))
+    expect(onToggleFocus).toHaveBeenCalledOnce()
+  })
+
+  it('renders Copy Mermaid button', () => {
+    render(<GraphRagProcessModal {...makeProps()} />)
+    expect(screen.getByText('Copy Mermaid')).toBeInTheDocument()
+  })
+
+  it('renders step buttons', () => {
+    render(<GraphRagProcessModal {...makeProps()} />)
+    expect(screen.getByText('1. Login Handler')).toBeInTheDocument()
+    expect(screen.getByText('2. Token Validator')).toBeInTheDocument()
+    expect(screen.getByText('3. Session Creator')).toBeInTheDocument()
+  })
+
+  it('calls onSelectNodeId when a step is clicked', async () => {
+    const onSelectNodeId = vi.fn()
+    render(<GraphRagProcessModal {...makeProps({ onSelectNodeId })} />)
+    await userEvent.click(screen.getByText('1. Login Handler'))
+    expect(onSelectNodeId).toHaveBeenCalledWith('n1')
+  })
+
+  it('renders intra-community process type', () => {
+    const intraDetail = {
+      ...mockDetail,
+      process: { ...mockDetail.process, process_type: 'intra_community' as const },
+    }
+    render(<GraphRagProcessModal {...makeProps({ detail: intraDetail })} />)
+    expect(screen.getByText(/Intra-community process/)).toBeInTheDocument()
   })
 })

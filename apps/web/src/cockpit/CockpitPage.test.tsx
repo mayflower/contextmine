@@ -1,182 +1,290 @@
 /**
- * Tests for CockpitPage pure functions.
+ * Tests for CockpitPage rendering.
  *
- * The CockpitPage component itself is large and heavily dependent on hooks and
- * child components, so we focus on testing the extractable pure logic:
- * - parseCsv()
- * - parseOverlayFile()
- * - downloadTextFile() - side-effect, tested via mocking
- *
- * Since these are not exported, we duplicate the logic here and verify behavior.
- * This ensures the internal logic is covered by tests.
+ * We mock useCockpitData and useCockpitState to render the component without
+ * actual API calls. This covers the JSX composition logic and early returns.
  */
-import { describe, expect, it } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-// Replicate the parseCsv logic from CockpitPage.tsx (line 55-67) to test it
-function parseCsv(content: string): Array<Record<string, string>> {
-  const lines = content.split('\n').map((line) => line.trim()).filter(Boolean)
-  if (lines.length < 2) return []
-  const headers = lines[0].split(',').map((entry) => entry.trim())
-  return lines.slice(1).map((line) => {
-    const cols = line.split(',').map((entry) => entry.trim())
-    const row: Record<string, string> = {}
-    headers.forEach((header, index) => {
-      row[header] = cols[index] || ''
-    })
-    return row
-  })
+// Mock all view components to avoid deep dependency trees
+vi.mock('./views/TopologyView', () => ({
+  default: () => <div data-testid="topology-view">TopologyView</div>,
+}))
+vi.mock('./views/DeepDiveView', () => ({
+  default: () => <div data-testid="deep-dive-view">DeepDiveView</div>,
+}))
+vi.mock('./views/C4DiffView', () => ({
+  default: () => <div data-testid="c4-diff-view">C4DiffView</div>,
+}))
+vi.mock('./views/ArchitectureView', () => ({
+  default: () => <div data-testid="architecture-view">ArchitectureView</div>,
+}))
+vi.mock('./views/CityView', () => ({
+  default: () => <div data-testid="city-view">CityView</div>,
+}))
+vi.mock('./views/EvolutionView', () => ({
+  default: () => <div data-testid="evolution-view">EvolutionView</div>,
+}))
+vi.mock('./views/GraphRagView', () => ({
+  default: () => <div data-testid="graphrag-view">GraphRagView</div>,
+}))
+vi.mock('./views/OverviewView', () => ({
+  default: () => <div data-testid="overview-view">OverviewView</div>,
+}))
+vi.mock('./views/SemanticMapView', () => ({
+  default: () => <div data-testid="semantic-map-view">SemanticMapView</div>,
+}))
+vi.mock('./views/TestMatrixView', () => ({
+  default: () => <div data-testid="test-matrix-view">TestMatrixView</div>,
+}))
+vi.mock('./views/RebuildReadinessView', () => ({
+  default: () => <div data-testid="rebuild-readiness-view">RebuildReadinessView</div>,
+}))
+vi.mock('./views/ExportsView', () => ({
+  default: () => <div data-testid="exports-view">ExportsView</div>,
+}))
+
+vi.mock('../faro', () => ({
+  getFaro: () => null,
+}))
+
+const mockSetCollectionId = vi.fn()
+const mockSetScenarioId = vi.fn()
+const mockSetLayer = vi.fn()
+const mockSetView = vi.fn()
+const mockSetHotspotFilter = vi.fn()
+const mockSetGraphQuery = vi.fn()
+const mockSetSelectedNodeId = vi.fn()
+const mockSetGraphPage = vi.fn()
+const mockSetGraphLimit = vi.fn()
+const mockSetIncludeKinds = vi.fn()
+const mockSetExcludeKinds = vi.fn()
+const mockSetEdgeKinds = vi.fn()
+const mockSetHideIsolated = vi.fn()
+const mockSetOverlayMode = vi.fn()
+
+const defaultSelection = {
+  collectionId: 'c1',
+  scenarioId: 's1',
+  layer: 'code_controlflow' as const,
+  view: 'overview' as const,
 }
 
-// Replicate parseOverlayFile logic (line 69-107)
-async function parseOverlayFile(
-  file: File,
-): Promise<{
-  runtimeByNodeKey: Record<string, { service: string; latency_p95?: number; error_rate?: number }>
-  riskByNodeKey: Record<string, { node: string; vuln_count?: number; severity_score?: number }>
-}> {
-  const content = await file.text()
-  const ext = file.name.toLowerCase()
-  const runtimeByNodeKey: Record<string, { service: string; latency_p95?: number; error_rate?: number }> = {}
-  const riskByNodeKey: Record<string, { node: string; vuln_count?: number; severity_score?: number }> = {}
+vi.mock('./hooks/useCockpitState', () => ({
+  useCockpitState: () => ({
+    selection: defaultSelection,
+    hotspotFilter: '',
+    graphQuery: '',
+    selectedNodeId: '',
+    graphPage: 0,
+    graphLimit: 1200,
+    includeKinds: [],
+    excludeKinds: [],
+    edgeKinds: [],
+    hideIsolated: false,
+    overlayMode: 'none' as const,
+    setHotspotFilter: mockSetHotspotFilter,
+    setGraphQuery: mockSetGraphQuery,
+    setSelectedNodeId: mockSetSelectedNodeId,
+    setGraphPage: mockSetGraphPage,
+    setGraphLimit: mockSetGraphLimit,
+    setIncludeKinds: mockSetIncludeKinds,
+    setExcludeKinds: mockSetExcludeKinds,
+    setEdgeKinds: mockSetEdgeKinds,
+    setHideIsolated: mockSetHideIsolated,
+    setOverlayMode: mockSetOverlayMode,
+    setCollectionId: mockSetCollectionId,
+    setScenarioId: mockSetScenarioId,
+    setLayer: mockSetLayer,
+    setView: mockSetView,
+  }),
+}))
 
-  let rows: Array<Record<string, unknown>> = []
-  if (ext.endsWith('.json')) {
-    const parsed = JSON.parse(content)
-    if (Array.isArray(parsed)) {
-      rows = parsed
-    } else if (Array.isArray(parsed.rows)) {
-      rows = parsed.rows
-    }
-  } else {
-    rows = parseCsv(content)
-  }
-
-  for (const row of rows) {
-    const service = String((row.service as string) || '')
-    const node = String((row.node as string) || '')
-    if (service) {
-      runtimeByNodeKey[service] = {
-        service,
-        latency_p95: Number(row.latency_p95 || 0),
-        error_rate: Number(row.error_rate || 0),
-      }
-    }
-    if (node) {
-      riskByNodeKey[node] = {
-        node,
-        vuln_count: Number(row.vuln_count || 0),
-        severity_score: Number(row.severity_score || 0),
-      }
-    }
-  }
-
-  return { runtimeByNodeKey, riskByNodeKey }
+const defaultGraph = {
+  nodes: [],
+  edges: [],
+  page: 0,
+  limit: 1200,
+  total_nodes: 0,
 }
 
-describe('parseCsv', () => {
-  it('returns empty array for empty content', () => {
-    expect(parseCsv('')).toEqual([])
+vi.mock('./hooks/useCockpitData', () => ({
+  useCockpitData: () => ({
+    scenarios: [{ id: 's1', name: 'Base', version: 1, is_as_is: true }],
+    scenariosState: 'ready' as const,
+    city: null,
+    graph: defaultGraph,
+    mermaid: null,
+    arc42: null,
+    portsAdapters: null,
+    arc42Drift: null,
+    erm: null,
+    architecturePanelErrors: { arc42: '', ports: '', drift: '', erm: '' },
+    architectureActions: { reindexState: 'idle' as const, reindexMessage: '', regenerateState: 'idle' as const, regenerateMessage: '' },
+    activeState: 'ready' as const,
+    activeError: '',
+    activeUpdatedAt: null,
+    errors: { topology: '', deep_dive: '', c4_diff: '', architecture: '', city: '', evolution: '', graphrag: '', semantic_map: '', ui_map: '', test_matrix: '', user_flows: '', rebuild_readiness: '', exports: '', overview: '' },
+    cityProjection: 'architecture' as const,
+    setCityProjection: vi.fn(),
+    cityEntityLevel: 'domain' as const,
+    setCityEntityLevel: vi.fn(),
+    cityEmbedUrl: '',
+    investmentUtilization: null,
+    knowledgeIslands: null,
+    temporalCoupling: null,
+    fitnessFunctions: null,
+    evolutionPanelErrors: { investment: '', knowledge: '', coupling: '', fitness: '' },
+    exportFormat: 'cc_json' as const,
+    setExportFormat: vi.fn(),
+    exportProjection: 'architecture' as const,
+    setExportProjection: vi.fn(),
+    exportContent: null,
+    neighborhood: null,
+    neighborhoodState: 'idle' as const,
+    neighborhoodError: '',
+    graphRagStatus: 'ready' as const,
+    graphRagReason: 'ok' as const,
+    graphRagEvidenceItems: [],
+    graphRagEvidenceTotal: 0,
+    graphRagEvidenceNodeName: '',
+    graphRagEvidenceState: 'idle' as const,
+    graphRagEvidenceError: '',
+    graphRagCommunities: [],
+    graphRagCommunitiesState: 'ready' as const,
+    graphRagCommunitiesError: '',
+    graphRagPath: null,
+    graphRagPathState: 'idle' as const,
+    graphRagPathError: '',
+    graphRagProcesses: [],
+    graphRagProcessesState: 'ready' as const,
+    graphRagProcessesError: '',
+    graphRagProcessDetail: null,
+    graphRagProcessDetailState: 'idle' as const,
+    graphRagProcessDetailError: '',
+    semanticMap: null,
+    semanticMapComparison: null,
+    uiMapSummary: null,
+    testMatrix: null,
+    userFlows: null,
+    rebuildReadiness: null,
+    traceGraphRagPath: vi.fn().mockResolvedValue(null),
+    loadGraphRagProcessDetail: vi.fn().mockResolvedValue(null),
+    triggerCollectionReindex: vi.fn().mockResolvedValue(true),
+    regenerateArc42: vi.fn().mockResolvedValue(true),
+    generateExport: vi.fn().mockResolvedValue(null),
+    refreshActiveView: vi.fn(),
+  }),
+}))
+
+import CockpitPage from './CockpitPage'
+
+const defaultCollections = [{ id: 'c1', name: 'ContextMine' }]
+
+describe('CockpitPage rendering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    defaultSelection.view = 'overview'
+    defaultSelection.collectionId = 'c1'
   })
 
-  it('returns empty array for header-only content', () => {
-    expect(parseCsv('name,value')).toEqual([])
+  it('renders the cockpit shell with header', () => {
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByText('Architecture Cockpit')).toBeInTheDocument()
   })
 
-  it('parses simple CSV with header and data rows', () => {
-    const csv = 'name,value\nalpha,1\nbeta,2'
-    const result = parseCsv(csv)
-    expect(result).toEqual([
-      { name: 'alpha', value: '1' },
-      { name: 'beta', value: '2' },
-    ])
+  it('renders onboarding when no collections', () => {
+    render(<CockpitPage collections={[]} />)
+    expect(screen.getByText('Start by creating a collection')).toBeInTheDocument()
+    expect(screen.getByText('Go to Collections')).toBeInTheDocument()
+    expect(screen.getByText('Go to Runs')).toBeInTheDocument()
   })
 
-  it('trims whitespace from values', () => {
-    const csv = ' name , value \n alpha , 1 '
-    const result = parseCsv(csv)
-    expect(result).toEqual([{ name: 'alpha', value: '1' }])
+  it('renders overview view by default', () => {
+    defaultSelection.view = 'overview'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('overview-view')).toBeInTheDocument()
   })
 
-  it('handles missing columns with empty string', () => {
-    const csv = 'a,b,c\n1,2'
-    const result = parseCsv(csv)
-    expect(result).toEqual([{ a: '1', b: '2', c: '' }])
+  it('renders topology view when selected', () => {
+    defaultSelection.view = 'topology'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('topology-view')).toBeInTheDocument()
   })
 
-  it('skips blank lines', () => {
-    const csv = 'name,value\n\nalpha,1\n\nbeta,2\n'
-    const result = parseCsv(csv)
-    expect(result).toEqual([
-      { name: 'alpha', value: '1' },
-      { name: 'beta', value: '2' },
-    ])
-  })
-})
-
-describe('parseOverlayFile', () => {
-  it('parses JSON array file with service data', async () => {
-    const content = JSON.stringify([
-      { service: 'auth', latency_p95: 150, error_rate: 0.05 },
-    ])
-    const file = new File([content], 'overlay.json', { type: 'application/json' })
-    const result = await parseOverlayFile(file)
-    expect(result.runtimeByNodeKey['auth']).toEqual({
-      service: 'auth',
-      latency_p95: 150,
-      error_rate: 0.05,
-    })
+  it('renders deep dive view when selected', () => {
+    defaultSelection.view = 'deep_dive'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('deep-dive-view')).toBeInTheDocument()
   })
 
-  it('parses JSON object with rows property', async () => {
-    const content = JSON.stringify({
-      rows: [{ node: 'api-gateway', vuln_count: 5, severity_score: 7 }],
-    })
-    const file = new File([content], 'risk.json', { type: 'application/json' })
-    const result = await parseOverlayFile(file)
-    expect(result.riskByNodeKey['api-gateway']).toEqual({
-      node: 'api-gateway',
-      vuln_count: 5,
-      severity_score: 7,
-    })
+  it('renders c4 diff view when selected', () => {
+    defaultSelection.view = 'c4_diff'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('c4-diff-view')).toBeInTheDocument()
   })
 
-  it('parses CSV file with service data', async () => {
-    const csv = 'service,latency_p95,error_rate\nauth,200,0.1'
-    const file = new File([csv], 'overlay.csv', { type: 'text/csv' })
-    const result = await parseOverlayFile(file)
-    expect(result.runtimeByNodeKey['auth']).toEqual({
-      service: 'auth',
-      latency_p95: 200,
-      error_rate: 0.1,
-    })
+  it('renders architecture view when selected', () => {
+    defaultSelection.view = 'architecture'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('architecture-view')).toBeInTheDocument()
   })
 
-  it('parses CSV file with node risk data', async () => {
-    const csv = 'node,vuln_count,severity_score\napi,3,6'
-    const file = new File([csv], 'risk.csv', { type: 'text/csv' })
-    const result = await parseOverlayFile(file)
-    expect(result.riskByNodeKey['api']).toEqual({
-      node: 'api',
-      vuln_count: 3,
-      severity_score: 6,
-    })
+  it('renders city view when selected', () => {
+    defaultSelection.view = 'city'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('city-view')).toBeInTheDocument()
   })
 
-  it('handles mixed service and node rows', async () => {
-    const content = JSON.stringify([
-      { service: 'auth', latency_p95: 100, node: 'auth', vuln_count: 2, severity_score: 4 },
-    ])
-    const file = new File([content], 'mixed.json')
-    const result = await parseOverlayFile(file)
-    expect(result.runtimeByNodeKey['auth']).toBeDefined()
-    expect(result.riskByNodeKey['auth']).toBeDefined()
+  it('renders evolution view when selected', () => {
+    defaultSelection.view = 'evolution'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('evolution-view')).toBeInTheDocument()
   })
 
-  it('returns empty maps for empty JSON array', async () => {
-    const content = JSON.stringify([])
-    const file = new File([content], 'empty.json')
-    const result = await parseOverlayFile(file)
-    expect(result.runtimeByNodeKey).toEqual({})
-    expect(result.riskByNodeKey).toEqual({})
+  it('renders graphrag view when selected', () => {
+    defaultSelection.view = 'graphrag'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('graphrag-view')).toBeInTheDocument()
+  })
+
+  it('renders semantic map view when selected', () => {
+    defaultSelection.view = 'semantic_map'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('semantic-map-view')).toBeInTheDocument()
+  })
+
+  it('renders test matrix view when selected', () => {
+    defaultSelection.view = 'test_matrix'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('test-matrix-view')).toBeInTheDocument()
+  })
+
+  it('renders rebuild readiness view when selected', () => {
+    defaultSelection.view = 'rebuild_readiness'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('rebuild-readiness-view')).toBeInTheDocument()
+  })
+
+  it('renders exports view when selected', () => {
+    defaultSelection.view = 'exports'
+    render(<CockpitPage collections={defaultCollections} />)
+    expect(screen.getByTestId('exports-view')).toBeInTheDocument()
+  })
+
+  it('calls onOpenCollections when Go to Collections is clicked (empty state)', async () => {
+    const onOpenCollections = vi.fn()
+    render(<CockpitPage collections={[]} onOpenCollections={onOpenCollections} />)
+    await userEvent.click(screen.getByText('Go to Collections'))
+    expect(onOpenCollections).toHaveBeenCalledOnce()
+  })
+
+  it('calls onOpenRuns when Go to Runs is clicked (empty state)', async () => {
+    const onOpenRuns = vi.fn()
+    render(<CockpitPage collections={[]} onOpenRuns={onOpenRuns} />)
+    await userEvent.click(screen.getByText('Go to Runs'))
+    expect(onOpenRuns).toHaveBeenCalledOnce()
   })
 })
