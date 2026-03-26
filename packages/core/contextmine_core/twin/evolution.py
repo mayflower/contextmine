@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -149,18 +149,11 @@ class _TarjanState:
     """Mutable state for iterative Tarjan SCC."""
 
     index: int = 0
-    stack: list[str] = None  # type: ignore[assignment]
-    on_stack: set[str] = None  # type: ignore[assignment]
-    indices: dict[str, int] = None  # type: ignore[assignment]
-    lowlink: dict[str, int] = None  # type: ignore[assignment]
-    cycles: list[list[str]] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        self.stack = []
-        self.on_stack = set()
-        self.indices = {}
-        self.lowlink = {}
-        self.cycles = []
+    stack: list[str] = field(default_factory=list)
+    on_stack: set[str] = field(default_factory=set)
+    indices: dict[str, int] = field(default_factory=dict)
+    lowlink: dict[str, int] = field(default_factory=dict)
+    cycles: list[list[str]] = field(default_factory=list)
 
 
 def _tarjan_visit(

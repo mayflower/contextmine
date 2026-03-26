@@ -525,8 +525,6 @@ async def get_collection_twin_status(
     in_progress_count = 0
     materialized_at: datetime | None = None
 
-    stage_latest: dict[str, UUID] = {}
-    stage_timings: dict[str, float] = defaultdict(float)
     behavioral_status_values: list[str] = []
     behavioral_materialized_at: datetime | None = None
     deep_warnings: list[str] = []

@@ -438,7 +438,7 @@ function SourceRow({
                 Edit
               </button>
               <button
-                onClick={async () => { onSetSelectedCollection(collection); await onDeleteSource(source.id, collection) }}
+                onClick={() => { onSetSelectedCollection(collection); onDeleteSource(source.id, collection) }}
                 className="delete-btn"
               >
                 ×
