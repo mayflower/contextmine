@@ -531,6 +531,18 @@ def _build_ownership_file_row(
     }
 
 
+def _accumulate_entity_ownership(
+    rows: list,
+    entity_key: str,
+    entity_contrib: dict[str, dict[str, float]],
+    global_contrib: dict[str, float],
+) -> None:
+    """Accumulate author contributions for an entity from ownership rows."""
+    for row in rows:
+        entity_contrib[entity_key][row.author_label] += float(row.additions)
+        global_contrib[row.author_label] += float(row.additions)
+
+
 async def get_knowledge_islands_payload(
     session: AsyncSession,
     *,
@@ -606,9 +618,7 @@ async def get_knowledge_islands_payload(
         if file_row is None:
             continue
         entity_key = file_row["entity_key"]
-        for row in rows:
-            entity_contrib[entity_key][row.author_label] += float(row.additions)
-            global_contrib[row.author_label] += float(row.additions)
+        _accumulate_entity_ownership(rows, entity_key, entity_contrib, global_contrib)
         entity_files[entity_key].append(file_row)
         dominant_files.append(file_row)
 

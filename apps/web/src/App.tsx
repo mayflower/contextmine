@@ -482,7 +482,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [, setSources] = useState<Source[]>([])
+  const [_sources, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1857,14 +1857,15 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" role="button" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
+                        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+                        <div className="collection-header-row" onClick={(e) => { if ((e.target as HTMLElement).closest('form, [role="toolbar"]')) return; handleToggleExpand(collection); }} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
 
                           <div className="collection-info">
                             {isEditing ? (
-                              <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                              <form onSubmit={handleSaveCollection} className="edit-collection-form">
                                 <input
                                   type="text"
                                   value={editCollectionName}
@@ -1956,7 +1957,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="share-popover" role="dialog" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>

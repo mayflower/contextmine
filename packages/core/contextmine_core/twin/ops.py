@@ -502,6 +502,28 @@ async def _collect_pipeline_stage_info(
     return stage_latest, stage_timings
 
 
+def _count_source_status(
+    status: str,
+    row_info: dict[str, Any],
+    ready_count: int,
+    failed_count: int,
+    in_progress_count: int,
+    materialized_at: datetime | None,
+    in_progress_statuses: set[str],
+) -> tuple[int, int, int, datetime | None]:
+    """Classify a source's status and update counters."""
+    if status == "ready":
+        ready_count += 1
+        finished_at = row_info.get("finished_at")
+        if finished_at and (materialized_at is None or finished_at > materialized_at):
+            materialized_at = finished_at
+    elif status == "failed":
+        failed_count += 1
+    elif status in in_progress_statuses:
+        in_progress_count += 1
+    return ready_count, failed_count, in_progress_count, materialized_at
+
+
 async def get_collection_twin_status(
     session: AsyncSession,
     *,
@@ -545,15 +567,15 @@ async def get_collection_twin_status(
         source_rows.append(row_info["row"])
 
         status = row_info["status"]
-        if status == "ready":
-            ready_count += 1
-            finished_at = row_info.get("finished_at")
-            if finished_at and (materialized_at is None or finished_at > materialized_at):
-                materialized_at = finished_at
-        elif status == "failed":
-            failed_count += 1
-        elif status in _STATUS_IN_PROGRESS:
-            in_progress_count += 1
+        ready_count, failed_count, in_progress_count, materialized_at = _count_source_status(
+            status,
+            row_info,
+            ready_count,
+            failed_count,
+            in_progress_count,
+            materialized_at,
+            _STATUS_IN_PROGRESS,
+        )
 
         latest = row_info.get("latest")
         if not latest:

@@ -305,6 +305,11 @@ def _extract_with_traversal(
     lines = content.split("\n")
     symbol_types = _get_symbol_node_types(language)
 
+    def _traverse_children(node: Any, new_parent: str) -> None:
+        if include_children:
+            for child in node.children:
+                traverse(child, new_parent)
+
     def traverse(node: Any, parent_name: str | None = None) -> None:
         if node.type in symbol_types:
             extracted_name = _try_extract_symbol_from_node(
@@ -317,9 +322,7 @@ def _extract_with_traversal(
                 symbols,
             )
             if extracted_name:
-                if include_children:
-                    for child in node.children:
-                        traverse(child, extracted_name)
+                _traverse_children(node, extracted_name)
                 return
         for child in node.children:
             traverse(child, parent_name)

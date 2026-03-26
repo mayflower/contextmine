@@ -78,15 +78,8 @@ class FinalizeInput(BaseModel):
     confidence: float = Field(default=0.8, description="Confidence 0.0-1.0")
 
 
-def create_tools(run_holder: dict[str, ResearchRun]) -> list:
-    """Create tools that operate on a shared ResearchRun.
-
-    Args:
-        run_holder: Dict holding the current run (mutable reference)
-
-    Returns:
-        List of tool functions
-    """
+def _create_search_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create search and finalize tools."""
 
     @tool
     async def hybrid_search(query: str, k: int = 10) -> str:
@@ -201,9 +194,11 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
         run_holder["confidence"] = confidence
         return f"Answer submitted for verification (confidence: {confidence})"
 
-    # =========================================================================
-    # DEFINITION/REFERENCE TOOLS (use pre-indexed Symbol and SymbolEdge data)
-    # =========================================================================
+    return [hybrid_search, open_span, finalize]
+
+
+def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create definition/reference lookup tools."""
 
     @tool
     async def goto_definition(symbol_name: str, file_path: str | None = None) -> str:
@@ -436,9 +431,11 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("get_signature failed: %s", e)
             return f"Get signature failed: {e}"
 
-    # =========================================================================
-    # SYMBOL INDEX TOOLS (use pre-indexed data from database)
-    # =========================================================================
+    return [goto_definition, find_references, get_signature]
+
+
+def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create symbol index tools."""
 
     @tool
     async def symbol_outline(file_path: str) -> str:
@@ -801,9 +798,18 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             logger.warning("summarize_evidence failed: %s", e)
             return f"Summarize failed: {e}"
 
-    # =========================================================================
-    # GRAPH TRAVERSAL TOOLS (use pre-indexed SymbolEdge data)
-    # =========================================================================
+    return [
+        symbol_outline,
+        symbol_find,
+        symbol_callers,
+        symbol_callees,
+        symbol_enclosing,
+        summarize_evidence,
+    ]
+
+
+def _create_graph_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create graph traversal tools."""
 
     @tool
     async def graph_expand(
@@ -1143,9 +1149,11 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             logger.warning("graph_trace failed: %s", e)
             return f"Graph trace failed: {e}"
 
-    # =========================================================================
-    # GRAPHRAG TOOLS (use Knowledge Graph with community-aware retrieval)
-    # =========================================================================
+    return [graph_expand, graph_pack, graph_trace]
+
+
+def _create_graphrag_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create GraphRAG tools."""
 
     @tool
     async def graphrag_search(query: str, max_entities: int = 15) -> str:
@@ -1453,33 +1461,24 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             logger.warning("kg_path failed: %s", e)
             return f"Knowledge Graph path failed: {e}"
 
-    # Build tools list - all tools use pre-indexed data
-    tools = [
-        # Core tools
-        hybrid_search,
-        open_span,
-        finalize,
-        summarize_evidence,
-        # Definition/reference tools (pre-indexed)
-        goto_definition,
-        find_references,
-        get_signature,
-        # Symbol index tools (pre-indexed)
-        symbol_outline,
-        symbol_find,
-        symbol_enclosing,
-        symbol_callers,
-        symbol_callees,
-        # Graph traversal tools (pre-indexed Symbol graph)
-        graph_expand,
-        graph_pack,
-        graph_trace,
-        # GraphRAG tools (Knowledge Graph with communities)
-        graphrag_search,
-        kg_neighborhood,
-        kg_path,
-    ]
+    return [graphrag_search, kg_neighborhood, kg_path]
 
+
+def create_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create tools that operate on a shared ResearchRun.
+
+    Args:
+        run_holder: Dict holding the current run (mutable reference)
+
+    Returns:
+        List of tool functions
+    """
+    tools: list = []
+    tools.extend(_create_search_tools(run_holder))
+    tools.extend(_create_definition_tools(run_holder))
+    tools.extend(_create_symbol_tools(run_holder))
+    tools.extend(_create_graph_tools(run_holder))
+    tools.extend(_create_graphrag_tools(run_holder))
     return tools
 
 
@@ -1587,6 +1586,51 @@ class ResearchAgent:
 
         return run
 
+    def _handle_verification_failure(
+        self,
+        state: dict,
+        run: Any,
+        run_holder: dict[str, Any],
+        pending: str,
+        attempts: int,
+    ) -> dict[str, object]:
+        """Handle a failed answer verification, retrying or accepting."""
+        current_ai_messages = len([m for m in state["messages"] if isinstance(m, AIMessage)])
+        run.budget_used = current_ai_messages
+        logger.warning(
+            "Answer rejected for run %s (attempt %d, budget %d/%d): %s",
+            run.run_id[:8],
+            attempts + 1,
+            current_ai_messages,
+            run.budget_steps,
+            run.verification.issues[:2],
+        )
+        budget_remaining = run.budget_steps - current_ai_messages
+        if budget_remaining <= 1 or attempts >= self.config.max_verification_retries:
+            logger.info(
+                "Accepting answer for run %s despite verification issues "
+                "(budget_remaining=%d, attempts=%d)",
+                run.run_id[:8],
+                budget_remaining,
+                attempts + 1,
+            )
+            run.complete(pending)
+            run_holder["pending_answer"] = None
+            return {"run": run, "pending_answer": None}
+        run.answer = None
+        run_holder["pending_answer"] = None
+        feedback = (
+            f"Your answer was rejected because it's not grounded in evidence. "
+            f"Issues: {'; '.join(run.verification.issues[:3])}. "
+            f"Please gather more evidence and try again."
+        )
+        return {
+            "messages": [HumanMessage(content=feedback)],
+            "run": run,
+            "pending_answer": None,
+            "verification_attempts": attempts + 1,
+        }
+
     def _build_graph(self, run_holder: dict[str, Any]) -> Any:
         """Build the LangGraph workflow."""
         # Create tools
@@ -1658,51 +1702,7 @@ class ResearchAgent:
             run.verification = verification
 
             if verification.status == VerificationStatus.FAILED:
-                # Recalculate budget_used from current message state
-                current_ai_messages = len(
-                    [m for m in state["messages"] if isinstance(m, AIMessage)]
-                )
-                run.budget_used = current_ai_messages
-
-                logger.warning(
-                    "Answer rejected for run %s (attempt %d, budget %d/%d): %s",
-                    run.run_id[:8],
-                    attempts + 1,
-                    current_ai_messages,
-                    run.budget_steps,
-                    verification.issues[:2],
-                )
-
-                # If budget is nearly exhausted, accept the answer anyway
-                # (a partially grounded answer is better than none)
-                budget_remaining = run.budget_steps - current_ai_messages
-                if budget_remaining <= 1 or attempts >= self.config.max_verification_retries:
-                    logger.info(
-                        "Accepting answer for run %s despite verification issues "
-                        "(budget_remaining=%d, attempts=%d)",
-                        run.run_id[:8],
-                        budget_remaining,
-                        attempts + 1,
-                    )
-                    run.complete(pending)
-                    run_holder["pending_answer"] = None
-                    return {"run": run, "pending_answer": None}
-
-                run.answer = None
-                run_holder["pending_answer"] = None
-
-                # Add feedback message for retry
-                feedback = (
-                    f"Your answer was rejected because it's not grounded in evidence. "
-                    f"Issues: {'; '.join(verification.issues[:3])}. "
-                    f"Please gather more evidence and try again."
-                )
-                return {
-                    "messages": [HumanMessage(content=feedback)],
-                    "run": run,
-                    "pending_answer": None,
-                    "verification_attempts": attempts + 1,
-                }
+                return self._handle_verification_failure(state, run, run_holder, pending, attempts)
 
             # Verification passed
             run.complete(pending)

@@ -74,6 +74,13 @@ function pairKey(source: string, target: string): string {
   return `${source}->${target}`
 }
 
+function metaString(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return String(value)
+  return ''
+}
+
 export default function GraphRagView({
   graph,
   state,
@@ -219,12 +226,12 @@ export default function GraphRagView({
               ? graph.nodes.some(
                   (node) =>
                     node.id === edge.source_node_id &&
-                    String(node.meta?.community_id ?? '') === communityId,
+                    metaString(node.meta?.community_id) === communityId,
                 ) &&
                 graph.nodes.some(
                   (node) =>
                     node.id === edge.target_node_id &&
-                    String(node.meta?.community_id ?? '') === communityId,
+                    metaString(node.meta?.community_id) === communityId,
                 )
               : true
           const edgeTouchesSelected =

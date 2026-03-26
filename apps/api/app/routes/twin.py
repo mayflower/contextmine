@@ -1145,6 +1145,35 @@ def _topology_entity_level(layer: TwinLayer | None, explicit: str | None) -> str
     return "container"
 
 
+def _build_adjacency(edges: list[dict]) -> dict[str, set[str]]:
+    """Build bidirectional adjacency map from edges."""
+    adjacency: dict[str, set[str]] = {}
+    for edge in edges:
+        src = str(edge.get("source_node_id"))
+        dst = str(edge.get("target_node_id"))
+        adjacency.setdefault(src, set()).add(dst)
+        adjacency.setdefault(dst, set()).add(src)
+    return adjacency
+
+
+def _bfs_expand(
+    frontier: set[str],
+    seen: set[str],
+    adjacency: dict[str, set[str]],
+    limit: int,
+) -> set[str]:
+    """Expand one BFS hop, respecting the node limit."""
+    next_frontier: set[str] = set()
+    for node_id in frontier:
+        for neighbor in adjacency.get(node_id, set()):
+            if neighbor not in seen:
+                seen.add(neighbor)
+                next_frontier.add(neighbor)
+            if len(seen) >= limit:
+                return next_frontier
+    return next_frontier
+
+
 def _extract_neighborhood(
     nodes: list[dict],
     edges: list[dict],
@@ -1158,27 +1187,12 @@ def _extract_neighborhood(
 
     seen = {root_node_id}
     frontier = {root_node_id}
-    adjacency: dict[str, set[str]] = {}
-    for edge in edges:
-        src = str(edge.get("source_node_id"))
-        dst = str(edge.get("target_node_id"))
-        adjacency.setdefault(src, set()).add(dst)
-        adjacency.setdefault(dst, set()).add(src)
+    adjacency = _build_adjacency(edges)
 
     for _ in range(max(hops, 0)):
         if not frontier or len(seen) >= limit:
             break
-        next_frontier: set[str] = set()
-        for node_id in frontier:
-            for neighbor in adjacency.get(node_id, set()):
-                if neighbor not in seen:
-                    seen.add(neighbor)
-                    next_frontier.add(neighbor)
-                if len(seen) >= limit:
-                    break
-            if len(seen) >= limit:
-                break
-        frontier = next_frontier
+        frontier = _bfs_expand(frontier, seen, adjacency, limit)
 
     neighborhood_nodes = [node for node_id, node in node_by_id.items() if node_id in seen]
     neighborhood_ids = {str(node.get("id")) for node in neighborhood_nodes}
@@ -4894,6 +4908,128 @@ async def graphrag_evidence_view(
         }
 
 
+async def _resolve_city_codecharta(
+    db: Any,
+    scenario_id: uuid.UUID,
+) -> tuple:
+    """Try progressively coarser CodeCharta projections until nodes are found."""
+    cc_projection = GraphProjection.ARCHITECTURE
+    cc_entity_level: str | None = "container"
+    cc_json_payload = json.loads(
+        await export_codecharta_json(
+            db, scenario_id, projection=cc_projection, entity_level=cc_entity_level
+        )
+    )
+    if len(cc_json_payload.get("nodes") or []) <= 1:
+        cc_entity_level = "component"
+        cc_json_payload = json.loads(
+            await export_codecharta_json(
+                db, scenario_id, projection=cc_projection, entity_level=cc_entity_level
+            )
+        )
+    if len(cc_json_payload.get("nodes") or []) <= 1:
+        cc_projection = GraphProjection.CODE_FILE
+        cc_entity_level = None
+        cc_json_payload = json.loads(
+            await export_codecharta_json(
+                db, scenario_id, projection=cc_projection, entity_level=None
+            )
+        )
+    return cc_projection, cc_entity_level, cc_json_payload
+
+
+async def _resolve_metrics_reason(
+    db: Any,
+    collection_uuid: uuid.UUID,
+    scenario_id: uuid.UUID,
+    metrics_ready: bool,
+) -> str:
+    """Determine the reason string for metrics availability."""
+    if metrics_ready:
+        return "ok"
+    sources = (
+        (await db.execute(select(Source).where(Source.collection_id == collection_uuid)))
+        .scalars()
+        .all()
+    )
+    github_source_ids = [source.id for source in sources if source.type == SourceType.GITHUB]
+    if not github_source_ids:
+        return "no_real_metrics"
+    jobs = (
+        (
+            await db.execute(
+                select(CoverageIngestJob)
+                .where(CoverageIngestJob.source_id.in_(github_source_ids))
+                .order_by(CoverageIngestJob.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    has_pending = any(job.status in {"queued", "processing"} for job in jobs)
+    if has_pending:
+        return "awaiting_ci_coverage"
+    latest_failed = next(
+        (job for job in jobs if job.status in {"failed", "rejected"}),
+        None,
+    )
+    if latest_failed is not None:
+        return "coverage_ingest_failed"
+    file_nodes = (
+        (
+            await db.execute(
+                select(TwinNode).where(
+                    TwinNode.scenario_id == scenario_id,
+                    TwinNode.kind == "file",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    has_structural = any(
+        bool((node.meta or {}).get("metrics_structural_ready")) for node in file_nodes
+    )
+    return "awaiting_ci_coverage" if has_structural else "no_real_metrics"
+
+
+def _compute_metric_averages(metrics: list, metrics_ready: bool) -> dict[str, float | None]:
+    """Compute metric averages over all metric snapshots."""
+    total = len(metrics)
+    if not metrics_ready or not total:
+        return {
+            "coverage_avg": None,
+            "complexity_avg": None,
+            "coupling_avg": None,
+            "cohesion_avg": None,
+            "instability_avg": None,
+            "duplication_ratio_avg": None,
+            "crap_score_avg": None,
+            "fan_in_avg": None,
+            "fan_out_avg": None,
+            "cycle_participation_ratio": None,
+            "cycle_size_avg": None,
+            "change_frequency_avg": None,
+            "churn_avg": None,
+        }
+    return {
+        "coverage_avg": sum(float(m.coverage or 0.0) for m in metrics) / total,
+        "complexity_avg": sum(float(m.complexity or 0.0) for m in metrics) / total,
+        "coupling_avg": sum(float(m.coupling or 0.0) for m in metrics) / total,
+        "cohesion_avg": sum(float(m.cohesion or 0.0) for m in metrics) / total,
+        "instability_avg": sum(float(m.instability or 0.0) for m in metrics) / total,
+        "duplication_ratio_avg": sum(float(m.duplication_ratio or 0.0) for m in metrics) / total,
+        "crap_score_avg": sum(float(m.crap_score or 0.0) for m in metrics) / total,
+        "fan_in_avg": sum(float(m.fan_in or 0.0) for m in metrics) / total,
+        "fan_out_avg": sum(float(m.fan_out or 0.0) for m in metrics) / total,
+        "cycle_participation_ratio": sum(1.0 for m in metrics if bool(m.cycle_participation))
+        / total,
+        "cycle_size_avg": sum(float(m.cycle_size or 0.0) for m in metrics) / total,
+        "change_frequency_avg": sum(float(m.change_frequency or 0.0) for m in metrics) / total,
+        "churn_avg": sum(float((m.meta or {}).get("churn", 0.0) or 0.0) for m in metrics) / total,
+    }
+
+
 @router.get(
     "/collections/{collection_id}/views/city",
     responses={
@@ -4940,58 +5076,9 @@ async def city_view(
 
         settings = get_settings()
         metrics_ready = len(metrics) > 0
-        metrics_reason = "ok" if metrics_ready else "no_real_metrics"
-        if not metrics_ready:
-            sources = (
-                (await db.execute(select(Source).where(Source.collection_id == collection_uuid)))
-                .scalars()
-                .all()
-            )
-            github_source_ids = [
-                source.id for source in sources if source.type == SourceType.GITHUB
-            ]
-
-            if github_source_ids:
-                jobs = (
-                    (
-                        await db.execute(
-                            select(CoverageIngestJob)
-                            .where(CoverageIngestJob.source_id.in_(github_source_ids))
-                            .order_by(CoverageIngestJob.created_at.desc())
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                has_pending = any(job.status in {"queued", "processing"} for job in jobs)
-                latest_failed = next(
-                    (job for job in jobs if job.status in {"failed", "rejected"}),
-                    None,
-                )
-                if has_pending:
-                    metrics_reason = "awaiting_ci_coverage"
-                elif latest_failed is not None:
-                    metrics_reason = "coverage_ingest_failed"
-                else:
-                    file_nodes = (
-                        (
-                            await db.execute(
-                                select(TwinNode).where(
-                                    TwinNode.scenario_id == scenario.id,
-                                    TwinNode.kind == "file",
-                                )
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-                    has_structural = any(
-                        bool((node.meta or {}).get("metrics_structural_ready"))
-                        for node in file_nodes
-                    )
-                    if has_structural:
-                        metrics_reason = "awaiting_ci_coverage"
-
+        metrics_reason = await _resolve_metrics_reason(
+            db, collection_uuid, scenario.id, metrics_ready
+        )
         metrics_status = {
             "status": "ready" if metrics_ready else "unavailable",
             "reason": metrics_reason,
@@ -5010,125 +5097,18 @@ async def city_view(
         hotspots = sorted_hotspots[:hotspots_limit] if metrics_ready else []
 
         total = len(metrics)
-        coverage_avg = (
-            sum(float(metric.coverage or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        complexity_avg = (
-            sum(float(metric.complexity or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        coupling_avg = (
-            sum(float(metric.coupling or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        cohesion_avg = (
-            sum(float(metric.cohesion or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        instability_avg = (
-            sum(float(metric.instability or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        duplication_ratio_avg = (
-            sum(float(metric.duplication_ratio or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        crap_score_avg = (
-            sum(float(metric.crap_score or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        fan_in_avg = (
-            sum(float(metric.fan_in or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        fan_out_avg = (
-            sum(float(metric.fan_out or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        cycle_participation_ratio = (
-            sum(1.0 for metric in metrics if bool(metric.cycle_participation)) / total
-            if metrics_ready and total
-            else None
-        )
-        cycle_size_avg = (
-            sum(float(metric.cycle_size or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        change_frequency_avg = (
-            sum(float(metric.change_frequency or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
-        churn_avg = (
-            sum(float((metric.meta or {}).get("churn", 0.0) or 0.0) for metric in metrics) / total
-            if metrics_ready and total
-            else None
-        )
+        averages = _compute_metric_averages(metrics, metrics_ready)
 
-        cc_projection = GraphProjection.ARCHITECTURE
-        cc_entity_level = "container"
-        cc_json_payload = json.loads(
-            await export_codecharta_json(
-                db,
-                scenario.id,
-                projection=cc_projection,
-                entity_level=cc_entity_level,
-            )
+        cc_projection, cc_entity_level, cc_json_payload = await _resolve_city_codecharta(
+            db, scenario.id
         )
-        # Monolith-heavy repositories often collapse to a single container node.
-        # In that case, component-level projection is more informative for the city view.
-        if len(cc_json_payload.get("nodes") or []) <= 1:
-            cc_entity_level = "component"
-            cc_json_payload = json.loads(
-                await export_codecharta_json(
-                    db,
-                    scenario.id,
-                    projection=cc_projection,
-                    entity_level=cc_entity_level,
-                )
-            )
-        # Final fallback for repos that still collapse into one architecture bucket.
-        if len(cc_json_payload.get("nodes") or []) <= 1:
-            cc_projection = GraphProjection.CODE_FILE
-            cc_entity_level = None
-            cc_json_payload = json.loads(
-                await export_codecharta_json(
-                    db,
-                    scenario.id,
-                    projection=cc_projection,
-                    entity_level=None,
-                )
-            )
 
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
             "summary": {
                 "metric_nodes": total,
-                "coverage_avg": coverage_avg,
-                "complexity_avg": complexity_avg,
-                "coupling_avg": coupling_avg,
-                "cohesion_avg": cohesion_avg,
-                "instability_avg": instability_avg,
-                "duplication_ratio_avg": duplication_ratio_avg,
-                "crap_score_avg": crap_score_avg,
-                "fan_in_avg": fan_in_avg,
-                "fan_out_avg": fan_out_avg,
-                "cycle_participation_ratio": cycle_participation_ratio,
-                "cycle_size_avg": cycle_size_avg,
-                "change_frequency_avg": change_frequency_avg,
-                "churn_avg": churn_avg,
+                **averages,
             },
             "metrics_status": metrics_status,
             "cc_projection": cc_projection.value,
@@ -5422,6 +5402,60 @@ async def query_cypher(request: Request, scenario_id: str, body: CypherRequest) 
         return {"rows": rows, "count": len(rows)}
 
 
+async def _export_mermaid_c4_format(
+    db: Any,
+    scenario: Any,
+    body: Any,
+) -> dict | None:
+    """Handle mermaid_c4 as-is/to-be export. Returns a result dict or None for single export."""
+    if not scenario.base_scenario_id:
+        return None
+    selected_c4_view = _parse_c4_view(body.c4_view)
+    selected_c4_scope = _parse_c4_scope(body.c4_scope)
+    selected_max_nodes = body.max_nodes or 120
+    as_is_content, to_be_content = await export_mermaid_asis_tobe(
+        db,
+        as_is_scenario_id=scenario.base_scenario_id,
+        to_be_scenario_id=scenario.id,
+        c4_view=selected_c4_view,
+        c4_scope=selected_c4_scope,
+        max_nodes=selected_max_nodes,
+    )
+    as_is_artifact = await _upsert_artifact(
+        db,
+        collection_id=scenario.collection_id,
+        kind=KnowledgeArtifactKind.MERMAID_C4_ASIS,
+        name=f"{scenario.name}.asis.mmd",
+        content=as_is_content,
+        meta={
+            "scenario_id": str(scenario.base_scenario_id),
+            "c4_view": selected_c4_view,
+            "c4_scope": selected_c4_scope,
+            "max_nodes": selected_max_nodes,
+        },
+    )
+    to_be_artifact = await _upsert_artifact(
+        db,
+        collection_id=scenario.collection_id,
+        kind=KnowledgeArtifactKind.MERMAID_C4_TOBE,
+        name=f"{scenario.name}.tobe.mmd",
+        content=to_be_content,
+        meta={
+            "scenario_id": str(scenario.id),
+            "c4_view": selected_c4_view,
+            "c4_scope": selected_c4_scope,
+            "max_nodes": selected_max_nodes,
+        },
+    )
+    await db.commit()
+    return {
+        "exports": [
+            {"id": str(as_is_artifact.id), "name": as_is_artifact.name},
+            {"id": str(to_be_artifact.id), "name": to_be_artifact.name},
+        ]
+    }
+
+
 @router.post(
     "/scenarios/{scenario_id}/exports",
     responses={
@@ -5499,52 +5533,13 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             kind = KnowledgeArtifactKind.TWIN_MANIFEST
             name = f"{scenario.name}.twin_manifest.json"
         else:
+            result = await _export_mermaid_c4_format(db, scenario, body)
+            if result is not None:
+                return result
+
             selected_c4_view = _parse_c4_view(body.c4_view)
             selected_c4_scope = _parse_c4_scope(body.c4_scope)
             selected_max_nodes = body.max_nodes or 120
-            if scenario.base_scenario_id:
-                as_is_content, to_be_content = await export_mermaid_asis_tobe(
-                    db,
-                    as_is_scenario_id=scenario.base_scenario_id,
-                    to_be_scenario_id=scenario.id,
-                    c4_view=selected_c4_view,
-                    c4_scope=selected_c4_scope,
-                    max_nodes=selected_max_nodes,
-                )
-                as_is_artifact = await _upsert_artifact(
-                    db,
-                    collection_id=scenario.collection_id,
-                    kind=KnowledgeArtifactKind.MERMAID_C4_ASIS,
-                    name=f"{scenario.name}.asis.mmd",
-                    content=as_is_content,
-                    meta={
-                        "scenario_id": str(scenario.base_scenario_id),
-                        "c4_view": selected_c4_view,
-                        "c4_scope": selected_c4_scope,
-                        "max_nodes": selected_max_nodes,
-                    },
-                )
-                to_be_artifact = await _upsert_artifact(
-                    db,
-                    collection_id=scenario.collection_id,
-                    kind=KnowledgeArtifactKind.MERMAID_C4_TOBE,
-                    name=f"{scenario.name}.tobe.mmd",
-                    content=to_be_content,
-                    meta={
-                        "scenario_id": str(scenario.id),
-                        "c4_view": selected_c4_view,
-                        "c4_scope": selected_c4_scope,
-                        "max_nodes": selected_max_nodes,
-                    },
-                )
-                await db.commit()
-                return {
-                    "exports": [
-                        {"id": str(as_is_artifact.id), "name": as_is_artifact.name},
-                        {"id": str(to_be_artifact.id), "name": to_be_artifact.name},
-                    ]
-                }
-
             content = await export_mermaid_c4(
                 db,
                 scenario.id,

@@ -262,18 +262,13 @@ def _resolve_file_edge_endpoints(
     return src_file_id, dst_file_id
 
 
-def build_code_file_projection(
+def _classify_file_nodes(
     nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    include_edge_kinds: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Project raw graph to file dependency graph."""
-    node_by_id = {str(node["id"]): node for node in nodes}
-
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, int]]:
+    """Separate file nodes from symbol nodes and count symbols per path."""
     file_nodes: list[dict[str, Any]] = []
     file_by_path: dict[str, dict[str, Any]] = {}
     symbol_count_by_path: dict[str, int] = defaultdict(int)
-
     for node in nodes:
         kind = str(node.get("kind") or "").lower()
         path = _canonical_file_path(node)
@@ -282,25 +277,17 @@ def build_code_file_projection(
             file_by_path[path] = node
         elif path:
             symbol_count_by_path[path] += 1
+    return file_nodes, file_by_path, symbol_count_by_path
 
-    projected_nodes: list[dict[str, Any]] = []
-    for node in file_nodes:
-        path = _canonical_file_path(node) or str(node.get("name") or "")
-        meta = dict(node.get("meta") or {})
-        meta["symbol_count"] = int(symbol_count_by_path.get(path, 0))
-        projected_nodes.append(
-            {
-                "id": str(node["id"]),
-                "natural_key": str(node["natural_key"]),
-                "kind": "file",
-                "name": str(node["name"]),
-                "meta": meta,
-            }
-        )
 
-    file_id_by_path = {path: str(node["id"]) for path, node in file_by_path.items()}
+def _bucket_file_edges(
+    edges: list[dict[str, Any]],
+    node_by_id: dict[str, dict[str, Any]],
+    file_id_by_path: dict[str, str],
+    include_edge_kinds: set[str] | None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Bucket edges by (source_file, target_file) for file projection."""
     edge_buckets: dict[tuple[str, str], dict[str, Any]] = {}
-
     for edge in edges:
         edge_kind = str(edge.get("kind") or "")
         if edge_kind == "file_defines_symbol":
@@ -318,6 +305,35 @@ def build_code_file_projection(
         bucket["weight"] += 1
         bucket["raw_edge_count"] += 1
         bucket["sample_edge_kinds"].add(edge_kind)
+    return edge_buckets
+
+
+def build_code_file_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    include_edge_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project raw graph to file dependency graph."""
+    node_by_id = {str(node["id"]): node for node in nodes}
+    file_nodes, file_by_path, symbol_count_by_path = _classify_file_nodes(nodes)
+
+    projected_nodes: list[dict[str, Any]] = []
+    for node in file_nodes:
+        path = _canonical_file_path(node) or str(node.get("name") or "")
+        meta = dict(node.get("meta") or {})
+        meta["symbol_count"] = int(symbol_count_by_path.get(path, 0))
+        projected_nodes.append(
+            {
+                "id": str(node["id"]),
+                "natural_key": str(node["natural_key"]),
+                "kind": "file",
+                "name": str(node["name"]),
+                "meta": meta,
+            }
+        )
+
+    file_id_by_path = {path: str(node["id"]) for path, node in file_by_path.items()}
+    edge_buckets = _bucket_file_edges(edges, node_by_id, file_id_by_path, include_edge_kinds)
 
     projected_edges: list[dict[str, Any]] = []
     for idx, ((src, dst), bucket) in enumerate(sorted(edge_buckets.items()), start=1):

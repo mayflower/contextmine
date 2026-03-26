@@ -297,6 +297,23 @@ def trace_path(
     return paths
 
 
+def _maybe_merge_path(
+    neighbor_id: str,
+    new_path: list[PathStep],
+    opposite_visited: dict[str, list[PathStep]],
+    direction: str,
+    paths: list[list[PathStep]],
+) -> None:
+    """If the neighbor was already visited from the opposite side, combine into a full path."""
+    opposite_path = opposite_visited.get(neighbor_id)
+    if opposite_path is None:
+        return
+    if direction == "forward":
+        paths.append(_combine_paths(new_path, opposite_path))
+    else:
+        paths.append(_combine_paths(opposite_path, new_path))
+
+
 def _expand_bfs_frontier(
     graph: CodeGraph,
     frontier: deque[str],
@@ -320,11 +337,7 @@ def _expand_bfs_frontier(
             new_path = path_so_far + [step] if direction == "forward" else [step] + path_so_far
             visited[neighbor.id] = new_path
             next_frontier.append(neighbor.id)
-            if neighbor.id in opposite_visited:
-                if direction == "forward":
-                    paths.append(_combine_paths(new_path, opposite_visited[neighbor.id]))
-                else:
-                    paths.append(_combine_paths(opposite_visited[neighbor.id], new_path))
+            _maybe_merge_path(neighbor.id, new_path, opposite_visited, direction, paths)
     return next_frontier
 
 

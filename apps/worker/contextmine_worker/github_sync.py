@@ -592,6 +592,179 @@ def _evo_pair_rows(
     return rows
 
 
+@dataclass
+class _EvoAccumulator:
+    """Mutable accumulator for evolution snapshot computation."""
+
+    ownership_acc: dict[tuple[str, str], dict[str, object]]
+    file_change_counts: dict[str, int]
+    file_pair_counts: dict[tuple[str, str], int]
+    container_change_counts: dict[str, int]
+    component_change_counts: dict[str, int]
+    container_pair_counts: dict[tuple[str, str], int]
+    component_pair_counts: dict[tuple[str, str], int]
+    file_to_container: dict[str, str | None]
+    warnings: list[str]
+    commits_scanned: int = 0
+    pairing_truncated_commits: int = 0
+    derive_arch_group: Any = None
+    max_files_per_commit: int = 200
+
+    @staticmethod
+    def create(max_files_per_commit: int = 200) -> "_EvoAccumulator":
+        from contextmine_core.twin import derive_arch_group
+
+        return _EvoAccumulator(
+            ownership_acc={},
+            file_change_counts=defaultdict(int),
+            file_pair_counts=defaultdict(int),
+            container_change_counts=defaultdict(int),
+            component_change_counts=defaultdict(int),
+            container_pair_counts=defaultdict(int),
+            component_pair_counts=defaultdict(int),
+            file_to_container={},
+            warnings=[],
+            derive_arch_group=derive_arch_group,
+            max_files_per_commit=max_files_per_commit,
+        )
+
+    def accumulate_ownership(
+        self,
+        path: str,
+        additions: int,
+        deletions: int,
+        author_key: str,
+        author_label: str,
+        commit_dt: datetime,
+    ) -> None:
+        self.file_change_counts[path] += 1
+        key = (path, author_key)
+        current = self.ownership_acc.get(key)
+        if current is None:
+            current = {
+                "node_natural_key": f"file:{path}",
+                "author_key": author_key,
+                "author_label": author_label,
+                "additions": 0,
+                "deletions": 0,
+                "touches": 0,
+                "last_touched_at": commit_dt,
+                "window_days": 0,
+            }
+            self.ownership_acc[key] = current
+        current["additions"] = int(current["additions"]) + additions
+        current["deletions"] = int(current["deletions"]) + deletions
+        current["touches"] = int(current["touches"]) + 1
+        last = current.get("last_touched_at")
+        if isinstance(last, datetime) and commit_dt > last:
+            current["last_touched_at"] = commit_dt
+        self.file_to_container[path] = _evo_entity_for(path, "container", self.derive_arch_group)
+
+    def accumulate_pairings(
+        self, touched: list[str], file_stats_by_path: dict[str, object]
+    ) -> None:
+        pairing_paths, truncated = _evo_limit_paths_for_pairing(
+            touched, self.max_files_per_commit, file_stats_by_path
+        )
+        if truncated:
+            self.pairing_truncated_commits += 1
+        for source, target in combinations(pairing_paths, 2):
+            self.file_pair_counts[tuple(sorted((source, target)))] += 1
+        pairing_set = set(pairing_paths)
+        container_entities = sorted(
+            {
+                v
+                for v in (
+                    _evo_entity_for(p, "container", self.derive_arch_group) for p in pairing_set
+                )
+                if v
+            }
+        )
+        component_entities = sorted(
+            {
+                v
+                for v in (
+                    _evo_entity_for(p, "component", self.derive_arch_group) for p in pairing_set
+                )
+                if v
+            }
+        )
+        for container in container_entities:
+            self.container_change_counts[container] += 1
+        for component in component_entities:
+            self.component_change_counts[component] += 1
+        for source, target in combinations(container_entities, 2):
+            self.container_pair_counts[tuple(sorted((source, target)))] += 1
+        for source, target in combinations(component_entities, 2):
+            self.component_pair_counts[tuple(sorted((source, target)))] += 1
+
+    def process_fast_path_commit(self, commit: _GitCommitTouch) -> None:
+        touched = sorted(commit.files.keys())
+        if not touched:
+            return
+        self.commits_scanned += 1
+        commit_dt = _evo_canonical_utc(commit.authored_at)
+        author_label = (commit.author_name or commit.author_email or "unknown").strip() or "unknown"
+        ak = _evo_author_key(commit.author_name or "", commit.author_email or "")
+        for path in set(touched):
+            ins, dels = commit.files.get(path, (0, 0))
+            self.accumulate_ownership(
+                path, int(ins or 0), int(dels or 0), ak, author_label, commit_dt
+            )
+        self.accumulate_pairings(touched, dict(commit.files.items()))
+
+    def process_slow_path_commit(self, commit: object) -> None:
+        files = commit.stats.files or {}  # type: ignore[attr-defined]
+        touched = sorted(path for path in files if path)
+        if not touched:
+            return
+        self.commits_scanned += 1
+        commit_dt = _evo_canonical_utc(commit.authored_datetime)  # type: ignore[attr-defined]
+        author_label = (
+            commit.author.name or commit.author.email or "unknown"  # type: ignore[attr-defined]
+        ).strip() or "unknown"
+        ak = _evo_author_key(
+            commit.author.name or "",  # type: ignore[attr-defined]
+            commit.author.email or "",  # type: ignore[attr-defined]
+        )
+        for path in set(touched):
+            stats_entry = files.get(path) or {}
+            self.accumulate_ownership(
+                path,
+                int(stats_entry.get("insertions", 0) or 0),
+                int(stats_entry.get("deletions", 0) or 0),
+                ak,
+                author_label,
+                commit_dt,
+            )
+        self.accumulate_pairings(touched, dict(files.items()))
+
+
+def _iter_evo_window_commits(
+    repo: Repo,
+    since_dt: datetime,
+    warnings: list[str],
+) -> list:
+    """Collect commits in the requested window with a robust fallback path."""
+    try:
+        scoped = list(repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat()))
+    except Exception:  # noqa: BLE001
+        scoped = []
+    if scoped:
+        return scoped
+    try:
+        fallback: list = []
+        for commit in repo.iter_commits("HEAD", no_merges=True):
+            commit_dt = _evo_canonical_utc(commit.authored_datetime)
+            if commit_dt >= since_dt:
+                fallback.append(commit)
+        if fallback:
+            warnings.append("git_since_filter_fallback_used")
+        return fallback
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def compute_git_evolution_snapshots(
     repo: Repo,
     target_files: set[str],
@@ -617,167 +790,24 @@ def compute_git_evolution_snapshots(
             "warnings": ["no_target_files"],
         }
 
-    from contextmine_core.twin import derive_arch_group
-
     since_dt = datetime.now(UTC) - timedelta(days=max(1, int(window_days)))
-
-    ownership_acc: dict[tuple[str, str], dict[str, object]] = {}
-    file_change_counts: dict[str, int] = defaultdict(int)
-    file_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
-
-    container_change_counts: dict[str, int] = defaultdict(int)
-    component_change_counts: dict[str, int] = defaultdict(int)
-    container_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
-    component_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
-
-    file_to_container: dict[str, str | None] = {}
-
-    warnings: list[str] = []
-    commits_scanned = 0
+    acc = _EvoAccumulator.create(max_files_per_commit=max_files_per_commit)
     commits_considered = 0
-    pairing_truncated_commits = 0
-
-    def _iter_window_commits() -> list:
-        """Collect commits in the requested window with a robust fallback path."""
-        try:
-            scoped = list(repo.iter_commits("HEAD", no_merges=True, since=since_dt.isoformat()))
-        except Exception:  # noqa: BLE001
-            scoped = []
-        if scoped:
-            return scoped
-        try:
-            fallback: list = []
-            for commit in repo.iter_commits("HEAD", no_merges=True):
-                commit_dt = _evo_canonical_utc(commit.authored_datetime)
-                if commit_dt >= since_dt:
-                    fallback.append(commit)
-            if fallback:
-                warnings.append("git_since_filter_fallback_used")
-            return fallback
-        except Exception:  # noqa: BLE001
-            return []
-
-    def _accumulate_ownership(
-        path: str,
-        additions: int,
-        deletions: int,
-        author_key: str,
-        author_label: str,
-        commit_dt: datetime,
-    ) -> None:
-        file_change_counts[path] += 1
-        key = (path, author_key)
-        current = ownership_acc.get(key)
-        if current is None:
-            current = {
-                "node_natural_key": f"file:{path}",
-                "author_key": author_key,
-                "author_label": author_label,
-                "additions": 0,
-                "deletions": 0,
-                "touches": 0,
-                "last_touched_at": commit_dt,
-                "window_days": int(window_days),
-            }
-            ownership_acc[key] = current
-        current["additions"] = int(current["additions"]) + additions
-        current["deletions"] = int(current["deletions"]) + deletions
-        current["touches"] = int(current["touches"]) + 1
-        last = current.get("last_touched_at")
-        if isinstance(last, datetime) and commit_dt > last:
-            current["last_touched_at"] = commit_dt
-        file_to_container[path] = _evo_entity_for(path, "container", derive_arch_group)
-
-    def _accumulate_pairings(touched: list[str], file_stats_by_path: dict[str, object]) -> None:
-        nonlocal pairing_truncated_commits
-        pairing_paths, truncated = _evo_limit_paths_for_pairing(
-            touched,
-            max_files_per_commit,
-            file_stats_by_path,
-        )
-        if truncated:
-            pairing_truncated_commits += 1
-        for source, target in combinations(pairing_paths, 2):
-            file_pair_counts[tuple(sorted((source, target)))] += 1
-        pairing_set = set(pairing_paths)
-        container_entities = sorted(
-            {
-                v
-                for v in (_evo_entity_for(p, "container", derive_arch_group) for p in pairing_set)
-                if v
-            }
-        )
-        component_entities = sorted(
-            {
-                v
-                for v in (_evo_entity_for(p, "component", derive_arch_group) for p in pairing_set)
-                if v
-            }
-        )
-        for container in container_entities:
-            container_change_counts[container] += 1
-        for component in component_entities:
-            component_change_counts[component] += 1
-        for source, target in combinations(container_entities, 2):
-            container_pair_counts[tuple(sorted((source, target)))] += 1
-        for source, target in combinations(component_entities, 2):
-            component_pair_counts[tuple(sorted((source, target)))] += 1
-
-    def _process_fast_path_commit(commit: _GitCommitTouch) -> None:
-        nonlocal commits_scanned
-        touched = sorted(commit.files.keys())
-        if not touched:
-            return
-        commits_scanned += 1
-        commit_dt = _evo_canonical_utc(commit.authored_at)
-        author_label = (commit.author_name or commit.author_email or "unknown").strip() or "unknown"
-        ak = _evo_author_key(commit.author_name or "", commit.author_email or "")
-        for path in set(touched):
-            ins, dels = commit.files.get(path, (0, 0))
-            _accumulate_ownership(path, int(ins or 0), int(dels or 0), ak, author_label, commit_dt)
-        _accumulate_pairings(touched, dict(commit.files.items()))
-
-    def _process_slow_path_commit(commit: object) -> None:
-        nonlocal commits_scanned
-        files = commit.stats.files or {}  # type: ignore[attr-defined]
-        touched = sorted(path for path in files if path in target_files)
-        if not touched:
-            return
-        commits_scanned += 1
-        commit_dt = _evo_canonical_utc(commit.authored_datetime)  # type: ignore[attr-defined]
-        author_label = (
-            commit.author.name or commit.author.email or "unknown"  # type: ignore[attr-defined]
-        ).strip() or "unknown"
-        ak = _evo_author_key(
-            commit.author.name or "",  # type: ignore[attr-defined]
-            commit.author.email or "",  # type: ignore[attr-defined]
-        )
-        for path in set(touched):
-            stats = files.get(path) or {}
-            _accumulate_ownership(
-                path,
-                int(stats.get("insertions", 0) or 0),
-                int(stats.get("deletions", 0) or 0),
-                ak,
-                author_label,
-                commit_dt,
-            )
-        _accumulate_pairings(touched, dict(files.items()))
 
     try:
         fast_path = _load_git_numstat_commits(repo, target_files, since_days=window_days)
         if fast_path is not None:
             window_commits, fallback_used = fast_path
             if fallback_used:
-                warnings.append("git_since_filter_fallback_used")
+                acc.warnings.append("git_since_filter_fallback_used")
             commits_considered = len(window_commits)
             for commit in window_commits:
-                _process_fast_path_commit(commit)
+                acc.process_fast_path_commit(commit)
         else:
-            window_commits = _iter_window_commits()
+            window_commits = _iter_evo_window_commits(repo, since_dt, acc.warnings)
             commits_considered = len(window_commits)
             for commit in window_commits:
-                _process_slow_path_commit(commit)
+                acc.process_slow_path_commit(commit)
     except Exception:
         logger.warning("Failed to compute git evolution snapshots", exc_info=True)
         return {
@@ -785,7 +815,7 @@ def compute_git_evolution_snapshots(
             "coupling_rows": [],
             "stats": {
                 "window_days": int(window_days),
-                "commits_scanned": commits_scanned,
+                "commits_scanned": acc.commits_scanned,
                 "commits_considered": commits_considered,
                 "files_seen": 0,
                 "ownership_rows": 0,
@@ -795,11 +825,11 @@ def compute_git_evolution_snapshots(
         }
 
     totals_by_file: dict[str, int] = defaultdict(int)
-    for (path, _author), row in ownership_acc.items():
+    for (path, _author), row in acc.ownership_acc.items():
         totals_by_file[path] += int(row["additions"])
 
     ownership_rows: list[dict[str, object]] = []
-    for (path, _author), row in ownership_acc.items():
+    for (path, _author), row in acc.ownership_acc.items():
         total_additions = int(totals_by_file[path])
         touches = int(row["touches"])
         denominator = float(total_additions if total_additions > 0 else touches)
@@ -816,35 +846,35 @@ def compute_git_evolution_snapshots(
     coupling_rows.extend(
         _evo_pair_rows(
             entity_level="file",
-            pair_counts=file_pair_counts,
-            change_counts=file_change_counts,
-            file_to_container=file_to_container,
+            pair_counts=acc.file_pair_counts,
+            change_counts=acc.file_change_counts,
+            file_to_container=acc.file_to_container,
             window_days=window_days,
         )
     )
     coupling_rows.extend(
         _evo_pair_rows(
             entity_level="container",
-            pair_counts=container_pair_counts,
-            change_counts=container_change_counts,
-            file_to_container=file_to_container,
+            pair_counts=acc.container_pair_counts,
+            change_counts=acc.container_change_counts,
+            file_to_container=acc.file_to_container,
             window_days=window_days,
         )
     )
     coupling_rows.extend(
         _evo_pair_rows(
             entity_level="component",
-            pair_counts=component_pair_counts,
-            change_counts=component_change_counts,
-            file_to_container=file_to_container,
+            pair_counts=acc.component_pair_counts,
+            change_counts=acc.component_change_counts,
+            file_to_container=acc.file_to_container,
             window_days=window_days,
         )
     )
 
     if commits_considered == 0:
-        warnings.append("no_commits_in_window")
-    if pairing_truncated_commits > 0:
-        warnings.append(f"temporal_coupling_pairing_capped:{pairing_truncated_commits}")
+        acc.warnings.append("no_commits_in_window")
+    if acc.pairing_truncated_commits > 0:
+        acc.warnings.append(f"temporal_coupling_pairing_capped:{acc.pairing_truncated_commits}")
 
     return {
         "ownership_rows": ownership_rows,
@@ -852,14 +882,14 @@ def compute_git_evolution_snapshots(
         "stats": {
             "window_days": int(window_days),
             "max_files_per_commit": int(max_files_per_commit),
-            "pairing_truncated_commits": int(pairing_truncated_commits),
-            "commits_scanned": commits_scanned,
+            "pairing_truncated_commits": int(acc.pairing_truncated_commits),
+            "commits_scanned": acc.commits_scanned,
             "commits_considered": commits_considered,
-            "files_seen": len(file_change_counts),
+            "files_seen": len(acc.file_change_counts),
             "ownership_rows": len(ownership_rows),
             "coupling_rows": len(coupling_rows),
         },
-        "warnings": warnings,
+        "warnings": acc.warnings,
     }
 
 

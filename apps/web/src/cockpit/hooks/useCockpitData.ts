@@ -29,6 +29,7 @@ import type {
   GraphRagEvidenceItem,
   GraphRagEvidencePayload,
   GraphRagPayload,
+  GraphViewPayload,
   GraphNeighborhoodResponse,
   GraphPagingState,
   InvestmentUtilizationPayload,
@@ -346,6 +347,410 @@ export function useCockpitData({
 
     const controller = new AbortController()
 
+    const fetchJson = async <T>(url: string, label: string): Promise<T> => {
+      const response = await fetch(url, {
+        credentials: 'include',
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        throw new Error(`Could not load ${label} (${response.status})`)
+      }
+      return (await response.json()) as T
+    }
+
+    const fetchOverview = async () => {
+      const payload = await fetchJson<CityPayload>(
+        `/api/twin/collections/${collectionId}/views/city?scenario_id=${scenarioId}&hotspots_limit=60`,
+        'overview',
+      )
+      setCity(payload)
+      setViewState('overview', 'ready')
+      markUpdated('overview')
+    }
+
+    const fetchTopologyOrDeepDive = async () => {
+      const endpoint = view === 'topology' ? 'topology' : 'deep-dive'
+      const fallbackLimit = view === 'topology' ? topologyLimit : deepDiveLimit
+      const limit = graphPaging.limit > 0 ? graphPaging.limit : fallbackLimit
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        layer,
+        limit: String(limit),
+        page: String(graphPaging.page),
+      })
+
+      if (graphFilters.includeKinds.length > 0) {
+        query.set('include_kinds', graphFilters.includeKinds.join(','))
+      }
+      if (graphFilters.excludeKinds.length > 0) {
+        query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+      }
+
+      if (view === 'topology') {
+        query.set('projection', 'architecture')
+        query.set('entity_level', topologyEntityLevel(layer))
+      } else if (deepDiveMode === 'file_dependency') {
+        query.set('projection', 'code_file')
+        query.set('entity_level', 'file')
+      } else if (deepDiveMode === 'symbol_callgraph') {
+        query.set('projection', 'code_symbol')
+        query.set('entity_level', 'symbol')
+        query.set('mode', 'symbol_callgraph')
+      } else {
+        query.set('projection', 'code_symbol')
+        query.set('entity_level', 'symbol')
+        query.set('mode', 'contains_hierarchy')
+      }
+
+      const payload = await fetchJson<GraphViewPayload>(
+        `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
+        endpoint,
+      )
+      const g = payload.graph || DEFAULT_GRAPH
+      setGraph({
+        ...g,
+        projection: payload.projection ?? g.projection,
+        entity_level: payload.entity_level ?? g.entity_level,
+        grouping_strategy: payload.grouping_strategy ?? g.grouping_strategy,
+        excluded_kinds: payload.excluded_kinds ?? g.excluded_kinds,
+      })
+      setViewState(view, 'ready')
+      markUpdated(view)
+    }
+
+    const fetchUiMap = async () => {
+      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        limit: String(limit),
+        page: String(graphPaging.page),
+      })
+
+      const loadEndpoint = async <T>(endpoint: 'ui-map' | 'user-flows'): Promise<T> => {
+        return fetchJson<T>(
+          `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
+          endpoint,
+        )
+      }
+
+      const [uiResult, flowsResult] = await Promise.allSettled([
+        loadEndpoint<UIMapPayload>('ui-map'),
+        loadEndpoint<UserFlowsPayload>('user-flows'),
+      ])
+
+      let successCount = 0
+      const viewErrors: string[] = []
+      let nextUiGraph = DEFAULT_GRAPH
+      let nextFlowsGraph = DEFAULT_GRAPH
+
+      if (uiResult.status === 'fulfilled') {
+        setUiMapSummary(uiResult.value.summary)
+        nextUiGraph = {
+          ...(uiResult.value.graph || DEFAULT_GRAPH),
+          projection: 'code_symbol',
+          entity_level: uiResult.value.entity_level,
+        }
+        setUiMapGraph(nextUiGraph)
+        successCount += 1
+      } else {
+        setUiMapSummary(null)
+        setUiMapGraph(DEFAULT_GRAPH)
+        viewErrors.push(uiResult.reason instanceof Error ? uiResult.reason.message : 'Could not load ui-map')
+      }
+
+      if (flowsResult.status === 'fulfilled') {
+        setUserFlows(flowsResult.value)
+        nextFlowsGraph = {
+          ...(flowsResult.value.graph || DEFAULT_GRAPH),
+          projection: 'code_symbol',
+          entity_level: flowsResult.value.entity_level,
+        }
+        setUserFlowsGraph(nextFlowsGraph)
+        successCount += 1
+      } else {
+        setUserFlows(null)
+        setUserFlowsGraph(DEFAULT_GRAPH)
+        viewErrors.push(
+          flowsResult.reason instanceof Error
+            ? flowsResult.reason.message
+            : 'Could not load user-flows',
+        )
+      }
+
+      setGraph(nextUiGraph.total_nodes > 0 ? nextUiGraph : nextFlowsGraph)
+      setViewError('ui_map', viewErrors.length > 0 ? viewErrors.join(' • ') : '')
+      if (successCount > 0) {
+        setViewState('ui_map', 'ready')
+        markUpdated('ui_map')
+      } else {
+        setViewState('ui_map', 'error')
+      }
+    }
+
+    const fetchTestMatrix = async () => {
+      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        limit: String(limit),
+        page: String(graphPaging.page),
+      })
+      const payload = await fetchJson<TestMatrixPayload>(
+        `/api/twin/collections/${collectionId}/views/test-matrix?${query.toString()}`,
+        'test-matrix',
+      )
+      setTestMatrix(payload)
+      setGraph({
+        ...(payload.graph || DEFAULT_GRAPH),
+        projection: 'code_symbol',
+        entity_level: payload.entity_level,
+      })
+      setViewState('test_matrix', 'ready')
+      markUpdated('test_matrix')
+    }
+
+    const fetchSemanticMap = async () => {
+      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+      const buildMapQuery = (mode: SemanticMapMode) => {
+        const thresholds = semanticMapThresholdsByMode[mode]
+        const q = new URLSearchParams({
+          scenario_id: scenarioId,
+          map_mode: mode,
+          limit: String(limit),
+          page: String(graphPaging.page),
+          mixed_cluster_max_dominant_ratio: String(thresholds.mixed_cluster_max_dominant_ratio),
+          isolated_distance_multiplier: String(thresholds.isolated_distance_multiplier),
+          semantic_duplication_min_similarity: String(thresholds.semantic_duplication_min_similarity),
+          semantic_duplication_max_source_overlap: String(thresholds.semantic_duplication_max_source_overlap),
+          misplaced_min_dominant_ratio: String(thresholds.misplaced_min_dominant_ratio),
+        })
+        if (graphFilters.includeKinds.length > 0) q.set('include_kinds', graphFilters.includeKinds.join(','))
+        if (graphFilters.excludeKinds.length > 0) q.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+        if (graphFilters.edgeKinds.length > 0) q.set('edge_kinds', graphFilters.edgeKinds.join(','))
+        return q
+      }
+
+      const comparisonMode: SemanticMapMode = semanticMapMode === 'semantic' ? 'code_structure' : 'semantic'
+      const [activeMapResult, comparisonMapResult] = await Promise.allSettled([
+        fetchJson<SemanticMapPayload>(
+          `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(semanticMapMode).toString()}`,
+          'semantic map',
+        ),
+        fetchJson<SemanticMapPayload>(
+          `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(comparisonMode).toString()}`,
+          'semantic map comparison',
+        ),
+      ])
+
+      if (activeMapResult.status !== 'fulfilled') {
+        throw activeMapResult.reason
+      }
+
+      setSemanticMap(activeMapResult.value)
+      setSemanticMapComparison(comparisonMapResult.status === 'fulfilled' ? comparisonMapResult.value : null)
+      setGraph(DEFAULT_GRAPH)
+      setViewState('semantic_map', 'ready')
+      markUpdated('semantic_map')
+    }
+
+    const fetchRebuildReadiness = async () => {
+      const payload = await fetchJson<RebuildReadinessPayload>(
+        `/api/twin/collections/${collectionId}/views/rebuild-readiness?scenario_id=${encodeURIComponent(scenarioId)}`,
+        'rebuild-readiness',
+      )
+      setRebuildReadiness(payload)
+      setViewState('rebuild_readiness', 'ready')
+      markUpdated('rebuild_readiness')
+    }
+
+    const fetchArchitecture = async () => {
+      const section = architectureSection.trim()
+      const normalizedContainer = portsContainer.trim()
+      const baselineScenarioId = driftBaselineScenarioId.trim()
+
+      const arc42Query = new URLSearchParams({ scenario_id: scenarioId })
+      if (section) arc42Query.set('section', section)
+
+      const portsQuery = new URLSearchParams({ scenario_id: scenarioId })
+      if (portsDirection !== 'all') portsQuery.set('direction', portsDirection)
+      if (normalizedContainer) portsQuery.set('container', normalizedContainer)
+
+      const driftQuery = new URLSearchParams({ scenario_id: scenarioId })
+      if (baselineScenarioId) driftQuery.set('baseline_scenario_id', baselineScenarioId)
+
+      const [arc42Result, portsResult, driftResult, ermResult] = await Promise.allSettled([
+        fetchJson<Arc42ViewPayload>(`/api/twin/collections/${collectionId}/views/arc42?${arc42Query.toString()}`, 'arc42 view'),
+        fetchJson<PortsAdaptersPayload>(`/api/twin/collections/${collectionId}/views/ports-adapters?${portsQuery.toString()}`, 'ports/adapters view'),
+        fetchJson<Arc42DriftPayload>(`/api/twin/collections/${collectionId}/views/arc42/drift?${driftQuery.toString()}`, 'arc42 drift view'),
+        fetchJson<ErmViewPayload>(`/api/twin/collections/${collectionId}/views/erm?scenario_id=${encodeURIComponent(scenarioId)}`, 'erm view'),
+      ])
+
+      let successCount = 0
+      const nextErrors = { arc42: '', ports: '', drift: '', erm: '' }
+      if (arc42Result.status === 'fulfilled') { setArc42(arc42Result.value); successCount += 1 }
+      else { nextErrors.arc42 = arc42Result.reason instanceof Error ? arc42Result.reason.message : 'Could not load arc42 view' }
+      if (portsResult.status === 'fulfilled') { setPortsAdapters(portsResult.value); successCount += 1 }
+      else { nextErrors.ports = portsResult.reason instanceof Error ? portsResult.reason.message : 'Could not load ports/adapters view' }
+      if (driftResult.status === 'fulfilled') { setArc42Drift(driftResult.value); successCount += 1 }
+      else { nextErrors.drift = driftResult.reason instanceof Error ? driftResult.reason.message : 'Could not load drift view' }
+      if (ermResult.status === 'fulfilled') { setErm(ermResult.value); successCount += 1 }
+      else { nextErrors.erm = ermResult.reason instanceof Error ? ermResult.reason.message : 'Could not load erm view' }
+
+      setArchitecturePanelErrors(nextErrors)
+      const allErrors = [nextErrors.arc42, nextErrors.ports, nextErrors.drift, nextErrors.erm].filter(Boolean)
+      setViewError('architecture', allErrors.length > 0 ? allErrors.join(' • ') : '')
+      if (successCount > 0) { setViewState('architecture', 'ready'); markUpdated('architecture') }
+      else { setViewState('architecture', 'error') }
+    }
+
+    const fetchEvolution = async () => {
+      const [investmentResult, knowledgeResult, couplingResult, fitnessResult] =
+        await Promise.allSettled([
+          fetchJson<InvestmentUtilizationPayload>(`/api/twin/collections/${collectionId}/views/evolution/investment-utilization?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365`, 'evolution investment/utilization'),
+          fetchJson<KnowledgeIslandsPayload>(`/api/twin/collections/${collectionId}/views/evolution/knowledge-islands?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365&ownership_threshold=0.7`, 'evolution knowledge islands'),
+          fetchJson<TemporalCouplingPayload>(`/api/twin/collections/${collectionId}/views/evolution/temporal-coupling?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=component&window_days=365&min_jaccard=0.2&max_edges=300`, 'evolution temporal coupling'),
+          fetchJson<FitnessFunctionsPayload>(`/api/twin/collections/${collectionId}/views/evolution/fitness-functions?scenario_id=${encodeURIComponent(scenarioId)}&window_days=365&include_resolved=false`, 'evolution fitness functions'),
+        ])
+
+      let successCount = 0
+      const nextErrors = { investment: '', knowledge: '', coupling: '', fitness: '' }
+      if (investmentResult.status === 'fulfilled') { setInvestmentUtilization(investmentResult.value); successCount += 1 }
+      else { nextErrors.investment = investmentResult.reason instanceof Error ? investmentResult.reason.message : 'Could not load investment/utilization panel' }
+      if (knowledgeResult.status === 'fulfilled') { setKnowledgeIslands(knowledgeResult.value); successCount += 1 }
+      else { nextErrors.knowledge = knowledgeResult.reason instanceof Error ? knowledgeResult.reason.message : 'Could not load knowledge islands panel' }
+      if (couplingResult.status === 'fulfilled') { setTemporalCoupling(couplingResult.value); successCount += 1 }
+      else { nextErrors.coupling = couplingResult.reason instanceof Error ? couplingResult.reason.message : 'Could not load temporal coupling panel' }
+      if (fitnessResult.status === 'fulfilled') { setFitnessFunctions(fitnessResult.value); successCount += 1 }
+      else { nextErrors.fitness = fitnessResult.reason instanceof Error ? fitnessResult.reason.message : 'Could not load fitness functions panel' }
+
+      setEvolutionPanelErrors(nextErrors)
+      const allErrors = [nextErrors.investment, nextErrors.knowledge, nextErrors.coupling, nextErrors.fitness].filter(Boolean)
+      setViewError('evolution', allErrors.length > 0 ? allErrors.join(' • ') : '')
+      if (successCount > 0) { setViewState('evolution', 'ready'); markUpdated('evolution') }
+      else { setViewState('evolution', 'error') }
+    }
+
+    const fetchGraphRag = async () => {
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        limit: String(graphPaging.limit > 0 ? graphPaging.limit : topologyLimit),
+        page: String(graphPaging.page),
+        community_mode: graphRagCommunityMode,
+      })
+      const normalizedCommunityId = graphRagCommunityId.trim()
+      if (normalizedCommunityId) query.set('community_id', normalizedCommunityId)
+      if (graphFilters.includeKinds.length > 0) query.set('include_kinds', graphFilters.includeKinds.join(','))
+      if (graphFilters.excludeKinds.length > 0) query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
+      if (graphFilters.edgeKinds.length > 0) query.set('edge_kinds', graphFilters.edgeKinds.join(','))
+
+      const payload = await fetchJson<GraphRagPayload>(
+        `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
+        'graphrag view',
+      )
+      setGraph({
+        ...(payload.graph || DEFAULT_GRAPH),
+        projection: payload.projection,
+        entity_level: payload.entity_level,
+      })
+      setGraphRagStatus(payload.status?.status || 'ready')
+      setGraphRagReason(payload.status?.reason || 'ok')
+
+      setGraphRagCommunitiesState('loading')
+      setGraphRagCommunitiesError('')
+      try {
+        const communitiesPayload = await fetchJson<GraphRagCommunitiesPayload>(
+          `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
+          'communities',
+        )
+        setGraphRagCommunities(communitiesPayload.items || [])
+        setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setGraphRagCommunitiesState('error')
+          setGraphRagCommunitiesError(error instanceof Error ? error.message : 'Could not load communities')
+        }
+      }
+
+      setGraphRagProcessesState('loading')
+      setGraphRagProcessesError('')
+      try {
+        const processesPayload = await fetchJson<{ items?: GraphRagProcessSummary[] }>(
+          `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
+          'processes',
+        )
+        setGraphRagProcesses(processesPayload.items || [])
+        setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setGraphRagProcessesState('error')
+          setGraphRagProcessesError(error instanceof Error ? error.message : 'Could not load processes')
+        }
+      }
+      setViewState('graphrag', 'ready')
+      markUpdated('graphrag')
+    }
+
+    const fetchC4Diff = async () => {
+      const query = new URLSearchParams({
+        scenario_id: scenarioId,
+        compare_with_base: 'true',
+        c4_view: c4View,
+        max_nodes: String(Math.max(10, c4MaxNodes || 120)),
+      })
+      const normalizedScope = c4Scope.trim()
+      if (normalizedScope) query.set('c4_scope', normalizedScope)
+
+      const payload = await fetchJson<MermaidPayload>(
+        `/api/twin/collections/${collectionId}/views/mermaid?${query.toString()}`,
+        'C4 view',
+      )
+      setMermaid(payload)
+      setViewState('c4_diff', 'ready')
+      markUpdated('c4_diff')
+    }
+
+    const fetchCity = async () => {
+      const cityProjectionValue: CityProjection = cityProjection
+      const entityLevel = cityProjectionValue === 'architecture' ? cityEntityLevel : 'file'
+
+      const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        signal: controller.signal,
+        body: JSON.stringify({ format: 'cc_json', projection: cityProjectionValue, entity_level: entityLevel }),
+      })
+      if (!exportResponse.ok) {
+        throw new Error(`Could not generate city map (${exportResponse.status})`)
+      }
+
+      const exportData = await exportResponse.json()
+      const exportId = exportData.id || exportData.exports?.[0]?.id
+      if (!exportId) {
+        throw new Error('Missing export id from city export response')
+      }
+
+      const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
+      const params = new URLSearchParams({ file: rawPath, area: 'loc', height: 'coupling', color: 'complexity', mode: 'Single' })
+      setCityEmbedUrl(`/codecharta/index.html?${params.toString()}`)
+      setViewState('city', 'ready')
+      markUpdated('city')
+    }
+
+    const viewHandlers: Record<string, (() => Promise<void>) | undefined> = {
+      overview: fetchOverview,
+      topology: fetchTopologyOrDeepDive,
+      deep_dive: fetchTopologyOrDeepDive,
+      ui_map: fetchUiMap,
+      test_matrix: fetchTestMatrix,
+      semantic_map: fetchSemanticMap,
+      rebuild_readiness: fetchRebuildReadiness,
+      architecture: fetchArchitecture,
+      evolution: fetchEvolution,
+      graphrag: fetchGraphRag,
+      c4_diff: fetchC4Diff,
+      city: fetchCity,
+    }
+
     const run = async () => {
       setViewState(view, 'loading')
       setViewError(view, '')
@@ -354,647 +759,9 @@ export function useCockpitData({
       }
 
       try {
-        if (view === 'overview') {
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/city?scenario_id=${scenarioId}&hotspots_limit=60`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load overview (${response.status})`)
-          }
-          const payload: CityPayload = await response.json()
-          setCity(payload)
-          setViewState('overview', 'ready')
-          markUpdated('overview')
-          return
-        }
-
-        if (view === 'topology' || view === 'deep_dive') {
-          const endpoint = view === 'topology' ? 'topology' : 'deep-dive'
-          const fallbackLimit = view === 'topology' ? topologyLimit : deepDiveLimit
-          const limit = graphPaging.limit > 0 ? graphPaging.limit : fallbackLimit
-          const query = new URLSearchParams({
-            scenario_id: scenarioId,
-            layer,
-            limit: String(limit),
-            page: String(graphPaging.page),
-          })
-
-          if (graphFilters.includeKinds.length > 0) {
-            query.set('include_kinds', graphFilters.includeKinds.join(','))
-          }
-          if (graphFilters.excludeKinds.length > 0) {
-            query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-          }
-
-          if (view === 'topology') {
-            query.set('projection', 'architecture')
-            query.set('entity_level', topologyEntityLevel(layer))
-          } else if (deepDiveMode === 'file_dependency') {
-            query.set('projection', 'code_file')
-            query.set('entity_level', 'file')
-          } else if (deepDiveMode === 'symbol_callgraph') {
-            query.set('projection', 'code_symbol')
-            query.set('entity_level', 'symbol')
-            query.set('mode', 'symbol_callgraph')
-          } else {
-            query.set('projection', 'code_symbol')
-            query.set('entity_level', 'symbol')
-            query.set('mode', 'contains_hierarchy')
-          }
-
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load ${endpoint} (${response.status})`)
-          }
-          const payload = await response.json()
-          setGraph({
-            ...(payload.graph || DEFAULT_GRAPH),
-            projection: payload.projection ?? payload.graph?.projection,
-            entity_level: payload.entity_level ?? payload.graph?.entity_level,
-            grouping_strategy: payload.grouping_strategy ?? payload.graph?.grouping_strategy,
-            excluded_kinds: payload.excluded_kinds ?? payload.graph?.excluded_kinds,
-          })
-          setViewState(view, 'ready')
-          markUpdated(view)
-          return
-        }
-
-        if (view === 'ui_map') {
-          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-          const query = new URLSearchParams({
-            scenario_id: scenarioId,
-            limit: String(limit),
-            page: String(graphPaging.page),
-          })
-
-          const loadPayload = async <T>(endpoint: 'ui-map' | 'user-flows'): Promise<T> => {
-            const response = await fetch(
-              `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
-              {
-                credentials: 'include',
-                signal: controller.signal,
-              },
-            )
-            if (!response.ok) {
-              throw new Error(`Could not load ${endpoint} (${response.status})`)
-            }
-            return (await response.json()) as T
-          }
-
-          const [uiResult, flowsResult] = await Promise.allSettled([
-            loadPayload<UIMapPayload>('ui-map'),
-            loadPayload<UserFlowsPayload>('user-flows'),
-          ])
-
-          let successCount = 0
-          const errors: string[] = []
-          let nextUiGraph = DEFAULT_GRAPH
-          let nextFlowsGraph = DEFAULT_GRAPH
-
-          if (uiResult.status === 'fulfilled') {
-            setUiMapSummary(uiResult.value.summary)
-            nextUiGraph = {
-              ...(uiResult.value.graph || DEFAULT_GRAPH),
-              projection: 'code_symbol',
-              entity_level: uiResult.value.entity_level,
-            }
-            setUiMapGraph(nextUiGraph)
-            successCount += 1
-          } else {
-            setUiMapSummary(null)
-            setUiMapGraph(DEFAULT_GRAPH)
-            errors.push(uiResult.reason instanceof Error ? uiResult.reason.message : 'Could not load ui-map')
-          }
-
-          if (flowsResult.status === 'fulfilled') {
-            setUserFlows(flowsResult.value)
-            nextFlowsGraph = {
-              ...(flowsResult.value.graph || DEFAULT_GRAPH),
-              projection: 'code_symbol',
-              entity_level: flowsResult.value.entity_level,
-            }
-            setUserFlowsGraph(nextFlowsGraph)
-            successCount += 1
-          } else {
-            setUserFlows(null)
-            setUserFlowsGraph(DEFAULT_GRAPH)
-            errors.push(
-              flowsResult.reason instanceof Error
-                ? flowsResult.reason.message
-                : 'Could not load user-flows',
-            )
-          }
-
-          const selectedGraph = nextUiGraph.total_nodes > 0 ? nextUiGraph : nextFlowsGraph
-          setGraph(selectedGraph)
-
-          if (errors.length > 0) {
-            setViewError('ui_map', errors.join(' • '))
-          } else {
-            setViewError('ui_map', '')
-          }
-
-          if (successCount > 0) {
-            setViewState('ui_map', 'ready')
-            markUpdated('ui_map')
-          } else {
-            setViewState('ui_map', 'error')
-          }
-          return
-        }
-
-        if (view === 'test_matrix') {
-          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-          const query = new URLSearchParams({
-            scenario_id: scenarioId,
-            limit: String(limit),
-            page: String(graphPaging.page),
-          })
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/test-matrix?${query.toString()}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load test-matrix (${response.status})`)
-          }
-          const payload: TestMatrixPayload = await response.json()
-          setTestMatrix(payload)
-          setGraph({
-            ...(payload.graph || DEFAULT_GRAPH),
-            projection: 'code_symbol',
-            entity_level: payload.entity_level,
-          })
-          setViewState('test_matrix', 'ready')
-          markUpdated('test_matrix')
-          return
-        }
-
-        if (view === 'semantic_map') {
-          const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-          const buildMapQuery = (mode: SemanticMapMode) => {
-            const thresholds = semanticMapThresholdsByMode[mode]
-            const query = new URLSearchParams({
-              scenario_id: scenarioId,
-              map_mode: mode,
-              limit: String(limit),
-              page: String(graphPaging.page),
-              mixed_cluster_max_dominant_ratio: String(
-                thresholds.mixed_cluster_max_dominant_ratio,
-              ),
-              isolated_distance_multiplier: String(thresholds.isolated_distance_multiplier),
-              semantic_duplication_min_similarity: String(
-                thresholds.semantic_duplication_min_similarity,
-              ),
-              semantic_duplication_max_source_overlap: String(
-                thresholds.semantic_duplication_max_source_overlap,
-              ),
-              misplaced_min_dominant_ratio: String(
-                thresholds.misplaced_min_dominant_ratio,
-              ),
-            })
-            if (graphFilters.includeKinds.length > 0) {
-              query.set('include_kinds', graphFilters.includeKinds.join(','))
-            }
-            if (graphFilters.excludeKinds.length > 0) {
-              query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-            }
-            if (graphFilters.edgeKinds.length > 0) {
-              query.set('edge_kinds', graphFilters.edgeKinds.join(','))
-            }
-            return query
-          }
-
-          const loadMap = async (mode: SemanticMapMode): Promise<SemanticMapPayload> => {
-            const response = await fetch(
-              `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(mode).toString()}`,
-              {
-                credentials: 'include',
-                signal: controller.signal,
-              },
-            )
-            if (!response.ok) {
-              throw new Error(`Could not load semantic map (${response.status})`)
-            }
-            return (await response.json()) as SemanticMapPayload
-          }
-
-          const comparisonMode: SemanticMapMode =
-            semanticMapMode === 'semantic' ? 'code_structure' : 'semantic'
-          const [activeMapResult, comparisonMapResult] = await Promise.allSettled([
-            loadMap(semanticMapMode),
-            loadMap(comparisonMode),
-          ])
-
-          if (activeMapResult.status !== 'fulfilled') {
-            throw activeMapResult.reason
-          }
-
-          setSemanticMap(activeMapResult.value)
-          if (comparisonMapResult.status === 'fulfilled') {
-            setSemanticMapComparison(comparisonMapResult.value)
-          } else {
-            setSemanticMapComparison(null)
-          }
-
-          setGraph(DEFAULT_GRAPH)
-
-          setViewState('semantic_map', 'ready')
-          markUpdated('semantic_map')
-          return
-        }
-
-        if (view === 'rebuild_readiness') {
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/rebuild-readiness?scenario_id=${encodeURIComponent(scenarioId)}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load rebuild-readiness (${response.status})`)
-          }
-          const payload: RebuildReadinessPayload = await response.json()
-          setRebuildReadiness(payload)
-          setViewState('rebuild_readiness', 'ready')
-          markUpdated('rebuild_readiness')
-          return
-        }
-
-        const loadPayload = async <T>(url: string, label: string): Promise<T> => {
-          const response = await fetch(url, {
-            credentials: 'include',
-            signal: controller.signal,
-          })
-          if (!response.ok) {
-            throw new Error(`Could not load ${label} (${response.status})`)
-          }
-          return (await response.json()) as T
-        }
-
-        if (view === 'architecture') {
-          const section = architectureSection.trim()
-          const normalizedContainer = portsContainer.trim()
-          const baselineScenarioId = driftBaselineScenarioId.trim()
-
-          const arc42Query = new URLSearchParams({ scenario_id: scenarioId })
-          if (section) arc42Query.set('section', section)
-
-          const portsQuery = new URLSearchParams({ scenario_id: scenarioId })
-          if (portsDirection !== 'all') {
-            portsQuery.set('direction', portsDirection)
-          }
-          if (normalizedContainer) {
-            portsQuery.set('container', normalizedContainer)
-          }
-
-          const driftQuery = new URLSearchParams({ scenario_id: scenarioId })
-          if (baselineScenarioId) {
-            driftQuery.set('baseline_scenario_id', baselineScenarioId)
-          }
-
-          const [arc42Result, portsResult, driftResult, ermResult] = await Promise.allSettled([
-            loadPayload<Arc42ViewPayload>(
-              `/api/twin/collections/${collectionId}/views/arc42?${arc42Query.toString()}`,
-              'arc42 view',
-            ),
-            loadPayload<PortsAdaptersPayload>(
-              `/api/twin/collections/${collectionId}/views/ports-adapters?${portsQuery.toString()}`,
-              'ports/adapters view',
-            ),
-            loadPayload<Arc42DriftPayload>(
-              `/api/twin/collections/${collectionId}/views/arc42/drift?${driftQuery.toString()}`,
-              'arc42 drift view',
-            ),
-            loadPayload<ErmViewPayload>(
-              `/api/twin/collections/${collectionId}/views/erm?scenario_id=${encodeURIComponent(scenarioId)}`,
-              'erm view',
-            ),
-          ])
-
-          let successCount = 0
-          const nextErrors = { arc42: '', ports: '', drift: '', erm: '' }
-          if (arc42Result.status === 'fulfilled') {
-            setArc42(arc42Result.value)
-            successCount += 1
-          } else {
-            nextErrors.arc42 =
-              arc42Result.reason instanceof Error ? arc42Result.reason.message : 'Could not load arc42 view'
-          }
-
-          if (portsResult.status === 'fulfilled') {
-            setPortsAdapters(portsResult.value)
-            successCount += 1
-          } else {
-            nextErrors.ports =
-              portsResult.reason instanceof Error
-                ? portsResult.reason.message
-                : 'Could not load ports/adapters view'
-          }
-
-          if (driftResult.status === 'fulfilled') {
-            setArc42Drift(driftResult.value)
-            successCount += 1
-          } else {
-            nextErrors.drift =
-              driftResult.reason instanceof Error
-                ? driftResult.reason.message
-                : 'Could not load drift view'
-          }
-
-          if (ermResult.status === 'fulfilled') {
-            setErm(ermResult.value)
-            successCount += 1
-          } else {
-            nextErrors.erm =
-              ermResult.reason instanceof Error
-                ? ermResult.reason.message
-                : 'Could not load erm view'
-          }
-
-          setArchitecturePanelErrors(nextErrors)
-          const allErrors = [nextErrors.arc42, nextErrors.ports, nextErrors.drift, nextErrors.erm].filter(Boolean)
-          if (allErrors.length > 0) {
-            setViewError('architecture', allErrors.join(' • '))
-          } else {
-            setViewError('architecture', '')
-          }
-
-          if (successCount > 0) {
-            setViewState('architecture', 'ready')
-            markUpdated('architecture')
-          } else {
-            setViewState('architecture', 'error')
-          }
-          return
-        }
-
-        if (view === 'evolution') {
-          const [investmentResult, knowledgeResult, couplingResult, fitnessResult] =
-            await Promise.allSettled([
-              loadPayload<InvestmentUtilizationPayload>(
-                `/api/twin/collections/${collectionId}/views/evolution/investment-utilization?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365`,
-                'evolution investment/utilization',
-              ),
-              loadPayload<KnowledgeIslandsPayload>(
-                `/api/twin/collections/${collectionId}/views/evolution/knowledge-islands?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365&ownership_threshold=0.7`,
-                'evolution knowledge islands',
-              ),
-              loadPayload<TemporalCouplingPayload>(
-                `/api/twin/collections/${collectionId}/views/evolution/temporal-coupling?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=component&window_days=365&min_jaccard=0.2&max_edges=300`,
-                'evolution temporal coupling',
-              ),
-              loadPayload<FitnessFunctionsPayload>(
-                `/api/twin/collections/${collectionId}/views/evolution/fitness-functions?scenario_id=${encodeURIComponent(scenarioId)}&window_days=365&include_resolved=false`,
-                'evolution fitness functions',
-              ),
-            ])
-
-          let successCount = 0
-          const nextErrors = {
-            investment: '',
-            knowledge: '',
-            coupling: '',
-            fitness: '',
-          }
-
-          if (investmentResult.status === 'fulfilled') {
-            setInvestmentUtilization(investmentResult.value)
-            successCount += 1
-          } else {
-            nextErrors.investment =
-              investmentResult.reason instanceof Error
-                ? investmentResult.reason.message
-                : 'Could not load investment/utilization panel'
-          }
-
-          if (knowledgeResult.status === 'fulfilled') {
-            setKnowledgeIslands(knowledgeResult.value)
-            successCount += 1
-          } else {
-            nextErrors.knowledge =
-              knowledgeResult.reason instanceof Error
-                ? knowledgeResult.reason.message
-                : 'Could not load knowledge islands panel'
-          }
-
-          if (couplingResult.status === 'fulfilled') {
-            setTemporalCoupling(couplingResult.value)
-            successCount += 1
-          } else {
-            nextErrors.coupling =
-              couplingResult.reason instanceof Error
-                ? couplingResult.reason.message
-                : 'Could not load temporal coupling panel'
-          }
-
-          if (fitnessResult.status === 'fulfilled') {
-            setFitnessFunctions(fitnessResult.value)
-            successCount += 1
-          } else {
-            nextErrors.fitness =
-              fitnessResult.reason instanceof Error
-                ? fitnessResult.reason.message
-                : 'Could not load fitness functions panel'
-          }
-
-          setEvolutionPanelErrors(nextErrors)
-          const allErrors = [
-            nextErrors.investment,
-            nextErrors.knowledge,
-            nextErrors.coupling,
-            nextErrors.fitness,
-          ].filter(Boolean)
-          if (allErrors.length > 0) {
-            setViewError('evolution', allErrors.join(' • '))
-          } else {
-            setViewError('evolution', '')
-          }
-
-          if (successCount > 0) {
-            setViewState('evolution', 'ready')
-            markUpdated('evolution')
-          } else {
-            setViewState('evolution', 'error')
-          }
-          return
-        }
-
-        if (view === 'graphrag') {
-          const query = new URLSearchParams({
-            scenario_id: scenarioId,
-            limit: String(graphPaging.limit > 0 ? graphPaging.limit : topologyLimit),
-            page: String(graphPaging.page),
-            community_mode: graphRagCommunityMode,
-          })
-          const normalizedCommunityId = graphRagCommunityId.trim()
-          if (normalizedCommunityId) {
-            query.set('community_id', normalizedCommunityId)
-          }
-          if (graphFilters.includeKinds.length > 0) {
-            query.set('include_kinds', graphFilters.includeKinds.join(','))
-          }
-          if (graphFilters.excludeKinds.length > 0) {
-            query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-          }
-          if (graphFilters.edgeKinds.length > 0) {
-            query.set('edge_kinds', graphFilters.edgeKinds.join(','))
-          }
-
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load graphrag view (${response.status})`)
-          }
-          const payload: GraphRagPayload = await response.json()
-          setGraph({
-            ...(payload.graph || DEFAULT_GRAPH),
-            projection: payload.projection,
-            entity_level: payload.entity_level,
-          })
-          setGraphRagStatus(payload.status?.status || 'ready')
-          setGraphRagReason(payload.status?.reason || 'ok')
-
-          setGraphRagCommunitiesState('loading')
-          setGraphRagCommunitiesError('')
-          try {
-            const communitiesResponse = await fetch(
-              `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
-              {
-                credentials: 'include',
-                signal: controller.signal,
-              },
-            )
-            if (!communitiesResponse.ok) {
-              throw new Error(`Could not load communities (${communitiesResponse.status})`)
-            }
-            const communitiesPayload: GraphRagCommunitiesPayload = await communitiesResponse.json()
-            setGraphRagCommunities(communitiesPayload.items || [])
-            setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
-          } catch (error) {
-            if (!controller.signal.aborted) {
-              setGraphRagCommunitiesState('error')
-              setGraphRagCommunitiesError(
-                error instanceof Error ? error.message : 'Could not load communities',
-              )
-            }
-          }
-
-          setGraphRagProcessesState('loading')
-          setGraphRagProcessesError('')
-          try {
-            const processesResponse = await fetch(
-              `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
-              {
-                credentials: 'include',
-                signal: controller.signal,
-              },
-            )
-            if (!processesResponse.ok) {
-              throw new Error(`Could not load processes (${processesResponse.status})`)
-            }
-            const processesPayload = await processesResponse.json()
-            setGraphRagProcesses(processesPayload.items || [])
-            setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
-          } catch (error) {
-            if (!controller.signal.aborted) {
-              setGraphRagProcessesState('error')
-              setGraphRagProcessesError(
-                error instanceof Error ? error.message : 'Could not load processes',
-              )
-            }
-          }
-          setViewState('graphrag', 'ready')
-          markUpdated('graphrag')
-          return
-        }
-
-        if (view === 'c4_diff') {
-          const query = new URLSearchParams({
-            scenario_id: scenarioId,
-            compare_with_base: 'true',
-            c4_view: c4View,
-            max_nodes: String(Math.max(10, c4MaxNodes || 120)),
-          })
-          const normalizedScope = c4Scope.trim()
-          if (normalizedScope) {
-            query.set('c4_scope', normalizedScope)
-          }
-          const response = await fetch(
-            `/api/twin/collections/${collectionId}/views/mermaid?${query.toString()}`,
-            {
-              credentials: 'include',
-              signal: controller.signal,
-            },
-          )
-          if (!response.ok) {
-            throw new Error(`Could not load C4 view (${response.status})`)
-          }
-          const payload: MermaidPayload = await response.json()
-          setMermaid(payload)
-          setViewState('c4_diff', 'ready')
-          markUpdated('c4_diff')
-          return
-        }
-
-        if (view === 'city') {
-          const cityProjectionValue: CityProjection = cityProjection
-          const entityLevel =
-            cityProjectionValue === 'architecture'
-              ? cityEntityLevel
-              : 'file'
-
-          const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            signal: controller.signal,
-            body: JSON.stringify({
-              format: 'cc_json',
-              projection: cityProjectionValue,
-              entity_level: entityLevel,
-            }),
-          })
-
-          if (!exportResponse.ok) {
-            throw new Error(`Could not generate city map (${exportResponse.status})`)
-          }
-
-          const exportData = await exportResponse.json()
-          const exportId = exportData.id || exportData.exports?.[0]?.id
-          if (!exportId) {
-            throw new Error('Missing export id from city export response')
-          }
-
-          const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
-          const params = new URLSearchParams({
-            file: rawPath,
-            area: 'loc',
-            height: 'coupling',
-            color: 'complexity',
-            mode: 'Single',
-          })
-          setCityEmbedUrl(`/codecharta/index.html?${params.toString()}`)
-          setViewState('city', 'ready')
-          markUpdated('city')
+        const handler = viewHandlers[view]
+        if (handler) {
+          await handler()
         }
       } catch (error) {
         if (controller.signal.aborted) {
