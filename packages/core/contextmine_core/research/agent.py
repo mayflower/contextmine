@@ -197,6 +197,61 @@ def _create_search_tools(run_holder: dict[str, ResearchRun]) -> list:
     return [hybrid_search, open_span, finalize]
 
 
+async def _query_goto_definition(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
+    """Fetch definitions from DB and return formatted output."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    async with get_async_session() as session:
+        stmt = (
+            select(Symbol)
+            .join(Document)
+            .where(Symbol.name == symbol_name)
+            .options(selectinload(Symbol.document))
+        )
+        if file_path:
+            stmt = stmt.order_by(
+                (Document.uri == file_path).desc(),
+                Symbol.start_line,
+            )
+        stmt = stmt.limit(5)
+
+        result = await session.execute(stmt)
+        symbols = result.scalars().all()
+
+    if not symbols:
+        return f"No definition found for '{symbol_name}'"
+
+    output_parts = []
+    for sym in symbols:
+        doc = sym.document
+        lines = (doc.content_markdown or "").split("\n")
+        start_idx = max(0, sym.start_line - 1)
+        end_idx = min(len(lines), sym.end_line)
+        content = "\n".join(lines[start_idx:end_idx])
+
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=doc.uri or "unknown",
+            start_line=sym.start_line,
+            end_line=sym.end_line,
+            content=content[:2000],
+            reason=f"Definition of '{symbol_name}'",
+            provenance="symbol_index",
+            symbol_id=sym.qualified_name,
+            symbol_kind=sym.kind.value,
+        )
+        run.add_evidence(evidence)
+        output_parts.append(
+            f"[{evidence.id}] {sym.kind.value} '{sym.name}' at "
+            f"{doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:500]}\n```"
+        )
+
+    return f"Found {len(symbols)} definition(s):\n\n" + "\n\n".join(output_parts)
+
+
 def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
     """Create definition/reference lookup tools."""
 
@@ -207,62 +262,8 @@ def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
         Uses pre-indexed Symbol table to find where a symbol is defined.
         Optionally filter by file path if you know where it's used.
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
-
-            async with get_async_session() as session:
-                # Find symbol by name
-                stmt = (
-                    select(Symbol)
-                    .join(Document)
-                    .where(Symbol.name == symbol_name)
-                    .options(selectinload(Symbol.document))
-                )
-                if file_path:
-                    # If file_path given, prioritize symbols in that file
-                    stmt = stmt.order_by(
-                        (Document.uri == file_path).desc(),
-                        Symbol.start_line,
-                    )
-                stmt = stmt.limit(5)
-
-                result = await session.execute(stmt)
-                symbols = result.scalars().all()
-
-                if not symbols:
-                    return f"No definition found for '{symbol_name}'"
-
-                output_parts = []
-                for sym in symbols:
-                    doc = sym.document
-                    lines = (doc.content_markdown or "").split("\n")
-                    start_idx = max(0, sym.start_line - 1)
-                    end_idx = min(len(lines), sym.end_line)
-                    content = "\n".join(lines[start_idx:end_idx])
-
-                    evidence = Evidence(
-                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                        file_path=doc.uri or "unknown",
-                        start_line=sym.start_line,
-                        end_line=sym.end_line,
-                        content=content[:2000],
-                        reason=f"Definition of '{symbol_name}'",
-                        provenance="symbol_index",
-                        symbol_id=sym.qualified_name,
-                        symbol_kind=sym.kind.value,
-                    )
-                    run.add_evidence(evidence)
-                    output_parts.append(
-                        f"[{evidence.id}] {sym.kind.value} '{sym.name}' at "
-                        f"{doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:500]}\n```"
-                    )
-
-                return f"Found {len(symbols)} definition(s):\n\n" + "\n\n".join(output_parts)
-
+            return await _query_goto_definition(symbol_name, file_path, run_holder["run"])
         except Exception as e:
             logger.warning("goto_definition failed: %s", e)
             return f"Goto definition failed: {e}"
@@ -434,8 +435,9 @@ def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
     return [goto_definition, find_references, get_signature]
 
 
-def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
-    """Create symbol index tools."""
+def _create_symbol_outline_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create symbol_outline tool (split from _create_symbol_tools to reduce complexity)."""
+    _ = run_holder  # outline does not need run
 
     @tool
     async def symbol_outline(file_path: str) -> str:
@@ -450,7 +452,6 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
             from sqlalchemy import select
 
             async with get_async_session() as session:
-                # Find document by URI
                 doc_stmt = select(Document).where(Document.uri == file_path)
                 doc_result = await session.execute(doc_stmt)
                 doc = doc_result.scalar_one_or_none()
@@ -458,33 +459,38 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
                 if not doc:
                     return f"File not found in index: {file_path}"
 
-                # Get all symbols for this document, ordered by line
                 sym_stmt = (
                     select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
                 )
                 sym_result = await session.execute(sym_stmt)
                 symbols = sym_result.scalars().all()
 
-                if not symbols:
-                    return f"No symbols indexed for {file_path}"
+            if not symbols:
+                return f"No symbols indexed for {file_path}"
 
-                outline_lines = []
-                for sym in symbols:
-                    indent = "  " if sym.parent_name else ""
-                    sig = f" - {sym.signature}" if sym.signature else ""
-                    outline_lines.append(
-                        f"{indent}{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line}){sig}"
-                    )
+            outline_lines = []
+            for sym in symbols:
+                indent = "  " if sym.parent_name else ""
+                sig = f" - {sym.signature}" if sym.signature else ""
+                outline_lines.append(
+                    f"{indent}{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line}){sig}"
+                )
 
-                summary = f"Found {len(symbols)} indexed symbols:\n" + "\n".join(outline_lines[:40])
-                if len(outline_lines) > 40:
-                    summary += f"\n... and {len(outline_lines) - 40} more"
+            summary = f"Found {len(symbols)} indexed symbols:\n" + "\n".join(outline_lines[:40])
+            if len(outline_lines) > 40:
+                summary += f"\n... and {len(outline_lines) - 40} more"
 
-                return summary
+            return summary
 
         except Exception as e:
             logger.warning("symbol_outline failed: %s", e)
             return f"Symbol outline failed: {e}"
+
+    return [symbol_outline]
+
+
+def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
+    """Create symbol index tools (excluding outline, which is created separately)."""
 
     @tool
     async def symbol_find(name: str, file_path: str | None = None) -> str:
@@ -799,7 +805,6 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
             return f"Summarize failed: {e}"
 
     return [
-        symbol_outline,
         symbol_find,
         symbol_callers,
         symbol_callees,
@@ -808,8 +813,8 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
     ]
 
 
-def _create_graph_tools(run_holder: dict[str, ResearchRun]) -> list:
-    """Create graph traversal tools."""
+def _create_graph_expand_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create graph_expand tool."""
 
     @tool
     async def graph_expand(
@@ -936,6 +941,12 @@ def _create_graph_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("graph_expand failed: %s", e)
             return f"Graph expand failed: {e}"
 
+    return [graph_expand]
+
+
+def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create graph_pack tool."""
+
     @tool
     async def graph_pack(target_count: int = 10) -> str:
         """Select the most relevant evidence items from collected evidence.
@@ -1003,6 +1014,12 @@ def _create_graph_tools(run_holder: dict[str, ResearchRun]) -> list:
             )
 
         return "\n".join(output_parts)
+
+    return [graph_pack]
+
+
+def _create_graph_trace_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create graph_trace tool."""
 
     @tool
     async def graph_trace(
@@ -1149,11 +1166,11 @@ def _create_graph_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("graph_trace failed: %s", e)
             return f"Graph trace failed: {e}"
 
-    return [graph_expand, graph_pack, graph_trace]
+    return [graph_trace]
 
 
-def _create_graphrag_tools(run_holder: dict[str, ResearchRun]) -> list:
-    """Create GraphRAG tools."""
+def _create_graphrag_search_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create graphrag_search tool."""
 
     @tool
     async def graphrag_search(query: str, max_entities: int = 15) -> str:
@@ -1244,6 +1261,12 @@ def _create_graphrag_tools(run_holder: dict[str, ResearchRun]) -> list:
         except Exception as e:
             logger.warning("graphrag_search failed: %s", e)
             return f"GraphRAG search failed: {e}. Try hybrid_search as fallback."
+
+    return [graphrag_search]
+
+
+def _create_kg_neighborhood_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create kg_neighborhood tool."""
 
     @tool
     async def kg_neighborhood(node_name: str, depth: int = 1, node_kind: str | None = None) -> str:
@@ -1356,6 +1379,12 @@ def _create_graphrag_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("kg_neighborhood failed: %s", e)
             return f"Knowledge Graph neighborhood failed: {e}"
 
+    return [kg_neighborhood]
+
+
+def _create_kg_path_tool(run_holder: dict[str, ResearchRun]) -> list:
+    """Create kg_path tool."""
+
     @tool
     async def kg_path(from_name: str, to_name: str, max_hops: int = 6) -> str:
         """Find path between two nodes in the Knowledge Graph.
@@ -1461,7 +1490,7 @@ def _create_graphrag_tools(run_holder: dict[str, ResearchRun]) -> list:
             logger.warning("kg_path failed: %s", e)
             return f"Knowledge Graph path failed: {e}"
 
-    return [graphrag_search, kg_neighborhood, kg_path]
+    return [kg_path]
 
 
 def create_tools(run_holder: dict[str, ResearchRun]) -> list:
@@ -1476,9 +1505,14 @@ def create_tools(run_holder: dict[str, ResearchRun]) -> list:
     tools: list = []
     tools.extend(_create_search_tools(run_holder))
     tools.extend(_create_definition_tools(run_holder))
+    tools.extend(_create_symbol_outline_tool(run_holder))
     tools.extend(_create_symbol_tools(run_holder))
-    tools.extend(_create_graph_tools(run_holder))
-    tools.extend(_create_graphrag_tools(run_holder))
+    tools.extend(_create_graph_expand_tool(run_holder))
+    tools.extend(_create_graph_pack_tool(run_holder))
+    tools.extend(_create_graph_trace_tool(run_holder))
+    tools.extend(_create_graphrag_search_tool(run_holder))
+    tools.extend(_create_kg_neighborhood_tool(run_holder))
+    tools.extend(_create_kg_path_tool(run_holder))
     return tools
 
 
@@ -1631,25 +1665,16 @@ class ResearchAgent:
             "verification_attempts": attempts + 1,
         }
 
-    def _build_graph(self, run_holder: dict[str, Any]) -> Any:
-        """Build the LangGraph workflow."""
-        # Create tools
-        tools = create_tools(run_holder)
+    @staticmethod
+    def _build_agent_node(model_with_tools: Any) -> Any:
+        """Build the agent node for the LangGraph workflow."""
 
-        # Get LangChain model and bind tools
-        model = self.llm_provider._model
-        model_with_tools = model.bind_tools(tools)
-
-        # Define nodes
         async def agent_node(state: AgentState) -> dict:
             """Agent node - calls LLM with tools."""
             run = state["run"]
-
-            # Count current steps (AI messages = LLM invocations)
             current_steps = len([m for m in state["messages"] if isinstance(m, AIMessage)])
             run.budget_used = current_steps
 
-            # Check budget
             if current_steps >= run.budget_steps:
                 logger.info(
                     "Research budget exhausted at step %d/%d with %d evidence items",
@@ -1664,7 +1689,6 @@ class ResearchAgent:
                     )
                 return {"run": run}
 
-            # Inject nudge to finalize when budget is running low
             messages_to_send = list(state["messages"])
             remaining = run.budget_steps - current_steps
             if remaining <= 2 and run.evidence:
@@ -1681,8 +1705,16 @@ class ResearchAgent:
                 )
 
             response = await model_with_tools.ainvoke(messages_to_send)
-
             return {"messages": [response], "run": run}
+
+        return agent_node
+
+    def _build_graph(self, run_holder: dict[str, Any]) -> Any:
+        """Build the LangGraph workflow."""
+        tools = create_tools(run_holder)
+        model = self.llm_provider._model
+        model_with_tools = model.bind_tools(tools)
+        agent_node = self._build_agent_node(model_with_tools)
 
         async def verify_node(state: AgentState) -> dict[str, object]:
             """Verify the answer is grounded in evidence."""

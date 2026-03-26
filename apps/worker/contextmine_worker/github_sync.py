@@ -765,6 +765,23 @@ def _iter_evo_window_commits(
         return []
 
 
+def _build_ownership_rows(acc: _EvoAccumulator) -> list[dict[str, object]]:
+    """Build ownership rows with computed ownership_share from accumulator."""
+    totals_by_file: dict[str, int] = defaultdict(int)
+    for (path, _author), row in acc.ownership_acc.items():
+        totals_by_file[path] += int(row["additions"])
+
+    rows: list[dict[str, object]] = []
+    for (path, _author), row in acc.ownership_acc.items():
+        total_additions = int(totals_by_file[path])
+        touches = int(row["touches"])
+        denominator = float(total_additions if total_additions > 0 else touches)
+        numerator = float(row["additions"] if total_additions > 0 else touches)
+        ownership_share = _evo_safe_ratio(numerator, denominator)
+        rows.append({**row, "ownership_share": round(ownership_share, 4)})
+    return rows
+
+
 def compute_git_evolution_snapshots(
     repo: Repo,
     target_files: set[str],
@@ -824,23 +841,7 @@ def compute_git_evolution_snapshots(
             "warnings": ["git_history_unavailable"],
         }
 
-    totals_by_file: dict[str, int] = defaultdict(int)
-    for (path, _author), row in acc.ownership_acc.items():
-        totals_by_file[path] += int(row["additions"])
-
-    ownership_rows: list[dict[str, object]] = []
-    for (path, _author), row in acc.ownership_acc.items():
-        total_additions = int(totals_by_file[path])
-        touches = int(row["touches"])
-        denominator = float(total_additions if total_additions > 0 else touches)
-        numerator = float(row["additions"] if total_additions > 0 else touches)
-        ownership_share = _evo_safe_ratio(numerator, denominator)
-        ownership_rows.append(
-            {
-                **row,
-                "ownership_share": round(ownership_share, 4),
-            }
-        )
+    ownership_rows = _build_ownership_rows(acc)
 
     coupling_rows: list[dict[str, object]] = []
     coupling_rows.extend(

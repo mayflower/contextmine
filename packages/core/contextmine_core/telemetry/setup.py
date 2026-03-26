@@ -117,13 +117,16 @@ def init_telemetry(
     return True
 
 
-async def shutdown_telemetry() -> None:  # noqa: RUF029
+async def shutdown_telemetry() -> None:
     """Gracefully shutdown telemetry exporters.
 
     This flushes any pending telemetry data before the application exits.
     Safe to call even if telemetry was never initialized.
-    Async because FastAPI lifespan awaits this coroutine.
+    Async because FastAPI lifespan awaits this coroutine; the blocking
+    provider shutdown calls are offloaded to a thread.
     """
+    import asyncio
+
     global _initialized  # noqa: PLW0602
 
     if not _initialized:
@@ -131,15 +134,15 @@ async def shutdown_telemetry() -> None:  # noqa: RUF029
 
     from opentelemetry import metrics, trace
 
-    # Shutdown tracer provider
-    tracer_provider = trace.get_tracer_provider()
-    if hasattr(tracer_provider, "shutdown"):
-        tracer_provider.shutdown()
+    def _sync_shutdown() -> None:
+        tracer_provider = trace.get_tracer_provider()
+        if hasattr(tracer_provider, "shutdown"):
+            tracer_provider.shutdown()
+        meter_provider = metrics.get_meter_provider()
+        if hasattr(meter_provider, "shutdown"):
+            meter_provider.shutdown()
 
-    # Shutdown meter provider
-    meter_provider = metrics.get_meter_provider()
-    if hasattr(meter_provider, "shutdown"):
-        meter_provider.shutdown()
+    await asyncio.to_thread(_sync_shutdown)
 
     logger.info("OpenTelemetry shutdown complete")
 

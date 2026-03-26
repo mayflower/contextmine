@@ -129,25 +129,34 @@ _ZERO_METRIC_VALUES = _MetricValues(
 )
 
 
+def _safe_int(value: object) -> int:
+    return int(value) if value else 0
+
+
+def _safe_float(value: object) -> float:
+    return float(value) if value else 0.0
+
+
 def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
     if snapshot is None:
         return _ZERO_METRIC_VALUES
+    meta = snapshot.meta if isinstance(snapshot.meta, dict) else {}
     return _MetricValues(
-        loc=int(snapshot.loc or 0),
-        symbol_count=int(snapshot.symbol_count or 0),
-        coupling=float(snapshot.coupling or 0.0),
-        coverage=float(snapshot.coverage or 0.0),
-        complexity=float(snapshot.complexity or 0.0),
-        cohesion=float(snapshot.cohesion or 0.0),
-        instability=float(snapshot.instability or 0.0),
-        fan_in=float(snapshot.fan_in or 0),
-        fan_out=float(snapshot.fan_out or 0),
-        cycle_participation=1.0 if bool(snapshot.cycle_participation) else 0.0,
-        cycle_size=float(snapshot.cycle_size or 0),
-        duplication_ratio=float(snapshot.duplication_ratio or 0.0),
-        crap_score=float(snapshot.crap_score or 0.0),
-        change_frequency=float(snapshot.change_frequency or 0.0),
-        churn=float(((snapshot.meta or {}).get("churn", 0.0)) or 0.0),
+        loc=_safe_int(snapshot.loc),
+        symbol_count=_safe_int(snapshot.symbol_count),
+        coupling=_safe_float(snapshot.coupling),
+        coverage=_safe_float(snapshot.coverage),
+        complexity=_safe_float(snapshot.complexity),
+        cohesion=_safe_float(snapshot.cohesion),
+        instability=_safe_float(snapshot.instability),
+        fan_in=_safe_float(snapshot.fan_in),
+        fan_out=_safe_float(snapshot.fan_out),
+        cycle_participation=1.0 if snapshot.cycle_participation else 0.0,
+        cycle_size=_safe_float(snapshot.cycle_size),
+        duplication_ratio=_safe_float(snapshot.duplication_ratio),
+        crap_score=_safe_float(snapshot.crap_score),
+        change_frequency=_safe_float(snapshot.change_frequency),
+        churn=_safe_float(meta.get("churn", 0.0)),
     )
 
 

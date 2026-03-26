@@ -82,6 +82,56 @@ TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
 _FILE_NODE_PREFIX = "file:"
+
+
+def _scip_normalize_language(value: object) -> str:
+    """Normalize a language value to lowercase string for SCIP comparisons."""
+    return str(value or "").strip().lower()
+
+
+def _scip_snapshot_repo_file_path(
+    file_info: dict[str, object], snapshot_meta: dict, repo_path: Path
+) -> str:
+    """Resolve a snapshot file path relative to the repository root."""
+    raw_path = str(file_info.get("path") or "").strip().replace("\\", "/")
+    if not raw_path:
+        return ""
+    path_obj = Path(raw_path)
+    if path_obj.is_absolute():
+        try:
+            return path_obj.resolve().relative_to(repo_path.resolve()).as_posix()
+        except ValueError:
+            return raw_path.lstrip("./")
+    repo_relative_root = str(snapshot_meta.get("repo_relative_root") or "").strip()
+    normalized = raw_path.lstrip("./")
+    if repo_relative_root:
+        repo_relative_root = repo_relative_root.replace("\\", "/").strip("/")
+        if normalized != repo_relative_root and not normalized.startswith(f"{repo_relative_root}/"):
+            normalized = f"{repo_relative_root}/{normalized}".strip("/")
+    return normalized
+
+
+def _scip_snapshot_file_language(
+    *,
+    repo_relative_path: str,
+    file_info: dict[str, object],
+    snapshot_language: str,
+    supported_languages: set[str],
+) -> str | None:
+    """Determine the language of a snapshot file."""
+    from contextmine_core.semantic_snapshot.indexers.language_census import EXTENSION_TO_LANGUAGE
+
+    explicit = _scip_normalize_language(file_info.get("language"))
+    if explicit in supported_languages:
+        return explicit
+    extension_language = EXTENSION_TO_LANGUAGE.get(Path(repo_relative_path).suffix.lower())
+    if extension_language:
+        return extension_language.value
+    if snapshot_language in supported_languages:
+        return snapshot_language
+    return None
+
+
 IGNORED_REPO_PATH_PARTS = frozenset(
     {
         "node_modules",
@@ -982,6 +1032,108 @@ async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> 
     return result_stats
 
 
+async def _kg_step_semantic_entities(
+    stats: dict,
+    collection_uuid: object,
+    llm_provider: object,
+    embedder: object,
+    changed_doc_ids: list[str] | None,
+) -> None:
+    """Step 5: Extract semantic entities using LLM."""
+    try:
+        from contextmine_core.knowledge.extraction import (
+            extract_from_documents,
+            persist_semantic_entities,
+        )
+
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+            logger.info("No changed documents - skipping semantic entity extraction")
+            return
+        async with get_session() as session:
+            extraction_batch = await extract_from_documents(
+                collection_id=collection_uuid,
+                llm_provider=llm_provider,
+                embedder=embedder,
+                max_chunks=50,
+            )
+            extraction_stats = await persist_semantic_entities(
+                session=session,
+                collection_id=collection_uuid,
+                batch=extraction_batch,
+            )
+            await session.commit()
+            stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
+            stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
+            logger.info(
+                "Extracted %d semantic entities, %d relationships",
+                stats["kg_semantic_entities"],
+                stats["kg_semantic_relationships"],
+            )
+    except Exception as e:
+        logger.warning("Failed to extract semantic entities: %s", e)
+        stats["kg_errors"].append(f"semantic_extraction: {e}")
+
+
+async def _kg_step_communities(stats: dict, collection_uuid: object) -> None:
+    """Step 6: Detect communities using Leiden algorithm."""
+    try:
+        from contextmine_core.knowledge.communities import detect_communities, persist_communities
+
+        async with get_session() as session:
+            community_result = await detect_communities(session, collection_uuid)
+            await persist_communities(session, collection_uuid, community_result)
+            await session.commit()
+            stats["kg_communities_l0"] = community_result.community_count(level=0)
+            stats["kg_communities_l1"] = community_result.community_count(level=1)
+            stats["kg_communities_l2"] = community_result.community_count(level=2)
+            logger.info(
+                "Leiden communities: L0=%d, L1=%d, L2=%d (modularity: %.3f, %.3f, %.3f)",
+                stats["kg_communities_l0"],
+                stats["kg_communities_l1"],
+                stats["kg_communities_l2"],
+                community_result.modularity.get(0, 0),
+                community_result.modularity.get(1, 0),
+                community_result.modularity.get(2, 0),
+            )
+    except Exception as e:
+        logger.warning("Failed to detect communities: %s", e)
+        stats["kg_errors"].append(f"communities: {e}")
+
+
+async def _kg_step_summaries(
+    stats: dict,
+    collection_uuid: object,
+    research_llm: object,
+    embedder: object,
+    changed_doc_ids: list[str] | None,
+) -> None:
+    """Step 7: Generate community summaries and embeddings."""
+    try:
+        from contextmine_core.knowledge.summaries import generate_community_summaries
+
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+            logger.info("No changed documents - skipping community summary regeneration")
+            return
+        async with get_session() as session:
+            summary_stats = await generate_community_summaries(
+                session,
+                collection_uuid,
+                provider=research_llm,
+                embed_provider=embedder,
+            )
+            await session.commit()
+            stats["kg_summaries_created"] = summary_stats.communities_summarized
+            stats["kg_embeddings_created"] = summary_stats.embeddings_created
+            logger.info(
+                "Generated %d community summaries, %d embeddings",
+                stats["kg_summaries_created"],
+                stats["kg_embeddings_created"],
+            )
+    except Exception as e:
+        logger.warning("Failed to generate community summaries: %s", e)
+        stats["kg_errors"].append(f"summaries: {e}")
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -1124,102 +1276,15 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"surface: {e}")
 
     # Step 5: Extract semantic entities using LLM (for proper GraphRAG)
-    try:
-        from contextmine_core.knowledge.extraction import (
-            extract_from_documents,
-            persist_semantic_entities,
-        )
-
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-            logger.info("No changed documents - skipping semantic entity extraction")
-        else:
-            async with get_session() as session:
-                # Extract semantic entities from documents
-                # Uses embedding similarity for cross-language entity resolution
-                extraction_batch = await extract_from_documents(
-                    collection_id=collection_uuid,
-                    llm_provider=llm_provider,
-                    embedder=embedder,
-                    max_chunks=50,  # Limit for cost control
-                )
-
-                # Persist to knowledge graph
-                extraction_stats = await persist_semantic_entities(
-                    session=session,
-                    collection_id=collection_uuid,
-                    batch=extraction_batch,
-                )
-                await session.commit()
-
-                stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
-                stats["kg_semantic_relationships"] = extraction_stats.get(
-                    "relationships_created", 0
-                )
-                logger.info(
-                    "Extracted %d semantic entities, %d relationships",
-                    stats["kg_semantic_entities"],
-                    stats["kg_semantic_relationships"],
-                )
-
-    except Exception as e:
-        logger.warning("Failed to extract semantic entities: %s", e)
-        stats["kg_errors"].append(f"semantic_extraction: {e}")
+    await _kg_step_semantic_entities(
+        stats, collection_uuid, llm_provider, embedder, changed_doc_ids
+    )
 
     # Step 6: Detect communities using Leiden algorithm (GraphRAG)
-    try:
-        from contextmine_core.knowledge.communities import detect_communities, persist_communities
-
-        async with get_session() as session:
-            # Leiden with resolution parameters: [1.0, 0.5, 0.1] for levels 0, 1, 2
-            community_result = await detect_communities(session, collection_uuid)
-            await persist_communities(session, collection_uuid, community_result)
-            await session.commit()
-
-            # Report communities at each hierarchical level
-            stats["kg_communities_l0"] = community_result.community_count(level=0)
-            stats["kg_communities_l1"] = community_result.community_count(level=1)
-            stats["kg_communities_l2"] = community_result.community_count(level=2)
-            logger.info(
-                "Leiden communities: L0=%d, L1=%d, L2=%d (modularity: %.3f, %.3f, %.3f)",
-                stats["kg_communities_l0"],
-                stats["kg_communities_l1"],
-                stats["kg_communities_l2"],
-                community_result.modularity.get(0, 0),
-                community_result.modularity.get(1, 0),
-                community_result.modularity.get(2, 0),
-            )
-
-    except Exception as e:
-        logger.warning("Failed to detect communities: %s", e)
-        stats["kg_errors"].append(f"communities: {e}")
+    await _kg_step_communities(stats, collection_uuid)
 
     # Step 7: Generate community summaries and embeddings
-    try:
-        from contextmine_core.knowledge.summaries import generate_community_summaries
-
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-            logger.info("No changed documents - skipping community summary regeneration")
-        else:
-            async with get_session() as session:
-                summary_stats = await generate_community_summaries(
-                    session,
-                    collection_uuid,
-                    provider=research_llm,
-                    embed_provider=embedder,
-                )
-                await session.commit()
-
-                stats["kg_summaries_created"] = summary_stats.communities_summarized
-                stats["kg_embeddings_created"] = summary_stats.embeddings_created
-                logger.info(
-                    "Generated %d community summaries, %d embeddings",
-                    stats["kg_summaries_created"],
-                    stats["kg_embeddings_created"],
-                )
-
-    except Exception as e:
-        logger.warning("Failed to generate community summaries: %s", e)
-        stats["kg_errors"].append(f"summaries: {e}")
+    await _kg_step_summaries(stats, collection_uuid, research_llm, embedder, changed_doc_ids)
 
     return stats
 
@@ -1332,6 +1397,57 @@ async def _generate_arch_docs_on_sync(
     return stats
 
 
+async def _apply_twin_file_metrics(
+    session: Any, scenario_id: Any, file_metrics: list[dict], stats: dict, settings: Any
+) -> None:
+    """Apply file metrics to a twin scenario and record stats."""
+    from contextmine_core.models import TwinNode
+    from contextmine_core.pathing import canonicalize_repo_relative_path
+    from contextmine_core.twin import apply_file_metrics_to_scenario
+
+    requested_metric_paths = {
+        canonicalize_repo_relative_path(str(m.get("file_path", "")).strip())
+        for m in file_metrics
+        if canonicalize_repo_relative_path(str(m.get("file_path", "")).strip())
+    }
+    requested_metric_files = len(requested_metric_paths)
+    available_nodes = (
+        (
+            await session.execute(
+                select(TwinNode.natural_key).where(
+                    TwinNode.scenario_id == scenario_id,
+                    TwinNode.kind == "file",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    available_paths = {
+        canonicalize_repo_relative_path(str(nk).removeprefix(_FILE_NODE_PREFIX))
+        for nk in available_nodes
+        if str(nk).startswith(_FILE_NODE_PREFIX)
+    }
+    metrics_unmapped = sorted(p for p in requested_metric_paths if p not in available_paths)
+    enriched = await apply_file_metrics_to_scenario(session, scenario_id, file_metrics)
+    stats["metrics_requested_files"] = requested_metric_files
+    stats["metrics_mapped_files"] = enriched
+    stats["metrics_unmapped_sample"] = metrics_unmapped[:25]
+    if enriched < requested_metric_files:
+        stats["metrics_gate"] = "fail"
+        gate_error = (
+            "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
+            f"(mapped={enriched}, metrics={requested_metric_files})"
+        )
+        if settings.metrics_strict_mode:
+            raise RuntimeError(gate_error)
+        logger.warning("%s", gate_error)
+    else:
+        stats["metrics_gate"] = "pass"
+    stats["twin_metric_nodes_enriched"] = enriched
+    stats["twin_metric_nodes_requested"] = requested_metric_files
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -1351,13 +1467,8 @@ async def build_twin_graph(
     import uuid as uuid_module
 
     from contextmine_core.graph.age import sync_scenario_to_age
-    from contextmine_core.models import (
-        TwinNode,
-    )
-    from contextmine_core.pathing import canonicalize_repo_relative_path
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
-        apply_file_metrics_to_scenario,
         evaluate_and_store_fitness_findings,
         get_or_create_as_is_scenario,
         ingest_snapshot_into_as_is,
@@ -1423,49 +1534,7 @@ async def build_twin_graph(
 
         settings = get_settings()
         if file_metrics:
-            requested_metric_paths = {
-                canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
-                for metric in file_metrics
-                if canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
-            }
-            requested_metric_files = len(requested_metric_paths)
-            available_nodes = (
-                (
-                    await session.execute(
-                        select(TwinNode.natural_key).where(
-                            TwinNode.scenario_id == as_is.id,
-                            TwinNode.kind == "file",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            available_paths = {
-                canonicalize_repo_relative_path(str(node_key).removeprefix(_FILE_NODE_PREFIX))
-                for node_key in available_nodes
-                if str(node_key).startswith(_FILE_NODE_PREFIX)
-            }
-            metrics_unmapped = sorted(
-                path for path in requested_metric_paths if path not in available_paths
-            )
-            enriched = await apply_file_metrics_to_scenario(session, as_is.id, file_metrics)
-            stats["metrics_requested_files"] = requested_metric_files
-            stats["metrics_mapped_files"] = enriched
-            stats["metrics_unmapped_sample"] = metrics_unmapped[:25]
-            if enriched < requested_metric_files:
-                stats["metrics_gate"] = "fail"
-                gate_error = (
-                    "METRICS_GATE_FAILED: twin_node_mapping_incomplete "
-                    f"(mapped={enriched}, metrics={requested_metric_files})"
-                )
-                if settings.metrics_strict_mode:
-                    raise RuntimeError(gate_error)
-                logger.warning("%s", gate_error)
-            else:
-                stats["metrics_gate"] = "pass"
-            stats["twin_metric_nodes_enriched"] = enriched
-            stats["twin_metric_nodes_requested"] = requested_metric_files
+            await _apply_twin_file_metrics(session, as_is.id, file_metrics, stats, settings)
 
         stats["twin_metrics_snapshots"] = await refresh_metric_snapshots(session, as_is.id)
         if evolution_payload:
@@ -2209,19 +2278,15 @@ async def sync_github_source(
         import tempfile
 
         from contextmine_core.semantic_snapshot.indexers.language_census import (
-            EXTENSION_TO_LANGUAGE,
             build_language_census,
         )
         from contextmine_core.semantic_snapshot.models import Language
-
-        def _normalize_language(value: object) -> str:
-            return str(value or "").strip().lower()
 
         supported_languages = {language.value for language in Language}
         attempted_targets: set[tuple[str, str, str]] = set()
 
         def _project_key_for(proj_dict: dict) -> tuple[str, str, str]:
-            language = _normalize_language(proj_dict.get("language"))
+            language = _scip_normalize_language(proj_dict.get("language"))
             root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
             metadata = dict(proj_dict.get("metadata") or {})
             mode = "default"
@@ -2232,26 +2297,7 @@ async def sync_github_source(
             return language, root, mode
 
         def _snapshot_repo_file_path(file_info: dict[str, object], snapshot_meta: dict) -> str:
-            raw_path = str(file_info.get("path") or "").strip().replace("\\", "/")
-            if not raw_path:
-                return ""
-
-            path_obj = Path(raw_path)
-            if path_obj.is_absolute():
-                try:
-                    return path_obj.resolve().relative_to(repo_path.resolve()).as_posix()
-                except ValueError:
-                    return raw_path.lstrip("./")
-
-            repo_relative_root = str(snapshot_meta.get("repo_relative_root") or "").strip()
-            normalized = raw_path.lstrip("./")
-            if repo_relative_root:
-                repo_relative_root = repo_relative_root.replace("\\", "/").strip("/")
-                if normalized != repo_relative_root and not normalized.startswith(
-                    f"{repo_relative_root}/"
-                ):
-                    normalized = f"{repo_relative_root}/{normalized}".strip("/")
-            return normalized
+            return _scip_snapshot_repo_file_path(file_info, snapshot_meta, repo_path)
 
         def _snapshot_file_language(
             *,
@@ -2259,15 +2305,12 @@ async def sync_github_source(
             file_info: dict[str, object],
             snapshot_language: str,
         ) -> str | None:
-            explicit = _normalize_language(file_info.get("language"))
-            if explicit in supported_languages:
-                return explicit
-            extension_language = EXTENSION_TO_LANGUAGE.get(Path(repo_relative_path).suffix.lower())
-            if extension_language:
-                return extension_language.value
-            if snapshot_language in supported_languages:
-                return snapshot_language
-            return None
+            return _scip_snapshot_file_language(
+                repo_relative_path=repo_relative_path,
+                file_info=file_info,
+                snapshot_language=snapshot_language,
+                supported_languages=supported_languages,
+            )
 
         def _collect_indexed_paths_by_language(
             snapshots: list[dict],
@@ -2275,7 +2318,7 @@ async def sync_github_source(
             indexed: dict[str, set[str]] = {}
             for snapshot_dict in snapshots:
                 snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                snapshot_language = _normalize_language(snapshot_meta.get("language"))
+                snapshot_language = _scip_normalize_language(snapshot_meta.get("language"))
                 files = snapshot_dict.get("files") or []
                 if not isinstance(files, list):
                     continue
@@ -2315,7 +2358,7 @@ async def sync_github_source(
             file_stats = list(getattr(census_report, "file_stats", []) or [])
             for item in file_stats:
                 language_obj = getattr(item, "language", None)
-                language = _normalize_language(getattr(language_obj, "value", language_obj))
+                language = _scip_normalize_language(getattr(language_obj, "value", language_obj))
                 if language not in supported_languages:
                     continue
                 code_lines = int(getattr(item, "code", 0) or 0)
@@ -2367,7 +2410,7 @@ async def sync_github_source(
             kind_totals: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
             for snapshot_dict in snapshots:
                 snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                language = _normalize_language(snapshot_meta.get("language"))
+                language = _scip_normalize_language(snapshot_meta.get("language"))
                 if language not in supported_languages:
                     continue
                 relations = snapshot_dict.get("relations") or []
@@ -2376,7 +2419,7 @@ async def sync_github_source(
                 for relation in relations:
                     if not isinstance(relation, dict):
                         continue
-                    kind = _normalize_language(relation.get("kind"))
+                    kind = _scip_normalize_language(relation.get("kind"))
                     totals[language] += 1
                     if kind:
                         kind_totals[language][kind] += 1
@@ -2403,7 +2446,7 @@ async def sync_github_source(
             return sorted(set(missing))
 
         async def _index_project_target(proj_dict: dict) -> bool:
-            language = _normalize_language(proj_dict.get("language"))
+            language = _scip_normalize_language(proj_dict.get("language"))
             project_root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
             artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
             if artifact_dict and artifact_dict.get("success"):
@@ -2516,7 +2559,7 @@ async def sync_github_source(
                 candidates = [
                     proj
                     for proj in project_dicts
-                    if _normalize_language(proj.get("language")) == language
+                    if _scip_normalize_language(proj.get("language")) == language
                 ]
                 fallback_target = dict(candidates[0]) if candidates else {}
                 fallback_target["language"] = language
@@ -2548,7 +2591,7 @@ async def sync_github_source(
                 candidates = [
                     proj
                     for proj in project_dicts
-                    if _normalize_language(proj.get("language")) == language
+                    if _scip_normalize_language(proj.get("language")) == language
                 ]
                 relation_recovery_target = dict(candidates[0]) if candidates else {}
                 relation_recovery_target["language"] = language

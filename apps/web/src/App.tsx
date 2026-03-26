@@ -451,6 +451,36 @@ function SourceRow({
   )
 }
 
+async function fetchCollectionDetailsRaw(
+  collectionId: string,
+  isOwner: boolean,
+): Promise<{ members: CollectionMember[]; invites: CollectionInvite[]; sources: Source[] }> {
+  const result: { members: CollectionMember[]; invites: CollectionInvite[]; sources: Source[] } = {
+    members: [],
+    invites: [],
+    sources: [],
+  }
+  try {
+    const membersRes = await fetch(`/api/collections/${collectionId}/members`, { credentials: 'include' })
+    if (membersRes.ok) {
+      result.members = await membersRes.json()
+    }
+    if (isOwner) {
+      const invitesRes = await fetch(`/api/collections/${collectionId}/invites`, { credentials: 'include' })
+      if (invitesRes.ok) {
+        result.invites = await invitesRes.json()
+      }
+      const sourcesRes = await fetch(`/api/collections/${collectionId}/sources`, { credentials: 'include' })
+      if (sourcesRes.ok) {
+        result.sources = await sourcesRes.json()
+      }
+    }
+  } catch {
+    // Error fetching collection details
+  }
+  return result
+}
+
 function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
@@ -482,7 +512,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [, setSources] = useState<Source[]>([])
+  const [_sources, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -647,33 +677,10 @@ function App() {
 
   // Fetch collection members, invites, and sources
   const fetchCollectionDetails = async (collection: Collection) => {
-    try {
-      const membersRes = await fetch(`/api/collections/${collection.id}/members`, { credentials: 'include' })
-      if (membersRes.ok) {
-        const members = await membersRes.json()
-        setCollectionMembers(members)
-      }
-
-      if (collection.is_owner) {
-        const invitesRes = await fetch(`/api/collections/${collection.id}/invites`, { credentials: 'include' })
-        if (invitesRes.ok) {
-          const invites = await invitesRes.json()
-          setCollectionInvites(invites)
-        }
-
-        // Fetch sources for owners
-        const sourcesRes = await fetch(`/api/collections/${collection.id}/sources`, { credentials: 'include' })
-        if (sourcesRes.ok) {
-          const sourcesData = await sourcesRes.json()
-          setSources(sourcesData)
-        }
-      } else {
-        setCollectionInvites([])
-        setSources([])
-      }
-    } catch {
-      // Error fetching collection details
-    }
+    const details = await fetchCollectionDetailsRaw(collection.id, collection.is_owner)
+    setCollectionMembers(details.members)
+    setCollectionInvites(details.invites)
+    setSources(details.sources)
   }
 
   const handleSelectCollection = (collection: Collection) => {
@@ -1829,22 +1836,17 @@ function App() {
                 </div>
               )}
 
-              {(() => {
-                if (collectionsLoading) {
-                  return <p className="loading-text">Loading collections...</p>
-                }
-                if (collections.length === 0) {
-                  return (
-                    <div className="empty-state">
-                      <p>No collections yet</p>
-                      <p className="note">Collections organize your documentation and code sources.</p>
-                      <button className="create-button" onClick={() => setSelectedCollection({ id: 'new' } as Collection)}>
-                        Create Your First Collection
-                      </button>
-                    </div>
-                  )
-                }
-                return (
+              {collectionsLoading ? (
+                <p className="loading-text">Loading collections...</p>
+              ) : collections.length === 0 ? (
+                <div className="empty-state">
+                  <p>No collections yet</p>
+                  <p className="note">Collections organize your documentation and code sources.</p>
+                  <button className="create-button" onClick={() => setSelectedCollection({ id: 'new' } as Collection)}>
+                    Create Your First Collection
+                  </button>
+                </div>
+              ) : (
                 <div className="collections-list">
                   {collections.map((collection) => {
                     const isExpanded = expandedCollections.has(collection.id)
@@ -1857,8 +1859,7 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-                        <div className="collection-header-row" onClick={(e) => { if ((e.target as HTMLElement).closest('form, [role="toolbar"]')) return; handleToggleExpand(collection); }} onKeyDown={e => { if (e.key === 'Enter') handleToggleExpand(collection) }}>
+                        <div className="collection-header-row" role="button" tabIndex={0} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
@@ -1957,7 +1958,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="share-popover" role="dialog" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
@@ -2079,8 +2080,7 @@ function App() {
                     )
                   })}
                 </div>
-              )
-              })()}
+              )}
             </section>
         )}
 

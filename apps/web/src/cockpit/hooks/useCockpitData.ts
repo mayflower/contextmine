@@ -1,5 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+/** Process a batch of Promise.allSettled results into values/errors. */
+function processSettledResults<K extends string>(
+  entries: ReadonlyArray<{ key: K; result: PromiseSettledResult<unknown>; setter: (v: never) => void; fallbackError: string }>,
+): { errors: Record<K, string>; successCount: number } {
+  const errors = {} as Record<K, string>
+  let successCount = 0
+  for (const { key, result, setter, fallbackError } of entries) {
+    if (result.status === 'fulfilled') {
+      setter(result.value as never)
+      successCount += 1
+      errors[key] = ''
+    } else {
+      errors[key] = result.reason instanceof Error ? result.reason.message : fallbackError
+    }
+  }
+  return { errors, successCount }
+}
+
 import type {
   Arc42DriftPayload,
   Arc42ViewPayload,
@@ -584,19 +602,14 @@ export function useCockpitData({
         fetchJson<ErmViewPayload>(`/api/twin/collections/${collectionId}/views/erm?scenario_id=${encodeURIComponent(scenarioId)}`, 'erm view'),
       ])
 
-      let successCount = 0
-      const nextErrors = { arc42: '', ports: '', drift: '', erm: '' }
-      if (arc42Result.status === 'fulfilled') { setArc42(arc42Result.value); successCount += 1 }
-      else { nextErrors.arc42 = arc42Result.reason instanceof Error ? arc42Result.reason.message : 'Could not load arc42 view' }
-      if (portsResult.status === 'fulfilled') { setPortsAdapters(portsResult.value); successCount += 1 }
-      else { nextErrors.ports = portsResult.reason instanceof Error ? portsResult.reason.message : 'Could not load ports/adapters view' }
-      if (driftResult.status === 'fulfilled') { setArc42Drift(driftResult.value); successCount += 1 }
-      else { nextErrors.drift = driftResult.reason instanceof Error ? driftResult.reason.message : 'Could not load drift view' }
-      if (ermResult.status === 'fulfilled') { setErm(ermResult.value); successCount += 1 }
-      else { nextErrors.erm = ermResult.reason instanceof Error ? ermResult.reason.message : 'Could not load erm view' }
-
+      const { errors: nextErrors, successCount } = processSettledResults([
+        { key: 'arc42' as const, result: arc42Result, setter: setArc42 as (v: never) => void, fallbackError: 'Could not load arc42 view' },
+        { key: 'ports' as const, result: portsResult, setter: setPortsAdapters as (v: never) => void, fallbackError: 'Could not load ports/adapters view' },
+        { key: 'drift' as const, result: driftResult, setter: setArc42Drift as (v: never) => void, fallbackError: 'Could not load drift view' },
+        { key: 'erm' as const, result: ermResult, setter: setErm as (v: never) => void, fallbackError: 'Could not load erm view' },
+      ])
       setArchitecturePanelErrors(nextErrors)
-      const allErrors = [nextErrors.arc42, nextErrors.ports, nextErrors.drift, nextErrors.erm].filter(Boolean)
+      const allErrors = Object.values(nextErrors).filter(Boolean)
       setViewError('architecture', allErrors.length > 0 ? allErrors.join(' • ') : '')
       if (successCount > 0) { setViewState('architecture', 'ready'); markUpdated('architecture') }
       else { setViewState('architecture', 'error') }
@@ -611,22 +624,53 @@ export function useCockpitData({
           fetchJson<FitnessFunctionsPayload>(`/api/twin/collections/${collectionId}/views/evolution/fitness-functions?scenario_id=${encodeURIComponent(scenarioId)}&window_days=365&include_resolved=false`, 'evolution fitness functions'),
         ])
 
-      let successCount = 0
-      const nextErrors = { investment: '', knowledge: '', coupling: '', fitness: '' }
-      if (investmentResult.status === 'fulfilled') { setInvestmentUtilization(investmentResult.value); successCount += 1 }
-      else { nextErrors.investment = investmentResult.reason instanceof Error ? investmentResult.reason.message : 'Could not load investment/utilization panel' }
-      if (knowledgeResult.status === 'fulfilled') { setKnowledgeIslands(knowledgeResult.value); successCount += 1 }
-      else { nextErrors.knowledge = knowledgeResult.reason instanceof Error ? knowledgeResult.reason.message : 'Could not load knowledge islands panel' }
-      if (couplingResult.status === 'fulfilled') { setTemporalCoupling(couplingResult.value); successCount += 1 }
-      else { nextErrors.coupling = couplingResult.reason instanceof Error ? couplingResult.reason.message : 'Could not load temporal coupling panel' }
-      if (fitnessResult.status === 'fulfilled') { setFitnessFunctions(fitnessResult.value); successCount += 1 }
-      else { nextErrors.fitness = fitnessResult.reason instanceof Error ? fitnessResult.reason.message : 'Could not load fitness functions panel' }
-
+      const { errors: nextErrors, successCount } = processSettledResults([
+        { key: 'investment' as const, result: investmentResult, setter: setInvestmentUtilization as (v: never) => void, fallbackError: 'Could not load investment/utilization panel' },
+        { key: 'knowledge' as const, result: knowledgeResult, setter: setKnowledgeIslands as (v: never) => void, fallbackError: 'Could not load knowledge islands panel' },
+        { key: 'coupling' as const, result: couplingResult, setter: setTemporalCoupling as (v: never) => void, fallbackError: 'Could not load temporal coupling panel' },
+        { key: 'fitness' as const, result: fitnessResult, setter: setFitnessFunctions as (v: never) => void, fallbackError: 'Could not load fitness functions panel' },
+      ])
       setEvolutionPanelErrors(nextErrors)
-      const allErrors = [nextErrors.investment, nextErrors.knowledge, nextErrors.coupling, nextErrors.fitness].filter(Boolean)
+      const allErrors = Object.values(nextErrors).filter(Boolean)
       setViewError('evolution', allErrors.length > 0 ? allErrors.join(' • ') : '')
       if (successCount > 0) { setViewState('evolution', 'ready'); markUpdated('evolution') }
       else { setViewState('evolution', 'error') }
+    }
+
+    const fetchGraphRagCommunities = async () => {
+      setGraphRagCommunitiesState('loading')
+      setGraphRagCommunitiesError('')
+      try {
+        const communitiesPayload = await fetchJson<GraphRagCommunitiesPayload>(
+          `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
+          'communities',
+        )
+        setGraphRagCommunities(communitiesPayload.items || [])
+        setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setGraphRagCommunitiesState('error')
+          setGraphRagCommunitiesError(error instanceof Error ? error.message : 'Could not load communities')
+        }
+      }
+    }
+
+    const fetchGraphRagProcesses = async () => {
+      setGraphRagProcessesState('loading')
+      setGraphRagProcessesError('')
+      try {
+        const processesPayload = await fetchJson<{ items?: GraphRagProcessSummary[] }>(
+          `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
+          'processes',
+        )
+        setGraphRagProcesses(processesPayload.items || [])
+        setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setGraphRagProcessesState('error')
+          setGraphRagProcessesError(error instanceof Error ? error.message : 'Could not load processes')
+        }
+      }
     }
 
     const fetchGraphRag = async () => {
@@ -654,37 +698,8 @@ export function useCockpitData({
       setGraphRagStatus(payload.status?.status || 'ready')
       setGraphRagReason(payload.status?.reason || 'ok')
 
-      setGraphRagCommunitiesState('loading')
-      setGraphRagCommunitiesError('')
-      try {
-        const communitiesPayload = await fetchJson<GraphRagCommunitiesPayload>(
-          `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
-          'communities',
-        )
-        setGraphRagCommunities(communitiesPayload.items || [])
-        setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setGraphRagCommunitiesState('error')
-          setGraphRagCommunitiesError(error instanceof Error ? error.message : 'Could not load communities')
-        }
-      }
-
-      setGraphRagProcessesState('loading')
-      setGraphRagProcessesError('')
-      try {
-        const processesPayload = await fetchJson<{ items?: GraphRagProcessSummary[] }>(
-          `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
-          'processes',
-        )
-        setGraphRagProcesses(processesPayload.items || [])
-        setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setGraphRagProcessesState('error')
-          setGraphRagProcessesError(error instanceof Error ? error.message : 'Could not load processes')
-        }
-      }
+      await fetchGraphRagCommunities()
+      await fetchGraphRagProcesses()
       setViewState('graphrag', 'ready')
       markUpdated('graphrag')
     }

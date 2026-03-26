@@ -10,6 +10,45 @@ import ReactFlow, {
 
 import ViewShell from '../components/ViewShell'
 import { runElkLayout, runGridLayout, type LayoutEngine } from '../layout/layoutCore'
+
+/** Run ELK layout (in-thread or via worker), calling back with positions on completion. */
+async function applyElkLayout(
+  nodes: Array<{ id: string }>,
+  edges: Array<{ source: string; target: string }>,
+  engine: LayoutEngine,
+  columns: number,
+  cancelled: { current: boolean },
+  startedAt: number,
+  onPositions: (positions: Record<string, { x: number; y: number }>) => void,
+  onCompleted: (engine: LayoutEngine, durationMs: number, nodeCount: number) => void,
+  onFinish: () => void,
+): Promise<void> {
+  try {
+    if (nodes.length > 1000) {
+      const worker = new Worker(new URL('../layout/layoutWorker.ts', import.meta.url), {
+        type: 'module',
+      })
+      worker.onmessage = (event: MessageEvent<{ ok: boolean; positions?: Record<string, { x: number; y: number }>; durationMs: number }>) => {
+        worker.terminate()
+        if (cancelled.current || !event.data.ok || !event.data.positions) return
+        onPositions(event.data.positions)
+        onFinish()
+        onCompleted(engine, event.data.durationMs, nodes.length)
+      }
+      worker.postMessage({ nodes, edges, engine, columns })
+      return
+    }
+    const positions = await runElkLayout(nodes, edges, engine)
+    if (cancelled.current) return
+    const durationMs = performance.now() - startedAt
+    onPositions(positions)
+    onFinish()
+    onCompleted(engine, durationMs, nodes.length)
+  } catch {
+    if (cancelled.current) return
+    onFinish()
+  }
+}
 import { layerLabel } from '../types'
 import type { CockpitLayer, CockpitLoadState, OverlayState, TwinGraphResponse } from '../types'
 
@@ -94,52 +133,20 @@ export default function TopologyView({
       return
     }
 
-    let cancelled = false
-    const startedAt = performance.now()
-
-    const apply = async () => {
-      try {
-        if (graph.nodes.length > 1000) {
-          const worker = new Worker(new URL('../layout/layoutWorker.ts', import.meta.url), {
-            type: 'module',
-          })
-          worker.onmessage = (event: MessageEvent<{ ok: boolean; positions?: Record<string, { x: number; y: number }>; durationMs: number }>) => {
-            worker.terminate()
-            if (cancelled || !event.data.ok || !event.data.positions) {
-              return
-            }
-            setLayoutPositions(event.data.positions)
-            setLayoutStatus('refined')
-            onLayoutCompleted(preferredEngine, event.data.durationMs, graph.nodes.length)
-          }
-          worker.postMessage({
-            nodes: graph.nodes.map((node) => ({ id: node.id })),
-            edges: graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
-            engine: preferredEngine,
-            columns,
-          })
-          return
-        }
-
-        const positions = await runElkLayout(
-          graph.nodes.map((node) => ({ id: node.id })),
-          graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
-          preferredEngine,
-        )
-        if (cancelled) return
-        const durationMs = performance.now() - startedAt
-        setLayoutPositions(positions)
-        setLayoutStatus('refined')
-        onLayoutCompleted(preferredEngine, durationMs, graph.nodes.length)
-      } catch {
-        if (cancelled) return
-        setLayoutStatus('refined')
-      }
-    }
-
-    apply()
+    const cancelRef = { current: false }
+    applyElkLayout(
+      graph.nodes.map((node) => ({ id: node.id })),
+      graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
+      preferredEngine,
+      columns,
+      cancelRef,
+      performance.now(),
+      setLayoutPositions,
+      onLayoutCompleted,
+      () => setLayoutStatus('refined'),
+    )
     return () => {
-      cancelled = true
+      cancelRef.current = true
     }
   }, [graph.edges, graph.nodes, columns, preferredEngine, onLayoutCompleted])
 

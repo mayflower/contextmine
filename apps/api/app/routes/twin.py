@@ -1724,6 +1724,50 @@ def _find_misplaced_nodes(
     ]
 
 
+def _build_community_points(
+    ordered_communities: list[dict[str, Any]],
+    node_by_id: dict,
+    positions: dict[str, tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """Build community point dicts from ordered communities."""
+    points: list[dict[str, Any]] = []
+    for community in ordered_communities:
+        member_ids = list(community.get("member_node_ids", []))
+        member_nodes = [node_by_id[nid] for nid in member_ids if nid in node_by_id]
+        profile = _community_profile(member_nodes)
+        dominant_domain = profile["dominant_domain"]
+        dominant_ratio = float(profile["dominant_ratio"])
+        misplaced_nodes = _find_misplaced_nodes(
+            member_nodes, dominant_domain, dominant_ratio, profile["node_domain_by_id"]
+        )
+        x, y = positions.get(str(community["id"]), (0.0, 0.0))
+        sample_nodes = community.get("sample_nodes") or []
+        anchor = str(sample_nodes[0]["id"]) if sample_nodes else ""
+        points.append(
+            {
+                "id": str(community["id"]),
+                "label": str(community["label"]),
+                "x": x,
+                "y": y,
+                "member_count": int(community["size"]),
+                "cohesion": float(community["cohesion"]),
+                "top_kinds": profile["top_kinds"],
+                "domain_counts": profile["domain_counts"],
+                "dominant_domain": dominant_domain,
+                "dominant_ratio": dominant_ratio,
+                "summary": None,
+                "anchor_node_id": anchor,
+                "sample_nodes": list(sample_nodes),
+                "member_node_ids": [str(mid) for mid in community.get("member_node_ids", [])],
+                "vector": [],
+                "source_refs": profile["source_refs"],
+                "name_tokens": profile["name_tokens"],
+                "misplaced_nodes": misplaced_nodes,
+            }
+        )
+    return points
+
+
 async def _build_structural_community_points(
     db: Any,
     *,
@@ -1796,45 +1840,7 @@ async def _build_structural_community_points(
     }
     positions = _layout_code_structure_points(point_ids, scoped_weights)
 
-    points: list[dict[str, Any]] = []
-    for community in ordered_communities:
-        member_ids = list(community.get("member_node_ids", []))
-        member_nodes = [node_by_id[node_id] for node_id in member_ids if node_id in node_by_id]
-        profile = _community_profile(member_nodes)
-        dominant_domain = profile["dominant_domain"]
-        dominant_ratio = float(profile["dominant_ratio"])
-        misplaced_nodes = _find_misplaced_nodes(
-            member_nodes, dominant_domain, dominant_ratio, profile["node_domain_by_id"]
-        )
-
-        x, y = positions.get(str(community["id"]), (0.0, 0.0))
-        points.append(
-            {
-                "id": str(community["id"]),
-                "label": str(community["label"]),
-                "x": x,
-                "y": y,
-                "member_count": int(community["size"]),
-                "cohesion": float(community["cohesion"]),
-                "top_kinds": profile["top_kinds"],
-                "domain_counts": profile["domain_counts"],
-                "dominant_domain": dominant_domain,
-                "dominant_ratio": dominant_ratio,
-                "summary": None,
-                "anchor_node_id": str(community["sample_nodes"][0]["id"])
-                if community.get("sample_nodes")
-                else "",
-                "sample_nodes": list(community.get("sample_nodes", [])),
-                "member_node_ids": [
-                    str(member_node_id) for member_node_id in community.get("member_node_ids", [])
-                ],
-                "vector": [],
-                "source_refs": profile["source_refs"],
-                "name_tokens": profile["name_tokens"],
-                "misplaced_nodes": misplaced_nodes,
-            }
-        )
-
+    points = _build_community_points(ordered_communities, node_by_id, positions)
     _normalize_xy(points)
     return points, warnings
 
@@ -3250,6 +3256,33 @@ async def ports_adapters_view(
         }
 
 
+def _resolve_table_name(col: KnowledgeNode) -> str:
+    """Resolve the table name from a column node's metadata or natural key."""
+    meta = col.meta if isinstance(col.meta, dict) else {}
+    return meta.get("table") or _parse_db_table_from_natural_key(col.natural_key) or "unknown"
+
+
+def _build_fk_row(
+    edge: KnowledgeEdge,
+    column_by_id: dict[uuid.UUID, KnowledgeNode],
+) -> dict[str, Any] | None:
+    """Build a foreign-key row dict from an edge, or return None if columns are missing."""
+    source_col = column_by_id.get(edge.source_node_id)
+    target_col = column_by_id.get(edge.target_node_id)
+    if not source_col or not target_col:
+        return None
+    return {
+        "id": str(edge.id),
+        "fk_name": (edge.meta or {}).get("fk_name"),
+        "source_table": _resolve_table_name(source_col),
+        "source_column": source_col.name,
+        "target_table": _resolve_table_name(target_col),
+        "target_column": target_col.name,
+        "source_column_node_id": str(source_col.id),
+        "target_column_node_id": str(target_col.id),
+    }
+
+
 def _process_erm_edges(
     edges: list[KnowledgeEdge],
     table_by_id: dict[uuid.UUID, KnowledgeNode],
@@ -3267,28 +3300,9 @@ def _process_erm_edges(
                 columns_by_table[source.id].append(target)
             continue
 
-        source_col = column_by_id.get(edge.source_node_id)
-        target_col = column_by_id.get(edge.target_node_id)
-        if not source_col or not target_col:
-            continue
-        source_meta = source_col.meta if isinstance(source_col.meta, dict) else {}
-        target_meta = target_col.meta if isinstance(target_col.meta, dict) else {}
-        fk_rows.append(
-            {
-                "id": str(edge.id),
-                "fk_name": (edge.meta or {}).get("fk_name"),
-                "source_table": source_meta.get("table")
-                or _parse_db_table_from_natural_key(source_col.natural_key)
-                or "unknown",
-                "source_column": source_col.name,
-                "target_table": target_meta.get("table")
-                or _parse_db_table_from_natural_key(target_col.natural_key)
-                or "unknown",
-                "target_column": target_col.name,
-                "source_column_node_id": str(source_col.id),
-                "target_column_node_id": str(target_col.id),
-            }
-        )
+        fk_row = _build_fk_row(edge, column_by_id)
+        if fk_row:
+            fk_rows.append(fk_row)
 
     return columns_by_table, fk_rows
 
@@ -5456,6 +5470,100 @@ async def _export_mermaid_c4_format(
     }
 
 
+async def _generate_export_content(
+    db: Any,
+    scenario: Any,
+    projection: GraphProjection,
+    body: Any,
+) -> tuple[dict | None, str, Any, str, GraphProjection]:
+    """Dispatch to the correct export format and return (early_return, content, kind, name, projection)."""
+    if body.format == "lpg_jsonl":
+        if projection == GraphProjection.CODE_SYMBOL:
+            content = await export_lpg_jsonl(db, scenario.id)
+        else:
+            graph = await get_full_scenario_graph(
+                session=db,
+                scenario_id=scenario.id,
+                layer=None,
+                projection=projection,
+                entity_level=body.entity_level,
+            )
+            content = export_lpg_jsonl_from_graph(scenario.id, graph)
+        return (
+            None,
+            content,
+            KnowledgeArtifactKind.LPG_JSONL,
+            f"{scenario.name}.lpg.jsonl",
+            projection,
+        )
+    if body.format == "cc_json":
+        if projection == GraphProjection.CODE_SYMBOL:
+            projection = GraphProjection.CODE_FILE
+        content = await export_codecharta_json(
+            db,
+            scenario.id,
+            projection=projection,
+            entity_level=body.entity_level,
+        )
+        return None, content, KnowledgeArtifactKind.CC_JSON, f"{scenario.name}.cc.json", projection
+    if body.format == "cx2":
+        if projection == GraphProjection.CODE_SYMBOL:
+            content = await export_cx2(db, scenario.id)
+        else:
+            graph = await get_full_scenario_graph(
+                session=db,
+                scenario_id=scenario.id,
+                layer=None,
+                projection=projection,
+                entity_level=body.entity_level,
+            )
+            content = export_cx2_from_graph(scenario.id, graph)
+        return None, content, KnowledgeArtifactKind.CX2, f"{scenario.name}.cx2.json", projection
+    if body.format == "jgf":
+        if projection == GraphProjection.CODE_SYMBOL:
+            content = await export_jgf(db, scenario.id)
+        else:
+            graph = await get_full_scenario_graph(
+                session=db,
+                scenario_id=scenario.id,
+                layer=None,
+                projection=projection,
+                entity_level=body.entity_level,
+            )
+            content = export_jgf_from_graph(scenario.id, graph)
+        return None, content, KnowledgeArtifactKind.JGF, f"{scenario.name}.jgf.json", projection
+    if body.format == "twin_manifest":
+        content = await export_twin_manifest(db, scenario.id)
+        return (
+            None,
+            content,
+            KnowledgeArtifactKind.TWIN_MANIFEST,
+            f"{scenario.name}.twin_manifest.json",
+            projection,
+        )
+    # Mermaid C4 or other format
+    result = await _export_mermaid_c4_format(db, scenario, body)
+    if result is not None:
+        return result, "", None, "", projection
+    selected_c4_view = _parse_c4_view(body.c4_view)
+    selected_c4_scope = _parse_c4_scope(body.c4_scope)
+    selected_max_nodes = body.max_nodes or 120
+    content = await export_mermaid_c4(
+        db,
+        scenario.id,
+        entity_level=body.entity_level or "container",
+        c4_view=selected_c4_view,
+        c4_scope=selected_c4_scope,
+        max_nodes=selected_max_nodes,
+    )
+    kind = (
+        KnowledgeArtifactKind.MERMAID_C4_ASIS
+        if scenario.is_as_is
+        else KnowledgeArtifactKind.MERMAID_C4_TOBE
+    )
+    return None, content, kind, f"{scenario.name}.mmd", projection
+
+
 @router.post(
     "/scenarios/{scenario_id}/exports",
     responses={
@@ -5475,85 +5583,11 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             GraphProjection(body.projection) if body.projection else GraphProjection.ARCHITECTURE
         )
 
-        if body.format == "lpg_jsonl":
-            if projection == GraphProjection.CODE_SYMBOL:
-                content = await export_lpg_jsonl(db, scenario.id)
-            else:
-                graph = await get_full_scenario_graph(
-                    session=db,
-                    scenario_id=scenario.id,
-                    layer=None,
-                    projection=projection,
-                    entity_level=body.entity_level,
-                )
-                content = export_lpg_jsonl_from_graph(scenario.id, graph)
-            kind = KnowledgeArtifactKind.LPG_JSONL
-            name = f"{scenario.name}.lpg.jsonl"
-        elif body.format == "cc_json":
-            if projection == GraphProjection.CODE_SYMBOL:
-                projection = GraphProjection.CODE_FILE
-            content = await export_codecharta_json(
-                db,
-                scenario.id,
-                projection=projection,
-                entity_level=body.entity_level,
-            )
-            kind = KnowledgeArtifactKind.CC_JSON
-            name = f"{scenario.name}.cc.json"
-        elif body.format == "cx2":
-            if projection == GraphProjection.CODE_SYMBOL:
-                content = await export_cx2(db, scenario.id)
-            else:
-                graph = await get_full_scenario_graph(
-                    session=db,
-                    scenario_id=scenario.id,
-                    layer=None,
-                    projection=projection,
-                    entity_level=body.entity_level,
-                )
-                content = export_cx2_from_graph(scenario.id, graph)
-            kind = KnowledgeArtifactKind.CX2
-            name = f"{scenario.name}.cx2.json"
-        elif body.format == "jgf":
-            if projection == GraphProjection.CODE_SYMBOL:
-                content = await export_jgf(db, scenario.id)
-            else:
-                graph = await get_full_scenario_graph(
-                    session=db,
-                    scenario_id=scenario.id,
-                    layer=None,
-                    projection=projection,
-                    entity_level=body.entity_level,
-                )
-                content = export_jgf_from_graph(scenario.id, graph)
-            kind = KnowledgeArtifactKind.JGF
-            name = f"{scenario.name}.jgf.json"
-        elif body.format == "twin_manifest":
-            content = await export_twin_manifest(db, scenario.id)
-            kind = KnowledgeArtifactKind.TWIN_MANIFEST
-            name = f"{scenario.name}.twin_manifest.json"
-        else:
-            result = await _export_mermaid_c4_format(db, scenario, body)
-            if result is not None:
-                return result
-
-            selected_c4_view = _parse_c4_view(body.c4_view)
-            selected_c4_scope = _parse_c4_scope(body.c4_scope)
-            selected_max_nodes = body.max_nodes or 120
-            content = await export_mermaid_c4(
-                db,
-                scenario.id,
-                entity_level=body.entity_level or "container",
-                c4_view=selected_c4_view,
-                c4_scope=selected_c4_scope,
-                max_nodes=selected_max_nodes,
-            )
-            kind = (
-                KnowledgeArtifactKind.MERMAID_C4_ASIS
-                if scenario.is_as_is
-                else KnowledgeArtifactKind.MERMAID_C4_TOBE
-            )
-            name = f"{scenario.name}.mmd"
+        early_return, content, kind, name, projection = await _generate_export_content(
+            db, scenario, projection, body
+        )
+        if early_return is not None:
+            return early_return
 
         meta: dict = {
             "scenario_id": str(scenario.id),
@@ -5562,9 +5596,9 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
             "entity_level": body.entity_level,
         }
         if body.format == "mermaid_c4":
-            meta["c4_view"] = selected_c4_view
-            meta["c4_scope"] = selected_c4_scope
-            meta["max_nodes"] = selected_max_nodes
+            meta["c4_view"] = _parse_c4_view(body.c4_view)
+            meta["c4_scope"] = _parse_c4_scope(body.c4_scope)
+            meta["max_nodes"] = body.max_nodes or 120
         artifact = await _upsert_artifact(
             db,
             collection_id=scenario.collection_id,
