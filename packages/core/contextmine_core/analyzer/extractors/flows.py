@@ -97,14 +97,12 @@ class FlowSynthesis:
     flows: list[UserFlowDef] = field(default_factory=list)
 
 
-def synthesize_user_flows(
+def _collect_route_hints_from_ui(
     ui_extractions: list[UIExtraction],
-    test_extractions: list[TestsExtraction],
-) -> FlowSynthesis:
-    """Build deterministic user flows from explicit UI and test symbol evidence."""
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Collect symbol and navigation hints per route from UI extractions."""
     route_to_symbol_hints: dict[str, list[str]] = {}
     route_to_navigation_hints: dict[str, list[str]] = {}
-    symbol_to_test_refs: dict[str, list[str]] = {}
 
     for ui in ui_extractions:
         if not ui.routes:
@@ -114,19 +112,35 @@ def synthesize_user_flows(
         for route in ui.routes:
             route_to_symbol_hints.setdefault(route.path, [])
             route_to_navigation_hints.setdefault(route.path, [])
+            candidate = route.view_name_hint or default_view_name
+            if candidate:
+                view = views_by_name.get(candidate)
+                if view is not None:
+                    route_to_symbol_hints[route.path].extend(view.symbol_hints)
+                    route_to_navigation_hints[route.path].extend(view.navigation_targets)
 
-            candidate_view_names: list[str] = []
-            if route.view_name_hint:
-                candidate_view_names.append(route.view_name_hint)
-            elif default_view_name:
-                candidate_view_names.append(default_view_name)
+    return route_to_symbol_hints, route_to_navigation_hints
 
-            for view_name in candidate_view_names:
-                view = views_by_name.get(view_name)
-                if view is None:
-                    continue
-                route_to_symbol_hints[route.path].extend(view.symbol_hints)
-                route_to_navigation_hints[route.path].extend(view.navigation_targets)
+
+def _collect_symbol_test_refs(
+    test_extractions: list[TestsExtraction],
+) -> dict[str, list[str]]:
+    """Map symbol hints to test case natural keys."""
+    symbol_to_test_refs: dict[str, list[str]] = {}
+    for test_file in test_extractions:
+        for case in test_file.cases:
+            for symbol_hint in case.symbol_hints:
+                symbol_to_test_refs.setdefault(symbol_hint.lower(), []).append(case.natural_key)
+    return symbol_to_test_refs
+
+
+def synthesize_user_flows(
+    ui_extractions: list[UIExtraction],
+    test_extractions: list[TestsExtraction],
+) -> FlowSynthesis:
+    """Build deterministic user flows from explicit UI and test symbol evidence."""
+    route_to_symbol_hints, route_to_navigation_hints = _collect_route_hints_from_ui(ui_extractions)
+    symbol_to_test_refs = _collect_symbol_test_refs(test_extractions)
 
     for test_file in test_extractions:
         for case in test_file.cases:

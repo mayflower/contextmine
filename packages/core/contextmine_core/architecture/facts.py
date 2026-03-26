@@ -244,6 +244,79 @@ def _dedupe_ports(facts: list[PortAdapterFact]) -> list[PortAdapterFact]:
     return sorted(by_id.values(), key=lambda row: row.fact_id)
 
 
+def _collect_container_facts(bundle: ArchitectureFactsBundle, container_graph: dict) -> None:
+    """Add container facts from the architecture graph."""
+    for node in container_graph["nodes"]:
+        meta = node.get("meta") or {}
+        bundle.facts.append(
+            ArchitectureFact(
+                fact_id=f"container:{node.get('natural_key')}",
+                fact_type="container",
+                title=f"Container {node.get('name')}",
+                description=f"Container '{node.get('name')}' with {meta.get('member_count', 0)} members",
+                source="deterministic",
+                confidence=DETERMINISTIC_CONFIDENCE,
+                tags=("c4", "container"),
+                attributes={
+                    "natural_key": node.get("natural_key"),
+                    "domain": meta.get("domain"),
+                    "container": meta.get("container"),
+                    "member_count": meta.get("member_count", 0),
+                    "grouping_strategy": container_graph.get("grouping_strategy"),
+                },
+                evidence=(),
+            )
+        )
+
+
+def _collect_component_facts(bundle: ArchitectureFactsBundle, component_graph: dict) -> None:
+    """Add component and component dependency facts."""
+    for node in component_graph["nodes"]:
+        meta = node.get("meta") or {}
+        component_name = str(meta.get("component") or node.get("name") or "component")
+        bundle.facts.append(
+            ArchitectureFact(
+                fact_id=f"component:{component_name}",
+                fact_type="component",
+                title=f"Component {component_name}",
+                description=f"Component '{component_name}' in container '{meta.get('container')}'",
+                source="deterministic",
+                confidence=DETERMINISTIC_CONFIDENCE,
+                tags=("c4", "component"),
+                attributes={
+                    "natural_key": node.get("natural_key"),
+                    "domain": meta.get("domain"),
+                    "container": meta.get("container"),
+                    "component": component_name,
+                    "member_count": meta.get("member_count", 0),
+                },
+                evidence=(),
+            )
+        )
+    for edge in component_graph["edges"]:
+        source_id = str(edge.get("source_node_id") or "")
+        target_id = str(edge.get("target_node_id") or "")
+        weight = (edge.get("meta") or {}).get("weight", 1)
+        bundle.facts.append(
+            ArchitectureFact(
+                fact_id=f"component_dep:{source_id}:{target_id}",
+                fact_type="component_dependency",
+                title="Component dependency",
+                description=f"Component dependency {source_id} -> {target_id}",
+                source="deterministic",
+                confidence=DETERMINISTIC_CONFIDENCE,
+                tags=("c4", "dependency"),
+                attributes={
+                    "source_node_id": source_id,
+                    "target_node_id": target_id,
+                    "weight": weight,
+                    "sample_edge_kinds": (edge.get("meta") or {}).get("sample_edge_kinds", []),
+                },
+                evidence=(EvidenceRef(kind="edge", ref=str(edge.get("id"))),),
+            )
+        )
+
+
 async def build_architecture_facts(
     session: AsyncSession,
     *,
@@ -293,77 +366,8 @@ async def build_architecture_facts(
         include_kinds={"file"},
     )
 
-    for node in container_graph["nodes"]:
-        meta = node.get("meta") or {}
-        bundle.facts.append(
-            ArchitectureFact(
-                fact_id=f"container:{node.get('natural_key')}",
-                fact_type="container",
-                title=f"Container {node.get('name')}",
-                description=(
-                    f"Container '{node.get('name')}' with {meta.get('member_count', 0)} members"
-                ),
-                source="deterministic",
-                confidence=DETERMINISTIC_CONFIDENCE,
-                tags=("c4", "container"),
-                attributes={
-                    "natural_key": node.get("natural_key"),
-                    "domain": meta.get("domain"),
-                    "container": meta.get("container"),
-                    "member_count": meta.get("member_count", 0),
-                    "grouping_strategy": container_graph.get("grouping_strategy"),
-                },
-                evidence=(),
-            )
-        )
-
-    for node in component_graph["nodes"]:
-        meta = node.get("meta") or {}
-        component_name = str(meta.get("component") or node.get("name") or "component")
-        bundle.facts.append(
-            ArchitectureFact(
-                fact_id=f"component:{component_name}",
-                fact_type="component",
-                title=f"Component {component_name}",
-                description=(
-                    f"Component '{component_name}' in container '{meta.get('container')}'"
-                ),
-                source="deterministic",
-                confidence=DETERMINISTIC_CONFIDENCE,
-                tags=("c4", "component"),
-                attributes={
-                    "natural_key": node.get("natural_key"),
-                    "domain": meta.get("domain"),
-                    "container": meta.get("container"),
-                    "component": component_name,
-                    "member_count": meta.get("member_count", 0),
-                },
-                evidence=(),
-            )
-        )
-
-    for edge in component_graph["edges"]:
-        source_id = str(edge.get("source_node_id") or "")
-        target_id = str(edge.get("target_node_id") or "")
-        weight = (edge.get("meta") or {}).get("weight", 1)
-        bundle.facts.append(
-            ArchitectureFact(
-                fact_id=f"component_dep:{source_id}:{target_id}",
-                fact_type="component_dependency",
-                title="Component dependency",
-                description=f"Component dependency {source_id} -> {target_id}",
-                source="deterministic",
-                confidence=DETERMINISTIC_CONFIDENCE,
-                tags=("c4", "dependency"),
-                attributes={
-                    "source_node_id": source_id,
-                    "target_node_id": target_id,
-                    "weight": weight,
-                    "sample_edge_kinds": (edge.get("meta") or {}).get("sample_edge_kinds", []),
-                },
-                evidence=(EvidenceRef(kind="edge", ref=str(edge.get("id"))),),
-            )
-        )
+    _collect_container_facts(bundle, container_graph)
+    _collect_component_facts(bundle, component_graph)
 
     context_view = await export_mermaid_c4_result(
         session,

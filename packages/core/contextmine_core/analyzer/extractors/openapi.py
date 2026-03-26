@@ -81,19 +81,13 @@ def extract_from_openapi(file_path: str, content: str) -> OpenAPIExtraction:
     return OpenAPIExtraction(file_path=file_path)
 
 
-def extract_from_openapi_document(file_path: str, spec: dict[str, Any]) -> OpenAPIExtraction:
-    """Extract endpoint/schema definitions from an already parsed OpenAPI/Swagger document."""
-    result = OpenAPIExtraction(file_path=file_path)
-    if not isinstance(spec, dict):
-        return result
-
-    # Extract basic info
+def _extract_openapi_info(spec: dict[str, Any], result: OpenAPIExtraction) -> None:
+    """Extract title, version, and base_path from an OpenAPI/Swagger spec."""
     info = spec.get("info", {})
     if isinstance(info, dict):
         result.title = info.get("title")
         result.version = info.get("version")
 
-    # Prefer OpenAPI server URL, fallback to Swagger 2 basePath.
     servers = spec.get("servers", [])
     if isinstance(servers, list) and servers and isinstance(servers[0], dict):
         result.base_path = servers[0].get("url", "")
@@ -102,22 +96,27 @@ def extract_from_openapi_document(file_path: str, spec: dict[str, Any]) -> OpenA
         if isinstance(base_path, str) and base_path.strip():
             result.base_path = base_path
 
-    is_swagger2 = bool(spec.get("swagger")) and not bool(spec.get("openapi"))
 
-    # Extract paths/endpoints
+def _extract_openapi_endpoints(
+    spec: dict[str, Any], result: OpenAPIExtraction, *, is_swagger2: bool
+) -> None:
+    """Extract endpoint definitions from paths in the spec."""
     paths = spec.get("paths", {})
-    if isinstance(paths, dict):
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
+    if not isinstance(paths, dict):
+        return
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
+            operation = path_item.get(method)
+            if not isinstance(operation, dict):
                 continue
-            for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
-                operation = path_item.get(method)
-                if not isinstance(operation, dict):
-                    continue
-                endpoint = _parse_endpoint(path, method, operation, is_swagger2=is_swagger2)
-                result.endpoints.append(endpoint)
+            endpoint = _parse_endpoint(path, method, operation, is_swagger2=is_swagger2)
+            result.endpoints.append(endpoint)
 
-    # Extract schemas from components (OpenAPI 3) or definitions (Swagger 2)
+
+def _extract_openapi_schemas(spec: dict[str, Any], result: OpenAPIExtraction) -> None:
+    """Extract schema definitions from components or definitions."""
     schema_defs: dict[str, Any] = {}
     components = spec.get("components", {})
     if isinstance(components, dict):
@@ -132,6 +131,17 @@ def extract_from_openapi_document(file_path: str, spec: dict[str, Any]) -> OpenA
         if isinstance(schema, dict):
             result.schemas[name] = _parse_schema(name, schema)
 
+
+def extract_from_openapi_document(file_path: str, spec: dict[str, Any]) -> OpenAPIExtraction:
+    """Extract endpoint/schema definitions from an already parsed OpenAPI/Swagger document."""
+    result = OpenAPIExtraction(file_path=file_path)
+    if not isinstance(spec, dict):
+        return result
+
+    _extract_openapi_info(spec, result)
+    is_swagger2 = bool(spec.get("swagger")) and not bool(spec.get("openapi"))
+    _extract_openapi_endpoints(spec, result, is_swagger2=is_swagger2)
+    _extract_openapi_schemas(spec, result)
     return result
 
 
@@ -258,6 +268,23 @@ def _extract_handler_hints(operation: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(hints))
 
 
+def _resolve_property_type(prop_def: dict[str, Any]) -> str | None:
+    """Resolve the type string for a single schema property definition."""
+    if "$ref" in prop_def:
+        return _extract_ref_name(prop_def["$ref"])
+    if "type" not in prop_def:
+        return None
+    prop_type = prop_def["type"]
+    if prop_type != "array" or "items" not in prop_def:
+        return prop_type
+    items = prop_def["items"]
+    if not isinstance(items, dict):
+        return prop_type
+    if "$ref" in items:
+        return f"array<{_extract_ref_name(items['$ref'])}>"
+    return f"array<{items.get('type', 'any')}>"
+
+
 def _parse_schema(name: str, schema: dict[str, Any]) -> SchemaDef:
     """Parse a schema definition."""
     schema_def = SchemaDef(
@@ -266,25 +293,13 @@ def _parse_schema(name: str, schema: dict[str, Any]) -> SchemaDef:
         required=schema.get("required", []),
     )
 
-    # Extract property types
     properties = schema.get("properties", {})
     for prop_name, prop_def in properties.items():
-        if isinstance(prop_def, dict):
-            if "$ref" in prop_def:
-                schema_def.properties[prop_name] = _extract_ref_name(prop_def["$ref"])
-            elif "type" in prop_def:
-                prop_type = prop_def["type"]
-                if prop_type == "array" and "items" in prop_def:
-                    items = prop_def["items"]
-                    if isinstance(items, dict):
-                        if "$ref" in items:
-                            schema_def.properties[prop_name] = (
-                                f"array<{_extract_ref_name(items['$ref'])}>"
-                            )
-                        else:
-                            schema_def.properties[prop_name] = f"array<{items.get('type', 'any')}>"
-                else:
-                    schema_def.properties[prop_name] = prop_type
+        if not isinstance(prop_def, dict):
+            continue
+        resolved = _resolve_property_type(prop_def)
+        if resolved is not None:
+            schema_def.properties[prop_name] = resolved
 
     return schema_def
 

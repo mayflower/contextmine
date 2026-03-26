@@ -81,6 +81,34 @@ class ProtobufExtraction:
     services: list[ProtoServiceDef] = field(default_factory=list)
 
 
+def _process_proto_node(content: str, node: object, result: ProtobufExtraction) -> None:
+    """Process a single top-level protobuf AST node into the extraction result."""
+    if node.type == "syntax":
+        syntax_value = unquote(node_text(content, first_child(node, "string")))
+        if syntax_value:
+            result.syntax = syntax_value
+    elif node.type == "package":
+        package_name = node_text(content, first_child(node, "full_ident")).strip()
+        if package_name:
+            result.package = package_name
+    elif node.type == "import":
+        imported = unquote(node_text(content, first_child(node, "string")))
+        if imported:
+            result.imports.append(imported)
+    elif node.type == "enum":
+        parsed = _parse_enum(content, node)
+        if parsed is not None:
+            result.enums.append(parsed)
+    elif node.type == "message":
+        parsed = _parse_message(content, node)
+        if parsed is not None:
+            result.messages.append(parsed)
+    elif node.type == "service":
+        parsed = _parse_service(content, node)
+        if parsed is not None:
+            result.services.append(parsed)
+
+
 def extract_from_protobuf(file_path: str, content: str) -> ProtobufExtraction:
     """Extract message, service, and enum definitions from a protobuf file.
 
@@ -98,31 +126,34 @@ def extract_from_protobuf(file_path: str, content: str) -> ProtobufExtraction:
         return result
 
     for node in root.children:
-        if node.type == "syntax":
-            syntax_value = unquote(node_text(content, first_child(node, "string")))
-            if syntax_value:
-                result.syntax = syntax_value
-        elif node.type == "package":
-            package_name = node_text(content, first_child(node, "full_ident")).strip()
-            if package_name:
-                result.package = package_name
-        elif node.type == "import":
-            imported = unquote(node_text(content, first_child(node, "string")))
-            if imported:
-                result.imports.append(imported)
-        elif node.type == "enum":
-            parsed = _parse_enum(content, node)
-            if parsed is not None:
-                result.enums.append(parsed)
-        elif node.type == "message":
-            parsed = _parse_message(content, node)
-            if parsed is not None:
-                result.messages.append(parsed)
-        elif node.type == "service":
-            parsed = _parse_service(content, node)
-            if parsed is not None:
-                result.services.append(parsed)
+        _process_proto_node(content, node, result)
     return result
+
+
+def _process_message_body_child(content: str, child: object, message: ProtoMessageDef) -> None:
+    """Process a single child node from a protobuf message body."""
+    if child.type == "field":
+        field = _parse_field(content, child)
+        if field is not None:
+            message.fields.append(field)
+    elif child.type == "map_field":
+        field = _parse_map_field(content, child)
+        if field is not None:
+            message.fields.append(field)
+    elif child.type == "message":
+        nested_name = node_text(
+            content,
+            first_child(first_child(child, "message_name"), "identifier"),
+        ).strip()
+        if nested_name:
+            message.nested_messages.append(nested_name)
+    elif child.type == "enum":
+        nested_enum_name = node_text(
+            content,
+            first_child(first_child(child, "enum_name"), "identifier"),
+        ).strip()
+        if nested_enum_name:
+            message.nested_enums.append(nested_enum_name)
 
 
 def _parse_message(content: str, message_node: object) -> ProtoMessageDef | None:
@@ -138,29 +169,7 @@ def _parse_message(content: str, message_node: object) -> ProtoMessageDef | None
         return message
 
     for child in body.children:
-        if child.type == "field":
-            field = _parse_field(content, child)
-            if field is not None:
-                message.fields.append(field)
-        elif child.type == "map_field":
-            field = _parse_map_field(content, child)
-            if field is not None:
-                message.fields.append(field)
-        elif child.type == "message":
-            nested_name = node_text(
-                content,
-                first_child(first_child(child, "message_name"), "identifier"),
-            ).strip()
-            if nested_name:
-                message.nested_messages.append(nested_name)
-        elif child.type == "enum":
-            nested_enum_name = node_text(
-                content,
-                first_child(first_child(child, "enum_name"), "identifier"),
-            ).strip()
-            if nested_enum_name:
-                message.nested_enums.append(nested_enum_name)
-
+        _process_message_body_child(content, child, message)
     return message
 
 

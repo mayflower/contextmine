@@ -110,25 +110,28 @@ class _MetricAccumulator:
         )
 
 
+_ZERO_METRIC_VALUES = _MetricValues(
+    loc=0,
+    symbol_count=0,
+    coupling=0.0,
+    coverage=0.0,
+    complexity=0.0,
+    cohesion=0.0,
+    instability=0.0,
+    fan_in=0.0,
+    fan_out=0.0,
+    cycle_participation=0.0,
+    cycle_size=0.0,
+    duplication_ratio=0.0,
+    crap_score=0.0,
+    change_frequency=0.0,
+    churn=0.0,
+)
+
+
 def _metric_from_snapshot(snapshot: MetricSnapshot | None) -> _MetricValues:
     if snapshot is None:
-        return _MetricValues(
-            loc=0,
-            symbol_count=0,
-            coupling=0.0,
-            coverage=0.0,
-            complexity=0.0,
-            cohesion=0.0,
-            instability=0.0,
-            fan_in=0.0,
-            fan_out=0.0,
-            cycle_participation=0.0,
-            cycle_size=0.0,
-            duplication_ratio=0.0,
-            crap_score=0.0,
-            change_frequency=0.0,
-            churn=0.0,
-        )
+        return _ZERO_METRIC_VALUES
     return _MetricValues(
         loc=int(snapshot.loc or 0),
         symbol_count=int(snapshot.symbol_count or 0),
@@ -346,6 +349,28 @@ def _unique_leaf_paths(
     return with_unique_paths, absolute_path_by_id
 
 
+def _insert_tree_node(
+    cursor: dict[str, Any],
+    segment: str,
+    is_leaf: bool,
+    attributes: dict[str, float | int],
+) -> dict[str, Any]:
+    """Find or create a child node in the tree."""
+    children = cast(list[dict[str, Any]], cursor.setdefault("children", []))
+    existing = next((child for child in children if child["name"] == segment), None)
+    if existing is not None:
+        return existing
+    new_node: dict[str, Any] = {
+        "name": segment,
+        "type": "File" if is_leaf else "Folder",
+        "attributes": attributes if is_leaf else {},
+    }
+    if not is_leaf:
+        new_node["children"] = []
+    children.append(new_node)
+    return new_node
+
+
 def _tree_from_leaf_items(
     items: list[tuple[str, list[str], dict[str, float | int]]],
 ) -> tuple[dict, dict[str, str]]:
@@ -361,18 +386,7 @@ def _tree_from_leaf_items(
         cursor: dict[str, Any] = root
         for depth, segment in enumerate(path_segments):
             is_leaf = depth == len(path_segments) - 1
-            children = cast(list[dict[str, Any]], cursor.setdefault("children", []))
-            next_node = next((child for child in children if child["name"] == segment), None)
-            if next_node is None:
-                next_node = {
-                    "name": segment,
-                    "type": "File" if is_leaf else "Folder",
-                    "attributes": attributes if is_leaf else {},
-                }
-                if not is_leaf:
-                    next_node["children"] = []
-                children.append(next_node)
-            cursor = next_node
+            cursor = _insert_tree_node(cursor, segment, is_leaf, attributes)
 
     return root, absolute_path_by_id
 
@@ -380,6 +394,69 @@ def _tree_from_leaf_items(
 def _checksum(payload: dict) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _build_file_projection_leaf_items(
+    graph: dict[str, Any],
+    projection: GraphProjection,
+    entity_level: str,
+    metric_by_natural_key: dict[str, MetricSnapshot],
+) -> list[tuple[str, list[str], dict[str, float | int]]]:
+    """Build leaf items for code_file projection."""
+    leaf_items: list[tuple[str, list[str], dict[str, float | int]]] = []
+    for node in graph["nodes"]:
+        node_id = str(node["id"])
+        values = _metric_for_graph_node(cast(dict[str, Any], node), metric_by_natural_key)
+        leaf_items.append(
+            (
+                node_id,
+                _node_path_segments(projection, node, entity_level),
+                _attributes_from_metrics(values),
+            )
+        )
+    return leaf_items
+
+
+async def _build_arch_projection_leaf_items(
+    session: AsyncSession,
+    scenario_id: UUID,
+    graph: dict[str, Any],
+    projection: GraphProjection,
+    entity_level: str,
+    metric_by_natural_key: dict[str, MetricSnapshot],
+) -> list[tuple[str, list[str], dict[str, float | int]]]:
+    """Build leaf items for architecture projection with aggregated metrics."""
+    file_nodes = (
+        (
+            await session.execute(
+                select(TwinNode).where(TwinNode.scenario_id == scenario_id, TwinNode.kind == "file")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    aggregated: dict[str, _MetricAccumulator] = {}
+    for file_node in file_nodes:
+        group = _derive_arch_group(_canonical_file_path(file_node), file_node.meta or {})
+        if not group:
+            continue
+        key = _arch_group_key(entity_level, group)
+        bucket = aggregated.setdefault(key, _MetricAccumulator())
+        bucket.add(_metric_for_twin_node(file_node, metric_by_natural_key))
+
+    leaf_items: list[tuple[str, list[str], dict[str, float | int]]] = []
+    for node in graph["nodes"]:
+        node_id = str(node["id"])
+        key = str(node.get("natural_key") or "")
+        values = aggregated.get(key, _MetricAccumulator()).as_values()
+        leaf_items.append(
+            (
+                node_id,
+                _node_path_segments(projection, node, entity_level),
+                _attributes_from_metrics(values),
+            )
+        )
+    return leaf_items
 
 
 async def export_codecharta_json(
@@ -392,9 +469,9 @@ async def export_codecharta_json(
     if projection == GraphProjection.CODE_SYMBOL:
         projection = GraphProjection.CODE_FILE
 
-    effective_entity_level = "container" if projection == GraphProjection.ARCHITECTURE else "file"
-    if entity_level:
-        effective_entity_level = entity_level
+    effective_entity_level = entity_level or (
+        "container" if projection == GraphProjection.ARCHITECTURE else "file"
+    )
 
     scenario = (
         await session.execute(select(TwinScenario).where(TwinScenario.id == scenario_id))
@@ -409,7 +486,6 @@ async def export_codecharta_json(
         .scalars()
         .all()
     )
-
     metric_by_natural_key = {metric.node_natural_key: metric for metric in metrics}
 
     graph = await get_full_scenario_graph(
@@ -421,51 +497,22 @@ async def export_codecharta_json(
         include_kinds={"file"} if projection == GraphProjection.ARCHITECTURE else None,
     )
 
-    leaf_items: list[tuple[str, list[str], dict[str, float | int]]] = []
     if projection == GraphProjection.CODE_FILE:
-        for node in graph["nodes"]:
-            node_id = str(node["id"])
-            values = _metric_for_graph_node(cast(dict[str, Any], node), metric_by_natural_key)
-            leaf_items.append(
-                (
-                    node_id,
-                    _node_path_segments(projection, node, effective_entity_level),
-                    _attributes_from_metrics(values),
-                )
-            )
-    else:
-        file_nodes = (
-            (
-                await session.execute(
-                    select(TwinNode).where(
-                        TwinNode.scenario_id == scenario_id,
-                        TwinNode.kind == "file",
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        leaf_items = _build_file_projection_leaf_items(
+            graph,
+            projection,
+            effective_entity_level,
+            metric_by_natural_key,
         )
-        aggregated: dict[str, _MetricAccumulator] = {}
-        for file_node in file_nodes:
-            group = _derive_arch_group(_canonical_file_path(file_node), file_node.meta or {})
-            if not group:
-                continue
-            key = _arch_group_key(effective_entity_level, group)
-            bucket = aggregated.setdefault(key, _MetricAccumulator())
-            bucket.add(_metric_for_twin_node(file_node, metric_by_natural_key))
-
-        for node in graph["nodes"]:
-            node_id = str(node["id"])
-            key = str(node.get("natural_key") or "")
-            values = aggregated.get(key, _MetricAccumulator()).as_values()
-            leaf_items.append(
-                (
-                    node_id,
-                    _node_path_segments(projection, node, effective_entity_level),
-                    _attributes_from_metrics(values),
-                )
-            )
+    else:
+        leaf_items = await _build_arch_projection_leaf_items(
+            session,
+            scenario_id,
+            graph,
+            projection,
+            effective_entity_level,
+            metric_by_natural_key,
+        )
 
     root, path_by_id = _tree_from_leaf_items(leaf_items)
 

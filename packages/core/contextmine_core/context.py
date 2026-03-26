@@ -149,21 +149,20 @@ class LLM(ABC):
 class FakeLLM(LLM):
     """Fake LLM for testing that returns deterministic Markdown."""
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
-        """Generate a deterministic response for testing."""
-        # Extract query from user prompt
-        lines = user_prompt.split("\n")
-        query = ""
+    @staticmethod
+    def _extract_query(lines: list[str]) -> str:
+        """Extract query from user prompt lines."""
         for i, line in enumerate(lines):
-            if line.strip() == "## Query":
-                if i + 1 < len(lines):
-                    query = lines[i + 1].strip()
-                break
+            if line.strip() == "## Query" and i + 1 < len(lines):
+                return lines[i + 1].strip()
+        return ""
 
-        # Extract chunks and their content
-        chunks_content = []
+    @staticmethod
+    def _extract_chunks(lines: list[str]) -> list[str]:
+        """Extract chunk contents from user prompt lines."""
+        chunks_content: list[str] = []
         in_chunk = False
-        current_chunk = []
+        current_chunk: list[str] = []
 
         for line in lines:
             if line.startswith("### Chunk"):
@@ -181,17 +180,28 @@ class FakeLLM(LLM):
 
         if current_chunk:
             chunks_content.append("\n".join(current_chunk))
+        return chunks_content
 
-        # Extract URIs from chunks
-        uris = []
+    @staticmethod
+    def _extract_uris(lines: list[str]) -> list[str]:
+        """Extract source URIs from user prompt lines."""
+        uris: list[str] = []
         for line in lines:
-            if "(from:" in line:
-                start = line.find("(from:") + 7
-                end = line.find(")", start)
-                if end > start:
-                    uris.append(line[start:end].strip())
+            if "(from:" not in line:
+                continue
+            start = line.find("(from:") + 7
+            end = line.find(")", start)
+            if end > start:
+                uris.append(line[start:end].strip())
+        return uris
 
-        # Build deterministic response
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
+        """Generate a deterministic response for testing."""
+        lines = user_prompt.split("\n")
+        query = self._extract_query(lines)
+        chunks_content = self._extract_chunks(lines)
+        uris = self._extract_uris(lines)
+
         response_parts = [
             f"# Response to: {query}",
             "",
@@ -201,16 +211,10 @@ class FakeLLM(LLM):
             "",
         ]
 
-        # Include first chunk content (preserving code fences)
         if chunks_content:
-            response_parts.append("## Relevant Content")
-            response_parts.append("")
-            response_parts.append(chunks_content[0])
-            response_parts.append("")
+            response_parts.extend(["## Relevant Content", "", chunks_content[0], ""])
 
-        # Add sources section
-        response_parts.append("## Sources")
-        response_parts.append("")
+        response_parts.extend(["## Sources", ""])
         for uri in uris:
             response_parts.append(f"- {uri}")
 

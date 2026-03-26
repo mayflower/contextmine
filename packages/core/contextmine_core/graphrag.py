@@ -105,67 +105,79 @@ class ContextPack:
     # All citations
     citations: list[Citation] = field(default_factory=list)
 
+    def _render_communities_section(self) -> list[str]:
+        """Render the communities section of the markdown report."""
+        if not self.communities:
+            return []
+        lines = ["## Global Context (Community Summaries)\n"]
+        for comm in self.communities:
+            lines.append(f"### {comm.title} (Level {comm.level})")
+            lines.append(f"*Relevance: {comm.relevance_score:.0%}, {comm.member_count} members*\n")
+            if comm.summary:
+                summary = comm.summary[:500] + "..." if len(comm.summary) > 500 else comm.summary
+                lines.append(summary)
+            lines.append("")
+        return lines
+
+    def _render_entities_section(self) -> list[str]:
+        """Render the entities section of the markdown report."""
+        if not self.entities:
+            return []
+        lines = ["## Local Context (Entities)\n"]
+        by_kind: dict[str, list[EntityContext]] = {}
+        for entity in self.entities:
+            by_kind.setdefault(entity.kind, []).append(entity)
+        for kind, entities in sorted(by_kind.items()):
+            lines.append(f"**{kind.upper()}** ({len(entities)}):")
+            for entity in entities[:10]:
+                citation_count = len(entity.evidence)
+                citation_note = f" [{citation_count} citations]" if citation_count else ""
+                lines.append(f"- {entity.name}{citation_note}")
+            if len(entities) > 10:
+                lines.append(f"  ... and {len(entities) - 10} more")
+            lines.append("")
+        return lines
+
+    def _render_edges_section(self) -> list[str]:
+        """Render the relationships section."""
+        if not self.edges:
+            return []
+        lines = ["## Relationships\n"]
+        edge_counts: dict[str, int] = {}
+        for edge in self.edges:
+            edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
+        for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"- {kind}: {count}")
+        lines.append("")
+        return lines
+
+    def _render_citations_section(self) -> list[str]:
+        """Render the citations section."""
+        if not self.citations:
+            return []
+        lines = ["## Source Citations\n"]
+        for cit in self.citations[:10]:
+            lines.append(f"- `{cit.format()}`")
+        if len(self.citations) > 10:
+            lines.append(f"  ... and {len(self.citations) - 10} more")
+        return lines
+
     def to_markdown(self) -> str:
         """Render as markdown for LLM consumption."""
-        lines = [f"# GraphRAG Context: {self.query}\n"]
-
-        lines.append(
+        lines = [
+            f"# GraphRAG Context: {self.query}\n",
             f"Found {len(self.communities)} communities, {len(self.entities)} entities, "
-            f"{len(self.citations)} citations.\n"
-        )
-
-        if self.communities:
-            lines.append("## Global Context (Community Summaries)\n")
-            for comm in self.communities:
-                lines.append(f"### {comm.title} (Level {comm.level})")
-                lines.append(
-                    f"*Relevance: {comm.relevance_score:.0%}, {comm.member_count} members*\n"
-                )
-                if comm.summary:
-                    summary = (
-                        comm.summary[:500] + "..." if len(comm.summary) > 500 else comm.summary
-                    )
-                    lines.append(summary)
-                lines.append("")
-
-        if self.entities:
-            lines.append("## Local Context (Entities)\n")
-            by_kind: dict[str, list[EntityContext]] = {}
-            for entity in self.entities:
-                by_kind.setdefault(entity.kind, []).append(entity)
-
-            for kind, entities in sorted(by_kind.items()):
-                lines.append(f"**{kind.upper()}** ({len(entities)}):")
-                for entity in entities[:10]:
-                    citation_count = len(entity.evidence)
-                    citation_note = f" [{citation_count} citations]" if citation_count else ""
-                    lines.append(f"- {entity.name}{citation_note}")
-                if len(entities) > 10:
-                    lines.append(f"  ... and {len(entities) - 10} more")
-                lines.append("")
-
-        if self.edges:
-            lines.append("## Relationships\n")
-            edge_counts: dict[str, int] = {}
-            for edge in self.edges:
-                edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
-            for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1])[:5]:
-                lines.append(f"- {kind}: {count}")
-            lines.append("")
-
+            f"{len(self.citations)} citations.\n",
+        ]
+        lines.extend(self._render_communities_section())
+        lines.extend(self._render_entities_section())
+        lines.extend(self._render_edges_section())
         if self.paths:
             lines.append("## Key Paths\n")
             for path in self.paths[:3]:
                 lines.append(f"- {path.description}")
             lines.append("")
-
-        if self.citations:
-            lines.append("## Source Citations\n")
-            for cit in self.citations[:10]:
-                lines.append(f"- `{cit.format()}`")
-            if len(self.citations) > 10:
-                lines.append(f"  ... and {len(self.citations) - 10} more")
-
+        lines.extend(self._render_citations_section())
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -379,6 +391,93 @@ async def graph_neighborhood(
     return pack
 
 
+async def _bfs_shortest_path(
+    session: AsyncSession,
+    from_node_id: UUID,
+    to_node_id: UUID,
+    collection_ids: list[UUID],
+    max_hops: int,
+) -> tuple[list[UUID], list[tuple[UUID, UUID, str]]]:
+    """Run BFS to find shortest path between two nodes."""
+    from contextmine_core.models import KnowledgeEdge
+    from sqlalchemy import or_, select
+
+    queue: deque[tuple[UUID, list[UUID], list[tuple[UUID, UUID, str]]]] = deque()
+    queue.append((from_node_id, [from_node_id], []))
+    visited: set[UUID] = {from_node_id}
+
+    while queue:
+        current, node_path, edge_path = queue.popleft()
+        if len(node_path) > max_hops + 1:
+            break
+        if current == to_node_id:
+            return node_path, edge_path
+
+        stmt = select(KnowledgeEdge).where(
+            KnowledgeEdge.collection_id.in_(collection_ids),
+            or_(
+                KnowledgeEdge.source_node_id == current,
+                KnowledgeEdge.target_node_id == current,
+            ),
+        )
+        for edge in (await session.execute(stmt)).scalars().all():
+            next_node = (
+                edge.target_node_id if edge.source_node_id == current else edge.source_node_id
+            )
+            if next_node not in visited:
+                visited.add(next_node)
+                queue.append(
+                    (
+                        next_node,
+                        node_path + [next_node],
+                        edge_path + [(edge.source_node_id, edge.target_node_id, edge.kind.value)],
+                    )
+                )
+    return [], []
+
+
+async def _populate_path_pack(
+    session: AsyncSession,
+    pack: ContextPack,
+    path_nodes: list[UUID],
+    path_edges: list[tuple[UUID, UUID, str]],
+) -> None:
+    """Populate a ContextPack with path entity and edge data."""
+    from contextmine_core.models import KnowledgeNode
+    from sqlalchemy import select
+
+    node_result = await session.execute(
+        select(KnowledgeNode).where(KnowledgeNode.id.in_(path_nodes))
+    )
+    node_map = {n.id: n for n in node_result.scalars().all()}
+
+    for nid in path_nodes:
+        node = node_map.get(nid)
+        if node:
+            pack.entities.append(
+                EntityContext(
+                    node_id=node.id,
+                    kind=node.kind.value,
+                    natural_key=node.natural_key,
+                    name=node.name,
+                )
+            )
+
+    for src, tgt, kind in path_edges:
+        pack.edges.append(EdgeContext(source_id=str(src), target_id=str(tgt), kind=kind))
+
+    if pack.entities:
+        pack.paths.append(
+            PathContext(
+                nodes=[e.natural_key for e in pack.entities],
+                edges=[e.kind for e in pack.edges],
+                description=" → ".join(e.name for e in pack.entities),
+            )
+        )
+
+    pack.citations = await _gather_citations(session, path_nodes)
+
+
 async def trace_path(
     session: AsyncSession,
     from_node_id: UUID,
@@ -398,8 +497,8 @@ async def trace_path(
     Returns:
         ContextPack with path entities and edges
     """
-    from contextmine_core.models import KnowledgeEdge, KnowledgeNode
-    from sqlalchemy import or_, select
+    from contextmine_core.models import KnowledgeNode
+    from sqlalchemy import select
 
     pack = ContextPack(query=f"Path {from_node_id} → {to_node_id}")
 
@@ -416,83 +515,17 @@ async def trace_path(
     if not collection_ids:
         return pack
 
-    # BFS to find shortest path
-    queue: deque[tuple[UUID, list[UUID], list[tuple[UUID, UUID, str]]]] = deque()
-    queue.append((from_node_id, [from_node_id], []))
-    visited: set[UUID] = {from_node_id}
-
-    path_nodes: list[UUID] = []
-    path_edges: list[tuple[UUID, UUID, str]] = []
-
-    while queue and not path_nodes:
-        current, node_path, edge_path = queue.popleft()
-
-        if len(node_path) > max_hops + 1:
-            break
-
-        if current == to_node_id:
-            path_nodes = node_path
-            path_edges = edge_path
-            break
-
-        stmt = select(KnowledgeEdge).where(
-            KnowledgeEdge.collection_id.in_(collection_ids),
-            or_(
-                KnowledgeEdge.source_node_id == current,
-                KnowledgeEdge.target_node_id == current,
-            ),
-        )
-
-        edge_result = await session.execute(stmt)
-        for edge in edge_result.scalars().all():
-            next_node = (
-                edge.target_node_id if edge.source_node_id == current else edge.source_node_id
-            )
-
-            if next_node not in visited:
-                visited.add(next_node)
-                new_node_path = node_path + [next_node]
-                new_edge_path = edge_path + [
-                    (edge.source_node_id, edge.target_node_id, edge.kind.value)
-                ]
-                queue.append((next_node, new_node_path, new_edge_path))
-
+    path_nodes, path_edges = await _bfs_shortest_path(
+        session,
+        from_node_id,
+        to_node_id,
+        collection_ids,
+        max_hops,
+    )
     if not path_nodes:
         return pack
 
-    # Fetch full node data
-    stmt = select(KnowledgeNode).where(KnowledgeNode.id.in_(path_nodes))
-    node_result = await session.execute(stmt)
-    node_map: dict[UUID, KnowledgeNode] = {n.id: n for n in node_result.scalars().all()}
-
-    for nid in path_nodes:
-        if nid in node_map:
-            node = node_map[nid]
-            pack.entities.append(
-                EntityContext(
-                    node_id=node.id,
-                    kind=node.kind.value,
-                    natural_key=node.natural_key,
-                    name=node.name,
-                )
-            )
-
-    for src, tgt, kind in path_edges:
-        pack.edges.append(EdgeContext(source_id=str(src), target_id=str(tgt), kind=kind))
-
-    # Build path description
-    if pack.entities:
-        names = [e.name for e in pack.entities]
-        pack.paths.append(
-            PathContext(
-                nodes=[e.natural_key for e in pack.entities],
-                edges=[e.kind for e in pack.edges],
-                description=" → ".join(names),
-            )
-        )
-
-    pack.citations = await _gather_citations(session, path_nodes)
-
+    await _populate_path_pack(session, pack, path_nodes, path_edges)
     return pack
 
 

@@ -116,46 +116,37 @@ class MockLLMProvider(LLMProvider):
         default_data = self._generate_default_for_schema(output_schema)
         return output_schema.model_validate(default_data)
 
+    @staticmethod
+    def _default_value_for_annotation(annotation: Any, field_name: str, field_info: Any) -> Any:
+        """Return a sensible default value for a given type annotation."""
+        if hasattr(annotation, "__origin__"):
+            origin = getattr(annotation, "__origin__", None)
+            if origin is type(None):
+                return None
+
+        _TYPE_DEFAULTS: dict[type, Any] = {str: None, int: 0, float: 0.0, bool: False}
+        if annotation in _TYPE_DEFAULTS:
+            return f"mock_{field_name}" if annotation is str else _TYPE_DEFAULTS[annotation]
+        if annotation is list or (
+            hasattr(annotation, "__origin__") and annotation.__origin__ is list
+        ):
+            return []
+        if annotation is dict or (
+            hasattr(annotation, "__origin__") and annotation.__origin__ is dict
+        ):
+            return {}
+        if field_info.default is not None:
+            return field_info.default
+        return None
+
     def _generate_default_for_schema(self, schema: type[BaseModel]) -> dict[str, Any]:
-        """Generate default values for a Pydantic schema.
-
-        Uses schema field info to generate sensible defaults.
-        """
-        result: dict[str, Any] = {}
-
-        for field_name, field_info in schema.model_fields.items():
-            annotation = field_info.annotation
-
-            # Handle Optional types
-            if hasattr(annotation, "__origin__"):
-                origin = getattr(annotation, "__origin__", None)
-                if origin is type(None):
-                    result[field_name] = None
-                    continue
-
-            # Generate defaults based on type
-            if annotation is str:
-                result[field_name] = f"mock_{field_name}"
-            elif annotation is int:
-                result[field_name] = 0
-            elif annotation is float:
-                result[field_name] = 0.0
-            elif annotation is bool:
-                result[field_name] = False
-            elif annotation is list or (
-                hasattr(annotation, "__origin__") and annotation.__origin__ is list
-            ):
-                result[field_name] = []
-            elif annotation is dict or (
-                hasattr(annotation, "__origin__") and annotation.__origin__ is dict
-            ):
-                result[field_name] = {}
-            elif field_info.default is not None:
-                result[field_name] = field_info.default
-            else:
-                result[field_name] = None
-
-        return result
+        """Generate default values for a Pydantic schema."""
+        return {
+            field_name: self._default_value_for_annotation(
+                field_info.annotation, field_name, field_info
+            )
+            for field_name, field_info in schema.model_fields.items()
+        }
 
 
 class FailingMockProvider(LLMProvider):

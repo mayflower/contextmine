@@ -164,6 +164,27 @@ class CommunityContext:
     source_symbols: list[str] = field(default_factory=list)
 
 
+def _add_member_to_context(member: Any, node: Any, context: CommunityContext) -> None:
+    """Add a single semantic entity member to the community context."""
+    meta = node.meta or {}
+    context.member_nodes.append(
+        {
+            "name": node.name,
+            "type": meta.get("type", "unknown"),
+            "description": meta.get("description", ""),
+            "aliases": meta.get("aliases", []),
+            "source_symbols": meta.get("source_symbols", []),
+            "score": member.score,
+        }
+    )
+    if node.name:
+        context.entity_names.append(node.name)
+    entity_type = meta.get("type", "unknown")
+    context.entity_types[entity_type] = context.entity_types.get(entity_type, 0) + 1
+    if meta.get("description"):
+        context.entity_descriptions.append(meta["description"])
+
+
 async def _gather_community_context(
     session: AsyncSession,
     community_id: UUID,
@@ -206,7 +227,6 @@ async def _gather_community_context(
     members = result.all()
 
     for member, node in members:
-        # GraphRAG communities contain SEMANTIC_ENTITY nodes only
         if node.kind != KnowledgeNodeKind.SEMANTIC_ENTITY:
             logger.warning(
                 "Unexpected node kind %s in community %s. "
@@ -216,27 +236,7 @@ async def _gather_community_context(
             )
             continue
 
-        node_info = {
-            "name": node.name,
-            "type": node.meta.get("type", "unknown"),
-            "description": node.meta.get("description", ""),
-            "aliases": node.meta.get("aliases", []),
-            "source_symbols": node.meta.get("source_symbols", []),
-            "score": member.score,
-        }
-        context.member_nodes.append(node_info)
-
-        # Track entity names
-        if node.name:
-            context.entity_names.append(node.name)
-
-        # Track entity types
-        entity_type = node.meta.get("type", "unknown")
-        context.entity_types[entity_type] = context.entity_types.get(entity_type, 0) + 1
-
-        # Track descriptions
-        if node.meta.get("description"):
-            context.entity_descriptions.append(node.meta["description"])
+        _add_member_to_context(member, node, context)
 
         # Track source symbols
         for sym in node.meta.get("source_symbols", []):

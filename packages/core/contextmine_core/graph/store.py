@@ -220,6 +220,21 @@ class CodeGraph:
         """
         return node_id in self._nodes
 
+    def _collect_neighbors(
+        self,
+        edges: list[Edge],
+        neighbor_id_attr: str,
+        edge_types: list[EdgeType] | None,
+        results: list[tuple[SymbolNode, Edge]],
+    ) -> None:
+        """Collect matching neighbors from an edge list."""
+        for edge in edges:
+            if edge_types is not None and edge.edge_type not in edge_types:
+                continue
+            neighbor = self._nodes.get(getattr(edge, neighbor_id_attr))
+            if neighbor:
+                results.append((neighbor, edge))
+
     def get_neighbors(
         self,
         node_id: str,
@@ -237,21 +252,20 @@ class CodeGraph:
             List of (neighbor_node, edge) tuples
         """
         results: list[tuple[SymbolNode, Edge]] = []
-
         if direction in ("outgoing", "both"):
-            for edge in self._outgoing.get(node_id, []):
-                if edge_types is None or edge.edge_type in edge_types:
-                    neighbor = self._nodes.get(edge.target_id)
-                    if neighbor:
-                        results.append((neighbor, edge))
-
+            self._collect_neighbors(
+                self._outgoing.get(node_id, []),
+                "target_id",
+                edge_types,
+                results,
+            )
         if direction in ("incoming", "both"):
-            for edge in self._incoming.get(node_id, []):
-                if edge_types is None or edge.edge_type in edge_types:
-                    neighbor = self._nodes.get(edge.source_id)
-                    if neighbor:
-                        results.append((neighbor, edge))
-
+            self._collect_neighbors(
+                self._incoming.get(node_id, []),
+                "source_id",
+                edge_types,
+                results,
+            )
         return results
 
     def get_nodes_in_file(self, file_path: str) -> list[SymbolNode]:

@@ -162,6 +162,23 @@ class SymbolTraceResolver:
         self._joern_client: JoernClient | None = None
         self._joern_ready = False
 
+    async def _resolve_batch(
+        self,
+        call_sites: list[CallSite],
+        resolver_fn,
+        resolved_by_node: dict[UUID, ResolvedSymbolRef],
+    ) -> list[CallSite]:
+        """Resolve call sites with a resolver, returning unresolved ones."""
+        unresolved: list[CallSite] = []
+        for call_site in call_sites:
+            refs = await resolver_fn(call_site)
+            if not refs:
+                unresolved.append(call_site)
+                continue
+            for ref in refs:
+                self._remember_best(resolved_by_node, ref)
+        return unresolved
+
     async def resolve_many(
         self,
         *,
@@ -171,23 +188,12 @@ class SymbolTraceResolver:
         await self._ensure_knowledge_symbols()
         resolved_by_node: dict[UUID, ResolvedSymbolRef] = {}
 
-        unresolved: list[CallSite] = []
-        for call_site in call_sites:
-            refs = await self._resolve_with_scip(call_site)
-            if not refs:
-                unresolved.append(call_site)
-                continue
-            for ref in refs:
-                self._remember_best(resolved_by_node, ref)
-
-        still_unresolved: list[CallSite] = []
-        for call_site in unresolved:
-            refs = await self._resolve_with_lsp(call_site)
-            if not refs:
-                still_unresolved.append(call_site)
-                continue
-            for ref in refs:
-                self._remember_best(resolved_by_node, ref)
+        unresolved = await self._resolve_batch(
+            call_sites, self._resolve_with_scip, resolved_by_node
+        )
+        still_unresolved = await self._resolve_batch(
+            unresolved, self._resolve_with_lsp, resolved_by_node
+        )
 
         # Joern is expensive: only attempt for a bounded number of unresolved callsites.
         for call_site in still_unresolved[:20]:
@@ -429,6 +435,25 @@ class SymbolTraceResolver:
                 self._kg_by_def_id[def_id] = symbol
         self._kg_loaded = True
 
+    @staticmethod
+    def _twin_row_to_symbol(row: Any) -> _TwinSymbolRow:
+        """Convert a TwinNode row to a _TwinSymbolRow."""
+        meta = row.meta or {}
+        file_path = _canonical_path(str(meta.get("file_path") or ""))
+        range_obj = meta.get("range") if isinstance(meta.get("range"), dict) else {}
+        return _TwinSymbolRow(
+            node_id=row.id,
+            natural_key=row.natural_key,
+            name=row.name,
+            file_path=file_path,
+            start_line=int((range_obj or {}).get("start_line") or 0),
+            end_line=int((range_obj or {}).get("end_line") or 0),
+            start_col=int((range_obj or {}).get("start_col") or 0),
+            end_col=int((range_obj or {}).get("end_col") or 0),
+            def_id=str(meta.get("def_id") or "").strip() or None,
+            kind=str(meta.get("symbol_kind") or row.kind),
+        )
+
     async def _ensure_scip_graph(self) -> None:
         if self._scip_loaded:
             return
@@ -461,28 +486,10 @@ class SymbolTraceResolver:
             .all()
         )
         for row in twin_rows:
-            meta = row.meta or {}
-            file_path = _canonical_path(str(meta.get("file_path") or ""))
-            range_obj = meta.get("range") if isinstance(meta.get("range"), dict) else {}
-            start_line = int((range_obj or {}).get("start_line") or 0)
-            end_line = int((range_obj or {}).get("end_line") or 0)
-            start_col = int((range_obj or {}).get("start_col") or 0)
-            end_col = int((range_obj or {}).get("end_col") or 0)
-            twin_symbol = _TwinSymbolRow(
-                node_id=row.id,
-                natural_key=row.natural_key,
-                name=row.name,
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                start_col=start_col,
-                end_col=end_col,
-                def_id=str(meta.get("def_id") or "").strip() or None,
-                kind=str(meta.get("symbol_kind") or row.kind),
-            )
+            twin_symbol = self._twin_row_to_symbol(row)
             self._twin_by_id[row.id] = twin_symbol
-            if file_path:
-                self._twin_by_file.setdefault(file_path, []).append(twin_symbol)
+            if twin_symbol.file_path:
+                self._twin_by_file.setdefault(twin_symbol.file_path, []).append(twin_symbol)
 
         edge_rows = (
             (

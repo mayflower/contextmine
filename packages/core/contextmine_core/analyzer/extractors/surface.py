@@ -592,34 +592,56 @@ async def _load_symbol_candidates(
     return indexed
 
 
-def _resolve_endpoint_handler_symbols(
-    *,
-    endpoint: EndpointDef,
-    symbol_candidates: dict[str, list[_SymbolCandidate]],
-) -> list[dict[str, str | float]]:
+def _collect_endpoint_hints(endpoint: EndpointDef) -> list[tuple[str, str, float]]:
+    """Collect all handler hints from an endpoint definition."""
     hints: list[tuple[str, str, float]] = []
     if endpoint.operation_id:
         hints.append((endpoint.operation_id, "operation_id", 0.84))
     for handler_hint in endpoint.handler_hints:
         hints.append((handler_hint, "handler_hint", 0.94))
+    return hints
 
+
+def _match_hint_to_symbols(
+    hint_value: str,
+    source: str,
+    base_confidence: float,
+    symbol_candidates: dict[str, list[_SymbolCandidate]],
+    by_symbol_id: dict[UUID, dict[str, str | float]],
+) -> None:
+    """Match a single hint against symbol candidates and update the results map."""
+    for token in symbol_token_variants(hint_value):
+        for candidate in symbol_candidates.get(token, []):
+            confidence = base_confidence
+            if candidate.name.strip().lower() == hint_value.strip().lower():
+                confidence = min(0.99, confidence + 0.04)
+            record = by_symbol_id.get(candidate.node_id)
+            if record and float(record["confidence"]) >= confidence:
+                continue
+            by_symbol_id[candidate.node_id] = {
+                "symbol_node_id": str(candidate.node_id),
+                "symbol_name": candidate.name,
+                "symbol_natural_key": candidate.natural_key,
+                "match_source": source,
+                "confidence": round(confidence, 4),
+            }
+
+
+def _resolve_endpoint_handler_symbols(
+    *,
+    endpoint: EndpointDef,
+    symbol_candidates: dict[str, list[_SymbolCandidate]],
+) -> list[dict[str, str | float]]:
+    hints = _collect_endpoint_hints(endpoint)
     by_symbol_id: dict[UUID, dict[str, str | float]] = {}
     for hint_value, source, base_confidence in hints:
-        for token in symbol_token_variants(hint_value):
-            for candidate in symbol_candidates.get(token, []):
-                confidence = base_confidence
-                if candidate.name.strip().lower() == hint_value.strip().lower():
-                    confidence = min(0.99, confidence + 0.04)
-                record = by_symbol_id.get(candidate.node_id)
-                if record and float(record["confidence"]) >= confidence:
-                    continue
-                by_symbol_id[candidate.node_id] = {
-                    "symbol_node_id": str(candidate.node_id),
-                    "symbol_name": candidate.name,
-                    "symbol_natural_key": candidate.natural_key,
-                    "match_source": source,
-                    "confidence": round(confidence, 4),
-                }
+        _match_hint_to_symbols(
+            hint_value,
+            source,
+            base_confidence,
+            symbol_candidates,
+            by_symbol_id,
+        )
     return sorted(
         by_symbol_id.values(),
         key=lambda item: (

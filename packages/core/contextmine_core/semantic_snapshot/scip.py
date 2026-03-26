@@ -671,56 +671,46 @@ class SCIPProvider:
 
         return None
 
-    def _infer_kind_and_name_from_symbol(self, symbol_str: str) -> tuple[SymbolKind, str | None]:
-        """Infer kind and human-readable name from SCIP symbol descriptors.
-
-        This is primarily used when scip-python emits UnspecifiedKind and no
-        display_name for document symbols.
-        """
-        if not symbol_str or symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
-            return SymbolKind.UNKNOWN, None
-
-        descriptor_tail = self._descriptor_tail(symbol_str)
-        if not descriptor_tail:
-            return SymbolKind.UNKNOWN, None
-
-        # Parameter descriptor: "...().(param)"
+    def _infer_from_descriptor_tail(
+        self,
+        descriptor_tail: str,
+    ) -> tuple[SymbolKind, str | None]:
+        """Infer kind and name from a non-empty descriptor tail string."""
         parameter_match = re.search(r"\(([^()]+)\)$", descriptor_tail)
         if parameter_match:
             return SymbolKind.PARAMETER, parameter_match.group(1)
 
-        # Method/function descriptor: "...name()."
         if descriptor_tail.endswith("()."):
             name = self._last_identifier(descriptor_tail.removesuffix("()."))
-            if "#" in descriptor_tail:
-                return SymbolKind.METHOD, name
-            return SymbolKind.FUNCTION, name
+            return (SymbolKind.METHOD if "#" in descriptor_tail else SymbolKind.FUNCTION), name
 
-        # Type/class descriptor: "...Type#"
         if descriptor_tail.endswith("#"):
             return SymbolKind.CLASS, self._last_identifier(descriptor_tail.removesuffix("#"))
 
-        # Term/property descriptor: "...field."
         if descriptor_tail.endswith("."):
             name = self._last_identifier(descriptor_tail.removesuffix("."))
-            if "#" in descriptor_tail:
-                return SymbolKind.PROPERTY, name
-            return SymbolKind.FUNCTION, name
+            return (SymbolKind.PROPERTY if "#" in descriptor_tail else SymbolKind.FUNCTION), name
 
-        # Namespace/module descriptors.
-        if descriptor_tail.endswith("/") or descriptor_tail.endswith(":"):
+        if descriptor_tail.endswith(("/", ":")):
             return SymbolKind.MODULE, self._last_identifier(descriptor_tail[:-1])
 
-        # Type parameter descriptor: "...[T]"
         if descriptor_tail.endswith("]"):
             m = re.search(r"\[([^\]]+)\]$", descriptor_tail)
             return SymbolKind.TYPE_ALIAS, m.group(1) if m else None
 
-        # Macro/meta descriptors.
         if descriptor_tail.endswith("!"):
             return SymbolKind.FUNCTION, self._last_identifier(descriptor_tail.removesuffix("!"))
 
         return SymbolKind.UNKNOWN, self._last_identifier(descriptor_tail)
+
+    def _infer_kind_and_name_from_symbol(self, symbol_str: str) -> tuple[SymbolKind, str | None]:
+        """Infer kind and human-readable name from SCIP symbol descriptors."""
+        if not symbol_str or symbol_str.startswith(_LOCAL_SYMBOL_PREFIX):
+            return SymbolKind.UNKNOWN, None
+        descriptor_tail = self._descriptor_tail(symbol_str)
+        if not descriptor_tail:
+            return SymbolKind.UNKNOWN, None
+        return self._infer_from_descriptor_tail(descriptor_tail)
 
     def _descriptor_tail(self, symbol_str: str) -> str:
         """Return the descriptor section of a SCIP symbol string."""

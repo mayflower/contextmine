@@ -419,6 +419,22 @@ async def extract_from_documents(
     return batch
 
 
+async def _get_entity_embeddings(embedder: Any, embed_texts: list[str]) -> list:
+    """Get embeddings from the embedder, supporting both modern and legacy APIs."""
+    if hasattr(embedder, "embed_batch"):
+        batch = await embedder.embed_batch(embed_texts)
+        embeddings = list(getattr(batch, "embeddings", []) or [])
+    elif hasattr(embedder, "embed_texts"):
+        embeddings = list(await embedder.embed_texts(embed_texts))
+    else:
+        raise ValueError(
+            "embedder must implement embed_batch(texts) or embed_texts(texts) for entity resolution"
+        )
+    if not embeddings:
+        raise ValueError("embedder returned no embeddings for entity resolution")
+    return embeddings
+
+
 async def _resolve_entities_with_embeddings(
     entities: list[ExtractedEntity],
     embedder: Any,
@@ -448,19 +464,7 @@ async def _resolve_entities_with_embeddings(
     # Create embedding text for each entity (name + description for context)
     embed_texts = [f"{e.name}: {e.description}" for e in entities]
 
-    # Get embeddings (prefer modern embed_batch contract, keep legacy fallback)
-    if hasattr(embedder, "embed_batch"):
-        batch = await embedder.embed_batch(embed_texts)
-        embeddings = list(getattr(batch, "embeddings", []) or [])
-    elif hasattr(embedder, "embed_texts"):
-        embeddings = list(await embedder.embed_texts(embed_texts))
-    else:
-        raise ValueError(
-            "embedder must implement embed_batch(texts) or embed_texts(texts) for entity resolution"
-        )
-
-    if not embeddings:
-        raise ValueError("embedder returned no embeddings for entity resolution")
+    embeddings = await _get_entity_embeddings(embedder, embed_texts)
     embeddings_array = np.array(embeddings)
 
     # Normalize for cosine similarity
@@ -592,6 +596,41 @@ def _co_occurrence_strength(count: int) -> float:
     return 0.3
 
 
+def _accumulate_co_occurrences(
+    entity_occurrences: dict[str, list[str]],
+    name_to_resolved: dict[str, str],
+    existing_pairs: set[tuple[str, str]],
+) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], list[str]]]:
+    """Accumulate entity co-occurrence counts and associated documents."""
+    co_occurrence: dict[tuple[str, str], int] = {}
+    co_occurrence_docs: dict[tuple[str, str], list[str]] = {}
+
+    for doc_uri, original_names in entity_occurrences.items():
+        resolved_names = {
+            name_to_resolved[orig.lower()]
+            for orig in original_names
+            if orig.lower() in name_to_resolved
+        }
+        resolved_list = sorted(resolved_names)
+        for i, entity_a in enumerate(resolved_list):
+            for entity_b in resolved_list[i + 1 :]:
+                pair = (entity_a, entity_b) if entity_a < entity_b else (entity_b, entity_a)
+                if (entity_a.lower(), entity_b.lower()) in existing_pairs:
+                    continue
+                co_occurrence[pair] = co_occurrence.get(pair, 0) + 1
+                co_occurrence_docs.setdefault(pair, []).append(doc_uri)
+
+    return co_occurrence, co_occurrence_docs
+
+
+def _format_doc_summary(doc_list: list[str]) -> str:
+    """Format a document list into a summary string."""
+    summary = ", ".join(doc_list[:3])
+    if len(doc_list) > 3:
+        summary += f" +{len(doc_list) - 3} more"
+    return summary
+
+
 def _extract_cross_document_relationships(
     resolved_entities: list[SemanticEntity],
     entity_occurrences: dict[str, list[str]],
@@ -600,45 +639,24 @@ def _extract_cross_document_relationships(
     """Extract relationships between entities that co-occur across documents."""
     name_to_resolved = _build_entity_name_resolver(resolved_entities)
     existing_pairs = _build_existing_pairs(existing_relationships)
-
-    co_occurrence: dict[tuple[str, str], int] = {}
-    co_occurrence_docs: dict[tuple[str, str], list[str]] = {}
-
-    for doc_uri, original_names in entity_occurrences.items():
-        resolved_names_in_doc: set[str] = set()
-        for orig_name in original_names:
-            resolved = name_to_resolved.get(orig_name.lower())
-            if resolved:
-                resolved_names_in_doc.add(resolved)
-
-        resolved_list = sorted(resolved_names_in_doc)
-        for i, entity_a in enumerate(resolved_list):
-            for entity_b in resolved_list[i + 1 :]:
-                if entity_a == entity_b:
-                    continue
-                pair = (entity_a, entity_b) if entity_a < entity_b else (entity_b, entity_a)
-                if (entity_a.lower(), entity_b.lower()) in existing_pairs:
-                    continue
-                co_occurrence[pair] = co_occurrence.get(pair, 0) + 1
-                co_occurrence_docs.setdefault(pair, []).append(doc_uri)
+    co_occurrence, co_occurrence_docs = _accumulate_co_occurrences(
+        entity_occurrences,
+        name_to_resolved,
+        existing_pairs,
+    )
 
     relationships: list[SemanticRelationship] = []
     for (entity_a, entity_b), count in co_occurrence.items():
         doc_list = co_occurrence_docs.get((entity_a, entity_b), [])
-        doc_summary = ", ".join(doc_list[:3])
-        if len(doc_list) > 3:
-            doc_summary += f" +{len(doc_list) - 3} more"
-
         relationships.append(
             SemanticRelationship(
                 source_entity=entity_a,
                 target_entity=entity_b,
                 relationship_type="CO_OCCURS",
-                description=f"Co-occur in {count} document(s): {doc_summary}",
+                description=f"Co-occur in {count} document(s): {_format_doc_summary(doc_list)}",
                 strength=_co_occurrence_strength(count),
             )
         )
-
     return relationships
 
 

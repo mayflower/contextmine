@@ -110,6 +110,26 @@ def _merge_text_sub_chunks(
     return current_chunk
 
 
+def _process_segment(
+    content: str,
+    is_code_block: bool,
+    current_chunk: str,
+    chunks: list[str],
+    text_splitter: "RecursiveCharacterTextSplitter",
+    chunk_size: int,
+) -> str:
+    """Process a single segment (code block or text) into the chunk list."""
+    if is_code_block:
+        current_chunk, flushed = _append_code_block(current_chunk, content, chunk_size)
+        if flushed:
+            chunks.append(flushed)
+        return current_chunk
+    if not content.strip():
+        return current_chunk
+    sub_chunks = text_splitter.split_text(content)
+    return _merge_text_sub_chunks(chunks, current_chunk, sub_chunks, chunk_size)
+
+
 def split_markdown_preserving_code_fences(
     text: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -158,15 +178,14 @@ def split_markdown_preserving_code_fences(
     current_chunk = ""
 
     for content, is_code_block in segments:
-        if is_code_block:
-            current_chunk, flushed = _append_code_block(current_chunk, content, chunk_size)
-            if flushed:
-                chunks.append(flushed)
-        else:
-            if not content.strip():
-                continue
-            sub_chunks = text_splitter.split_text(content)
-            current_chunk = _merge_text_sub_chunks(chunks, current_chunk, sub_chunks, chunk_size)
+        current_chunk = _process_segment(
+            content,
+            is_code_block,
+            current_chunk,
+            chunks,
+            text_splitter,
+            chunk_size,
+        )
 
     # Flush remaining
     if current_chunk.strip():

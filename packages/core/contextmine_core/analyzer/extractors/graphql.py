@@ -59,6 +59,69 @@ class GraphQLExtraction:
     operations: list[GraphQLOperationDef] = field(default_factory=list)
 
 
+_GRAPHQL_KIND_MAP = {
+    "object_type_definition": "type",
+    "interface_type_definition": "interface",
+    "input_object_type_definition": "input",
+    "enum_type_definition": "enum",
+    "union_type_definition": "union",
+    "scalar_type_definition": "scalar",
+}
+
+
+def _extract_enum_values(content: str, node: object) -> list[str]:
+    """Extract enum value names from an enum type definition node."""
+    enum_values_node = first_child(node, "enum_values_definition")
+    if enum_values_node is None:
+        return []
+    values: list[str] = []
+    for enum_value in children_of(enum_values_node, "enum_value_definition"):
+        for sub in walk(enum_value):
+            if sub.type == "name":
+                enum_name = node_text(content, sub).strip()
+                if enum_name:
+                    values.append(enum_name)
+                    break
+    return values
+
+
+def _populate_type_def_fields(
+    content: str, kind: str, node: object, type_def: GraphQLTypeDef
+) -> None:
+    """Populate fields or enum values on a type definition based on its kind."""
+    if kind == "enum":
+        type_def.enum_values = _extract_enum_values(content, node)
+    elif kind in {"type", "interface"}:
+        fields_node = first_child(node, "fields_definition")
+        if fields_node is not None:
+            type_def.fields = _parse_field_definitions(
+                content, fields_node, field_type="field_definition"
+            )
+    elif kind == "input":
+        fields_node = first_child(node, "input_fields_definition")
+        if fields_node is not None:
+            type_def.fields = _parse_field_definitions(
+                content,
+                fields_node,
+                field_type="input_value_definition",
+            )
+
+
+def _build_graphql_type_def(
+    content: str,
+    kind: str,
+    node: object,
+    name: str,
+) -> GraphQLTypeDef:
+    """Build a complete GraphQLTypeDef from a parsed AST node."""
+    description = _extract_description(content, node)
+    type_def = GraphQLTypeDef(name=name, kind=kind, description=description)
+    type_def.implements = _extract_named_types(content, first_child(node, "implements_interfaces"))
+    type_def.union_types = _extract_named_types(content, first_child(node, "union_member_types"))
+    _populate_type_def_fields(content, kind, node, type_def)
+    return type_def
+
+
 def extract_from_graphql(file_path: str, content: str) -> GraphQLExtraction:
     """Extract type and operation definitions from a GraphQL schema.
 
@@ -75,61 +138,16 @@ def extract_from_graphql(file_path: str, content: str) -> GraphQLExtraction:
         logger.warning("GraphQL parser unavailable; skipping AST extraction for %s", file_path)
         return result
 
-    kind_map = {
-        "object_type_definition": "type",
-        "interface_type_definition": "interface",
-        "input_object_type_definition": "input",
-        "enum_type_definition": "enum",
-        "union_type_definition": "union",
-        "scalar_type_definition": "scalar",
-    }
-
     for node in walk(root):
-        kind = kind_map.get(node.type)
+        kind = _GRAPHQL_KIND_MAP.get(node.type)
         if kind is None:
             continue
 
-        name_node = first_child(node, "name")
-        name = node_text(content, name_node).strip()
+        name = node_text(content, first_child(node, "name")).strip()
         if not name:
             continue
 
-        description = _extract_description(content, node)
-        type_def = GraphQLTypeDef(name=name, kind=kind, description=description)
-        type_def.implements = _extract_named_types(
-            content, first_child(node, "implements_interfaces")
-        )
-        type_def.union_types = _extract_named_types(
-            content, first_child(node, "union_member_types")
-        )
-
-        if kind == "enum":
-            enum_values_node = first_child(node, "enum_values_definition")
-            if enum_values_node is not None:
-                for enum_value in children_of(enum_values_node, "enum_value_definition"):
-                    enum_name = ""
-                    for sub in walk(enum_value):
-                        if sub.type == "name":
-                            enum_name = node_text(content, sub).strip()
-                            if enum_name:
-                                break
-                    if enum_name:
-                        type_def.enum_values.append(enum_name)
-        elif kind in {"type", "interface"}:
-            fields_node = first_child(node, "fields_definition")
-            if fields_node is not None:
-                type_def.fields = _parse_field_definitions(
-                    content, fields_node, field_type="field_definition"
-                )
-        elif kind == "input":
-            fields_node = first_child(node, "input_fields_definition")
-            if fields_node is not None:
-                type_def.fields = _parse_field_definitions(
-                    content,
-                    fields_node,
-                    field_type="input_value_definition",
-                )
-
+        type_def = _build_graphql_type_def(content, kind, node, name)
         result.types.append(type_def)
         if name in {"Query", "Mutation", "Subscription"}:
             result.operations.append(

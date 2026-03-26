@@ -100,10 +100,8 @@ def parse_lcov_report(
             )
         elif line.startswith("DA:"):
             valid, hit = _parse_lcov_da_line(line)
-            if valid:
-                total += 1
-                if hit:
-                    covered += 1
+            total += int(valid)
+            covered += int(valid and hit)
         elif line == "end_of_record":
             flush()
 

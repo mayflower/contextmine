@@ -213,6 +213,27 @@ def extract_tests_from_files(files: list[tuple[str, str]]) -> list[TestsExtracti
     return extractions
 
 
+def _maybe_extract_python_suite(
+    file_path: str,
+    content: str,
+    node: Any,
+    extraction: TestsExtraction,
+) -> None:
+    """Extract a test suite from a class definition node if it looks like a test class."""
+    if node.type != "class_definition":
+        return
+    name = node_text(content, first_child(node, "identifier")).strip()
+    if name and ("test" in name.lower() or is_pascal_case(name)):
+        extraction.suites.append(
+            TestSuiteDef(
+                name=name,
+                file_path=file_path,
+                line=line_number(node),
+                natural_key=f"test_suite:{file_path}:{name}",
+            )
+        )
+
+
 def _extract_python_tests(
     file_path: str,
     content: str,
@@ -220,17 +241,7 @@ def _extract_python_tests(
     extraction: TestsExtraction,
 ) -> None:
     for node in walk(root):
-        if node.type == "class_definition":
-            name = node_text(content, first_child(node, "identifier")).strip()
-            if name and ("test" in name.lower() or is_pascal_case(name)):
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=name,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{name}",
-                    )
-                )
+        _maybe_extract_python_suite(file_path, content, node, extraction)
 
         if node.type not in {"function_definition", "decorated_definition"}:
             continue
@@ -245,11 +256,7 @@ def _extract_python_tests(
 
         if any(name.endswith("fixture") for name in decorators):
             extraction.fixtures.append(
-                TestFixtureDef(
-                    name=fn_name,
-                    file_path=file_path,
-                    line=line_number(function_node),
-                )
+                TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(function_node))
             )
 
         if not fn_name.startswith("test_"):
@@ -328,6 +335,32 @@ def _python_parent_suite(content: str, node: Any) -> str | None:
     return None
 
 
+def _process_call_node(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    endpoints: list[str],
+    call_sites: list[dict[str, Any]],
+    assertions: list[str],
+) -> None:
+    """Process a single call node, extracting signals for test case analysis."""
+    full_name, base_name, method_name = _python_call_name(content, node)
+    callee = method_name or base_name or full_name
+    if callee:
+        call_sites.append(
+            {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+        )
+    endpoint = _endpoint_from_call(content, node, base_name=base_name, method_name=method_name)
+    if endpoint:
+        endpoints.append(endpoint)
+    symbol_token = method_name or base_name
+    if symbol_token and len(symbol_token) >= 3 and symbol_token not in SYMBOL_STOP_WORDS:
+        symbols.append(symbol_token)
+    call_text = node_text(content, node).strip()
+    if "expect(" in call_text or base_name in {"assert", "expect"}:
+        assertions.append(call_text)
+
+
 def _collect_python_case_signals(
     content: str, function_node: Any
 ) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
@@ -338,29 +371,8 @@ def _collect_python_case_signals(
     for node in walk(function_node):
         if node.type == "assert_statement":
             assertions.append(node_text(content, node).strip())
-            continue
-        if node.type != "call":
-            continue
-        full_name, base_name, method_name = _python_call_name(content, node)
-        callee = method_name or base_name or full_name
-        if callee:
-            call_sites.append(
-                {
-                    "line": line_number(node),
-                    "column": int(node.start_point[1]),
-                    "callee": callee,
-                }
-            )
-        endpoint = _endpoint_from_call(content, node, base_name=base_name, method_name=method_name)
-        if endpoint:
-            endpoints.append(endpoint)
-
-        symbol_token = method_name or base_name
-        if symbol_token and len(symbol_token) >= 3 and symbol_token not in SYMBOL_STOP_WORDS:
-            symbols.append(symbol_token)
-        call_text = node_text(content, node).strip()
-        if "expect(" in call_text or base_name in {"assert", "expect"}:
-            assertions.append(call_text)
+        elif node.type == "call":
+            _process_call_node(content, node, symbols, endpoints, call_sites, assertions)
     return _dedupe(symbols), _dedupe(endpoints), call_sites, _dedupe(assertions)
 
 

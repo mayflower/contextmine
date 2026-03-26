@@ -265,8 +265,8 @@ class ResearchRun:
             "evidence": [e.to_dict() for e in self.evidence],
         }
 
-    def to_report_markdown(self) -> str:
-        """Generate a markdown report for the run."""
+    def _report_header_lines(self) -> list[str]:
+        """Build header section of markdown report."""
         lines = [
             f"# Research Report: {self.run_id[:8]}",
             "",
@@ -274,13 +274,10 @@ class ResearchRun:
             f"**Status:** {self.status.value}",
             f"**Created:** {self.created_at.isoformat()}",
         ]
-
         if self.completed_at:
             lines.append(f"**Completed:** {self.completed_at.isoformat()}")
-
         if self.scope:
             lines.append(f"**Scope:** `{self.scope}`")
-
         lines.extend(
             [
                 f"**Steps used:** {self.budget_used}/{self.budget_steps}",
@@ -288,66 +285,51 @@ class ResearchRun:
                 "",
             ]
         )
+        return lines
 
+    def _report_evidence_lines(self) -> list[str]:
+        """Build evidence section of markdown report."""
+        if not self.evidence:
+            return []
+        lines = ["## Evidence", ""]
+        for e in self.evidence:
+            lines.extend(
+                [
+                    f"### [{e.id}] {e.file_path}:{e.start_line}-{e.end_line}",
+                    "",
+                    f"**Reason:** {e.reason}",
+                    f"**Provenance:** {e.provenance}",
+                    "",
+                    "```",
+                    e.content,
+                    "```",
+                    "",
+                ]
+            )
+        return lines
+
+    def _report_trace_lines(self) -> list[str]:
+        """Build trace section of markdown report."""
+        if not self.steps:
+            return []
+        lines = ["## Trace", ""]
+        for step in self.steps:
+            status = "ERROR" if step.error else "OK"
+            lines.append(f"{step.step_number}. **{step.action}** ({step.duration_ms}ms) [{status}]")
+            lines.append(
+                f"   - Error: {step.error}" if step.error else f"   - {step.output_summary}"
+            )
+        return lines
+
+    def to_report_markdown(self) -> str:
+        """Generate a markdown report for the run."""
+        lines = self._report_header_lines()
         if self.answer:
-            lines.extend(
-                [
-                    "## Answer",
-                    "",
-                    self.answer,
-                    "",
-                ]
-            )
-
+            lines.extend(["## Answer", "", self.answer, ""])
         if self.error_message:
-            lines.extend(
-                [
-                    "## Error",
-                    "",
-                    f"```\n{self.error_message}\n```",
-                    "",
-                ]
-            )
-
-        if self.evidence:
-            lines.extend(
-                [
-                    "## Evidence",
-                    "",
-                ]
-            )
-            for e in self.evidence:
-                lines.extend(
-                    [
-                        f"### [{e.id}] {e.file_path}:{e.start_line}-{e.end_line}",
-                        "",
-                        f"**Reason:** {e.reason}",
-                        f"**Provenance:** {e.provenance}",
-                        "",
-                        "```",
-                        e.content,
-                        "```",
-                        "",
-                    ]
-                )
-
-        if self.steps:
-            lines.extend(
-                [
-                    "## Trace",
-                    "",
-                ]
-            )
-            for step in self.steps:
-                status = "ERROR" if step.error else "OK"
-                lines.append(
-                    f"{step.step_number}. **{step.action}** ({step.duration_ms}ms) [{status}]"
-                )
-                if step.error:
-                    lines.append(f"   - Error: {step.error}")
-                else:
-                    lines.append(f"   - {step.output_summary}")
-
+            lines.extend(["## Error", "", f"```\n{self.error_message}\n```", ""])
+        lines.extend(self._report_evidence_lines())
+        lines.extend(self._report_trace_lines())
         return "\n".join(lines)
 
     @classmethod

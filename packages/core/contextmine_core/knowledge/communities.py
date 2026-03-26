@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import igraph as ig
@@ -91,6 +91,62 @@ class HierarchicalCommunities:
             if comm.id == community_id:
                 return comm
         return None
+
+
+def _build_edge_list(
+    edges: list,
+    node_id_to_idx: dict[UUID, int],
+) -> tuple[list[tuple[int, int]], list[float]]:
+    """Build edge list and weights for igraph from DB edge rows."""
+    edge_list: list[tuple[int, int]] = []
+    edge_weights: list[float] = []
+    for src_id, dst_id, _kind, meta in edges:
+        src_idx = node_id_to_idx.get(src_id)
+        dst_idx = node_id_to_idx.get(dst_id)
+        if src_idx is None or dst_idx is None:
+            continue
+        weight = meta.get("strength", 1.0) if meta else 1.0
+        edge_list.append((src_idx, dst_idx))
+        edge_weights.append(weight)
+    return edge_list, edge_weights
+
+
+def _single_community_result(
+    result: HierarchicalCommunities,
+    nodes: list,
+) -> HierarchicalCommunities:
+    """Create a single-community result when no edges exist."""
+    single_comm = Community(id=0, level=0, size=len(nodes))
+    single_comm.node_ids = [n[0] for n in nodes]
+    single_comm.node_keys = [n[1] for n in nodes]
+    result.levels[0] = [single_comm]
+    for node_id, _, _, _ in nodes:
+        result.node_membership[node_id] = {0: 0}
+    return result
+
+
+def _build_level_communities(
+    partition: Any,
+    level: int,
+    idx_to_node_id: dict[int, UUID],
+    idx_to_node_key: dict[int, str],
+    result: HierarchicalCommunities,
+) -> list[Community]:
+    """Build Community objects for a single Leiden partition level."""
+    community_nodes: dict[int, list[int]] = {}
+    for node_idx, comm_id in enumerate(partition.membership):
+        community_nodes.setdefault(comm_id, []).append(node_idx)
+
+    communities: list[Community] = []
+    for comm_id, node_indices in sorted(community_nodes.items()):
+        comm = Community(id=comm_id, level=level, size=len(node_indices))
+        comm.node_ids = [idx_to_node_id[idx] for idx in node_indices]
+        comm.node_keys = [idx_to_node_key[idx] for idx in node_indices]
+        communities.append(comm)
+        for node_idx in node_indices:
+            node_id = idx_to_node_id[node_idx]
+            result.node_membership.setdefault(node_id, {})[level] = comm_id
+    return communities
 
 
 async def detect_communities(
@@ -174,39 +230,15 @@ async def detect_communities(
     )
     edges = edge_result.all()
 
-    # Build igraph Graph
-    edge_list: list[tuple[int, int]] = []
-    edge_weights: list[float] = []
-
-    for src_id, dst_id, _kind, meta in edges:
-        src_idx = node_id_to_idx.get(src_id)
-        dst_idx = node_id_to_idx.get(dst_id)
-
-        if src_idx is None or dst_idx is None:
-            continue
-
-        # Weight: use meta.strength for semantic relationships, default to 1.0
-        weight = meta.get("strength", 1.0) if meta else 1.0
-
-        edge_list.append((src_idx, dst_idx))
-        edge_weights.append(weight)
+    edge_list, edge_weights = _build_edge_list(edges, node_id_to_idx)
 
     if not edge_list:
         logger.debug("No edges found for collection %s", collection_id)
-        # Create single community with all nodes
-        single_comm = Community(id=0, level=0, size=len(nodes))
-        single_comm.node_ids = [n[0] for n in nodes]
-        single_comm.node_keys = [n[1] for n in nodes]
-        result.levels[0] = [single_comm]
-        for node_id, _, _, _ in nodes:
-            result.node_membership[node_id] = {0: 0}
-        return result
+        return _single_community_result(result, nodes)
 
-    # Create igraph Graph
     g = ig.Graph(n=len(nodes), edges=edge_list, directed=False)
     g.es["weight"] = edge_weights
 
-    # Run Leiden at each resolution level
     for level, resolution in enumerate(resolutions):
         partition = leidenalg.find_partition(
             g,
@@ -215,43 +247,19 @@ async def detect_communities(
             resolution_parameter=resolution,
             seed=seed,
         )
-
-        # Record modularity
         result.modularity[level] = partition.modularity
-
-        # Build communities for this level
-        communities: list[Community] = []
-        community_nodes: dict[int, list[int]] = {}
-
-        for node_idx, comm_id in enumerate(partition.membership):
-            if comm_id not in community_nodes:
-                community_nodes[comm_id] = []
-            community_nodes[comm_id].append(node_idx)
-
-        # Create Community objects
-        for comm_id, node_indices in sorted(community_nodes.items()):
-            comm = Community(
-                id=comm_id,
-                level=level,
-                size=len(node_indices),
-            )
-            comm.node_ids = [idx_to_node_id[idx] for idx in node_indices]
-            comm.node_keys = [idx_to_node_key[idx] for idx in node_indices]
-            communities.append(comm)
-
-            # Update node membership
-            for node_idx in node_indices:
-                node_id = idx_to_node_id[node_idx]
-                if node_id not in result.node_membership:
-                    result.node_membership[node_id] = {}
-                result.node_membership[node_id][level] = comm_id
-
-        result.levels[level] = communities
+        result.levels[level] = _build_level_communities(
+            partition,
+            level,
+            idx_to_node_id,
+            idx_to_node_key,
+            result,
+        )
         logger.info(
             "Level %d (resolution=%.2f): %d communities, modularity=%.4f",
             level,
             resolution,
-            len(communities),
+            len(result.levels[level]),
             partition.modularity,
         )
 

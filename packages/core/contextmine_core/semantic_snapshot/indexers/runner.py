@@ -48,6 +48,29 @@ class CmdResult:
     timed_out: bool = False
 
 
+def _write_cmd_logs(
+    logs_path: Path | None,
+    cmd: list[str],
+    exit_info: int | str,
+    elapsed: float,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Write command execution logs to a file if logs_path is set."""
+    if not logs_path:
+        return
+    logs_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(logs_path, "w") as f:
+        f.write(f"Command: {' '.join(cmd)}\n")
+        label = f"Exit code: {exit_info}" if isinstance(exit_info, int) else str(exit_info)
+        f.write(f"{label}\n")
+        f.write(f"Duration: {elapsed:.2f}s\n")
+        f.write("\n--- STDOUT ---\n")
+        f.write(stdout)
+        f.write("\n--- STDERR ---\n")
+        f.write(stderr)
+
+
 def run_cmd(
     cmd: list[str],
     cwd: Path,
@@ -90,21 +113,10 @@ def run_cmd(
             text=True,
             timeout=timeout_s,
         )
-
         elapsed = time.monotonic() - start_time
-
-        # Optionally write full logs
-        if logs_path:
-            logs_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(logs_path, "w") as f:
-                f.write(f"Command: {' '.join(cmd)}\n")
-                f.write(f"Exit code: {result.returncode}\n")
-                f.write(f"Duration: {elapsed:.2f}s\n")
-                f.write("\n--- STDOUT ---\n")
-                f.write(result.stdout or "")
-                f.write("\n--- STDERR ---\n")
-                f.write(result.stderr or "")
-
+        _write_cmd_logs(
+            logs_path, cmd, result.returncode, elapsed, result.stdout or "", result.stderr or ""
+        )
         return CmdResult(
             exit_code=result.returncode,
             stdout_tail=result.stdout[-tail_chars:] if result.stdout else "",
@@ -112,28 +124,13 @@ def run_cmd(
             elapsed_s=elapsed,
             timed_out=False,
         )
-
     except FileNotFoundError as e:
         raise CommandNotFoundError(f"Command not found: {cmd[0]}") from e
-
     except subprocess.TimeoutExpired as e:
         elapsed = time.monotonic() - start_time
-
-        # Capture partial output
         stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-
-        if logs_path:
-            logs_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(logs_path, "w") as f:
-                f.write(f"Command: {' '.join(cmd)}\n")
-                f.write(f"TIMEOUT after {timeout_s}s\n")
-                f.write(f"Duration: {elapsed:.2f}s\n")
-                f.write("\n--- STDOUT ---\n")
-                f.write(stdout)
-                f.write("\n--- STDERR ---\n")
-                f.write(stderr)
-
+        _write_cmd_logs(logs_path, cmd, f"TIMEOUT after {timeout_s}s", elapsed, stdout, stderr)
         return CmdResult(
             exit_code=-1,
             stdout_tail=stdout[-tail_chars:] if stdout else "",

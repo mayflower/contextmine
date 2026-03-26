@@ -204,6 +204,29 @@ async def _render_container_view(
     )
 
 
+def _render_component_container_lines(
+    container_groups: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    """Render Mermaid C4 lines for component containers."""
+    lines: list[str] = []
+    for container_name in sorted(container_groups):
+        boundary_id = _safe_id(f"container:{container_name}")
+        lines.append(
+            f'  Container_Boundary({boundary_id}, "{_safe_text(container_name, "container")}") {{'
+        )
+        for node in sorted(
+            container_groups[container_name], key=lambda item: str(item.get("name") or "")
+        ):
+            node_id = _safe_id(str(node.get("id") or ""))
+            kind = _safe_text(str(node.get("kind") or "component"), "component")
+            label = _safe_text(str(node.get("name") or "component"), "component")
+            members = int((node.get("meta") or {}).get("member_count", 0) or 0)
+            description = _safe_text(f"members={members}", "")
+            lines.append(f'    Component({node_id}, "{label}", "{kind}", "{description}")')
+        lines.append("  }")
+    return lines
+
+
 async def _render_component_view(
     session: AsyncSession,
     scenario_id: UUID,
@@ -242,21 +265,7 @@ async def _render_component_view(
 
     lines = ["C4Component", f'title "{_safe_text(scenario_name, "Scenario")}"']
     lines.append('Container_Boundary(system_container, "System") {')
-    for container_name in sorted(container_groups):
-        boundary_id = _safe_id(f"container:{container_name}")
-        lines.append(
-            f'  Container_Boundary({boundary_id}, "{_safe_text(container_name, "container")}") {{'
-        )
-        for node in sorted(
-            container_groups[container_name], key=lambda item: str(item.get("name") or "")
-        ):
-            node_id = _safe_id(str(node.get("id") or ""))
-            kind = _safe_text(str(node.get("kind") or "component"), "component")
-            label = _safe_text(str(node.get("name") or "component"), "component")
-            members = int((node.get("meta") or {}).get("member_count", 0) or 0)
-            description = _safe_text(f"members={members}", "")
-            lines.append(f'    Component({node_id}, "{label}", "{kind}", "{description}")')
-        lines.append("  }")
+    lines.extend(_render_component_container_lines(container_groups))
     lines.append("}")
     lines.extend(_build_relation_lines(edges))
 
@@ -269,6 +278,89 @@ async def _render_component_view(
         c4_scope=c4_scope,
         warnings=warnings,
     )
+
+
+def _build_component_path_map(
+    file_graph: dict[str, Any],
+) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Build component-to-paths and component-to-container maps from a file graph."""
+    component_to_paths: dict[str, set[str]] = defaultdict(set)
+    component_to_container: dict[str, str] = {}
+    for node in file_graph["nodes"]:
+        file_path = _canonical_file_path(node)
+        if not file_path:
+            continue
+        group = _derive_arch_group(file_path, node.get("meta") or {})
+        if not group:
+            continue
+        domain, container, component = group
+        key = f"{domain}/{container}/{component}"
+        component_to_paths[key].add(file_path)
+        component_to_container[key] = container
+    return component_to_paths, component_to_container
+
+
+def _select_code_scope_component(
+    component_to_paths: dict[str, set[str]],
+    c4_scope: str | None,
+    warnings: list[str],
+) -> str | None:
+    """Select the component to scope the code view to."""
+    if not component_to_paths:
+        return None
+    selected: str | None = None
+    if c4_scope:
+        scope = c4_scope.lower()
+        for key in component_to_paths:
+            _, container, component = key.split("/", 2)
+            if scope in {key.lower(), container.lower(), component.lower()}:
+                selected = key
+                break
+        if selected is None:
+            warnings.append(
+                f'No component/file scope matched "{c4_scope}"; defaulted to largest component.'
+            )
+    if selected is None:
+        selected = max(component_to_paths.items(), key=lambda item: len(item[1]))[0]
+    return selected
+
+
+def _filter_edges_by_node_ids(
+    edges: list[dict[str, Any]],
+    node_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Filter edges to only those connecting nodes in node_ids."""
+    return [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in node_ids
+        and str(edge.get("target_node_id")) in node_ids
+    ]
+
+
+def _check_edge_kind_warnings(edges: list[dict[str, Any]], warnings: list[str]) -> None:
+    """Add warnings about missing edge kinds in code view."""
+    has_call_edges = any(str(edge.get("kind") or "") == "symbol_calls_symbol" for edge in edges)
+    has_reference_edges = any(
+        str(edge.get("kind") or "") == "symbol_references_symbol" for edge in edges
+    )
+    if not has_call_edges and has_reference_edges:
+        warnings.append(
+            "No symbol_calls_symbol edges found in scope; using references/contains relationships as fallback."
+        )
+
+
+def _render_code_symbol_lines(nodes: list[dict[str, Any]]) -> list[str]:
+    """Render C4 Component lines for symbol nodes."""
+    lines: list[str] = []
+    for node in sorted(nodes, key=lambda item: str(item.get("name") or "")):
+        node_id = _safe_id(str(node.get("id") or ""))
+        kind = _safe_text(str(node.get("kind") or "symbol"), "symbol")
+        label = _safe_text(str(node.get("name") or kind), kind)
+        file_path = _safe_text(_canonical_file_path(node) or "", "")
+        description = _safe_text(f"{kind} | {file_path}" if file_path else kind, kind)
+        lines.append(f'    Component({node_id}, "{label}", "{kind}", "{description}")')
+    return lines
 
 
 async def _render_code_view(
@@ -287,38 +379,8 @@ async def _render_code_view(
         projection=GraphProjection.CODE_FILE,
         entity_level="file",
     )
-
-    component_to_paths: dict[str, set[str]] = defaultdict(set)
-    component_to_container: dict[str, str] = {}
-
-    for node in file_graph["nodes"]:
-        file_path = _canonical_file_path(node)
-        if not file_path:
-            continue
-        group = _derive_arch_group(file_path, node.get("meta") or {})
-        if not group:
-            continue
-        domain, container, component = group
-        key = f"{domain}/{container}/{component}"
-        component_to_paths[key].add(file_path)
-        component_to_container[key] = container
-
-    selected_component: str | None = None
-    if component_to_paths:
-        if c4_scope:
-            scope = c4_scope.lower()
-            for key, _paths in component_to_paths.items():
-                _, container, component = key.split("/", 2)
-                if scope in {key.lower(), container.lower(), component.lower()}:
-                    selected_component = key
-                    break
-            if selected_component is None:
-                warnings.append(
-                    f'No component/file scope matched "{c4_scope}"; defaulted to largest component.'
-                )
-        if selected_component is None:
-            selected_component = max(component_to_paths.items(), key=lambda item: len(item[1]))[0]
-
+    component_to_paths, component_to_container = _build_component_path_map(file_graph)
+    selected_component = _select_code_scope_component(component_to_paths, c4_scope, warnings)
     scope_paths = component_to_paths.get(selected_component, set()) if selected_component else set()
 
     symbol_graph = await get_full_scenario_graph(
@@ -345,33 +407,15 @@ async def _render_code_view(
             warnings.append("Scoped code selection had no symbols; rendering global code view.")
 
     node_ids = {str(node.get("id")) for node in nodes}
-    edges = [
-        edge
-        for edge in symbol_graph["edges"]
-        if str(edge.get("source_node_id")) in node_ids
-        and str(edge.get("target_node_id")) in node_ids
-    ]
-
-    has_call_edges = any(str(edge.get("kind") or "") == "symbol_calls_symbol" for edge in edges)
-    has_reference_edges = any(
-        str(edge.get("kind") or "") == "symbol_references_symbol" for edge in edges
-    )
-    if not has_call_edges and has_reference_edges:
-        warnings.append(
-            "No symbol_calls_symbol edges found in scope; using references/contains relationships as fallback."
-        )
+    edges = _filter_edges_by_node_ids(symbol_graph["edges"], node_ids)
+    _check_edge_kind_warnings(edges, warnings)
 
     nodes, edges, was_limited = _limit_nodes_by_degree(nodes, edges, max_nodes)
     if was_limited:
         warnings.append(f"Code view limited to top {max_nodes} symbols by degree for readability.")
 
     node_ids = {str(node.get("id")) for node in nodes}
-    edges = [
-        edge
-        for edge in edges
-        if str(edge.get("source_node_id")) in node_ids
-        and str(edge.get("target_node_id")) in node_ids
-    ]
+    edges = _filter_edges_by_node_ids(edges, node_ids)
 
     container_name = "code-scope"
     if selected_component:
@@ -382,16 +426,9 @@ async def _render_code_view(
     lines.append(
         f'  Container_Boundary(scope_boundary, "{_safe_text(container_name, "scope")}") {{'
     )
-    for node in sorted(nodes, key=lambda item: str(item.get("name") or "")):
-        node_id = _safe_id(str(node.get("id") or ""))
-        kind = _safe_text(str(node.get("kind") or "symbol"), "symbol")
-        label = _safe_text(str(node.get("name") or kind), kind)
-        file_path = _safe_text(_canonical_file_path(node) or "", "")
-        description = _safe_text(f"{kind} | {file_path}" if file_path else kind, kind)
-        lines.append(f'    Component({node_id}, "{label}", "{kind}", "{description}")')
+    lines.extend(_render_code_symbol_lines(nodes))
     lines.append("  }")
     lines.append("}")
-
     lines.extend(_build_relation_lines(edges))
 
     if not nodes:
@@ -504,6 +541,66 @@ def _infer_job_container(
     return "shared"
 
 
+def _scope_deployment_jobs(
+    job_nodes: list[KnowledgeNode],
+    file_path_by_job: dict[UUID, str],
+    c4_scope: str | None,
+    warnings: list[str],
+) -> list[KnowledgeNode]:
+    """Filter deployment jobs by scope, returning empty list if no scope or no match."""
+    if not c4_scope:
+        return []
+    scope_l = c4_scope.lower()
+    scoped: list[KnowledgeNode] = []
+    for job in job_nodes:
+        job_file_path = file_path_by_job.get(job.id, "")
+        if scope_l in str(job.name or "").lower() or scope_l in job_file_path.lower():
+            scoped.append(job)
+    if not scoped:
+        warnings.append(f'No deployment jobs matched scope "{c4_scope}"; rendered all jobs.')
+    return scoped
+
+
+def _render_deployment_container_lines(
+    jobs_by_container: dict[str, list[KnowledgeNode]],
+) -> list[str]:
+    """Render Mermaid deployment node lines grouped by container."""
+    lines: list[str] = []
+    for container_name in sorted(jobs_by_container):
+        deployment_id = _safe_id(f"deploy:{container_name}")
+        lines.append(
+            f'  Deployment_Node({deployment_id}, "{_safe_text(container_name, "shared")}", "deployment slice") {{'
+        )
+        for job in jobs_by_container[container_name]:
+            job_id = _safe_id(str(job.id))
+            job_meta = job.meta or {}
+            framework = _safe_text(str(job_meta.get("framework") or "job"), "job")
+            image = _safe_text(str(job_meta.get("container_image") or ""), "")
+            description = f"framework={framework}"
+            if image:
+                description = f"{description} | image={image}"
+            lines.append(
+                f'    Container({job_id}, "{_safe_text(job.name, "job")}", "{framework}", "{_safe_text(description, framework)}")'
+            )
+        lines.append("  }")
+    return lines
+
+
+def _render_deployment_trigger_lines(
+    jobs_by_container: dict[str, list[KnowledgeNode]],
+) -> list[str]:
+    """Render trigger relationship lines for deployment jobs."""
+    lines: list[str] = ['System_Ext(trigger_engine, "Scheduler", "CI / cron / workflow triggers")']
+    for jobs in jobs_by_container.values():
+        for job in jobs:
+            job_id = _safe_id(str(job.id))
+            schedule = _safe_text(
+                str((job.meta or {}).get("schedule") or "manual/event"), "manual/event"
+            )
+            lines.append(f'Rel(trigger_engine, {job_id}, "{schedule}")')
+    return lines
+
+
 async def _render_deployment_view(
     session: AsyncSession,
     collection_id: UUID,
@@ -582,18 +679,8 @@ async def _render_deployment_view(
             container_name_set,
         )
 
-    scoped_jobs: list[KnowledgeNode] = []
-    if c4_scope:
-        scope_l = c4_scope.lower()
-        for job in job_nodes:
-            job_file_path = file_path_by_job.get(job.id, "")
-            if scope_l in str(job.name or "").lower() or scope_l in job_file_path.lower():
-                scoped_jobs.append(job)
-        if not scoped_jobs:
-            warnings.append(f'No deployment jobs matched scope "{c4_scope}"; rendered all jobs.')
-
-    source_jobs = scoped_jobs or list(job_nodes)
-    source_jobs = sorted(source_jobs, key=lambda node: str(node.name or ""))
+    scoped_jobs = _scope_deployment_jobs(job_nodes, file_path_by_job, c4_scope, warnings)
+    source_jobs = sorted(scoped_jobs or list(job_nodes), key=lambda node: str(node.name or ""))
     if len(source_jobs) > max_nodes:
         source_jobs = source_jobs[:max_nodes]
         warnings.append(f"Deployment view limited to {max_nodes} jobs for readability.")
@@ -606,33 +693,9 @@ async def _render_deployment_view(
 
     lines = ["C4Deployment", f'title "{_safe_text(scenario_name, "Scenario")}"']
     lines.append('Deployment_Node(runtime_cluster, "Runtime", "cluster") {')
-    for container_name in sorted(jobs_by_container):
-        deployment_id = _safe_id(f"deploy:{container_name}")
-        lines.append(
-            f'  Deployment_Node({deployment_id}, "{_safe_text(container_name, "shared")}", "deployment slice") {{'
-        )
-        for job in jobs_by_container[container_name]:
-            job_id = _safe_id(str(job.id))
-            job_meta = job.meta or {}
-            framework = _safe_text(str(job_meta.get("framework") or "job"), "job")
-            image = _safe_text(str(job_meta.get("container_image") or ""), "")
-            description = f"framework={framework}"
-            if image:
-                description = f"{description} | image={image}"
-            lines.append(
-                f'    Container({job_id}, "{_safe_text(job.name, "job")}", "{framework}", "{_safe_text(description, framework)}")'
-            )
-        lines.append("  }")
+    lines.extend(_render_deployment_container_lines(jobs_by_container))
     lines.append("}")
-
-    lines.append('System_Ext(trigger_engine, "Scheduler", "CI / cron / workflow triggers")')
-    for jobs in jobs_by_container.values():
-        for job in jobs:
-            job_id = _safe_id(str(job.id))
-            schedule = _safe_text(
-                str((job.meta or {}).get("schedule") or "manual/event"), "manual/event"
-            )
-            lines.append(f'Rel(trigger_engine, {job_id}, "{schedule}")')
+    lines.extend(_render_deployment_trigger_lines(jobs_by_container))
 
     if weak_mapping_count > 0:
         warnings.append(

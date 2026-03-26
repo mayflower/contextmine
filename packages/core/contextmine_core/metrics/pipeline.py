@@ -130,6 +130,58 @@ def _collect_relevant_files(
     return relevant_files
 
 
+def _check_required_metrics(
+    complexity_entry: dict,
+    coupling_entry: dict,
+) -> list[str]:
+    """Check for missing required metric fields."""
+    required_fields = [
+        ("loc", complexity_entry),
+        ("complexity", complexity_entry),
+        ("coupling_in", coupling_entry),
+        ("coupling_out", coupling_entry),
+        ("coupling", coupling_entry),
+    ]
+    return [name for name, source in required_fields if source.get(name) is None]
+
+
+def _build_file_metric_record(
+    file_path: str,
+    language: str,
+    complexity_entry: dict,
+    coupling_entry: dict,
+    duplication_map: dict[str, float],
+    coupling_provenance: dict[str, Any],
+) -> FileMetricRecord:
+    """Build a single FileMetricRecord from raw metric entries."""
+    return FileMetricRecord(
+        file_path=file_path,
+        language=language,
+        loc=int(complexity_entry["loc"]),
+        complexity=float(complexity_entry["complexity"]),
+        coupling_in=int(coupling_entry["coupling_in"]),
+        coupling_out=int(coupling_entry["coupling_out"]),
+        coupling=float(coupling_entry["coupling"]),
+        cohesion=float(coupling_entry.get("cohesion", 1.0) or 1.0),
+        instability=float(coupling_entry.get("instability", 0.0) or 0.0),
+        fan_in=int(coupling_entry.get("fan_in", 0) or 0),
+        fan_out=int(coupling_entry.get("fan_out", 0) or 0),
+        cycle_participation=bool(coupling_entry.get("cycle_participation", False)),
+        cycle_size=int(coupling_entry.get("cycle_size", 0) or 0),
+        duplication_ratio=float(duplication_map.get(file_path, 0.0) or 0.0),
+        crap_score=None,
+        coverage=None,
+        sources={
+            "complexity": "lizard",
+            "coupling": coupling_provenance,
+            "duplication": {
+                "provider": "line_hash",
+                "normalization": "strip_whitespace_and_comments",
+            },
+        },
+    )
+
+
 def _build_file_metrics(
     language: str,
     relevant_files: set[str],
@@ -146,55 +198,21 @@ def _build_file_metrics(
         complexity_entry = complexity_map.get(file_path) or {}
         coupling_entry = coupling_map.get(file_path) or {}
 
-        loc_value = complexity_entry.get("loc")
-        complexity_value = complexity_entry.get("complexity")
-        coupling_in = coupling_entry.get("coupling_in")
-        coupling_out = coupling_entry.get("coupling_out")
-        coupling_value = coupling_entry.get("coupling")
-
-        required_missing: list[str] = []
-        if loc_value is None:
-            required_missing.append("loc")
-        if complexity_value is None:
-            required_missing.append("complexity")
-        if coupling_in is None:
-            required_missing.append("coupling_in")
-        if coupling_out is None:
-            required_missing.append("coupling_out")
-        if coupling_value is None:
-            required_missing.append("coupling")
-
+        required_missing = _check_required_metrics(complexity_entry, coupling_entry)
         if required_missing:
             missing.append({"file_path": file_path, "missing": required_missing})
             continue
 
-        record = FileMetricRecord(
-            file_path=file_path,
-            language=language,
-            loc=int(loc_value),
-            complexity=float(complexity_value),
-            coupling_in=int(coupling_in),
-            coupling_out=int(coupling_out),
-            coupling=float(coupling_value),
-            cohesion=float(coupling_entry.get("cohesion", 1.0) or 1.0),
-            instability=float(coupling_entry.get("instability", 0.0) or 0.0),
-            fan_in=int(coupling_entry.get("fan_in", 0) or 0),
-            fan_out=int(coupling_entry.get("fan_out", 0) or 0),
-            cycle_participation=bool(coupling_entry.get("cycle_participation", False)),
-            cycle_size=int(coupling_entry.get("cycle_size", 0) or 0),
-            duplication_ratio=float(duplication_map.get(file_path, 0.0) or 0.0),
-            crap_score=None,
-            coverage=None,
-            sources={
-                "complexity": "lizard",
-                "coupling": coupling_provenance,
-                "duplication": {
-                    "provider": "line_hash",
-                    "normalization": "strip_whitespace_and_comments",
-                },
-            },
+        records.append(
+            _build_file_metric_record(
+                file_path,
+                language,
+                complexity_entry,
+                coupling_entry,
+                duplication_map,
+                coupling_provenance,
+            )
         )
-        records.append(record)
 
     if strict_mode and missing:
         raise MetricsGateError(

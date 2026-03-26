@@ -376,28 +376,32 @@ def get_job_natural_key(job: JobDef) -> str:
     return hashlib.sha256(key_string.encode()).hexdigest()[:16]
 
 
-async def build_jobs_graph(
+def _build_job_meta(job: JobDef) -> dict[str, Any]:
+    """Build metadata dict for a job node."""
+    meta: dict[str, Any] = {
+        "framework": job.framework,
+        "schedule": job.schedule,
+        "container_image": job.container_image,
+        "trigger_count": len(job.triggers),
+        "step_count": len(job.steps),
+        "description": job.description,
+    }
+    if job.triggers:
+        meta["triggers"] = [
+            {"type": t.trigger_type, "cron": t.cron, "description": t.description}
+            for t in job.triggers
+        ]
+    return meta
+
+
+async def _upsert_job_node(
     session: AsyncSession,
     collection_id: UUID,
-    extractions: list[JobsExtraction],
-) -> dict:
-    """Build knowledge graph nodes and edges from extracted jobs.
-
-    Creates:
-    - JOB nodes for each job definition
-    - JOB_DEPENDS_ON edges for job dependencies
-
-    Args:
-        session: Database session
-        collection_id: Collection UUID
-        extractions: List of job extractions
-
-    Returns:
-        Stats dict with counts
-    """
+    job: JobDef,
+    stats: dict,
+) -> UUID:
+    """Upsert a single job node and its evidence."""
     from contextmine_core.models import (
-        KnowledgeEdge,
-        KnowledgeEdgeKind,
         KnowledgeEvidence,
         KnowledgeNode,
         KnowledgeNodeEvidence,
@@ -406,96 +410,62 @@ async def build_jobs_graph(
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    stats = {
-        "job_nodes_created": 0,
-        "edges_created": 0,
-        "evidence_created": 0,
-    }
+    natural_key = f"job:{get_job_natural_key(job)}"
+    meta = _build_job_meta(job)
 
-    job_node_ids: dict[str, UUID] = {}  # job_name -> node_id
+    stmt = pg_insert(KnowledgeNode).values(
+        collection_id=collection_id,
+        kind=KnowledgeNodeKind.JOB,
+        natural_key=natural_key,
+        name=job.name,
+        meta=meta,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_knowledge_node_natural",
+        set_={"name": stmt.excluded.name, "meta": stmt.excluded.meta},
+    ).returning(KnowledgeNode.id)
 
-    for extraction in extractions:
-        for job in extraction.jobs:
-            natural_key = f"job:{get_job_natural_key(job)}"
+    result = await session.execute(stmt)
+    node_id = result.scalar_one()
+    stats["job_nodes_created"] += 1
 
-            # Build metadata
-            meta: dict[str, Any] = {
-                "framework": job.framework,
-                "schedule": job.schedule,
-                "container_image": job.container_image,
-                "trigger_count": len(job.triggers),
-                "step_count": len(job.steps),
-                "description": job.description,
-            }
+    evidence = KnowledgeEvidence(file_path=job.file_path, start_line=1, end_line=1)
+    session.add(evidence)
+    await session.flush()
 
-            if job.triggers:
-                meta["triggers"] = [
-                    {
-                        "type": t.trigger_type,
-                        "cron": t.cron,
-                        "description": t.description,
-                    }
-                    for t in job.triggers
-                ]
+    existing_link = await session.execute(
+        select(KnowledgeNodeEvidence.evidence_id).where(
+            KnowledgeNodeEvidence.node_id == node_id,
+            KnowledgeNodeEvidence.evidence_id == evidence.id,
+        )
+    )
+    if not existing_link.scalar_one_or_none():
+        session.add(KnowledgeNodeEvidence(node_id=node_id, evidence_id=evidence.id))
+        stats["evidence_created"] += 1
 
-            stmt = pg_insert(KnowledgeNode).values(
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.JOB,
-                natural_key=natural_key,
-                name=job.name,
-                meta=meta,
-            )
-            stmt = stmt.on_conflict_do_update(
-                constraint="uq_knowledge_node_natural",
-                set_={
-                    "name": stmt.excluded.name,
-                    "meta": stmt.excluded.meta,
-                },
-            ).returning(KnowledgeNode.id)
+    return node_id
 
-            result = await session.execute(stmt)
-            node_id = result.scalar_one()
-            job_node_ids[job.name] = node_id
-            stats["job_nodes_created"] += 1
 
-            # Create evidence linking to source file
-            evidence = KnowledgeEvidence(
-                file_path=job.file_path,
-                start_line=1,
-                end_line=1,
-            )
-            session.add(evidence)
-            await session.flush()
+async def _create_job_dependency_edges(
+    session: AsyncSession,
+    collection_id: UUID,
+    extractions: list[JobsExtraction],
+    job_node_ids: dict[str, UUID],
+    stats: dict,
+) -> None:
+    """Create JOB_DEPENDS_ON edges for all job dependencies."""
+    from contextmine_core.models import KnowledgeEdge, KnowledgeEdgeKind
+    from sqlalchemy import select
 
-            # Check if evidence link already exists
-            existing_link = await session.execute(
-                select(KnowledgeNodeEvidence.evidence_id).where(
-                    KnowledgeNodeEvidence.node_id == node_id,
-                    KnowledgeNodeEvidence.evidence_id == evidence.id,
-                )
-            )
-            if not existing_link.scalar_one_or_none():
-                session.add(
-                    KnowledgeNodeEvidence(
-                        node_id=node_id,
-                        evidence_id=evidence.id,
-                    )
-                )
-                stats["evidence_created"] += 1
-
-    # Create dependency edges
     for extraction in extractions:
         for job in extraction.jobs:
             source_id = job_node_ids.get(job.name)
             if not source_id:
                 continue
-
             for dep_name in job.dependencies:
                 target_id = job_node_ids.get(dep_name)
                 if not target_id:
                     continue
-
-                # Check if edge already exists
                 edge_exists = await session.execute(
                     select(KnowledgeEdge.id).where(
                         KnowledgeEdge.collection_id == collection_id,
@@ -516,6 +486,22 @@ async def build_jobs_graph(
                     )
                     stats["edges_created"] += 1
 
+
+async def build_jobs_graph(
+    session: AsyncSession,
+    collection_id: UUID,
+    extractions: list[JobsExtraction],
+) -> dict:
+    """Build knowledge graph nodes and edges from extracted jobs."""
+    stats = {"job_nodes_created": 0, "edges_created": 0, "evidence_created": 0}
+    job_node_ids: dict[str, UUID] = {}
+
+    for extraction in extractions:
+        for job in extraction.jobs:
+            node_id = await _upsert_job_node(session, collection_id, job, stats)
+            job_node_ids[job.name] = node_id
+
+    await _create_job_dependency_edges(session, collection_id, extractions, job_node_ids, stats)
     return stats
 
 
@@ -572,26 +558,38 @@ def extract_jobs(file_path: str, content: str) -> JobsExtraction:
     return result
 
 
+def _parse_github_schedule_triggers(config: list) -> list[JobTriggerDef]:
+    """Parse GitHub Actions schedule trigger configuration."""
+    triggers: list[JobTriggerDef] = []
+    for sched in config:
+        if isinstance(sched, dict) and "cron" in sched:
+            triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
+    return triggers
+
+
+def _parse_github_dict_triggers(on_config: dict) -> list[JobTriggerDef]:
+    """Parse GitHub Actions dict-format trigger configuration."""
+    triggers: list[JobTriggerDef] = []
+    for trigger_type, config in on_config.items():
+        if trigger_type == "schedule" and isinstance(config, list):
+            triggers.extend(_parse_github_schedule_triggers(config))
+            continue
+        trigger = JobTriggerDef(trigger_type=trigger_type)
+        if isinstance(config, dict) and "cron" in config:
+            trigger.cron = config["cron"]
+        triggers.append(trigger)
+    return triggers
+
+
 def _parse_github_triggers(on_config: Any) -> list[JobTriggerDef]:
     """Parse GitHub Actions trigger configuration into trigger definitions."""
-    triggers: list[JobTriggerDef] = []
     if isinstance(on_config, str):
-        triggers.append(JobTriggerDef(trigger_type=on_config))
-    elif isinstance(on_config, list):
-        for trigger in on_config:
-            triggers.append(JobTriggerDef(trigger_type=trigger))
-    elif isinstance(on_config, dict):
-        for trigger_type, config in on_config.items():
-            if trigger_type == "schedule" and isinstance(config, list):
-                for sched in config:
-                    if isinstance(sched, dict) and "cron" in sched:
-                        triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
-                continue
-            trigger = JobTriggerDef(trigger_type=trigger_type)
-            if isinstance(config, dict) and "cron" in config:
-                trigger.cron = config["cron"]
-            triggers.append(trigger)
-    return triggers
+        return [JobTriggerDef(trigger_type=on_config)]
+    if isinstance(on_config, list):
+        return [JobTriggerDef(trigger_type=trigger) for trigger in on_config]
+    if isinstance(on_config, dict):
+        return _parse_github_dict_triggers(on_config)
+    return []
 
 
 def _extract_github_workflow_sync(file_path: str, content: str, result: JobsExtraction) -> None:
@@ -671,6 +669,22 @@ def _extract_k8s_cronjob_sync(file_path: str, data: dict[str, Any], result: Jobs
     result.jobs.append(job)
 
 
+def _extract_prefect_schedules(deployment: dict[str, Any], job: JobDef) -> None:
+    """Extract schedule triggers from a Prefect deployment definition."""
+    schedules = deployment.get("schedules", [])
+    for sched in schedules:
+        if isinstance(sched, dict) and "cron" in sched:
+            job.schedule = sched["cron"]
+            job.triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
+
+    if job.schedule or "schedule" not in deployment:
+        return
+    sched = deployment["schedule"]
+    if isinstance(sched, dict) and "cron" in sched:
+        job.schedule = sched["cron"]
+        job.triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
+
+
 def _extract_prefect_deployment_sync(
     file_path: str, data: dict[str, Any], result: JobsExtraction
 ) -> None:
@@ -684,6 +698,7 @@ def _extract_prefect_deployment_sync(
         if not isinstance(deployment, dict):
             continue
 
+        work_pool = deployment.get("work_pool")
         job = JobDef(
             name=deployment.get("name", "unnamed"),
             framework=JobKind.PREFECT_DEPLOYMENT,
@@ -691,24 +706,9 @@ def _extract_prefect_deployment_sync(
             meta={
                 "flow_name": deployment.get("flow_name"),
                 "entrypoint": deployment.get("entrypoint"),
-                "work_pool": deployment.get("work_pool", {}).get("name")
-                if isinstance(deployment.get("work_pool"), dict)
-                else None,
+                "work_pool": work_pool.get("name") if isinstance(work_pool, dict) else None,
             },
         )
 
-        # Extract schedule
-        schedules = deployment.get("schedules", [])
-        for sched in schedules:
-            if isinstance(sched, dict) and "cron" in sched:
-                job.schedule = sched["cron"]
-                job.triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
-
-        # Legacy schedule format
-        if not job.schedule and "schedule" in deployment:
-            sched = deployment["schedule"]
-            if isinstance(sched, dict) and "cron" in sched:
-                job.schedule = sched["cron"]
-                job.triggers.append(JobTriggerDef(trigger_type="schedule", cron=sched["cron"]))
-
+        _extract_prefect_schedules(deployment, job)
         result.jobs.append(job)

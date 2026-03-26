@@ -11,6 +11,41 @@ from contextmine_core.metrics.models import MetricsGateError
 from contextmine_core.semantic_snapshot.models import Snapshot
 
 
+def _track_fan_metrics(
+    src_file: str | None,
+    dst_file: str | None,
+    relation: Any,
+    relevant_files: set[str],
+    outgoing_calls: defaultdict[str, int],
+    fan_in: defaultdict[str, set[str]],
+    fan_out: defaultdict[str, set[str]],
+) -> None:
+    """Track fan-in, fan-out, and outgoing call counters."""
+    if src_file and src_file in relevant_files:
+        outgoing_calls[src_file] += 1
+        if relation.dst_def_id:
+            fan_out[src_file].add(str(relation.dst_def_id))
+    if dst_file and dst_file in relevant_files and relation.src_def_id:
+        fan_in[dst_file].add(str(relation.src_def_id))
+
+
+def _track_cross_file_coupling(
+    src_file: str | None,
+    dst_file: str | None,
+    relevant_files: set[str],
+    coupling_in: defaultdict[str, int],
+    coupling_out: defaultdict[str, int],
+    inter_file_edges: set[tuple[str, str]],
+) -> None:
+    """Track coupling metrics for cross-file relations."""
+    if src_file and src_file in relevant_files:
+        coupling_out[src_file] += 1
+    if dst_file and dst_file in relevant_files:
+        coupling_in[dst_file] += 1
+    if src_file and dst_file and src_file in relevant_files and dst_file in relevant_files:
+        inter_file_edges.add((src_file, dst_file))
+
+
 def _accumulate_relation(
     src_file: str | None,
     dst_file: str | None,
@@ -25,30 +60,18 @@ def _accumulate_relation(
     inter_file_edges: set[tuple[str, str]],
 ) -> None:
     """Accumulate coupling counters for a single relation."""
-    if src_file and src_file in relevant_files:
-        outgoing_calls[src_file] += 1
-        if relation.dst_def_id:
-            fan_out[src_file].add(str(relation.dst_def_id))
-    if dst_file and dst_file in relevant_files and relation.src_def_id:
-        fan_in[dst_file].add(str(relation.src_def_id))
+    _track_fan_metrics(
+        src_file, dst_file, relation, relevant_files, outgoing_calls, fan_in, fan_out
+    )
 
     if src_file == dst_file:
         if src_file and src_file in relevant_files:
             internal_calls[src_file] += 1
         return
 
-    if src_file and src_file in relevant_files:
-        coupling_out[src_file] += 1
-    if dst_file and dst_file in relevant_files:
-        coupling_in[dst_file] += 1
-    if (
-        src_file
-        and dst_file
-        and src_file in relevant_files
-        and dst_file in relevant_files
-        and src_file != dst_file
-    ):
-        inter_file_edges.add((src_file, dst_file))
+    _track_cross_file_coupling(
+        src_file, dst_file, relevant_files, coupling_in, coupling_out, inter_file_edges
+    )
 
 
 def _snapshot_project_root(snapshot: Snapshot, fallback: Path) -> Path:
@@ -58,15 +81,40 @@ def _snapshot_project_root(snapshot: Snapshot, fallback: Path) -> Path:
     return Path(raw)
 
 
-def _compute_scc(
+def _build_scc_adjacency(
     nodes: set[str],
     edges: set[tuple[str, str]],
-) -> list[set[str]]:
+) -> dict[str, list[str]]:
+    """Build adjacency list for SCC computation."""
     adjacency: dict[str, list[str]] = {node: [] for node in nodes}
     for src, dst in edges:
         adjacency.setdefault(src, [])
         adjacency.setdefault(dst, [])
         adjacency[src].append(dst)
+    return adjacency
+
+
+def _pop_scc_component(
+    root: str,
+    stack: list[str],
+    on_stack: set[str],
+) -> set[str]:
+    """Pop a strongly connected component from the Tarjan stack."""
+    component: set[str] = set()
+    while stack:
+        candidate = stack.pop()
+        on_stack.discard(candidate)
+        component.add(candidate)
+        if candidate == root:
+            break
+    return component
+
+
+def _compute_scc(
+    nodes: set[str],
+    edges: set[tuple[str, str]],
+) -> list[set[str]]:
+    adjacency = _build_scc_adjacency(nodes, edges)
 
     index = 0
     stack: list[str] = []
@@ -91,20 +139,81 @@ def _compute_scc(
                 lowlink[node] = min(lowlink[node], indices[neighbor])
 
         if lowlink[node] == indices[node]:
-            component: set[str] = set()
-            while stack:
-                candidate = stack.pop()
-                on_stack.discard(candidate)
-                component.add(candidate)
-                if candidate == node:
-                    break
-            components.append(component)
+            components.append(_pop_scc_component(node, stack, on_stack))
 
     for node in nodes:
         if node not in indices:
             strongconnect(node)
 
     return components
+
+
+def _build_symbol_to_file_map(
+    snapshots: list[Snapshot],
+    repo_root: Path,
+    project_root: Path,
+) -> dict[str, str]:
+    """Map symbol def_ids to their repo-relative file paths."""
+    symbol_to_file: dict[str, str] = {}
+    for snapshot in snapshots:
+        snap_project_root = _snapshot_project_root(snapshot, project_root)
+        for symbol in snapshot.symbols:
+            if symbol.file_path == "<external>":
+                continue
+            file_path = to_repo_relative_path(
+                symbol.file_path,
+                repo_root=repo_root,
+                project_root=snap_project_root,
+            )
+            if file_path:
+                symbol_to_file[symbol.def_id] = file_path
+    return symbol_to_file
+
+
+def _build_component_size_map(
+    relevant_files: set[str],
+    inter_file_edges: set[tuple[str, str]],
+) -> tuple[dict[str, int], list[set[str]]]:
+    """Compute SCC components and return file-to-cycle-size mapping plus components."""
+    components = _compute_scc(set(relevant_files), inter_file_edges)
+    component_size_by_file: dict[str, int] = {}
+    for component in components:
+        if len(component) <= 1:
+            continue
+        for file_path in component:
+            component_size_by_file[file_path] = len(component)
+    return component_size_by_file, components
+
+
+def _build_file_coupling_entry(
+    file_path: str,
+    coupling_in: defaultdict[str, int],
+    coupling_out: defaultdict[str, int],
+    internal_calls: defaultdict[str, int],
+    outgoing_calls: defaultdict[str, int],
+    fan_in: defaultdict[str, set[str]],
+    fan_out: defaultdict[str, set[str]],
+    component_size_by_file: dict[str, int],
+) -> dict[str, int | float | bool]:
+    """Build a single file's coupling metrics entry."""
+    incoming = int(coupling_in.get(file_path, 0))
+    outgoing = int(coupling_out.get(file_path, 0))
+    internal = int(internal_calls.get(file_path, 0))
+    call_total = int(outgoing_calls.get(file_path, 0))
+    cohesion = 1.0 if call_total == 0 else float(internal / call_total)
+    instability = float(outgoing / (incoming + outgoing)) if (incoming + outgoing) > 0 else 0.0
+    cycle_size = int(component_size_by_file.get(file_path, 0))
+    return {
+        "coupling_in": incoming,
+        "coupling_out": outgoing,
+        "coupling": float(incoming + outgoing),
+        "cohesion": cohesion,
+        "instability": instability,
+        "fan_in": int(len(fan_in.get(file_path, set()))),
+        "fan_out": int(len(fan_out.get(file_path, set()))),
+        "cycle_participation": bool(cycle_size > 1),
+        "cycle_size": cycle_size,
+    }
 
 
 def compute_file_coupling_from_snapshots(
@@ -122,22 +231,8 @@ def compute_file_coupling_from_snapshots(
     fan_out: defaultdict[str, set[str]] = defaultdict(set)
     inter_file_edges: set[tuple[str, str]] = set()
 
-    symbol_to_file: dict[str, str] = {}
     snapshots = [Snapshot.from_dict(snapshot_dict) for snapshot_dict in snapshot_dicts]
-
-    for snapshot in snapshots:
-        snap_project_root = _snapshot_project_root(snapshot, project_root)
-        for symbol in snapshot.symbols:
-            if symbol.file_path == "<external>":
-                continue
-            file_path = to_repo_relative_path(
-                symbol.file_path,
-                repo_root=repo_root,
-                project_root=snap_project_root,
-            )
-            if not file_path:
-                continue
-            symbol_to_file[symbol.def_id] = file_path
+    symbol_to_file = _build_symbol_to_file_map(snapshots, repo_root, project_root)
 
     total_relations = 0
     mapped_relations = 0
@@ -176,35 +271,23 @@ def compute_file_coupling_from_snapshots(
             },
         )
 
-    components = _compute_scc(set(relevant_files), inter_file_edges)
-    component_size_by_file: dict[str, int] = {}
-    for component in components:
-        if len(component) <= 1:
-            continue
-        component_size = len(component)
-        for file_path in component:
-            component_size_by_file[file_path] = component_size
+    component_size_by_file, components = _build_component_size_map(
+        relevant_files,
+        inter_file_edges,
+    )
 
     coupling_map: dict[str, dict[str, int | float | bool]] = {}
     for file_path in relevant_files:
-        incoming = int(coupling_in.get(file_path, 0))
-        outgoing = int(coupling_out.get(file_path, 0))
-        internal = int(internal_calls.get(file_path, 0))
-        call_total = int(outgoing_calls.get(file_path, 0))
-        cohesion = 1.0 if call_total == 0 else float(internal / call_total)
-        instability = float(outgoing / (incoming + outgoing)) if (incoming + outgoing) > 0 else 0.0
-        cycle_size = int(component_size_by_file.get(file_path, 0))
-        coupling_map[file_path] = {
-            "coupling_in": incoming,
-            "coupling_out": outgoing,
-            "coupling": float(incoming + outgoing),
-            "cohesion": cohesion,
-            "instability": instability,
-            "fan_in": int(len(fan_in.get(file_path, set()))),
-            "fan_out": int(len(fan_out.get(file_path, set()))),
-            "cycle_participation": bool(cycle_size > 1),
-            "cycle_size": cycle_size,
-        }
+        coupling_map[file_path] = _build_file_coupling_entry(
+            file_path,
+            coupling_in,
+            coupling_out,
+            internal_calls,
+            outgoing_calls,
+            fan_in,
+            fan_out,
+            component_size_by_file,
+        )
 
     provenance = {
         "relations_total": total_relations,

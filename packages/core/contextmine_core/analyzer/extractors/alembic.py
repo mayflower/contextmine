@@ -146,18 +146,18 @@ class AlembicVisitor(ast.NodeVisitor):
                 )
             )
 
+    def _extract_call_func_name(self, node: ast.Call) -> str | None:
+        """Extract the function name from a Call node."""
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr
+        return None
+
     def _parse_column(self, node: ast.Call) -> ColumnDef | None:
         """Parse a sa.Column() call."""
-        # Check if it's Column() or sa.Column()
-        func_name = None
-        if isinstance(node.func, ast.Name):
-            func_name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            func_name = node.func.attr
-
-        if func_name != "Column":
+        if self._extract_call_func_name(node) != "Column":
             return None
-
         if not node.args:
             return None
 
@@ -165,23 +165,17 @@ class AlembicVisitor(ast.NodeVisitor):
         if not col_name:
             return None
 
-        # Get type from second arg
-        type_name = "unknown"
-        if len(node.args) > 1:
-            type_name = self._get_type_name(node.args[1])
+        type_name = self._get_type_name(node.args[1]) if len(node.args) > 1 else "unknown"
 
-        # Check keywords for nullable, primary_key
         nullable = True
         primary_key = False
-        foreign_key = None
-
         for kw in node.keywords:
             if kw.arg == "nullable":
                 nullable = self._get_bool_value(kw.value, default=True)
             elif kw.arg == "primary_key":
                 primary_key = self._get_bool_value(kw.value, default=False)
 
-        # Check for ForeignKey in args
+        foreign_key = None
         for arg in node.args[1:]:
             if isinstance(arg, ast.Call):
                 fk = self._get_foreign_key(arg)

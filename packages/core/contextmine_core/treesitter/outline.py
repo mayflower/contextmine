@@ -168,94 +168,94 @@ def extract_outline(
     return _extract_with_traversal(file_path, content, language, include_children)
 
 
+def _collect_definition_captures(
+    captures_dict: dict[str, list],
+    definition_nodes: dict[int, dict[str, Any]],
+) -> None:
+    """Process a single match's capture groups into definition_nodes."""
+    for capture_name, nodes in captures_dict.items():
+        for node in nodes:
+            if capture_name.startswith("definition."):
+                node_id = id(node)
+                if node_id not in definition_nodes:
+                    definition_nodes[node_id] = {
+                        "node": node,
+                        "kind": CAPTURE_TO_KIND.get(capture_name, SymbolKind.UNKNOWN),
+                        "name": None,
+                    }
+            elif capture_name == "name":
+                _assign_name_to_parent_definition(node, definition_nodes)
+
+
+def _assign_name_to_parent_definition(
+    name_node: Any, definition_nodes: dict[int, dict[str, Any]]
+) -> None:
+    """Walk up from a name node to find and assign to its parent definition."""
+    parent = name_node.parent
+    while parent is not None:
+        parent_id = id(parent)
+        if parent_id in definition_nodes:
+            if name_node.text is not None:
+                definition_nodes[parent_id]["name"] = name_node.text.decode("utf-8")
+            break
+        parent = parent.parent
+
+
+def _build_symbol_from_definition(
+    data: dict[str, Any],
+    file_path: str,
+    lines: list[str],
+    language: TreeSitterLanguage,
+) -> Symbol | None:
+    """Build a Symbol from a definition node data dict."""
+    name = data["name"]
+    if not name:
+        return None
+    node = data["node"]
+    start_line = node.start_point[0] + 1
+    end_line = node.end_point[0] + 1
+    signature = lines[start_line - 1].strip() if start_line <= len(lines) else None
+    docstring = _extract_docstring(node, language)
+    return Symbol(
+        name=name,
+        kind=data["kind"],
+        file_path=file_path,
+        start_line=start_line,
+        end_line=end_line,
+        start_column=node.start_point[1],
+        end_column=node.end_point[1],
+        signature=signature,
+        docstring=docstring,
+    )
+
+
 def _extract_with_query(
     file_path: str,
     content: str,
     language: TreeSitterLanguage,
     query_str: str,
 ) -> list[Symbol]:
-    """Extract symbols using tree-sitter queries.
-
-    Args:
-        file_path: Path to source file
-        content: File content
-        language: The programming language
-        query_str: Tree-sitter query string
-
-    Returns:
-        List of extracted symbols
-    """
+    """Extract symbols using tree-sitter queries."""
     from tree_sitter import Query, QueryCursor
     from tree_sitter_language_pack import get_language
 
     manager = get_treesitter_manager()
     tree = manager.parse(file_path, content)
 
-    # Get the language object and create query
     ts_language = get_language(language.value)
     query = Query(ts_language, query_str)
     cursor = QueryCursor(query)
 
-    # Run the query using QueryCursor
     definition_nodes: dict[int, dict[str, Any]] = {}
-
     for _pattern_index, captures_dict in cursor.matches(tree.root_node):
-        # Process each capture group
-        for capture_name, nodes in captures_dict.items():
-            for node in nodes:
-                if capture_name.startswith("definition."):
-                    node_id = id(node)
-                    if node_id not in definition_nodes:
-                        definition_nodes[node_id] = {
-                            "node": node,
-                            "kind": CAPTURE_TO_KIND.get(capture_name, SymbolKind.UNKNOWN),
-                            "name": None,
-                        }
-                elif capture_name == "name":
-                    # Find the parent definition for this name
-                    parent = node.parent
-                    while parent is not None:
-                        parent_id = id(parent)
-                        if parent_id in definition_nodes:
-                            if node.text is not None:
-                                definition_nodes[parent_id]["name"] = node.text.decode("utf-8")
-                            break
-                        parent = parent.parent
+        _collect_definition_captures(captures_dict, definition_nodes)
 
-    # Build Symbol objects
-    symbols: list[Symbol] = []
     lines = content.split("\n")
-
+    symbols: list[Symbol] = []
     for data in definition_nodes.values():
-        node = data["node"]
-        name = data["name"]
-        if not name:
-            continue
-
-        # Extract signature (first line of the definition)
-        start_line = node.start_point[0] + 1  # Convert to 1-indexed
-        end_line = node.end_point[0] + 1
-
-        signature = None
-        if start_line <= len(lines):
-            signature = lines[start_line - 1].strip()
-
-        # Extract docstring (look for string after definition)
-        docstring = _extract_docstring(node, language)
-
-        symbol = Symbol(
-            name=name,
-            kind=data["kind"],
-            file_path=file_path,
-            start_line=start_line,
-            end_line=end_line,
-            start_column=node.start_point[1],
-            end_column=node.end_point[1],
-            signature=signature,
-            docstring=docstring,
-        )
-        symbols.append(symbol)
-
+        symbol = _build_symbol_from_definition(data, file_path, lines, language)
+        if symbol is not None:
+            symbols.append(symbol)
     return symbols
 
 
@@ -283,47 +283,43 @@ def _extract_with_traversal(
 
     symbols: list[Symbol] = []
     lines = content.split("\n")
-
-    # Node types that represent symbol definitions by language
     symbol_types = _get_symbol_node_types(language)
 
+    def _try_extract_symbol(node: Any, parent_name: str | None) -> str | None:
+        """Try to extract a symbol from node; return symbol name if found."""
+        name = _extract_name_from_node(node, language)
+        if not name:
+            return None
+        kind = symbol_types[node.type]
+        start_line = node.start_point[0] + 1
+        end_line = node.end_point[0] + 1
+        signature = lines[start_line - 1].strip() if start_line <= len(lines) else None
+        docstring = _extract_docstring(node, language)
+        symbols.append(
+            Symbol(
+                name=name,
+                kind=kind,
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                start_column=node.start_point[1],
+                end_column=node.end_point[1],
+                signature=signature,
+                parent=parent_name,
+                docstring=docstring,
+            )
+        )
+        return name
+
     def traverse(node: Any, parent_name: str | None = None) -> None:
-        node_type = node.type
-
-        if node_type in symbol_types:
-            name = _extract_name_from_node(node, language)
-            if name:
-                kind = symbol_types[node_type]
-                start_line = node.start_point[0] + 1
-                end_line = node.end_point[0] + 1
-
-                signature = None
-                if start_line <= len(lines):
-                    signature = lines[start_line - 1].strip()
-
-                docstring = _extract_docstring(node, language)
-
-                symbol = Symbol(
-                    name=name,
-                    kind=kind,
-                    file_path=file_path,
-                    start_line=start_line,
-                    end_line=end_line,
-                    start_column=node.start_point[1],
-                    end_column=node.end_point[1],
-                    signature=signature,
-                    parent=parent_name,
-                    docstring=docstring,
-                )
-                symbols.append(symbol)
-
-                # Traverse children with this symbol as parent
+        if node.type in symbol_types:
+            extracted_name = _try_extract_symbol(node, parent_name)
+            if extracted_name:
                 if include_children:
                     for child in node.children:
-                        traverse(child, name)
+                        traverse(child, extracted_name)
                 return
 
-        # Continue traversing
         for child in node.children:
             traverse(child, parent_name)
 
@@ -420,33 +416,40 @@ def _extract_name_from_node(node: Any, language: TreeSitterLanguage) -> str | No
     return None
 
 
-def _extract_docstring(node: Any, language: TreeSitterLanguage) -> str | None:
-    """Extract docstring from a definition node.
+def _strip_python_string_quotes(text: str) -> str:
+    """Strip Python string literal quotes and return the inner content."""
+    if text.startswith('"""') or text.startswith("'''"):
+        return text[3:-3].strip()
+    if text.startswith('"') or text.startswith("'"):
+        return text[1:-1].strip()
+    return text.strip()
 
-    Args:
-        node: Tree-sitter node for the definition
-        language: The programming language
 
-    Returns:
-        Docstring if found, None otherwise
-    """
-    if language == TreeSitterLanguage.PYTHON:
-        # Look for expression_statement with string as first child in body
-        for child in node.children:
-            if child.type == "block":
-                for block_child in child.children:
-                    if block_child.type == "expression_statement":
-                        for expr_child in block_child.children:
-                            if expr_child.type == "string":
-                                text = expr_child.text.decode("utf-8")
-                                # Strip quotes
-                                if text.startswith('"""') or text.startswith("'''"):
-                                    return text[3:-3].strip()
-                                elif text.startswith('"') or text.startswith("'"):
-                                    return text[1:-1].strip()
-                        break
+def _find_python_docstring_node(node: Any) -> Any | None:
+    """Find the first string node in a Python function/class body block."""
+    for child in node.children:
+        if child.type != "block":
+            continue
+        for block_child in child.children:
+            if block_child.type != "expression_statement":
                 break
+            for expr_child in block_child.children:
+                if expr_child.type == "string":
+                    return expr_child
+            break
+        break
     return None
+
+
+def _extract_docstring(node: Any, language: TreeSitterLanguage) -> str | None:
+    """Extract docstring from a definition node."""
+    if language != TreeSitterLanguage.PYTHON:
+        return None
+    string_node = _find_python_docstring_node(node)
+    if string_node is None:
+        return None
+    text = string_node.text.decode("utf-8")
+    return _strip_python_string_quotes(text)
 
 
 def _nest_symbols(symbols: list[Symbol]) -> None:

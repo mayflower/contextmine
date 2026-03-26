@@ -55,46 +55,14 @@ class GraphBuildStats:
         }
 
 
-async def build_knowledge_graph_for_source(
+async def _create_file_nodes(
     session: AsyncSession,
-    source_id: UUID,
-) -> GraphBuildStats:
-    """Build knowledge graph nodes and edges for a source.
-
-    Creates:
-    - FILE nodes for each document
-    - SYMBOL nodes for each symbol
-    - FILE_DEFINES_SYMBOL edges
-    - SYMBOL_CONTAINS_SYMBOL edges (from parent_name)
-    - Other edges from SymbolEdge table
-
-    Uses upsert to be idempotent on re-run.
-
-    Args:
-        session: Database session
-        source_id: Source UUID to build graph for
-
-    Returns:
-        GraphBuildStats with nodes_created, edges_created, etc.
-    """
-    stats = GraphBuildStats()
-
-    # Get source and collection info
-    result = await session.execute(select(Source.collection_id).where(Source.id == source_id))
-    collection_id = result.scalar_one_or_none()
-    if not collection_id:
-        logger.warning("Source %s not found", source_id)
-        return stats
-
-    # Get all documents for this source
-    result = await session.execute(select(Document).where(Document.source_id == source_id))
-    documents = result.scalars().all()
-
-    # Map document_id -> knowledge_node_id for later edge creation
+    collection_id: UUID,
+    documents: list,
+    stats: GraphBuildStats,
+) -> dict[UUID, UUID]:
+    """Create FILE nodes for all documents, returning doc_id -> node_id map."""
     doc_to_node: dict[UUID, UUID] = {}
-    symbol_to_node: dict[UUID, UUID] = {}
-
-    # Create FILE nodes for documents
     for doc in documents:
         file_path = doc.meta.get("file_path", doc.uri) if doc.meta else doc.uri
         node_id = await upsert_node(
@@ -103,121 +71,121 @@ async def build_knowledge_graph_for_source(
             kind=KnowledgeNodeKind.FILE,
             natural_key=doc.uri,
             name=doc.title or file_path,
-            meta={
-                "document_id": str(doc.id),
-                "file_path": file_path,
-                "uri": doc.uri,
-            },
+            meta={"document_id": str(doc.id), "file_path": file_path, "uri": doc.uri},
         )
         stats.file_nodes_created += 1
         doc_to_node[doc.id] = node_id
+    return doc_to_node
 
-    # Create SYMBOL nodes and edges
-    for doc in documents:
-        file_node_id = doc_to_node.get(doc.id)
-        if not file_node_id:
+
+async def _create_symbol_nodes_and_edges(
+    session: AsyncSession,
+    collection_id: UUID,
+    doc,
+    file_node_id: UUID,
+    symbol_to_node: dict[UUID, UUID],
+    stats: GraphBuildStats,
+) -> None:
+    """Create SYMBOL nodes, FILE_DEFINES_SYMBOL edges, and evidence for a document."""
+    result = await session.execute(select(Symbol).where(Symbol.document_id == doc.id))
+    symbols = result.scalars().all()
+
+    for symbol in symbols:
+        natural_key = f"{doc.uri}::{symbol.qualified_name}"
+        symbol_node_id = await upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.SYMBOL,
+            natural_key=natural_key,
+            name=symbol.name,
+            meta={
+                "symbol_id": str(symbol.id),
+                "document_id": str(doc.id),
+                "qualified_name": symbol.qualified_name,
+                "kind": symbol.kind.value,
+                "start_line": symbol.start_line,
+                "end_line": symbol.end_line,
+                "signature": symbol.signature,
+                "parent_name": symbol.parent_name,
+            },
+        )
+        stats.symbol_nodes_created += 1
+        symbol_to_node[symbol.id] = symbol_node_id
+
+        await upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=file_node_id,
+            target_node_id=symbol_node_id,
+            kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+            meta={},
+        )
+        stats.edges_created += 1
+
+        file_path = doc.meta.get("file_path", doc.uri) if doc.meta else doc.uri
+        ev_id = await create_node_evidence(
+            session,
+            node_id=symbol_node_id,
+            file_path=file_path,
+            start_line=symbol.start_line,
+            end_line=symbol.end_line,
+        )
+        stats.evidence_created += 1
+        stats.evidence_ids.append(ev_id)
+
+    # Create SYMBOL_CONTAINS_SYMBOL edges from parent_name
+    for symbol in symbols:
+        if not symbol.parent_name:
             continue
-
-        # Get symbols for this document
-        result = await session.execute(select(Symbol).where(Symbol.document_id == doc.id))
-        symbols = result.scalars().all()
-
-        for symbol in symbols:
-            # Create SYMBOL node
-            natural_key = f"{doc.uri}::{symbol.qualified_name}"
-            symbol_node_id = await upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.SYMBOL,
-                natural_key=natural_key,
-                name=symbol.name,
-                meta={
-                    "symbol_id": str(symbol.id),
-                    "document_id": str(doc.id),
-                    "qualified_name": symbol.qualified_name,
-                    "kind": symbol.kind.value,
-                    "start_line": symbol.start_line,
-                    "end_line": symbol.end_line,
-                    "signature": symbol.signature,
-                    "parent_name": symbol.parent_name,
-                },
-            )
-            stats.symbol_nodes_created += 1
-            symbol_to_node[symbol.id] = symbol_node_id
-
-            # Create FILE_DEFINES_SYMBOL edge
+        child_node_id = symbol_to_node.get(symbol.id)
+        if not child_node_id:
+            continue
+        parent_symbol = next(
+            (s for s in symbols if s.qualified_name == symbol.parent_name),
+            None,
+        )
+        if not parent_symbol:
+            continue
+        parent_node_id = symbol_to_node.get(parent_symbol.id)
+        if parent_node_id:
             await upsert_edge(
                 session,
                 collection_id=collection_id,
-                source_node_id=file_node_id,
-                target_node_id=symbol_node_id,
-                kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+                source_node_id=parent_node_id,
+                target_node_id=child_node_id,
+                kind=KnowledgeEdgeKind.SYMBOL_CONTAINS_SYMBOL,
                 meta={},
             )
             stats.edges_created += 1
 
-            # Create evidence linking symbol node to source location
-            file_path = doc.meta.get("file_path", doc.uri) if doc.meta else doc.uri
-            ev_id = await create_node_evidence(
-                session,
-                node_id=symbol_node_id,
-                file_path=file_path,
-                start_line=symbol.start_line,
-                end_line=symbol.end_line,
-            )
-            stats.evidence_created += 1
-            stats.evidence_ids.append(ev_id)
 
-        # Create SYMBOL_CONTAINS_SYMBOL edges from parent_name
-        for symbol in symbols:
-            if not symbol.parent_name:
-                continue
+_SYMBOL_EDGE_KIND_MAP = {
+    SymbolEdgeType.CALLS: KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+    SymbolEdgeType.REFERENCES: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+    SymbolEdgeType.IMPORTS: KnowledgeEdgeKind.FILE_IMPORTS_FILE,
+}
 
-            child_node_id = symbol_to_node.get(symbol.id)
-            if not child_node_id:
-                continue
 
-            # Find parent symbol by qualified name
-            parent_symbol = next(
-                (s for s in symbols if s.qualified_name == symbol.parent_name),
-                None,
-            )
-            if parent_symbol:
-                parent_node_id = symbol_to_node.get(parent_symbol.id)
-                if parent_node_id:
-                    await upsert_edge(
-                        session,
-                        collection_id=collection_id,
-                        source_node_id=parent_node_id,
-                        target_node_id=child_node_id,
-                        kind=KnowledgeEdgeKind.SYMBOL_CONTAINS_SYMBOL,
-                        meta={},
-                    )
-                    stats.edges_created += 1
-
-    # Create edges from SymbolEdge table
-    edge_kind_map = {
-        SymbolEdgeType.CALLS: KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-        SymbolEdgeType.REFERENCES: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
-        SymbolEdgeType.IMPORTS: KnowledgeEdgeKind.FILE_IMPORTS_FILE,
-    }
-
+async def _create_symbol_edge_graph_edges(
+    session: AsyncSession,
+    collection_id: UUID,
+    documents: list,
+    symbol_to_node: dict[UUID, UUID],
+    stats: GraphBuildStats,
+) -> None:
+    """Create knowledge graph edges from the SymbolEdge table."""
     for doc in documents:
         result = await session.execute(
             select(SymbolEdge)
             .join(Symbol, SymbolEdge.source_symbol_id == Symbol.id)
             .where(Symbol.document_id == doc.id)
         )
-        symbol_edges = result.scalars().all()
-
-        for sym_edge in symbol_edges:
+        for sym_edge in result.scalars().all():
             source_node_id = symbol_to_node.get(sym_edge.source_symbol_id)
             target_node_id = symbol_to_node.get(sym_edge.target_symbol_id)
-
             if not source_node_id or not target_node_id:
                 continue
-
-            kg_edge_kind = edge_kind_map.get(sym_edge.edge_type)
+            kg_edge_kind = _SYMBOL_EDGE_KIND_MAP.get(sym_edge.edge_type)
             if kg_edge_kind:
                 await upsert_edge(
                     session,
@@ -229,6 +197,49 @@ async def build_knowledge_graph_for_source(
                 )
                 stats.edges_created += 1
 
+
+async def build_knowledge_graph_for_source(
+    session: AsyncSession,
+    source_id: UUID,
+) -> GraphBuildStats:
+    """Build knowledge graph nodes and edges for a source.
+
+    Creates FILE/SYMBOL nodes and associated edges. Uses upsert for idempotency.
+    """
+    stats = GraphBuildStats()
+
+    result = await session.execute(select(Source.collection_id).where(Source.id == source_id))
+    collection_id = result.scalar_one_or_none()
+    if not collection_id:
+        logger.warning("Source %s not found", source_id)
+        return stats
+
+    result = await session.execute(select(Document).where(Document.source_id == source_id))
+    documents = result.scalars().all()
+
+    doc_to_node = await _create_file_nodes(session, collection_id, documents, stats)
+    symbol_to_node: dict[UUID, UUID] = {}
+
+    for doc in documents:
+        file_node_id = doc_to_node.get(doc.id)
+        if not file_node_id:
+            continue
+        await _create_symbol_nodes_and_edges(
+            session,
+            collection_id,
+            doc,
+            file_node_id,
+            symbol_to_node,
+            stats,
+        )
+
+    await _create_symbol_edge_graph_edges(
+        session,
+        collection_id,
+        documents,
+        symbol_to_node,
+        stats,
+    )
     return stats
 
 

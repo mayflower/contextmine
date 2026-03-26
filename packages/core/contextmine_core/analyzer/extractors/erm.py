@@ -43,14 +43,10 @@ class ERMExtractor:
     def __init__(self) -> None:
         self.schema = ERMSchema()
 
-    def add_alembic_extraction(self, extraction: AlembicExtraction) -> None:
-        """Add extracted Alembic data to the schema."""
-        self.schema.sources.append(extraction.file_path)
-
-        # Add tables
+    def _merge_tables(self, extraction: AlembicExtraction) -> None:
+        """Merge table definitions from an extraction into the schema."""
         for table in extraction.tables:
             if table.name in self.schema.tables:
-                # Merge columns
                 existing = self.schema.tables[table.name]
                 existing_cols = {c.name for c in existing.columns}
                 for col in table.columns:
@@ -59,35 +55,41 @@ class ERMExtractor:
             else:
                 self.schema.tables[table.name] = table
 
-        # Add columns from add_column
+    def _merge_added_columns(self, extraction: AlembicExtraction) -> None:
+        """Merge add_column operations into the schema."""
         for table_name, column in extraction.added_columns:
             if table_name in self.schema.tables:
                 existing = self.schema.tables[table_name]
                 if not any(c.name == column.name for c in existing.columns):
                     existing.columns.append(column)
             else:
-                # Table doesn't exist yet, create it
                 self.schema.tables[table_name] = TableDef(name=table_name, columns=[column])
 
-        # Add foreign keys
-        self.schema.foreign_keys.extend(extraction.foreign_keys)
-
-        # Also extract FKs from column definitions
+    def _extract_column_foreign_keys(self, extraction: AlembicExtraction) -> None:
+        """Extract foreign keys embedded in column definitions."""
         for table in extraction.tables:
             for col in table.columns:
-                if col.foreign_key:
-                    # Parse "table.column" format
-                    parts = col.foreign_key.split(".")
-                    if len(parts) == 2:
-                        self.schema.foreign_keys.append(
-                            ForeignKeyDef(
-                                name=None,
-                                source_table=table.name,
-                                source_columns=[col.name],
-                                target_table=parts[0],
-                                target_columns=[parts[1]],
-                            )
+                if not col.foreign_key:
+                    continue
+                parts = col.foreign_key.split(".")
+                if len(parts) == 2:
+                    self.schema.foreign_keys.append(
+                        ForeignKeyDef(
+                            name=None,
+                            source_table=table.name,
+                            source_columns=[col.name],
+                            target_table=parts[0],
+                            target_columns=[parts[1]],
                         )
+                    )
+
+    def add_alembic_extraction(self, extraction: AlembicExtraction) -> None:
+        """Add extracted Alembic data to the schema."""
+        self.schema.sources.append(extraction.file_path)
+        self._merge_tables(extraction)
+        self._merge_added_columns(extraction)
+        self.schema.foreign_keys.extend(extraction.foreign_keys)
+        self._extract_column_foreign_keys(extraction)
 
     def extract_from_directory(self, alembic_dir: Path) -> None:
         """Extract schema from all migrations in a directory.
