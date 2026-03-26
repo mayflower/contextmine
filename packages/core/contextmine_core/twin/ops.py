@@ -72,6 +72,11 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _safe_int(d: dict[str, Any], key: str) -> int:
+    """Extract an int from a dict, defaulting to 0."""
+    return int(d.get(key, 0) or 0)
+
+
 def _normalize_pattern_token(value: str) -> str:
     trimmed = value.strip().lower()
     if "." in trimmed:
@@ -345,21 +350,31 @@ def _accumulate_scip_stats(
     scip_failed_projects: list[dict[str, Any]],
 ) -> None:
     """Accumulate SCIP project stats from a source version."""
-    projects_by_language = latest_stats.get("scip_projects_by_language")
-    if isinstance(projects_by_language, dict):
-        for language, count in projects_by_language.items():
-            normalized_language = str(language).strip().lower()
-            if not normalized_language:
-                continue
-            try:
-                scip_projects_by_language[normalized_language] += int(count or 0)
-            except (TypeError, ValueError):
-                continue
+    _accumulate_scip_projects_by_language(latest_stats, scip_projects_by_language)
     failed_projects = latest_stats.get("scip_failed_projects")
-    if isinstance(failed_projects, list):
-        for failed in failed_projects[:100]:
-            if isinstance(failed, dict):
-                scip_failed_projects.append(dict(failed))
+    if not isinstance(failed_projects, list):
+        return
+    for failed in failed_projects[:100]:
+        if isinstance(failed, dict):
+            scip_failed_projects.append(dict(failed))
+
+
+def _accumulate_scip_projects_by_language(
+    latest_stats: dict[str, Any],
+    scip_projects_by_language: dict[str, int],
+) -> None:
+    """Accumulate per-language project counts."""
+    projects_by_language = latest_stats.get("scip_projects_by_language")
+    if not isinstance(projects_by_language, dict):
+        return
+    for language, count in projects_by_language.items():
+        normalized_language = str(language).strip().lower()
+        if not normalized_language:
+            continue
+        try:
+            scip_projects_by_language[normalized_language] += int(count or 0)
+        except (TypeError, ValueError):
+            continue
 
 
 def _accumulate_metrics_stats(
@@ -498,6 +513,7 @@ async def get_collection_twin_status(
     metrics_gate_failed = False
     metrics_unmapped_sample: set[str] = set()
 
+    _STATUS_IN_PROGRESS = {"queued", "materializing", "loading", "generating"}
     for source in sources:
         row_info = await _build_source_status_row(session, source, collection_id, now)
         source_rows.append(row_info["row"])
@@ -510,7 +526,7 @@ async def get_collection_twin_status(
                 materialized_at = finished_at
         elif status == "failed":
             failed_count += 1
-        elif status in {"queued", "materializing", "loading", "generating"}:
+        elif status in _STATUS_IN_PROGRESS:
             in_progress_count += 1
 
         latest = row_info.get("latest")
@@ -521,10 +537,10 @@ async def get_collection_twin_status(
         _accumulate_behavioral_stats(latest_stats, behavioral_status_values, deep_warnings)
         behavioral_materialized_at = _parse_behavioral_ts(latest_stats, behavioral_materialized_at)
         _accumulate_scip_stats(latest_stats, scip_projects_by_language, scip_failed_projects)
-        scip_projects_detected += int(latest_stats.get("scip_projects_detected", 0) or 0)
-        scip_projects_indexed += int(latest_stats.get("scip_projects_indexed", 0) or 0)
-        scip_projects_failed += int(latest_stats.get("scip_projects_failed", 0) or 0)
-        if bool(latest_stats.get("scip_degraded", False)):
+        scip_projects_detected += _safe_int(latest_stats, "scip_projects_detected")
+        scip_projects_indexed += _safe_int(latest_stats, "scip_projects_indexed")
+        scip_projects_failed += _safe_int(latest_stats, "scip_projects_failed")
+        if latest_stats.get("scip_degraded", False):
             scip_has_degraded = True
         metrics_requested_files, metrics_mapped_files, metrics_gate_failed = (
             _accumulate_metrics_stats(
@@ -738,6 +754,32 @@ async def trigger_collection_refresh(
     }
 
 
+def _accumulate_diff_events(
+    events: list[Any],
+    from_version: int,
+    to_version: int,
+) -> tuple[int, int, int, int, set[str]]:
+    """Aggregate delta counts and changed keys from diff events."""
+    nodes_added = 0
+    nodes_removed = 0
+    edges_added = 0
+    edges_removed = 0
+    changed_keys: set[str] = set()
+    for event in events:
+        payload = event.payload or {}
+        version = payload.get("scenario_version")
+        if isinstance(version, int) and (version < from_version or version > to_version):
+            continue
+        nodes_added += int(payload.get("nodes_upserted", 0) or 0)
+        edges_added += int(payload.get("edges_upserted", 0) or 0)
+        nodes_removed += int(payload.get("nodes_deactivated", 0) or 0)
+        edges_removed += int(payload.get("edges_deactivated", 0) or 0)
+        for key in payload.get("sample_node_keys", [])[:10]:
+            if isinstance(key, str):
+                changed_keys.add(key)
+    return nodes_added, nodes_removed, edges_added, edges_removed, changed_keys
+
+
 async def get_collection_twin_diff(
     session: AsyncSession,
     *,
@@ -775,23 +817,9 @@ async def get_collection_twin_diff(
         .scalars()
         .all()
     )
-    nodes_added = 0
-    nodes_removed = 0
-    edges_added = 0
-    edges_removed = 0
-    changed_keys: set[str] = set()
-    for event in events:
-        payload = event.payload or {}
-        version = payload.get("scenario_version")
-        if isinstance(version, int) and (version < from_version or version > to_version):
-            continue
-        nodes_added += int(payload.get("nodes_upserted", 0) or 0)
-        edges_added += int(payload.get("edges_upserted", 0) or 0)
-        nodes_removed += int(payload.get("nodes_deactivated", 0) or 0)
-        edges_removed += int(payload.get("edges_deactivated", 0) or 0)
-        for key in payload.get("sample_node_keys", [])[:10]:
-            if isinstance(key, str):
-                changed_keys.add(key)
+    nodes_added, nodes_removed, edges_added, edges_removed, changed_keys = _accumulate_diff_events(
+        events, from_version, to_version
+    )
 
     sample_nodes = (
         (
@@ -1189,6 +1217,22 @@ async def list_methods(
     )
 
 
+def _format_call_edge(edge: Any, node_by_id: dict) -> dict[str, Any]:
+    """Format a call edge as a dict for API response."""
+    src = node_by_id.get(edge.source_node_id)
+    dst = node_by_id.get(edge.target_node_id)
+    return {
+        "id": str(edge.id),
+        "caller_id": str(edge.source_node_id),
+        "callee_id": str(edge.target_node_id),
+        "caller": src.name if src else str(edge.source_node_id),
+        "callee": dst.name if dst else str(edge.target_node_id),
+        "caller_natural_key": src.natural_key if src else None,
+        "callee_natural_key": dst.natural_key if dst else None,
+        "meta": edge.meta or {},
+    }
+
+
 async def list_calls(
     session: AsyncSession,
     *,
@@ -1225,22 +1269,7 @@ async def list_calls(
             .scalars()
             .all()
         )
-        items = []
-        for edge in edges:
-            src = node_by_id.get(edge.source_node_id)
-            dst = node_by_id.get(edge.target_node_id)
-            items.append(
-                {
-                    "id": str(edge.id),
-                    "caller_id": str(edge.source_node_id),
-                    "callee_id": str(edge.target_node_id),
-                    "caller": src.name if src else str(edge.source_node_id),
-                    "callee": dst.name if dst else str(edge.target_node_id),
-                    "caller_natural_key": src.natural_key if src else None,
-                    "callee_natural_key": dst.natural_key if dst else None,
-                    "meta": edge.meta or {},
-                }
-            )
+        items = [_format_call_edge(edge, node_by_id) for edge in edges]
         return {
             "collection_id": str(collection_id),
             "scenario_id": str(scenario.id),
@@ -1262,6 +1291,47 @@ async def list_calls(
     )
 
 
+async def _bfs_cfg_edges(
+    session: AsyncSession,
+    *,
+    scenario_id: UUID,
+    root_id: UUID,
+    depth: int,
+) -> tuple[set[UUID], list[TwinEdge]]:
+    """BFS traversal collecting edges and visited node ids for CFG expansion."""
+    queue: deque[tuple[UUID, int]] = deque([(root_id, 0)])
+    seen: set[UUID] = {root_id}
+    adjacency: list[TwinEdge] = []
+    while queue:
+        node_id, hop = queue.popleft()
+        if hop >= max(depth, 1):
+            continue
+        edges = (
+            (
+                await session.execute(
+                    select(TwinEdge).where(
+                        TwinEdge.scenario_id == scenario_id,
+                        TwinEdge.is_active.is_(True),
+                        TwinEdge.kind.in_(["symbol_calls_symbol", "symbol_contains_symbol"]),
+                        or_(
+                            TwinEdge.source_node_id == node_id,
+                            TwinEdge.target_node_id == node_id,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for edge in edges:
+            adjacency.append(edge)
+            next_id = edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
+            if next_id not in seen:
+                seen.add(next_id)
+                queue.append((next_id, hop + 1))
+    return seen, adjacency
+
+
 async def get_cfg(
     session: AsyncSession,
     *,
@@ -1276,39 +1346,9 @@ async def get_cfg(
         if not root:
             raise ValueError("Node not found")
 
-        queue: deque[tuple[UUID, int]] = deque([(root.id, 0)])
-        seen: set[UUID] = {root.id}
-        adjacency: list[TwinEdge] = []
-        while queue:
-            node_id, hop = queue.popleft()
-            if hop >= max(depth, 1):
-                continue
-            edges = (
-                (
-                    await session.execute(
-                        select(TwinEdge).where(
-                            TwinEdge.scenario_id == scenario.id,
-                            TwinEdge.is_active.is_(True),
-                            TwinEdge.kind.in_(["symbol_calls_symbol", "symbol_contains_symbol"]),
-                            or_(
-                                TwinEdge.source_node_id == node_id,
-                                TwinEdge.target_node_id == node_id,
-                            ),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for edge in edges:
-                adjacency.append(edge)
-                next_id = (
-                    edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
-                )
-                if next_id in seen:
-                    continue
-                seen.add(next_id)
-                queue.append((next_id, hop + 1))
+        seen, adjacency = await _bfs_cfg_edges(
+            session, scenario_id=scenario.id, root_id=root.id, depth=depth
+        )
 
         nodes = (
             (
@@ -1360,6 +1400,53 @@ async def get_cfg(
     )
 
 
+_VARIABLE_FLOW_EDGE_KINDS = [
+    "symbol_references_symbol",
+    "symbol_calls_symbol",
+    "symbol_contains_symbol",
+]
+
+
+async def _bfs_variable_paths(
+    session: AsyncSession,
+    *,
+    scenario_id: UUID,
+    root_id: UUID,
+    max_hops: int,
+) -> list[list[UUID]]:
+    """BFS that discovers forward paths from root, up to max_hops."""
+    queue: deque[list[UUID]] = deque([[root_id]])
+    paths: list[list[UUID]] = []
+    while queue and len(paths) < 100:
+        path = queue.popleft()
+        current = path[-1]
+        if len(path) - 1 >= max(max_hops, 1):
+            paths.append(path)
+            continue
+        edges = (
+            (
+                await session.execute(
+                    select(TwinEdge).where(
+                        TwinEdge.scenario_id == scenario_id,
+                        TwinEdge.is_active.is_(True),
+                        TwinEdge.kind.in_(_VARIABLE_FLOW_EDGE_KINDS),
+                        TwinEdge.source_node_id == current,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not edges:
+            paths.append(path)
+            continue
+        for edge in edges[:6]:
+            if edge.target_node_id in path:
+                continue
+            queue.append([*path, edge.target_node_id])
+    return paths
+
+
 async def get_variable_flow(
     session: AsyncSession,
     *,
@@ -1375,40 +1462,9 @@ async def get_variable_flow(
         if not root:
             raise ValueError("Node not found")
 
-        edge_kinds = [
-            "symbol_references_symbol",
-            "symbol_calls_symbol",
-            "symbol_contains_symbol",
-        ]
-        queue: deque[list[UUID]] = deque([[root.id]])
-        paths: list[list[UUID]] = []
-        while queue and len(paths) < 100:
-            path = queue.popleft()
-            current = path[-1]
-            if len(path) - 1 >= max(max_hops, 1):
-                paths.append(path)
-                continue
-            edges = (
-                (
-                    await session.execute(
-                        select(TwinEdge).where(
-                            TwinEdge.scenario_id == scenario.id,
-                            TwinEdge.is_active.is_(True),
-                            TwinEdge.kind.in_(edge_kinds),
-                            TwinEdge.source_node_id == current,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if not edges:
-                paths.append(path)
-                continue
-            for edge in edges[:6]:
-                if edge.target_node_id in path:
-                    continue
-                queue.append([*path, edge.target_node_id])
+        paths = await _bfs_variable_paths(
+            session, scenario_id=scenario.id, root_id=root.id, max_hops=max_hops
+        )
 
         node_ids = {node_id for path in paths for node_id in path}
         nodes = (
@@ -1579,6 +1635,73 @@ async def find_taint_sinks(
     )
 
 
+def _render_taint_path(
+    path: list[UUID],
+    node_map: dict[UUID, Any],
+    source_id: UUID,
+) -> dict[str, Any]:
+    """Render a single taint flow path as a dict."""
+    rendered = [
+        {
+            "id": str(node_id),
+            "name": node_map[node_id].name if node_id in node_map else str(node_id),
+            "natural_key": node_map[node_id].natural_key if node_id in node_map else None,
+        }
+        for node_id in path
+    ]
+    return {
+        "source_id": str(source_id),
+        "sink_id": str(path[-1]),
+        "path": rendered,
+        "hops": len(path) - 1,
+        "confidence": "high" if len(path) <= 4 else "medium",
+    }
+
+
+def _is_sanitizer(
+    node_id: UUID,
+    node_map: dict[UUID, Any],
+    sanitizer_tokens: list[str],
+) -> bool:
+    """Check if a node matches sanitizer patterns."""
+    node = node_map.get(node_id)
+    if not node:
+        return False
+    lower_name = node.name.lower()
+    return any(token in lower_name for token in sanitizer_tokens)
+
+
+def _find_taint_flow_paths(
+    *,
+    source_ids: list[UUID],
+    sink_ids: set[UUID],
+    outgoing: dict[UUID, list[UUID]],
+    node_map: dict[UUID, Any],
+    sanitizer_tokens: list[str],
+    max_hops: int,
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """BFS-based taint flow discovery from sources to sinks."""
+    flows: list[dict[str, Any]] = []
+    for source_id in source_ids:
+        queue: deque[list[UUID]] = deque([[source_id]])
+        while queue and len(flows) < max_results:
+            path = queue.popleft()
+            current = path[-1]
+            if current in sink_ids and len(path) > 1:
+                flows.append(_render_taint_path(path, node_map, source_id))
+                continue
+            if len(path) - 1 >= max_hops:
+                continue
+            for target in outgoing.get(current, [])[:20]:
+                if target in path:
+                    continue
+                if _is_sanitizer(target, node_map, sanitizer_tokens):
+                    continue
+                queue.append([*path, target])
+    return flows
+
+
 async def find_taint_flows(
     session: AsyncSession,
     *,
@@ -1647,45 +1770,15 @@ async def find_taint_flows(
         node_map = {row.id: row for row in node_rows}
 
         sanitizer_tokens = [_normalize_pattern_token(x) for x in SANITIZER_PATTERNS.get(lang, [])]
-
-        flows: list[dict[str, Any]] = []
-        for source_id in source_ids:
-            queue: deque[list[UUID]] = deque([[source_id]])
-            while queue and len(flows) < max_results:
-                path = queue.popleft()
-                current = path[-1]
-                if current in sink_ids and len(path) > 1:
-                    rendered = []
-                    for node_id in path:
-                        node = node_map.get(node_id)
-                        rendered.append(
-                            {
-                                "id": str(node_id),
-                                "name": node.name if node else str(node_id),
-                                "natural_key": (node.natural_key if node else None),
-                            }
-                        )
-                    flows.append(
-                        {
-                            "source_id": str(source_id),
-                            "sink_id": str(current),
-                            "path": rendered,
-                            "hops": len(path) - 1,
-                            "confidence": ("high" if len(path) <= 4 else "medium"),
-                        }
-                    )
-                    continue
-                if len(path) - 1 >= max_hops:
-                    continue
-                for target in outgoing.get(current, [])[:20]:
-                    if target in path:
-                        continue
-                    target_node = node_map.get(target)
-                    if target_node and any(
-                        token in target_node.name.lower() for token in sanitizer_tokens
-                    ):
-                        continue
-                    queue.append([*path, target])
+        flows = _find_taint_flow_paths(
+            source_ids=source_ids,
+            sink_ids=sink_ids,
+            outgoing=outgoing,
+            node_map=node_map,
+            sanitizer_tokens=sanitizer_tokens,
+            max_hops=max_hops,
+            max_results=max_results,
+        )
 
         return {
             "collection_id": str(collection_id),
@@ -2535,6 +2628,25 @@ def _read_node_file_path(node: TwinNode) -> str | None:
     return None
 
 
+def _resolve_node_file(
+    node: Any,
+    repos_root: Path,
+) -> tuple[Path, Path] | None:
+    """Resolve a twin file node to (repo_root, absolute_file_path), or None."""
+    source_id = _read_node_source_id(node)
+    rel_path = _read_node_file_path(node)
+    if source_id is None or not rel_path:
+        return None
+    repo_root = repos_root / str(source_id)
+    if not repo_root.exists():
+        return None
+    candidate = Path(rel_path)
+    file_path = candidate if candidate.is_absolute() else repo_root / candidate
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    return repo_root, file_path
+
+
 async def _collect_lsp_symbols(
     session: AsyncSession,
     *,
@@ -2569,19 +2681,10 @@ async def _collect_lsp_symbols(
     errors: list[str] = []
 
     for node in nodes:
-        source_id = _read_node_source_id(node)
-        rel_path = _read_node_file_path(node)
-        if source_id is None or not rel_path:
+        resolved = _resolve_node_file(node, repos_root)
+        if resolved is None:
             continue
-
-        repo_root = repos_root / str(source_id)
-        if not repo_root.exists():
-            continue
-
-        candidate = Path(rel_path)
-        file_path = candidate if candidate.is_absolute() else repo_root / candidate
-        if not file_path.exists() or not file_path.is_file():
-            continue
+        repo_root, file_path = resolved
 
         try:
             client = await manager.get_client(file_path=file_path, project_root=repo_root)

@@ -132,6 +132,26 @@ def _node_kind_in_scope(kind: str, scope: str) -> bool:
     return True
 
 
+def _node_provenance_mode(node: dict) -> str:
+    """Extract the provenance mode string from a node dict."""
+    return str(((node.get("meta") or {}).get("provenance") or {}).get("mode") or "").lower()
+
+
+def _filter_by_provenance(
+    nodes: list[dict], edges: list[dict], mode: str
+) -> tuple[list[dict], list[dict]]:
+    """Filter nodes and edges to those matching the given provenance mode."""
+    allowed_ids = {str(node.get("id")) for node in nodes if _node_provenance_mode(node) == mode}
+    filtered_nodes = [node for node in nodes if str(node.get("id")) in allowed_ids]
+    filtered_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in allowed_ids
+        and str(edge.get("target_node_id")) in allowed_ids
+    ]
+    return filtered_nodes, filtered_edges
+
+
 def _filter_graph_payload(
     graph: dict,
     *,
@@ -160,19 +180,7 @@ def _filter_graph_payload(
     if provenance_mode:
         mode = provenance_mode.strip().lower()
         if mode in {"deterministic", "inferred"}:
-            allowed_ids = {
-                str(node.get("id"))
-                for node in nodes
-                if str(((node.get("meta") or {}).get("provenance") or {}).get("mode") or "").lower()
-                == mode
-            }
-            nodes = [node for node in nodes if str(node.get("id")) in allowed_ids]
-            edges = [
-                edge
-                for edge in edges
-                if str(edge.get("source_node_id")) in allowed_ids
-                and str(edge.get("target_node_id")) in allowed_ids
-            ]
+            nodes, edges = _filter_by_provenance(nodes, edges, mode)
 
     if include_test_links is False:
         edges = [
@@ -660,6 +668,16 @@ async def _lookup_document(session, file_path: str) -> Document | None:
     return result.scalar_one_or_none()
 
 
+def _format_symbol_children(children: list, lines: list[str]) -> None:
+    """Append child symbol lines to the outline."""
+    for child in children:
+        lines.append(
+            f"  - {child.kind.value} `{child.name}` (L{child.start_line}-{child.end_line})"
+        )
+        if child.signature:
+            lines.append(f"    `{child.signature}`")
+
+
 def _format_symbol_outline(
     file_path: str,
     db_symbols: list,
@@ -679,12 +697,7 @@ def _format_symbol_outline(
         if sym.signature:
             lines.append(f"```\n{sym.signature}\n```")
         if include_children and sym.qualified_name in children_map:
-            for child in children_map[sym.qualified_name]:
-                lines.append(
-                    f"  - {child.kind.value} `{child.name}` (L{child.start_line}-{child.end_line})"
-                )
-                if child.signature:
-                    lines.append(f"    `{child.signature}`")
+            _format_symbol_children(children_map[sym.qualified_name], lines)
         lines.append("")
 
     lines.append(f"\n*Found {len(top_level)} top-level symbols*")
@@ -890,6 +903,33 @@ async def code_references(
         return "\n".join(output_lines)
 
 
+def _parse_edge_types(edge_types: list[str] | None, EdgeType) -> list | str:  # noqa: N803
+    """Parse edge types, returning a list or an error string."""
+    if not edge_types:
+        return None  # type: ignore[return-value]
+    parsed = []
+    for et in edge_types:
+        try:
+            parsed.append(EdgeType(et.lower()))
+        except ValueError:
+            return f"# Error\n\nUnknown edge type: {et}\nValid: calls, called_by, imports, imported_by, inherits, inherited_by"
+    return parsed
+
+
+def _resolve_seeds(seeds: list[str], all_node_ids: set[str]) -> list[str]:
+    """Find valid seeds from graph node IDs, trying exact then partial match."""
+    valid_seeds = [s for s in seeds if s in all_node_ids]
+    if valid_seeds:
+        return valid_seeds
+    for seed in seeds:
+        symbol_name = seed.split("::")[-1] if "::" in seed else seed
+        for node_id in all_node_ids:
+            if symbol_name in node_id:
+                valid_seeds.append(node_id)
+                break
+    return valid_seeds
+
+
 @mcp.tool(name="expand")
 async def code_expand(
     seeds: Annotated[
@@ -934,27 +974,13 @@ async def code_expand(
             return f"# No Symbols Found\n\nNo symbols extracted from: {', '.join(file_paths)}"
 
         # Parse edge types
-        parsed_edge_types = None
-        if edge_types:
-            parsed_edge_types = []
-            for et in edge_types:
-                try:
-                    parsed_edge_types.append(EdgeType(et.lower()))
-                except ValueError:
-                    return f"# Error\n\nUnknown edge type: {et}\nValid: calls, called_by, imports, imported_by, inherits, inherited_by"
+        parsed_edge_types = _parse_edge_types(edge_types, EdgeType)
+        if isinstance(parsed_edge_types, str):
+            return parsed_edge_types  # error message
 
         # Find valid seeds
         all_node_ids = {n.id for n in graph.get_all_nodes()}
-        valid_seeds = [s for s in seeds if s in all_node_ids]
-
-        if not valid_seeds:
-            # Try partial match
-            for seed in seeds:
-                symbol_name = seed.split("::")[-1] if "::" in seed else seed
-                for node_id in all_node_ids:
-                    if symbol_name in node_id:
-                        valid_seeds.append(node_id)
-                        break
+        valid_seeds = _resolve_seeds(seeds, all_node_ids)
 
         if not valid_seeds:
             available = list(all_node_ids)[:10]
@@ -1132,6 +1158,95 @@ async def get_research_report(run_id: str) -> str:
 # =============================================================================
 
 
+def _rule_matches_query(rule, query_words: set[str]) -> bool:
+    """Check if a rule's name/meta matches any query word."""
+    meta = rule.meta or {}
+    searchable = " ".join(
+        [
+            rule.name.lower(),
+            meta.get("natural_language", "").lower(),
+            meta.get("container_name", "").lower(),
+        ]
+    ).replace("_", " ")
+    return any(word in searchable for word in query_words if len(word) > 2)
+
+
+async def _match_rules_by_query(
+    db, all_rules, query_words, code_path_lower, KnowledgeEvidence, KnowledgeNodeEvidence
+):
+    """Match business rules by name, content, or evidence file paths."""
+    matched = []
+    for rule in all_rules:
+        if _rule_matches_query(rule, query_words):
+            matched.append(rule)
+            continue
+        ev_stmt = (
+            select(KnowledgeEvidence)
+            .join(KnowledgeNodeEvidence, KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id)
+            .where(KnowledgeNodeEvidence.node_id == rule.id)
+        )
+        ev_result = await db.execute(ev_stmt)
+        for ev in ev_result.scalars().all():
+            if code_path_lower in ev.file_path.lower():
+                matched.append(rule)
+                break
+    return matched
+
+
+def _match_candidates_by_query(all_candidates, query_words: set[str]) -> list:
+    """Match rule candidates by name/meta query words."""
+    matched = []
+    for candidate in all_candidates:
+        meta = candidate.meta or {}
+        searchable = " ".join(
+            [
+                candidate.name.lower(),
+                meta.get("container_name", "").lower(),
+                meta.get("file_path", "").lower(),
+            ]
+        ).replace("_", " ")
+        if any(word in searchable for word in query_words if len(word) > 2):
+            matched.append(candidate)
+    return matched
+
+
+def _format_validation_results(
+    code_path: str, matched_rules: list, matched_candidates: list
+) -> str:
+    """Format matched rules and candidates into markdown."""
+    lines = [f"# Validation Rules for: {code_path}\n"]
+    if matched_rules:
+        lines.append(f"## Business Rules ({len(matched_rules)} found)\n")
+        for rule in matched_rules[:10]:
+            meta = rule.meta or {}
+            lines.append(f"### {rule.name}")
+            lines.append(
+                f"- **Category**: {meta.get('category', 'unknown')} | **Severity**: {meta.get('severity', 'unknown')}"
+            )
+            if meta.get("natural_language"):
+                lines.append(f"- **Rule**: {meta['natural_language']}")
+            if meta.get("predicate"):
+                lines.append(f"- **Condition**: `{meta['predicate'][:100]}`")
+            if meta.get("failure"):
+                lines.append(f"- **On Failure**: `{meta['failure'][:100]}`")
+            lines.append("")
+    if matched_candidates:
+        lines.append(f"## Validation Candidates ({len(matched_candidates)} unlabeled)\n")
+        lines.append(
+            "*These are detected validation patterns not yet labeled as business rules.*\n"
+        )
+        for candidate in matched_candidates[:5]:
+            meta = candidate.meta or {}
+            lines.append(f"### {meta.get('container_name', candidate.name)}")
+            lines.append(f"- **File**: `{meta.get('file_path', 'unknown')}`")
+            if meta.get("predicate"):
+                lines.append(f"- **Condition**: `{meta['predicate'][:150]}`")
+            if meta.get("failure"):
+                lines.append(f"- **Failure**: `{meta['failure'][:100]}`")
+            lines.append("")
+    return "\n".join(lines)
+
+
 @mcp.tool(name="research_validation")
 async def research_validation(
     code_path: Annotated[str, "File path or function name to find validation rules for"],
@@ -1187,93 +1302,70 @@ async def research_validation(
             result = await db.execute(stmt)
             all_candidates = result.scalars().all()
 
-            # Match rules by evidence file path or rule content
-            matched_rules = []
-            for rule in all_rules:
-                meta = rule.meta or {}
-                searchable = " ".join(
-                    [
-                        rule.name.lower(),
-                        meta.get("natural_language", "").lower(),
-                        meta.get("container_name", "").lower(),
-                    ]
-                ).replace("_", " ")
-
-                # Check if matches by name or content
-                if any(word in searchable for word in query_words if len(word) > 2):
-                    matched_rules.append(rule)
-                    continue
-
-                # Check evidence file paths
-                ev_stmt = (
-                    select(KnowledgeEvidence)
-                    .join(
-                        KnowledgeNodeEvidence,
-                        KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id,
-                    )
-                    .where(KnowledgeNodeEvidence.node_id == rule.id)
-                )
-                ev_result = await db.execute(ev_stmt)
-                for ev in ev_result.scalars().all():
-                    if code_path_lower in ev.file_path.lower():
-                        matched_rules.append(rule)
-                        break
-
-            # Match candidates similarly
-            matched_candidates = []
-            for candidate in all_candidates:
-                meta = candidate.meta or {}
-                searchable = " ".join(
-                    [
-                        candidate.name.lower(),
-                        meta.get("container_name", "").lower(),
-                        meta.get("file_path", "").lower(),
-                    ]
-                ).replace("_", " ")
-
-                if any(word in searchable for word in query_words if len(word) > 2):
-                    matched_candidates.append(candidate)
+            matched_rules = await _match_rules_by_query(
+                db,
+                all_rules,
+                query_words,
+                code_path_lower,
+                KnowledgeEvidence,
+                KnowledgeNodeEvidence,
+            )
+            matched_candidates = _match_candidates_by_query(all_candidates, query_words)
 
             if not matched_rules and not matched_candidates:
                 return f"# No Validation Rules Found\n\nNo business rules or validation logic found for: `{code_path}`"
 
-            lines = [f"# Validation Rules for: {code_path}\n"]
-
-            if matched_rules:
-                lines.append(f"## Business Rules ({len(matched_rules)} found)\n")
-                for rule in matched_rules[:10]:
-                    meta = rule.meta or {}
-                    lines.append(f"### {rule.name}")
-                    lines.append(
-                        f"- **Category**: {meta.get('category', 'unknown')} | **Severity**: {meta.get('severity', 'unknown')}"
-                    )
-                    if meta.get("natural_language"):
-                        lines.append(f"- **Rule**: {meta['natural_language']}")
-                    if meta.get("predicate"):
-                        lines.append(f"- **Condition**: `{meta['predicate'][:100]}`")
-                    if meta.get("failure"):
-                        lines.append(f"- **On Failure**: `{meta['failure'][:100]}`")
-                    lines.append("")
-
-            if matched_candidates:
-                lines.append(f"## Validation Candidates ({len(matched_candidates)} unlabeled)\n")
-                lines.append(
-                    "*These are detected validation patterns not yet labeled as business rules.*\n"
-                )
-                for candidate in matched_candidates[:5]:
-                    meta = candidate.meta or {}
-                    lines.append(f"### {meta.get('container_name', candidate.name)}")
-                    lines.append(f"- **File**: `{meta.get('file_path', 'unknown')}`")
-                    if meta.get("predicate"):
-                        lines.append(f"- **Condition**: `{meta['predicate'][:150]}`")
-                    if meta.get("failure"):
-                        lines.append(f"- **Failure**: `{meta['failure'][:100]}`")
-                    lines.append("")
-
-            return "\n".join(lines)
+            return _format_validation_results(code_path, matched_rules, matched_candidates)
 
     except Exception as e:
         return f"# Error\n\nFailed to research validation: {e}"
+
+
+def _format_data_model_results(
+    entity: str,
+    entity_lower: str,
+    tables: list,
+    columns: list,
+    endpoints: list,
+    erd_artifact,
+) -> str:
+    """Format data model research results as markdown."""
+    lines = [f"# Data Model: {entity}\n"]
+    if tables:
+        lines.append(f"## Database Tables ({len(tables)} found)\n")
+        for table in tables[:10]:
+            meta = table.meta or {}
+            pk = f" (PK: `{meta.get('primary_key')}`)" if meta.get("primary_key") else ""
+            lines.append(f"### {table.name}{pk}")
+            lines.append(f"- **Columns**: {meta.get('column_count', 'unknown')}")
+            for col in (meta.get("columns") or [])[:8]:
+                nullable = "" if col.get("nullable", True) else " NOT NULL"
+                lines.append(f"  - `{col['name']}`: {col.get('type', '?')}{nullable}")
+            lines.append("")
+    if columns:
+        cols_by_table: dict[str, list] = {}
+        for col in columns:
+            table_name = col.natural_key.split(":")[1] if ":" in col.natural_key else "unknown"
+            cols_by_table.setdefault(table_name, []).append(col)
+        lines.append(f"## Related Columns ({len(columns)} found)\n")
+        for table_name, cols in cols_by_table.items():
+            lines.append(f"**{table_name}**:")
+            for col in cols[:5]:
+                meta = col.meta or {}
+                lines.append(f"- `{col.name}`: {meta.get('type', '?')}")
+            lines.append("")
+    if endpoints:
+        lines.append(f"## Related API Endpoints ({len(endpoints)} found)\n")
+        for ep in endpoints[:8]:
+            meta = ep.meta or {}
+            lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
+        lines.append("")
+    if erd_artifact and entity_lower in erd_artifact.content.lower():
+        lines.append("## Entity Relationship Diagram\n")
+        lines.append("```mermaid")
+        lines.append(erd_artifact.content)
+        lines.append("```\n")
+    return "\n".join(lines)
 
 
 @mcp.tool(name="research_data_model")
@@ -1367,53 +1459,9 @@ async def research_data_model(
             if not tables and not columns and not endpoints:
                 return f"# No Data Model Found\n\nNo tables, columns, or APIs found for: `{entity}`"
 
-            lines = [f"# Data Model: {entity}\n"]
-
-            if tables:
-                lines.append(f"## Database Tables ({len(tables)} found)\n")
-                for table in tables[:10]:
-                    meta = table.meta or {}
-                    pk = f" (PK: `{meta.get('primary_key')}`)" if meta.get("primary_key") else ""
-                    lines.append(f"### {table.name}{pk}")
-                    lines.append(f"- **Columns**: {meta.get('column_count', 'unknown')}")
-                    if meta.get("columns"):
-                        for col in meta["columns"][:8]:
-                            nullable = "" if col.get("nullable", True) else " NOT NULL"
-                            lines.append(f"  - `{col['name']}`: {col.get('type', '?')}{nullable}")
-                    lines.append("")
-
-            if columns:
-                # Group columns by table
-                cols_by_table: dict[str, list] = {}
-                for col in columns:
-                    table_name = (
-                        col.natural_key.split(":")[1] if ":" in col.natural_key else "unknown"
-                    )
-                    cols_by_table.setdefault(table_name, []).append(col)
-
-                lines.append(f"## Related Columns ({len(columns)} found)\n")
-                for table_name, cols in cols_by_table.items():
-                    lines.append(f"**{table_name}**:")
-                    for col in cols[:5]:
-                        meta = col.meta or {}
-                        lines.append(f"- `{col.name}`: {meta.get('type', '?')}")
-                    lines.append("")
-
-            if endpoints:
-                lines.append(f"## Related API Endpoints ({len(endpoints)} found)\n")
-                for ep in endpoints[:8]:
-                    meta = ep.meta or {}
-                    lines.append(f"- `{meta.get('method', 'GET')} {meta.get('path', ep.name)}`")
-                lines.append("")
-
-            if erd_artifact and entity_lower in erd_artifact.content.lower():
-                lines.append("## Entity Relationship Diagram\n")
-                lines.append("```mermaid")
-                # Extract relevant portion of ERD
-                lines.append(erd_artifact.content)
-                lines.append("```\n")
-
-            return "\n".join(lines)
+            return _format_data_model_results(
+                entity, entity_lower, tables, columns, endpoints, erd_artifact
+            )
 
     except Exception as e:
         return f"# Error\n\nFailed to research data model: {e}"
@@ -2516,6 +2564,106 @@ async def mcp_get_arc42(
         return f"# Error\n\nFailed to get arc42: {e}"
 
 
+async def _resolve_scenario_for_arch(
+    db,
+    *,
+    collection_id: uuid.UUID,
+    scenario_id: str | None,
+    user_id: uuid.UUID | None,
+) -> tuple:
+    """Resolve scenario for arch tools; returns (scenario, error_str | None)."""
+    from contextmine_core.models import TwinScenario
+    from contextmine_core.twin import get_or_create_as_is_scenario
+
+    if scenario_id:
+        scenario = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == uuid.UUID(scenario_id),
+                    TwinScenario.collection_id == collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if scenario is None:
+            return None, _ERR_SCENARIO_NOT_FOUND
+        return scenario, None
+
+    scenario = (
+        await db.execute(
+            select(TwinScenario)
+            .where(
+                TwinScenario.collection_id == collection_id,
+                TwinScenario.is_as_is.is_(True),
+            )
+            .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if scenario is None:
+        scenario = await get_or_create_as_is_scenario(db, collection_id, user_id=user_id)
+    return scenario, None
+
+
+def _try_get_llm_provider(settings):
+    """Attempt to initialize LLM provider for arch doc enrichment."""
+    if not (settings.arch_docs_llm_enrich and settings.default_llm_provider):
+        return None
+    try:
+        from contextmine_core.research.llm import get_llm_provider
+
+        return get_llm_provider(settings.default_llm_provider)
+    except Exception:
+        return None
+
+
+async def _resolve_drift_baseline(
+    db,
+    *,
+    collection_id: uuid.UUID,
+    scenario,
+    baseline_scenario_id: str | None,
+) -> tuple:
+    """Resolve baseline scenario for drift. Returns (baseline | None, error_str | None)."""
+    from contextmine_core.models import TwinScenario
+
+    if baseline_scenario_id:
+        baseline = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == uuid.UUID(baseline_scenario_id),
+                    TwinScenario.collection_id == collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if baseline is None:
+            return None, "# Error\n\nBaseline scenario not found in collection."
+        return baseline, None
+
+    baseline = None
+    if scenario.base_scenario_id:
+        baseline = (
+            await db.execute(
+                select(TwinScenario).where(
+                    TwinScenario.id == scenario.base_scenario_id,
+                    TwinScenario.collection_id == collection_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if baseline is None:
+        baseline = (
+            await db.execute(
+                select(TwinScenario)
+                .where(
+                    TwinScenario.collection_id == collection_id,
+                    TwinScenario.id != scenario.id,
+                )
+                .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    return baseline, None
+
+
 @mcp.tool(name="arc42_drift_report")
 async def mcp_arc42_drift_report(
     collection_id: Annotated[str | None, "Optional collection UUID"] = None,
@@ -2527,8 +2675,6 @@ async def mcp_arc42_drift_report(
         from dataclasses import asdict
 
         from contextmine_core.architecture import build_architecture_facts, compute_arc42_drift
-        from contextmine_core.models import TwinScenario
-        from contextmine_core.twin import get_or_create_as_is_scenario
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
@@ -2537,85 +2683,32 @@ async def mcp_arc42_drift_report(
         user_id = get_current_user_id()
         async with get_db_session() as db:
             collection, error = await _resolve_collection_for_tool(
-                db,
-                collection_id=collection_id,
-                user_id=user_id,
+                db, collection_id=collection_id, user_id=user_id
             )
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
                 return _ERR_COLLECTION_NOT_FOUND
 
-            if scenario_id:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario).where(
-                            TwinScenario.id == uuid.UUID(scenario_id),
-                            TwinScenario.collection_id == collection.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if scenario is None:
-                    return _ERR_SCENARIO_NOT_FOUND
-            else:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario)
-                        .where(
-                            TwinScenario.collection_id == collection.id,
-                            TwinScenario.is_as_is.is_(True),
-                        )
-                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if scenario is None:
-                    scenario = await get_or_create_as_is_scenario(
-                        db, collection.id, user_id=user_id
-                    )
+            scenario, sc_err = await _resolve_scenario_for_arch(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario_id,
+                user_id=user_id,
+            )
+            if sc_err:
+                return sc_err
 
-            baseline = None
-            if baseline_scenario_id:
-                baseline = (
-                    await db.execute(
-                        select(TwinScenario).where(
-                            TwinScenario.id == uuid.UUID(baseline_scenario_id),
-                            TwinScenario.collection_id == collection.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if baseline is None:
-                    return "# Error\n\nBaseline scenario not found in collection."
-            elif scenario.base_scenario_id:
-                baseline = (
-                    await db.execute(
-                        select(TwinScenario).where(
-                            TwinScenario.id == scenario.base_scenario_id,
-                            TwinScenario.collection_id == collection.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-            if baseline is None:
-                baseline = (
-                    await db.execute(
-                        select(TwinScenario)
-                        .where(
-                            TwinScenario.collection_id == collection.id,
-                            TwinScenario.id != scenario.id,
-                        )
-                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
+            baseline, bl_err = await _resolve_drift_baseline(
+                db,
+                collection_id=collection.id,
+                scenario=scenario,
+                baseline_scenario_id=baseline_scenario_id,
+            )
+            if bl_err:
+                return bl_err
 
-            llm_provider = None
-            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
-                try:
-                    from contextmine_core.research.llm import get_llm_provider
-
-                    llm_provider = get_llm_provider(settings.default_llm_provider)
-                except Exception:
-                    llm_provider = None
+            llm_provider = _try_get_llm_provider(settings)
 
             current = await build_architecture_facts(
                 db,
@@ -2678,8 +2771,6 @@ async def mcp_list_ports_adapters(
         from dataclasses import asdict
 
         from contextmine_core.architecture import build_architecture_facts
-        from contextmine_core.models import TwinScenario
-        from contextmine_core.twin import get_or_create_as_is_scenario
 
         settings = get_settings()
         if not settings.arch_docs_enabled:
@@ -2692,51 +2783,23 @@ async def mcp_list_ports_adapters(
         user_id = get_current_user_id()
         async with get_db_session() as db:
             collection, error = await _resolve_collection_for_tool(
-                db,
-                collection_id=collection_id,
-                user_id=user_id,
+                db, collection_id=collection_id, user_id=user_id
             )
             if error:
                 return f"# Error\n\n{error}"
             if collection is None:
                 return _ERR_COLLECTION_NOT_FOUND
 
-            if scenario_id:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario).where(
-                            TwinScenario.id == uuid.UUID(scenario_id),
-                            TwinScenario.collection_id == collection.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if scenario is None:
-                    return _ERR_SCENARIO_NOT_FOUND
-            else:
-                scenario = (
-                    await db.execute(
-                        select(TwinScenario)
-                        .where(
-                            TwinScenario.collection_id == collection.id,
-                            TwinScenario.is_as_is.is_(True),
-                        )
-                        .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if scenario is None:
-                    scenario = await get_or_create_as_is_scenario(
-                        db, collection.id, user_id=user_id
-                    )
+            scenario, sc_err = await _resolve_scenario_for_arch(
+                db,
+                collection_id=collection.id,
+                scenario_id=scenario_id,
+                user_id=user_id,
+            )
+            if sc_err:
+                return sc_err
 
-            llm_provider = None
-            if settings.arch_docs_llm_enrich and settings.default_llm_provider:
-                try:
-                    from contextmine_core.research.llm import get_llm_provider
-
-                    llm_provider = get_llm_provider(settings.default_llm_provider)
-                except Exception:
-                    llm_provider = None
+            llm_provider = _try_get_llm_provider(settings)
 
             bundle = await build_architecture_facts(
                 db,

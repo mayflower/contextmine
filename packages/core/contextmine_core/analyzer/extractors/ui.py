@@ -287,27 +287,31 @@ def _looks_like_route_module(file_path: str) -> bool:
     return _PATH_ADMIN_ASSETS_SRC in normalized
 
 
+def _split_relative_path(normalized: str, lower: str) -> tuple[str, str] | None:
+    """Extract (base_prefix, relative) from a normalised file path, or None if not UI."""
+    if _PATH_ADMIN_ASSETS_SRC in lower:
+        idx = lower.index(_PATH_ADMIN_ASSETS_SRC)
+        return "/admin", normalized[idx + len(_PATH_ADMIN_ASSETS_SRC) :]
+    if _PATH_ASSETS_SRC in lower:
+        idx = lower.index(_PATH_ASSETS_SRC)
+        prefix = "/admin" if "/admin/" in lower[:idx] else ""
+        return prefix, normalized[idx + len(_PATH_ASSETS_SRC) :]
+    if _PATH_SRC in lower:
+        idx = lower.index(_PATH_SRC)
+        return "", normalized[idx + len(_PATH_SRC) :]
+    if "/ui/" in lower:
+        idx = lower.index("/ui/")
+        return "", normalized[idx + len("/ui/") :]
+    return None
+
+
 def _route_path_from_file(file_path: str) -> str | None:
     normalized = file_path.replace("\\", "/")
     lower = normalized.lower()
-    base_prefix = ""
-    relative = ""
-    if _PATH_ADMIN_ASSETS_SRC in lower:
-        split_idx = lower.index(_PATH_ADMIN_ASSETS_SRC)
-        relative = normalized[split_idx + len(_PATH_ADMIN_ASSETS_SRC) :]
-        base_prefix = "/admin"
-    elif _PATH_ASSETS_SRC in lower:
-        split_idx = lower.index(_PATH_ASSETS_SRC)
-        relative = normalized[split_idx + len(_PATH_ASSETS_SRC) :]
-        base_prefix = "/admin" if "/admin/" in lower[:split_idx] else ""
-    elif _PATH_SRC in lower:
-        split_idx = lower.index(_PATH_SRC)
-        relative = normalized[split_idx + len(_PATH_SRC) :]
-    elif "/ui/" in lower:
-        split_idx = lower.index("/ui/")
-        relative = normalized[split_idx + len("/ui/") :]
-    else:
+    split_result = _split_relative_path(normalized, lower)
+    if split_result is None:
         return None
+    base_prefix, relative = split_result
 
     relative_path = PurePosixPath(relative)
     segments = [segment for segment in relative_path.parts if segment and segment != "."]
@@ -395,11 +399,10 @@ def _is_template_like_file(file_path: str) -> bool:
     )
 
 
-def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
-    extraction = UIExtraction(file_path=file_path)
+def _scan_routes_from_patterns(file_path: str, content: str) -> list[UIRouteDef]:
+    """Scan content for explicit route definitions from regex patterns."""
     routes: list[UIRouteDef] = []
     route_keys: set[tuple[str, int, str | None]] = set()
-
     for pattern in UI_ROUTE_PATTERNS:
         for match in pattern.finditer(content):
             raw_path = match.groupdict().get("path") or ""
@@ -421,51 +424,48 @@ def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
             routes.append(
                 UIRouteDef(path=path, file_path=file_path, line=line, view_name_hint=view_hint)
             )
+    return routes
 
-    if not routes and _looks_like_route_module(file_path):
-        inferred_route = _route_path_from_file(file_path)
-        normalized_route = _normalize_ui_route_path(inferred_route or "")
-        if normalized_route:
-            routes.append(
-                UIRouteDef(
-                    path=normalized_route,
-                    file_path=file_path,
-                    line=1,
-                    view_name_hint=_view_name_from_file_path(file_path),
-                    inferred=True,
-                )
-            )
 
+def _infer_fallback_route(file_path: str) -> UIRouteDef | None:
+    """Create an inferred route from the file path if it looks like a route module."""
+    if not _looks_like_route_module(file_path):
+        return None
+    inferred_route = _route_path_from_file(file_path)
+    normalized_route = _normalize_ui_route_path(inferred_route or "")
+    if not normalized_route:
+        return None
+    return UIRouteDef(
+        path=normalized_route,
+        file_path=file_path,
+        line=1,
+        view_name_hint=_view_name_from_file_path(file_path),
+        inferred=True,
+    )
+
+
+def _scan_view_candidates(file_path: str, content: str) -> dict[str, UIViewDef]:
+    """Scan for template and render-call view candidates."""
     view_candidates: dict[str, UIViewDef] = {}
-    template_like = _is_template_like_file(file_path)
-
-    if template_like:
+    if _is_template_like_file(file_path):
         name = _view_name_from_file_path(file_path)
         if name:
-            view_candidates[name] = UIViewDef(
-                name=name,
-                file_path=file_path,
-                line=1,
-                inferred=True,
-            )
-
+            view_candidates[name] = UIViewDef(name=name, file_path=file_path, line=1, inferred=True)
     for render_match in UI_RENDER_CALL_PATTERN.finditer(content):
         view_name = _normalize_view_hint(render_match.groupdict().get("name") or "")
-        if not view_name:
-            continue
-        if view_name not in view_candidates:
+        if view_name and view_name not in view_candidates:
             view_candidates[view_name] = UIViewDef(
                 name=view_name,
                 file_path=file_path,
                 line=_line_number_for_offset(content, render_match.start()),
                 inferred=True,
             )
+    return view_candidates
 
+
+def _scan_component_tags(content: str) -> list[str]:
+    """Extract component names from HTML/JSX tags in content."""
     components: list[str] = []
-    symbol_hints: list[str] = []
-    endpoint_hints: list[str] = []
-    navigation_targets: list[str] = []
-
     for tag_match in UI_COMPONENT_TAG_PATTERN.finditer(content):
         tag = tag_match.groupdict().get("tag") or ""
         if ":" in tag:
@@ -474,16 +474,20 @@ def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
             components.append(_to_pascal_case(tag))
         elif is_pascal_case(tag):
             components.append(tag)
+    return components
 
-    for symbol_match in UI_SYMBOL_HINT_PATTERN.finditer(content):
-        symbol_hints.append(symbol_match.groupdict().get("symbol") or "")
 
+def _scan_navigation_and_endpoints(
+    content: str,
+) -> tuple[list[str], list[str]]:
+    """Extract endpoint hints and navigation targets from content."""
+    endpoint_hints: list[str] = []
+    navigation_targets: list[str] = []
     for pattern in UI_ENDPOINT_HINT_PATTERNS:
         for endpoint_match in pattern.finditer(content):
             hint = _normalize_endpoint_path(endpoint_match.groupdict().get("path") or "")
             if hint:
                 endpoint_hints.append(hint)
-
     for navigation_match in UI_NAVIGATION_HINT_PATTERN.finditer(content):
         nav = _normalize_endpoint_path(navigation_match.groupdict().get("path") or "")
         if not nav:
@@ -492,18 +496,33 @@ def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
             endpoint_hints.append(nav)
         else:
             navigation_targets.append(nav)
+    return endpoint_hints, navigation_targets
+
+
+def _extract_ui_heuristic(file_path: str, content: str) -> UIExtraction:
+    extraction = UIExtraction(file_path=file_path)
+
+    routes = _scan_routes_from_patterns(file_path, content)
+    if not routes:
+        fallback = _infer_fallback_route(file_path)
+        if fallback:
+            routes.append(fallback)
+
+    view_candidates = _scan_view_candidates(file_path, content)
+
+    components = _scan_component_tags(content)
+    symbol_hints = [
+        m.groupdict().get("symbol") or "" for m in UI_SYMBOL_HINT_PATTERN.finditer(content)
+    ]
+    endpoint_hints, navigation_targets = _scan_navigation_and_endpoints(content)
 
     if not view_candidates and routes:
         hinted_names = [route.view_name_hint for route in routes if route.view_name_hint]
-        if len(hinted_names) == 1:
+        if len(hinted_names) == 1 and hinted_names[0]:
             only_name = hinted_names[0]
-            if only_name:
-                view_candidates[only_name] = UIViewDef(
-                    name=only_name,
-                    file_path=file_path,
-                    line=1,
-                    inferred=True,
-                )
+            view_candidates[only_name] = UIViewDef(
+                name=only_name, file_path=file_path, line=1, inferred=True
+            )
 
     if view_candidates:
         deduped_components = _dedupe(components)[:40]
@@ -573,25 +592,31 @@ def extract_ui_from_files(files: list[tuple[str, str]]) -> list[UIExtraction]:
     return results
 
 
+_ROUTE_EXTRACTOR_DISPATCH: dict[str, Any] = {
+    "jsx_self_closing_element": "_route_from_jsx",
+    "jsx_opening_element": "_route_from_jsx",
+    "object": "_route_from_object",
+    "call_expression": "_route_from_router_call",
+}
+
+
+def _try_extract_route_from_node(file_path: str, content: str, node: Any) -> UIRouteDef | None:
+    """Dispatch to the right route extractor based on AST node type."""
+    if node.type in {"jsx_self_closing_element", "jsx_opening_element"}:
+        return _route_from_jsx(file_path, content, node)
+    if node.type == "object":
+        return _route_from_object(file_path, content, node)
+    if node.type == "call_expression":
+        return _route_from_router_call(file_path, content, node)
+    return None
+
+
 def _extract_routes(file_path: str, content: str, root: Any) -> list[UIRouteDef]:
     routes: list[UIRouteDef] = []
     for node in walk(root):
-        if node.type in {"jsx_self_closing_element", "jsx_opening_element"}:
-            route = _route_from_jsx(file_path, content, node)
-            if route is not None:
-                routes.append(route)
-            continue
-
-        if node.type == "object":
-            route = _route_from_object(file_path, content, node)
-            if route is not None:
-                routes.append(route)
-            continue
-
-        if node.type == "call_expression":
-            route = _route_from_router_call(file_path, content, node)
-            if route is not None:
-                routes.append(route)
+        route = _try_extract_route_from_node(file_path, content, node)
+        if route is not None:
+            routes.append(route)
 
     deduped: list[UIRouteDef] = []
     seen: set[tuple[str, int, str | None]] = set()
@@ -760,6 +785,33 @@ def _infer_route_for_view(file_path: str, view: UIViewDef) -> UIRouteDef | None:
     )
 
 
+def _process_call_expression_signals(
+    content: str,
+    node: Any,
+    symbol_hints: list[str],
+    endpoint_hints: list[str],
+    navigation_targets: list[str],
+    call_sites: list[dict[str, Any]],
+) -> None:
+    """Extract symbol, endpoint, and navigation signals from a call_expression node."""
+    full_name, base_name, method_name = _js_call_name(content, node)
+    callee = full_name or method_name or base_name
+    if callee:
+        call_sites.append(
+            {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+        )
+        if len(callee) >= 3:
+            symbol_hints.append(callee)
+        if method_name and method_name != callee and len(method_name) >= 3:
+            symbol_hints.append(method_name)
+    endpoint = _endpoint_from_call(content, node, base_name=base_name, method_name=method_name)
+    if endpoint:
+        endpoint_hints.append(endpoint)
+    navigation = _navigation_target(content, node, base_name=base_name, method_name=method_name)
+    if navigation:
+        navigation_targets.append(navigation)
+
+
 def _collect_view_signals(
     content: str,
     root: Any,
@@ -779,26 +831,9 @@ def _collect_view_signals(
 
         if node.type != "call_expression":
             continue
-        full_name, base_name, method_name = _js_call_name(content, node)
-        callee = full_name or method_name or base_name
-        if callee:
-            call_sites.append(
-                {
-                    "line": line_number(node),
-                    "column": int(node.start_point[1]),
-                    "callee": callee,
-                }
-            )
-            if len(callee) >= 3:
-                symbol_hints.append(callee)
-            if method_name and method_name != callee and len(method_name) >= 3:
-                symbol_hints.append(method_name)
-        endpoint = _endpoint_from_call(content, node, base_name=base_name, method_name=method_name)
-        if endpoint:
-            endpoint_hints.append(endpoint)
-        navigation = _navigation_target(content, node, base_name=base_name, method_name=method_name)
-        if navigation:
-            navigation_targets.append(navigation)
+        _process_call_expression_signals(
+            content, node, symbol_hints, endpoint_hints, navigation_targets, call_sites
+        )
     return (
         _dedupe(components),
         _dedupe(symbol_hints),
@@ -913,6 +948,20 @@ def _jsx_attribute_string(content: str, attr_node: Any) -> str | None:
     return None
 
 
+def _pascal_from_jsx_expression(content: str, expr_node: Any) -> str | None:
+    """Search a jsx_expression subtree for a PascalCase identifier or JSX tag."""
+    for nested in walk(expr_node):
+        if nested.type in {"jsx_self_closing_element", "jsx_opening_element"}:
+            tag = _jsx_tag_name(content, nested)
+            if is_pascal_case(tag):
+                return tag
+        if nested.type == "identifier":
+            token = node_text(content, nested).strip()
+            if is_pascal_case(token):
+                return token
+    return None
+
+
 def _jsx_attribute_view_hint(content: str, attr_node: Any) -> str | None:
     for child in attr_node.children:
         if child.type == "identifier":
@@ -920,15 +969,9 @@ def _jsx_attribute_view_hint(content: str, attr_node: Any) -> str | None:
             if is_pascal_case(name):
                 return name
         if child.type == "jsx_expression":
-            for nested in walk(child):
-                if nested.type in {"jsx_self_closing_element", "jsx_opening_element"}:
-                    tag = _jsx_tag_name(content, nested)
-                    if is_pascal_case(tag):
-                        return tag
-                if nested.type == "identifier":
-                    token = node_text(content, nested).strip()
-                    if is_pascal_case(token):
-                        return token
+            result = _pascal_from_jsx_expression(content, child)
+            if result:
+                return result
     return None
 
 
@@ -1235,83 +1278,66 @@ async def _persist_views(
             meta=view_meta,
         )
 
-        linked_endpoint_ids: set[UUID] = set()
-        for ref in resolved_symbol_refs:
-            contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
-            contract_meta = {
-                "source_view": view.name,
-                "symbol_node_id": str(ref.symbol_node_id),
-                "symbol_name": ref.symbol_name,
-                "resolution_engine": ref.engine,
-                **_provenance(
-                    mode="deterministic" if ref.engine.startswith("scip") else "inferred",
-                    extractor=f"{_EXTRACTOR_UI_V1}.{ref.engine}",
-                    confidence=ref.confidence,
-                ),
-            }
-            contract_id = await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
-                natural_key=contract_key,
-                name=f"{view.name} contract",
-                meta=contract_meta,
-            )
-            stats["interface_contracts"] += 1
-            token_candidates = symbol_token_variants(ref.symbol_name)
-            for token in token_candidates:
-                endpoint_ids = endpoint_symbol_index.get(token, set())
-                for endpoint_id in endpoint_ids:
-                    await _upsert_edge(
-                        session,
-                        collection_id=collection_id,
-                        source_node_id=contract_id,
-                        target_node_id=endpoint_id,
-                        kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
-                        meta=_provenance(
-                            mode="inferred",
-                            extractor=f"{_EXTRACTOR_UI_V1}.endpoint.{ref.engine}",
-                            confidence=max(0.66, ref.confidence - 0.08),
-                            evidence_ids=[evidence_id],
-                        ),
-                    )
-                    linked_endpoint_ids.add(endpoint_id)
-                    stats["contract_edges"] += 1
+        linked_endpoint_ids = await _link_symbol_contracts(
+            session,
+            collection_id=collection_id,
+            view=view,
+            resolved_symbol_refs=resolved_symbol_refs,
+            endpoint_symbol_index=endpoint_symbol_index,
+            evidence_id=evidence_id,
+            stats=stats,
+        )
 
-        for endpoint_hint in view.endpoint_hints:
-            method_hint, path_hint = _parse_endpoint_hint(endpoint_hint)
-            if not path_hint:
-                continue
-            endpoint_ids: set[UUID] = set(endpoint_path_index.get(path_hint, set()))
-            if method_hint:
-                endpoint_ids.update(endpoint_method_path_index.get((method_hint, path_hint), set()))
-            endpoint_ids.difference_update(linked_endpoint_ids)
-            if not endpoint_ids:
-                continue
+        await _link_endpoint_hint_contracts(
+            session,
+            collection_id=collection_id,
+            view=view,
+            endpoint_path_index=endpoint_path_index,
+            endpoint_method_path_index=endpoint_method_path_index,
+            linked_endpoint_ids=linked_endpoint_ids,
+            evidence_id=evidence_id,
+            stats=stats,
+        )
 
-            method_token = method_hint or "any"
-            contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
-            contract_meta = {
-                "source_view": view.name,
-                "endpoint_hint": endpoint_hint,
-                "endpoint_path": path_hint,
-                "endpoint_method": method_hint,
-                **_provenance(
-                    mode="inferred",
-                    extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
-                    confidence=0.83,
-                ),
-            }
-            contract_id = await _upsert_node(
-                session,
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
-                natural_key=contract_key,
-                name=f"{view.name} endpoint contract",
-                meta=contract_meta,
-            )
-            stats["interface_contracts"] += 1
-            for endpoint_id in endpoint_ids:
+    return view_ids
+
+
+async def _link_symbol_contracts(
+    session: AsyncSession,
+    *,
+    collection_id: UUID,
+    view: UIViewDef,
+    resolved_symbol_refs: list[Any],
+    endpoint_symbol_index: dict[str, set[UUID]],
+    evidence_id: Any,
+    stats: dict[str, int],
+) -> set[UUID]:
+    """Create INTERFACE_CONTRACT nodes from resolved symbol refs and link to endpoints."""
+    linked_endpoint_ids: set[UUID] = set()
+    for ref in resolved_symbol_refs:
+        contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
+        contract_meta = {
+            "source_view": view.name,
+            "symbol_node_id": str(ref.symbol_node_id),
+            "symbol_name": ref.symbol_name,
+            "resolution_engine": ref.engine,
+            **_provenance(
+                mode="deterministic" if ref.engine.startswith("scip") else "inferred",
+                extractor=f"{_EXTRACTOR_UI_V1}.{ref.engine}",
+                confidence=ref.confidence,
+            ),
+        }
+        contract_id = await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
+            natural_key=contract_key,
+            name=f"{view.name} contract",
+            meta=contract_meta,
+        )
+        stats["interface_contracts"] += 1
+        for token in symbol_token_variants(ref.symbol_name):
+            for endpoint_id in endpoint_symbol_index.get(token, set()):
                 await _upsert_edge(
                     session,
                     collection_id=collection_id,
@@ -1320,14 +1346,83 @@ async def _persist_views(
                     kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
                     meta=_provenance(
                         mode="inferred",
-                        extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
-                        confidence=0.82,
+                        extractor=f"{_EXTRACTOR_UI_V1}.endpoint.{ref.engine}",
+                        confidence=max(0.66, ref.confidence - 0.08),
                         evidence_ids=[evidence_id],
                     ),
                 )
+                linked_endpoint_ids.add(endpoint_id)
                 stats["contract_edges"] += 1
+    return linked_endpoint_ids
 
-    return view_ids
+
+async def _link_endpoint_hint_contracts(
+    session: AsyncSession,
+    *,
+    collection_id: UUID,
+    view: UIViewDef,
+    endpoint_path_index: dict[str, set[UUID]],
+    endpoint_method_path_index: dict[tuple[str, str], set[UUID]],
+    linked_endpoint_ids: set[UUID],
+    evidence_id: Any,
+    stats: dict[str, int],
+) -> None:
+    """Create INTERFACE_CONTRACT nodes from endpoint hints and link to endpoints."""
+    for endpoint_hint in view.endpoint_hints:
+        method_hint, path_hint = _parse_endpoint_hint(endpoint_hint)
+        if not path_hint:
+            continue
+        endpoint_ids: set[UUID] = set(endpoint_path_index.get(path_hint, set()))
+        if method_hint:
+            endpoint_ids.update(endpoint_method_path_index.get((method_hint, path_hint), set()))
+        endpoint_ids.difference_update(linked_endpoint_ids)
+        if not endpoint_ids:
+            continue
+
+        method_token = method_hint or "any"
+        contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
+        contract_meta = {
+            "source_view": view.name,
+            "endpoint_hint": endpoint_hint,
+            "endpoint_path": path_hint,
+            "endpoint_method": method_hint,
+            **_provenance(
+                mode="inferred",
+                extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
+                confidence=0.83,
+            ),
+        }
+        contract_id = await _upsert_node(
+            session,
+            collection_id=collection_id,
+            kind=KnowledgeNodeKind.INTERFACE_CONTRACT,
+            natural_key=contract_key,
+            name=f"{view.name} endpoint contract",
+            meta=contract_meta,
+        )
+        stats["interface_contracts"] += 1
+        for endpoint_id in endpoint_ids:
+            await _upsert_edge(
+                session,
+                collection_id=collection_id,
+                source_node_id=contract_id,
+                target_node_id=endpoint_id,
+                kind=KnowledgeEdgeKind.CONTRACT_GOVERNS_ENDPOINT,
+                meta=_provenance(
+                    mode="inferred",
+                    extractor=f"{_EXTRACTOR_UI_V1}.endpoint_hint",
+                    confidence=0.82,
+                    evidence_ids=[evidence_id],
+                ),
+            )
+            stats["contract_edges"] += 1
+
+
+def _is_inferred_route_link(route: UIRouteDef, target_view: UIViewDef | None) -> bool:
+    """Determine if a route-to-view link is inferred."""
+    return (
+        route.inferred or route.view_name_hint is None or bool(target_view and target_view.inferred)
+    )
 
 
 async def _link_routes_to_views(
@@ -1350,16 +1445,14 @@ async def _link_routes_to_views(
             continue
 
         target_view_name = route.view_name_hint or default_view_name
-        target_view_id = view_ids.get(target_view_name) if target_view_name else None
+        if not target_view_name:
+            continue
+        target_view_id = view_ids.get(target_view_name)
         if target_view_id is None:
             continue
 
-        target_view = views_by_name.get(target_view_name) if target_view_name else None
-        inferred = (
-            route.inferred
-            or route.view_name_hint is None
-            or bool(target_view and target_view.inferred)
-        )
+        target_view = views_by_name.get(target_view_name)
+        inferred = _is_inferred_route_link(route, target_view)
         await _upsert_edge(
             session,
             collection_id=collection_id,

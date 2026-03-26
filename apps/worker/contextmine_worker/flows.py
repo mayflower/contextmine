@@ -321,6 +321,24 @@ async def _process_document_batch(
     return acc
 
 
+def _try_surface_extract(
+    uri: str, content: str | None, extractor: Any, stats: dict[str, int]
+) -> None:
+    """Attempt to extract surface data from one document."""
+    if not content:
+        return
+    file_path = _uri_to_file_path(uri)
+    if _is_ignored_repo_path(file_path):
+        return
+    stats["surface_files_scanned"] += 1
+    try:
+        if extractor.add_file(file_path, content):
+            stats["surface_files_recognized"] += 1
+    except Exception as exc:
+        stats["surface_parse_errors"] += 1
+        logger.debug("Surface extraction failed for %s: %s", file_path, exc)
+
+
 async def materialize_surface_catalog_for_source(
     *,
     source_id: str,
@@ -358,18 +376,7 @@ async def materialize_surface_catalog_for_source(
         extractor = SurfaceCatalogExtractor()
 
         for uri, content in docs:
-            if not content:
-                continue
-            file_path = _uri_to_file_path(uri)
-            if _is_ignored_repo_path(file_path):
-                continue
-            stats["surface_files_scanned"] += 1
-            try:
-                if extractor.add_file(file_path, content):
-                    stats["surface_files_recognized"] += 1
-            except Exception as exc:
-                stats["surface_parse_errors"] += 1
-                logger.debug("Surface extraction failed for %s: %s", file_path, exc)
+            _try_surface_extract(uri, content, extractor, stats)
 
         catalog = extractor.catalog
         has_surfaces = (
@@ -503,6 +510,33 @@ async def get_or_create_embedding_model(
         return new_model
 
 
+async def _embed_batch_with_fallback(
+    embedder: Any,
+    texts: list[str],
+    dimension: int,
+    document_id: str,
+) -> Any:
+    """Embed a batch of texts, falling back to FakeEmbedder on failure."""
+    try:
+        return await asyncio.wait_for(
+            embedder.embed_batch(texts),
+            timeout=_embedding_batch_timeout_seconds(),
+        )
+    except TimeoutError:
+        logger.warning(
+            "Embedding batch timed out after %ss for document %s; using deterministic fallback.",
+            _embedding_batch_timeout_seconds(),
+            document_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Embedding batch failed for document %s: %s; using deterministic fallback.",
+            document_id,
+            exc,
+        )
+    return await FakeEmbedder(dimension=dimension).embed_batch(texts)
+
+
 @task(
     retries=EMBEDDING_API_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=2),
@@ -616,26 +650,9 @@ async def embed_chunks_for_document(
         chunk_ids = [row.id for row in batch]
         texts = [row.content for row in batch]
 
-        # Get embeddings from API
-        try:
-            result = await asyncio.wait_for(
-                embedder.embed_batch(texts),
-                timeout=_embedding_batch_timeout_seconds(),
-            )
-        except TimeoutError:
-            logger.warning(
-                "Embedding batch timed out after %ss for document %s; using deterministic fallback.",
-                _embedding_batch_timeout_seconds(),
-                document_id,
-            )
-            result = await FakeEmbedder(dimension=int(embedding_model.dimension)).embed_batch(texts)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Embedding batch failed for document %s: %s; using deterministic fallback.",
-                document_id,
-                exc,
-            )
-            result = await FakeEmbedder(dimension=int(embedding_model.dimension)).embed_batch(texts)
+        result = await _embed_batch_with_fallback(
+            embedder, texts, int(embedding_model.dimension), document_id
+        )
         stats["tokens_used"] += result.tokens_used
 
         # Update chunks with embeddings via raw SQL (for pgvector)
@@ -749,6 +766,19 @@ def _is_schema_candidate(file_path: str) -> bool:
     )
 
 
+def _try_alembic_extraction(
+    file_path: str, content: str, erm_extractor: Any, extract_fn: Any
+) -> None:
+    """Try to extract ERM from an Alembic migration file."""
+    if "alembic/versions" not in file_path or not file_path.endswith(".py"):
+        return
+    try:
+        extraction = extract_fn(file_path, content)
+        erm_extractor.add_alembic_extraction(extraction)
+    except Exception as e:
+        logger.debug("ERM extraction failed for %s: %s", file_path, e)
+
+
 async def _kg_extract_erm(
     source_uuid: object,
     collection_uuid: object,
@@ -781,17 +811,12 @@ async def _kg_extract_erm(
         for uri, content in docs:
             if not content:
                 continue
-            file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
+            file_path = _uri_to_file_path(uri)
             if _is_ignored_repo_path(file_path):
                 continue
             if _is_schema_candidate(file_path):
                 schema_candidates.append((file_path, content))
-            if "alembic/versions" in file_path and file_path.endswith(".py"):
-                try:
-                    extraction = extract_from_alembic(file_path, content)
-                    erm_extractor.add_alembic_extraction(extraction)
-                except Exception as e:
-                    logger.debug("ERM extraction failed for %s: %s", file_path, e)
+            _try_alembic_extraction(file_path, content, erm_extractor, extract_from_alembic)
 
         if erm_extractor.schema.tables:
             erm_stats = await build_erm_graph(session, collection_uuid, erm_extractor.schema)
@@ -893,10 +918,8 @@ async def _kg_extract_business_rules(
         for _doc_id, uri, content in docs:
             if not content:
                 continue
-            file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-            if _is_ignored_repo_path(file_path):
-                continue
-            if detect_language(file_path) is None:
+            file_path = _uri_to_file_path(uri)
+            if _is_ignored_repo_path(file_path) or detect_language(file_path) is None:
                 continue
             try:
                 rule_result = await extract_rules_from_file(file_path, content, research_llm)
@@ -912,6 +935,51 @@ async def _kg_extract_business_rules(
             logger.info("Extracted %d business rules", rules_created)
             return rules_created
     return 0
+
+
+async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> dict[str, int]:
+    """Extract surface catalog (OpenAPI, GraphQL, Protobuf, Jobs) into the KG."""
+    from contextmine_core.analyzer.extractors.surface import (
+        SurfaceCatalogExtractor,
+        build_surface_graph,
+    )
+    from contextmine_core.models import Document
+
+    result_stats: dict[str, int] = {"kg_endpoints": 0, "kg_jobs": 0}
+    surface_extractor = SurfaceCatalogExtractor()
+    async with get_session() as session:
+        result = await session.execute(
+            select(Document.uri, Document.content_markdown).where(Document.source_id == source_uuid)
+        )
+        for uri, content in result.all():
+            _try_surface_extract(
+                uri,
+                content,
+                surface_extractor,
+                {
+                    "surface_files_scanned": 0,
+                    "surface_files_recognized": 0,
+                    "surface_parse_errors": 0,
+                },
+            )
+        catalog = surface_extractor.catalog
+        has_surfaces = (
+            catalog.openapi_specs
+            or catalog.graphql_schemas
+            or catalog.protobuf_files
+            or catalog.job_definitions
+        )
+        if has_surfaces:
+            surface_stats = await build_surface_graph(session, collection_uuid, catalog)
+            result_stats["kg_endpoints"] = surface_stats.get("endpoint_nodes", 0)
+            result_stats["kg_jobs"] = surface_stats.get("job_nodes", 0)
+            await session.commit()
+            logger.info(
+                "Extracted %d endpoints, %d jobs",
+                result_stats["kg_endpoints"],
+                result_stats["kg_jobs"],
+            )
+    return result_stats
 
 
 @traced_task()
@@ -948,7 +1016,6 @@ async def build_knowledge_graph(
     """
     import uuid as uuid_module
 
-    from contextmine_core.models import Document
     from contextmine_core.research.llm import get_llm_provider, get_research_llm_provider
 
     stats = {
@@ -1049,51 +1116,9 @@ async def build_knowledge_graph(
 
     # Step 4: Extract Surface Catalog (OpenAPI, GraphQL, Protobuf, Jobs)
     try:
-        from contextmine_core.analyzer.extractors.surface import (
-            SurfaceCatalogExtractor,
-            build_surface_graph,
-        )
-
-        surface_extractor = SurfaceCatalogExtractor()
-
-        async with get_session() as session:
-            result = await session.execute(
-                select(Document.uri, Document.content_markdown).where(
-                    Document.source_id == source_uuid
-                )
-            )
-            docs = result.all()
-
-            for uri, content in docs:
-                if not content:
-                    continue
-                file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
-                if _is_ignored_repo_path(file_path):
-                    continue
-                try:
-                    surface_extractor.add_file(file_path, content)
-                except Exception as e:
-                    logger.debug("Surface extraction failed for %s: %s", file_path, e)
-
-            # Build graph if we found anything
-            catalog = surface_extractor.catalog
-            has_surfaces = (
-                catalog.openapi_specs
-                or catalog.graphql_schemas
-                or catalog.protobuf_files
-                or catalog.job_definitions
-            )
-            if has_surfaces:
-                surface_stats = await build_surface_graph(session, collection_uuid, catalog)
-                stats["kg_endpoints"] = surface_stats.get("endpoint_nodes", 0)
-                stats["kg_jobs"] = surface_stats.get("job_nodes", 0)
-                await session.commit()
-                logger.info(
-                    "Extracted %d endpoints, %d jobs",
-                    stats["kg_endpoints"],
-                    stats["kg_jobs"],
-                )
-
+        surface_result = await _kg_extract_surfaces(source_uuid, collection_uuid)
+        stats["kg_endpoints"] = surface_result.get("kg_endpoints", 0)
+        stats["kg_jobs"] = surface_result.get("kg_jobs", 0)
     except Exception as e:
         logger.warning("Failed to extract surfaces: %s", e)
         stats["kg_errors"].append(f"surface: {e}")
@@ -1199,6 +1224,114 @@ async def build_knowledge_graph(
     return stats
 
 
+async def _generate_arch_docs_on_sync(
+    session: Any,
+    settings: Any,
+    collection_uuid: Any,
+    as_is: Any,
+) -> dict[str, Any]:
+    """Generate arc42 architecture docs during sync. Returns stats dict."""
+    from dataclasses import asdict
+
+    from contextmine_core.architecture import (
+        build_architecture_facts,
+        compute_arc42_drift,
+        generate_arc42_from_facts,
+    )
+    from contextmine_core.models import KnowledgeArtifact, KnowledgeArtifactKind, TwinScenario
+
+    stats: dict[str, Any] = {"arch_facts_count": 0, "arch_ports_adapters_count": 0}
+    llm_provider = None
+    if settings.arch_docs_llm_enrich and settings.default_llm_provider:
+        try:
+            from contextmine_core.research.llm import get_llm_provider
+
+            llm_provider = get_llm_provider(settings.default_llm_provider)
+        except Exception:
+            pass
+
+    facts_bundle = await build_architecture_facts(
+        session,
+        collection_id=collection_uuid,
+        scenario_id=as_is.id,
+        enable_llm_enrich=settings.arch_docs_llm_enrich,
+        llm_provider=llm_provider,
+    )
+    arc42_doc = generate_arc42_from_facts(facts_bundle, as_is, options={})
+    artifact_name = f"{as_is.id}.arc42.md"
+
+    artifact = (
+        await session.execute(
+            select(KnowledgeArtifact).where(
+                KnowledgeArtifact.collection_id == collection_uuid,
+                KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
+                KnowledgeArtifact.name == artifact_name,
+            )
+        )
+    ).scalar_one_or_none()
+
+    drift_meta: dict[str, object] | None = None
+    if settings.arch_docs_drift_enabled:
+        baseline = (
+            await session.execute(
+                select(TwinScenario)
+                .where(TwinScenario.collection_id == collection_uuid, TwinScenario.id != as_is.id)
+                .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if baseline:
+            baseline_bundle = await build_architecture_facts(
+                session,
+                collection_id=collection_uuid,
+                scenario_id=baseline.id,
+                enable_llm_enrich=settings.arch_docs_llm_enrich,
+                llm_provider=llm_provider,
+            )
+            drift_report = compute_arc42_drift(
+                facts_bundle, baseline_bundle, baseline_scenario_id=baseline.id
+            )
+            drift_meta = {
+                "generated_at": drift_report.generated_at.isoformat(),
+                "baseline_scenario_id": str(baseline.id),
+                "current_hash": drift_report.current_hash,
+                "baseline_hash": drift_report.baseline_hash,
+                "deltas": [asdict(delta) for delta in drift_report.deltas],
+                "warnings": drift_report.warnings,
+            }
+            stats["arch_drift_deltas"] = len(drift_report.deltas)
+
+    artifact_meta = {
+        "scenario_id": str(as_is.id),
+        "generated_at": arc42_doc.generated_at.isoformat(),
+        "facts_hash": facts_bundle.facts_hash(),
+        "confidence_summary": arc42_doc.confidence_summary,
+        "section_coverage": arc42_doc.section_coverage,
+        "warnings": arc42_doc.warnings,
+        "sections": arc42_doc.sections,
+    }
+    if drift_meta is not None:
+        artifact_meta["drift"] = drift_meta
+
+    if artifact:
+        artifact.content = arc42_doc.markdown
+        artifact.meta = artifact_meta
+    else:
+        session.add(
+            KnowledgeArtifact(
+                collection_id=collection_uuid,
+                kind=KnowledgeArtifactKind.ARC42,
+                name=artifact_name,
+                content=arc42_doc.markdown,
+                meta=artifact_meta,
+            )
+        )
+
+    stats["arch_facts_count"] = len(facts_bundle.facts)
+    stats["arch_ports_adapters_count"] = len(facts_bundle.ports_adapters)
+    return stats
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -1219,10 +1352,7 @@ async def build_twin_graph(
 
     from contextmine_core.graph.age import sync_scenario_to_age
     from contextmine_core.models import (
-        KnowledgeArtifact,
-        KnowledgeArtifactKind,
         TwinNode,
-        TwinScenario,
     )
     from contextmine_core.pathing import canonicalize_repo_relative_path
     from contextmine_core.semantic_snapshot.models import Snapshot
@@ -1368,107 +1498,10 @@ async def build_twin_graph(
 
         if settings.arch_docs_enabled and settings.arch_docs_generate_on_sync:
             try:
-                from dataclasses import asdict
-
-                from contextmine_core.architecture import (
-                    build_architecture_facts,
-                    compute_arc42_drift,
-                    generate_arc42_from_facts,
+                arch_result = await _generate_arch_docs_on_sync(
+                    session, settings, collection_uuid, as_is
                 )
-
-                llm_provider = None
-                if settings.arch_docs_llm_enrich and settings.default_llm_provider:
-                    try:
-                        from contextmine_core.research.llm import get_llm_provider
-
-                        llm_provider = get_llm_provider(settings.default_llm_provider)
-                    except Exception:
-                        llm_provider = None
-
-                facts_bundle = await build_architecture_facts(
-                    session,
-                    collection_id=collection_uuid,
-                    scenario_id=as_is.id,
-                    enable_llm_enrich=settings.arch_docs_llm_enrich,
-                    llm_provider=llm_provider,
-                )
-                arc42_doc = generate_arc42_from_facts(facts_bundle, as_is, options={})
-                artifact_name = f"{as_is.id}.arc42.md"
-
-                artifact = (
-                    await session.execute(
-                        select(KnowledgeArtifact).where(
-                            KnowledgeArtifact.collection_id == collection_uuid,
-                            KnowledgeArtifact.kind == KnowledgeArtifactKind.ARC42,
-                            KnowledgeArtifact.name == artifact_name,
-                        )
-                    )
-                ).scalar_one_or_none()
-
-                drift_meta: dict[str, object] | None = None
-                if settings.arch_docs_drift_enabled:
-                    baseline = (
-                        await session.execute(
-                            select(TwinScenario)
-                            .where(
-                                TwinScenario.collection_id == collection_uuid,
-                                TwinScenario.id != as_is.id,
-                            )
-                            .order_by(TwinScenario.version.desc(), TwinScenario.created_at.desc())
-                            .limit(1)
-                        )
-                    ).scalar_one_or_none()
-                    if baseline:
-                        baseline_bundle = await build_architecture_facts(
-                            session,
-                            collection_id=collection_uuid,
-                            scenario_id=baseline.id,
-                            enable_llm_enrich=settings.arch_docs_llm_enrich,
-                            llm_provider=llm_provider,
-                        )
-                        drift_report = compute_arc42_drift(
-                            facts_bundle,
-                            baseline_bundle,
-                            baseline_scenario_id=baseline.id,
-                        )
-                        drift_meta = {
-                            "generated_at": drift_report.generated_at.isoformat(),
-                            "baseline_scenario_id": str(baseline.id),
-                            "current_hash": drift_report.current_hash,
-                            "baseline_hash": drift_report.baseline_hash,
-                            "deltas": [asdict(delta) for delta in drift_report.deltas],
-                            "warnings": drift_report.warnings,
-                        }
-                        stats["arch_drift_deltas"] = len(drift_report.deltas)
-
-                artifact_meta = {
-                    "scenario_id": str(as_is.id),
-                    "generated_at": arc42_doc.generated_at.isoformat(),
-                    "facts_hash": facts_bundle.facts_hash(),
-                    "confidence_summary": arc42_doc.confidence_summary,
-                    "section_coverage": arc42_doc.section_coverage,
-                    "warnings": arc42_doc.warnings,
-                    "sections": arc42_doc.sections,
-                }
-                if drift_meta is not None:
-                    artifact_meta["drift"] = drift_meta
-
-                if artifact:
-                    artifact.content = arc42_doc.markdown
-                    artifact.meta = artifact_meta
-                else:
-                    session.add(
-                        KnowledgeArtifact(
-                            collection_id=collection_uuid,
-                            kind=KnowledgeArtifactKind.ARC42,
-                            name=artifact_name,
-                            content=arc42_doc.markdown,
-                            meta=artifact_meta,
-                        )
-                    )
-
-                stats["arch_facts_count"] = len(facts_bundle.facts)
-                stats["arch_ports_adapters_count"] = len(facts_bundle.ports_adapters)
+                stats.update(arch_result)
             except Exception as exc:
                 logger.warning("Architecture docs generation failed (advisory): %s", exc)
                 stats["arch_docs_error"] = str(exc)
@@ -1594,24 +1627,26 @@ async def _materialize_behavioral_layers_impl(
             )
             await sync_scenario_to_age(session, scenario_uuid)
 
+        source_version = None
         if source_version_uuid:
             source_version = (
                 await session.execute(
                     select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_uuid)
                 )
             ).scalar_one_or_none()
-            if source_version:
-                merged = dict(source_version.stats or {})
-                merged.update(
-                    {
-                        "behavioral_layers_status": "ready",
-                        "last_behavioral_materialized_at": now_iso,
-                        "deep_warnings": deep_warnings,
-                        "behavioral_extract": behavioral_stats,
-                    }
-                )
-                source_version.stats = merged
+        if source_version:
+            merged = dict(source_version.stats or {})
+            merged.update(
+                {
+                    "behavioral_layers_status": "ready",
+                    "last_behavioral_materialized_at": now_iso,
+                    "deep_warnings": deep_warnings,
+                    "behavioral_extract": behavioral_stats,
+                }
+            )
+            source_version.stats = merged
 
+        if source_version_uuid:
             await record_twin_event(
                 session,
                 collection_id=collection_uuid,
@@ -1789,34 +1824,30 @@ async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict 
     cfg = _build_scip_index_config()
     cfg.output_dir = output_dir
 
-    # Find appropriate backend
-    for backend in BACKENDS:
-        if backend.can_handle(target):
-            try:
-                artifact = backend.index(target, cfg)
-                if artifact.success:
-                    logger.info(
-                        "SCIP indexed %s project at %s in %.1fs",
-                        target.language.value,
-                        target.root_path,
-                        artifact.duration_s,
-                    )
-                    return artifact.to_dict()
-                else:
-                    logger.warning(
-                        "SCIP indexing failed for %s: %s",
-                        target.root_path,
-                        artifact.error_message,
-                    )
-                    if not cfg.best_effort:
-                        return None
-            except Exception as e:
-                logger.warning("SCIP backend error for %s: %s", target.root_path, e)
-                if not cfg.best_effort:
-                    raise
-            break
-
-    return None
+    backend = next((b for b in BACKENDS if b.can_handle(target)), None)
+    if backend is None:
+        return None
+    try:
+        artifact = backend.index(target, cfg)
+    except Exception as e:
+        logger.warning("SCIP backend error for %s: %s", target.root_path, e)
+        if not cfg.best_effort:
+            raise
+        return None
+    if artifact.success:
+        logger.info(
+            "SCIP indexed %s project at %s in %.1fs",
+            target.language.value,
+            target.root_path,
+            artifact.duration_s,
+        )
+        return artifact.to_dict()
+    logger.warning(
+        "SCIP indexing failed for %s: %s",
+        target.root_path,
+        artifact.error_message,
+    )
+    return None if cfg.best_effort else None
 
 
 @task(
@@ -3302,6 +3333,58 @@ async def sync_github_source(
     return stats
 
 
+def _build_page_meta(page: Any, base_meta: dict | None = None) -> dict:
+    """Build meta dict from page HTTP cache headers."""
+    meta = dict(base_meta or {})
+    if page.etag:
+        meta["etag"] = page.etag
+    if page.last_modified:
+        meta["last_modified"] = page.last_modified
+    return meta
+
+
+async def _process_web_page(
+    session: Any,
+    source: Source,
+    page: Any,
+    base_url: str,
+    run_started_at: datetime,
+    stats: Any,
+) -> tuple[str, str, str | None] | None:
+    """Process a single web page: upsert document and return chunk tuple if content changed."""
+    uri = page.url
+    title = get_page_title(page)
+    result = await session.execute(select(Document).where(Document.uri == uri))
+    existing_doc = result.scalar_one_or_none()
+
+    if existing_doc:
+        if existing_doc.content_hash != page.content_hash:
+            existing_doc.content_markdown = page.markdown
+            existing_doc.content_hash = page.content_hash
+            existing_doc.title = title
+            existing_doc.updated_at = datetime.now(UTC)
+            existing_doc.meta = _build_page_meta(page, existing_doc.meta)
+            stats.docs_updated += 1
+            existing_doc.last_seen_at = run_started_at
+            return (str(existing_doc.id), page.markdown, None)
+        existing_doc.last_seen_at = run_started_at
+        return None
+
+    new_doc = Document(
+        source_id=source.id,
+        uri=uri,
+        title=title,
+        content_markdown=page.markdown,
+        content_hash=page.content_hash,
+        meta=_build_page_meta(page, {"base_url": base_url}),
+        last_seen_at=run_started_at,
+    )
+    session.add(new_doc)
+    await session.flush()
+    stats.docs_created += 1
+    return (str(new_doc.id), page.markdown, None)
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -3370,55 +3453,12 @@ async def sync_web_source(
     total_symbols_deleted = 0
 
     async with get_session() as session:
-        # Process each page
         for page in pages:
-            # Use URL as URI
-            uri = page.url
-            title = get_page_title(page)
-
-            # Check if document exists
-            result = await session.execute(select(Document).where(Document.uri == uri))
-            existing_doc = result.scalar_one_or_none()
-
-            if existing_doc:
-                # Update only if content changed (incremental)
-                if existing_doc.content_hash != page.content_hash:
-                    existing_doc.content_markdown = page.markdown
-                    existing_doc.content_hash = page.content_hash
-                    existing_doc.title = title
-                    existing_doc.updated_at = datetime.now(UTC)
-                    # Update HTTP cache headers in meta
-                    meta = existing_doc.meta or {}
-                    if page.etag:
-                        meta["etag"] = page.etag
-                    if page.last_modified:
-                        meta["last_modified"] = page.last_modified
-                    existing_doc.meta = meta
-                    stats.docs_updated += 1
-                    # Mark for re-chunking
-                    docs_to_chunk.append((str(existing_doc.id), page.markdown, None))
-                existing_doc.last_seen_at = run_started_at
-            else:
-                # Create new document with HTTP cache headers in meta
-                meta = {"base_url": base_url}
-                if page.etag:
-                    meta["etag"] = page.etag
-                if page.last_modified:
-                    meta["last_modified"] = page.last_modified
-                new_doc = Document(
-                    source_id=source.id,
-                    uri=uri,
-                    title=title,
-                    content_markdown=page.markdown,
-                    content_hash=page.content_hash,
-                    meta=meta,
-                    last_seen_at=run_started_at,
-                )
-                session.add(new_doc)
-                await session.flush()  # Get the ID
-                stats.docs_created += 1
-                # Mark for chunking
-                docs_to_chunk.append((str(new_doc.id), page.markdown, None))
+            doc_pair = await _process_web_page(
+                session, source, page, base_url, run_started_at, stats
+            )
+            if doc_pair is not None:
+                docs_to_chunk.append(doc_pair)
 
         # Hard delete documents not seen in this run (pages that disappeared)
         result = await session.execute(
@@ -3618,6 +3658,69 @@ def _parse_scip_gate_details(stats: dict[str, object], text: str) -> None:
             pass
 
 
+async def _handle_sync_failure(source: Source, sync_run: SyncRun, exc: Exception) -> SyncRun:
+    """Handle a sync failure: log, mark run as failed, update source timestamps."""
+    from contextmine_core.models import TwinSourceVersion
+    from contextmine_core.twin import record_twin_event, set_source_version_status
+
+    error_message = str(exc).strip() or repr(exc)
+    if error_message == repr(exc):
+        logger.exception("Source sync failed without explicit message for source %s", source.id)
+    else:
+        logger.exception("Source sync failed for source %s: %s", source.id, error_message)
+
+    async with get_session() as session:
+        result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
+        db_run = result.scalar_one()
+        db_run.status = SyncRunStatus.FAILED
+        db_run.finished_at = datetime.now(UTC)
+        db_run.error = error_message
+
+        failed_source_version = (
+            await session.execute(
+                select(TwinSourceVersion)
+                .where(
+                    TwinSourceVersion.source_id == source.id,
+                    TwinSourceVersion.status.in_(["queued", "materializing"]),
+                )
+                .order_by(TwinSourceVersion.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if failed_source_version:
+            failure_stats = _build_failure_stats(str(sync_run.id), error_message)
+            await set_source_version_status(
+                session,
+                source_version_id=failed_source_version.id,
+                status="failed",
+                stats=failure_stats,
+                finished=True,
+            )
+            await record_twin_event(
+                session,
+                collection_id=source.collection_id,
+                scenario_id=None,
+                source_id=source.id,
+                source_version_id=failed_source_version.id,
+                event_type="materialization_failed",
+                status="failed",
+                payload={"sync_run_id": str(sync_run.id)},
+                idempotency_key=f"materialization_failed:{source.id}:{sync_run.id}",
+                error=error_message,
+            )
+
+        result = await session.execute(select(Source).where(Source.id == source.id))
+        db_source = result.scalar_one()
+        db_source.last_run_at = datetime.now(UTC)
+        db_source.next_run_at = datetime.now(UTC) + timedelta(
+            minutes=db_source.schedule_interval_minutes
+        )
+
+        await session.commit()
+        await session.refresh(db_run)
+        return db_run
+
+
 @traced_task()
 @task(
     retries=DEFAULT_RETRIES,
@@ -3698,66 +3801,7 @@ async def sync_source(source: Source) -> SyncRun | None:
             await sync_web_source(source, sync_run, run_started_at)
 
     except Exception as e:
-        error_message = str(e).strip() or repr(e)
-        if error_message == repr(e):
-            logger.exception("Source sync failed without explicit message for source %s", source.id)
-        else:
-            logger.exception("Source sync failed for source %s: %s", source.id, error_message)
-        # Mark run as failed
-        async with get_session() as session:
-            from contextmine_core.models import TwinSourceVersion
-            from contextmine_core.twin import record_twin_event, set_source_version_status
-
-            result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
-            db_run = result.scalar_one()
-            db_run.status = SyncRunStatus.FAILED
-            db_run.finished_at = datetime.now(UTC)
-            db_run.error = error_message
-
-            failed_source_version = (
-                await session.execute(
-                    select(TwinSourceVersion)
-                    .where(
-                        TwinSourceVersion.source_id == source.id,
-                        TwinSourceVersion.status.in_(["queued", "materializing"]),
-                    )
-                    .order_by(TwinSourceVersion.created_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if failed_source_version:
-                failure_stats = _build_failure_stats(str(sync_run.id), error_message)
-                await set_source_version_status(
-                    session,
-                    source_version_id=failed_source_version.id,
-                    status="failed",
-                    stats=failure_stats,
-                    finished=True,
-                )
-                await record_twin_event(
-                    session,
-                    collection_id=source.collection_id,
-                    scenario_id=None,
-                    source_id=source.id,
-                    source_version_id=failed_source_version.id,
-                    event_type="materialization_failed",
-                    status="failed",
-                    payload={"sync_run_id": str(sync_run.id)},
-                    idempotency_key=f"materialization_failed:{source.id}:{sync_run.id}",
-                    error=error_message,
-                )
-
-            # Still update source timestamps
-            result = await session.execute(select(Source).where(Source.id == source.id))
-            db_source = result.scalar_one()
-            db_source.last_run_at = datetime.now(UTC)
-            db_source.next_run_at = datetime.now(UTC) + timedelta(
-                minutes=db_source.schedule_interval_minutes
-            )
-
-            await session.commit()
-            await session.refresh(db_run)
-            return db_run
+        return await _handle_sync_failure(source, sync_run, e)
 
     # Refresh and return
     async with get_session() as session:
@@ -3821,6 +3865,29 @@ async def _fail_coverage_ingest_job(
     return {"status": status, "error_code": error_code, "error_detail": error_detail}
 
 
+def _find_relevant_metric_files(file_nodes: list, source_id_str: str) -> set[str]:
+    """Filter twin file nodes to those with structural metrics from the given source."""
+    from contextmine_core.pathing import canonicalize_repo_relative_path
+
+    relevant: set[str] = set()
+    for node in file_nodes:
+        if node.kind != "file":
+            continue
+        if not node.natural_key.startswith(_FILE_NODE_PREFIX):
+            continue
+        meta = dict(node.meta or {})
+        if str(meta.get("source_id") or "") != source_id_str:
+            continue
+        if not meta.get("metrics_structural_ready"):
+            continue
+        file_path = canonicalize_repo_relative_path(
+            node.natural_key.removeprefix(_FILE_NODE_PREFIX)
+        )
+        if file_path:
+            relevant.add(file_path)
+    return relevant
+
+
 @traced_flow()
 @flow(name="ingest_coverage_metrics", retries=2, retry_delay_seconds=5)
 async def ingest_coverage_metrics(job_id: str) -> dict:
@@ -3830,7 +3897,6 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
 
     from contextmine_core.metrics.coverage_reports import parse_coverage_reports
     from contextmine_core.models import TwinNode
-    from contextmine_core.pathing import canonicalize_repo_relative_path
     from contextmine_core.twin import (
         apply_coverage_metrics_to_scenario,
         get_or_create_as_is_scenario,
@@ -3910,23 +3976,7 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
             .scalars()
             .all()
         )
-        source_id_str = str(source.id)
-        relevant_files: set[str] = set()
-        for node in file_nodes:
-            if node.kind != "file":
-                continue
-            if not node.natural_key.startswith(_FILE_NODE_PREFIX):
-                continue
-            meta = dict(node.meta or {})
-            if str(meta.get("source_id") or "") != source_id_str:
-                continue
-            if not bool(meta.get("metrics_structural_ready")):
-                continue
-            file_path = canonicalize_repo_relative_path(
-                node.natural_key.removeprefix(_FILE_NODE_PREFIX)
-            )
-            if file_path:
-                relevant_files.add(file_path)
+        relevant_files = _find_relevant_metric_files(file_nodes, str(source.id))
 
         if not relevant_files:
             await session.commit()

@@ -219,12 +219,12 @@ export default function GraphRagView({
               ? graph.nodes.some(
                   (node) =>
                     node.id === edge.source_node_id &&
-                    String(node.meta?.community_id ?? '') === communityId,
+                    `${node.meta?.community_id ?? ''}` === communityId,
                 ) &&
                 graph.nodes.some(
                   (node) =>
                     node.id === edge.target_node_id &&
-                    String(node.meta?.community_id ?? '') === communityId,
+                    `${node.meta?.community_id ?? ''}` === communityId,
                 )
               : true
           const edgeTouchesSelected =
