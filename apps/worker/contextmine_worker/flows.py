@@ -1847,7 +1847,7 @@ async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict 
         target.root_path,
         artifact.error_message,
     )
-    return None if cfg.best_effort else None
+    return None
 
 
 @task(

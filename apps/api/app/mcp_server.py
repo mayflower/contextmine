@@ -903,14 +903,14 @@ async def code_references(
         return "\n".join(output_lines)
 
 
-def _parse_edge_types(edge_types: list[str] | None, EdgeType) -> list | str:  # noqa: N803
+def _parse_edge_types(edge_types: list[str] | None, edge_type_cls: type) -> list | str | None:
     """Parse edge types, returning a list or an error string."""
     if not edge_types:
-        return None  # type: ignore[return-value]
+        return None
     parsed = []
     for et in edge_types:
         try:
-            parsed.append(EdgeType(et.lower()))
+            parsed.append(edge_type_cls(et.lower()))
         except ValueError:
             return f"# Error\n\nUnknown edge type: {et}\nValid: calls, called_by, imports, imported_by, inherits, inherited_by"
     return parsed
@@ -1172,7 +1172,7 @@ def _rule_matches_query(rule, query_words: set[str]) -> bool:
 
 
 async def _match_rules_by_query(
-    db, all_rules, query_words, code_path_lower, KnowledgeEvidence, KnowledgeNodeEvidence
+    db, all_rules, query_words, code_path_lower, evidence_model, node_evidence_model
 ):
     """Match business rules by name, content, or evidence file paths."""
     matched = []
@@ -1181,9 +1181,9 @@ async def _match_rules_by_query(
             matched.append(rule)
             continue
         ev_stmt = (
-            select(KnowledgeEvidence)
-            .join(KnowledgeNodeEvidence, KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id)
-            .where(KnowledgeNodeEvidence.node_id == rule.id)
+            select(evidence_model)
+            .join(node_evidence_model, node_evidence_model.evidence_id == evidence_model.id)
+            .where(node_evidence_model.node_id == rule.id)
         )
         ev_result = await db.execute(ev_stmt)
         for ev in ev_result.scalars().all():
