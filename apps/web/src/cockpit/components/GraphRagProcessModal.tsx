@@ -17,10 +17,10 @@ function toMermaid(detail: GraphRagProcessDetailPayload): string {
   const nodeLabelById = new Map<string, string>()
 
   for (const step of detail.steps) {
-    const safeId = step.node_id.replace(/[^a-zA-Z0-9_]/g, '_')
+    const safeId = step.node_id.replaceAll(/[^a-zA-Z0-9_]/g, '_')
     const label = `${step.step}. ${step.node_name}`
-      .replace(/"/g, "'")
-      .replace(/\n/g, ' ')
+      .replaceAll('"', "'")
+      .replaceAll('\n', ' ')
       .trim()
     nodeLabelById.set(step.node_id, safeId)
     lines.push(`  ${safeId}["${label}"]`)

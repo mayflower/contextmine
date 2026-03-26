@@ -38,7 +38,7 @@ interface ArchitectureViewProps {
 }
 
 function sectionLabel(sectionKey: string): string {
-  const normalized = sectionKey.replace(/^\d+_/, '').replace(/_/g, ' ').trim()
+  const normalized = sectionKey.replace(/^\d+_/, '').replaceAll('_', ' ').trim()
   return normalized
     .split(' ')
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1))

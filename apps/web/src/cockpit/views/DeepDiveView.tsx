@@ -223,7 +223,7 @@ export default function DeepDiveView({
         </label>
 
         <label>
-          Density
+          Density{' '}
           <select value={density} onChange={(event) => onDensityChange(Number(event.target.value))}>
             <option value={3000}>Focused</option>
             <option value={5000}>Balanced</option>

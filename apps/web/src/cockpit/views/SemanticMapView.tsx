@@ -50,7 +50,7 @@ function colorForDomain(domain: string | null): string {
   const normalized = domain.toLowerCase()
   let hash = 0
   for (let i = 0; i < normalized.length; i += 1) {
-    hash = (hash * 31 + normalized.charCodeAt(i)) >>> 0
+    hash = (hash * 31 + (normalized.codePointAt(i) ?? 0)) >>> 0
   }
   return DOMAIN_COLORS[hash % DOMAIN_COLORS.length]
 }

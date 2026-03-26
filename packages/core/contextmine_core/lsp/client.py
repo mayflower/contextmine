@@ -404,6 +404,10 @@ class LspClient:
         )
 
 
+async def _noop() -> None:
+    """No-op awaitable compatible with both asyncio and Trio backends."""
+
+
 class MockLspClient:
     """Mock LSP client for testing without actual language servers."""
 
@@ -450,24 +454,27 @@ class MockLspClient:
         """Set mock hover response."""
         self._hovers[(file_path, line, column)] = info
 
-    async def start(self) -> None:  # Intentionally async: LspClient interface contract
+    async def start(self) -> None:
         """Mock start."""
+        await _noop()
         self._started = True
 
-    async def stop(self) -> None:  # Intentionally async: LspClient interface contract
+    async def stop(self) -> None:
         """Mock stop."""
+        await _noop()
         self._started = False
 
-    async def get_definition(  # Intentionally async: LspClient interface contract
+    async def get_definition(
         self,
         file_path: str,
         line: int,
         column: int,
     ) -> list[Location]:
         """Get mock definition."""
+        await _noop()
         return self._definitions.get((file_path, line, column), [])
 
-    async def get_references(  # Intentionally async: LspClient interface contract
+    async def get_references(
         self,
         file_path: str,
         line: int,
@@ -475,20 +482,23 @@ class MockLspClient:
         _include_declaration: bool = True,
     ) -> list[Location]:
         """Get mock references."""
+        await _noop()
         return self._references.get((file_path, line, column), [])
 
-    async def get_hover(  # Intentionally async: LspClient interface contract
+    async def get_hover(
         self,
         file_path: str,
         line: int,
         column: int,
     ) -> SymbolInfo | None:
         """Get mock hover."""
+        await _noop()
         return self._hovers.get((file_path, line, column))
 
-    async def get_document_symbols(  # Intentionally async: LspClient interface contract
+    async def get_document_symbols(
         self,
         _file_path: str,
     ) -> list[dict[str, Any]]:
         """Get mock document symbols."""
+        await _noop()
         return []

@@ -117,13 +117,14 @@ def init_telemetry(
     return True
 
 
-async def shutdown_telemetry() -> None:  # Intentionally async: FastAPI lifespan expects coroutine
+async def shutdown_telemetry() -> None:  # noqa: RUF029
     """Gracefully shutdown telemetry exporters.
 
     This flushes any pending telemetry data before the application exits.
     Safe to call even if telemetry was never initialized.
+    Async because FastAPI lifespan awaits this coroutine.
     """
-    global _initialized
+    global _initialized  # noqa: PLW0602
 
     if not _initialized:
         return

@@ -648,28 +648,10 @@ def _parse_pgvector_text(raw_value: str | None) -> list[float]:
     return values
 
 
-def _extract_domain_token(path_like: str | None) -> str | None:
-    if not path_like:
-        return None
-    normalized = str(path_like).strip().lower()
-    if not normalized:
-        return None
-    for prefix in ("file:", "symbol:", "entity:"):
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix) :]
-    if "://" in normalized:
-        remainder = normalized.split("://", 1)[1]
-        normalized = remainder.split("/", 1)[1] if "/" in remainder else remainder
-    normalized = normalized.split("?", 1)[0].strip("/")
-    parts = [part for part in normalized.split("/") if part]
-    if not parts:
-        return None
-    if "." in parts[-1]:
-        parts = parts[:-1]
-    if not parts:
-        return None
+_DOMAIN_TOKEN_PREFIXES = ("file:", "symbol:", "entity:")
 
-    ignored = {
+_DOMAIN_TOKEN_IGNORED = frozenset(
+    {
         "src",
         "main",
         "lib",
@@ -694,22 +676,46 @@ def _extract_domain_token(path_like: str | None) -> str | None:
         "ts",
         "js",
     }
+)
+
+
+def _normalize_domain_path(path_like: str) -> str:
+    """Strip prefixes, protocol, query strings and trailing file extension from a path."""
+    normalized = str(path_like).strip().lower()
+    for prefix in _DOMAIN_TOKEN_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+    if "://" in normalized:
+        remainder = normalized.split("://", 1)[1]
+        normalized = remainder.split("/", 1)[1] if "/" in remainder else remainder
+    return normalized.split("?", 1)[0].strip("/")
+
+
+def _extract_domain_token(path_like: str | None) -> str | None:
+    if not path_like:
+        return None
+    normalized = _normalize_domain_path(path_like)
+    if not normalized:
+        return None
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return None
+    if "." in parts[-1]:
+        parts = parts[:-1]
+    if not parts:
+        return None
+
     for part in reversed(parts):
         token = part.strip().replace("_", "-")
-        if len(token) < 2:
-            continue
-        if token in ignored:
+        if len(token) < 2 or token in _DOMAIN_TOKEN_IGNORED:
             continue
         return token
     return parts[-1]
 
 
-def _node_domain_info(
-    node: KnowledgeNode,
-) -> tuple[str | None, set[str]]:
-    meta = _safe_meta(node.meta)
+def _collect_source_refs(meta: dict, natural_key: str | None) -> set[str]:
+    """Gather source reference strings from node metadata and natural key."""
     source_refs: set[str] = set()
-
     file_path = meta.get("file_path")
     if isinstance(file_path, str) and file_path.strip():
         source_refs.add(file_path)
@@ -717,14 +723,20 @@ def _node_domain_info(
     for key in ("source_files", "source_symbols"):
         raw_refs = meta.get(key)
         if isinstance(raw_refs, list):
-            for ref in raw_refs:
-                if isinstance(ref, str) and ref.strip():
-                    source_refs.add(ref)
+            source_refs.update(ref for ref in raw_refs if isinstance(ref, str) and ref.strip())
         elif isinstance(raw_refs, str) and raw_refs.strip():
             source_refs.add(raw_refs)
 
-    if node.natural_key:
-        source_refs.add(node.natural_key)
+    if natural_key:
+        source_refs.add(natural_key)
+    return source_refs
+
+
+def _node_domain_info(
+    node: KnowledgeNode,
+) -> tuple[str | None, set[str]]:
+    meta = _safe_meta(node.meta)
+    source_refs = _collect_source_refs(meta, node.natural_key)
 
     domains = [token for token in (_extract_domain_token(ref) for ref in source_refs) if token]
     if not domains:
@@ -963,6 +975,47 @@ def _detect_isolated_point_ids(
     return isolated_ids, nearest_distances
 
 
+def _detect_semantic_duplicates(
+    points: list[dict[str, Any]],
+    *,
+    mode: str,
+    min_similarity: float,
+    max_source_overlap: float,
+) -> list[dict[str, Any]]:
+    """Find pairs of clusters that are semantically close but have little source overlap."""
+    results: list[dict[str, Any]] = []
+    for index, left in enumerate(points):
+        left_tokens = set(left.get("name_tokens", []))
+        left_sources = set(left.get("source_refs", []))
+        left_vector = left.get("vector") or []
+        for right in points[index + 1 :]:
+            right_sources = set(right.get("source_refs", []))
+            source_overlap = _jaccard(left_sources, right_sources)
+            if source_overlap >= max_source_overlap:
+                continue
+
+            if mode == "semantic":
+                similarity = _cosine_similarity(left_vector, right.get("vector") or [])
+            else:
+                similarity = _jaccard(left_tokens, set(right.get("name_tokens", [])))
+
+            if similarity < min_similarity:
+                continue
+
+            results.append(
+                {
+                    "left_community_id": left["id"],
+                    "right_community_id": right["id"],
+                    "left_label": left.get("label", left["id"]),
+                    "right_label": right.get("label", right["id"]),
+                    "score": round(similarity, 4),
+                    "anchor_node_id": left.get("anchor_node_id", ""),
+                    "reason": "Two clusters are semantically close but have little source overlap.",
+                }
+            )
+    return results
+
+
 def _build_semantic_map_signals(
     points: list[dict[str, Any]],
     *,
@@ -1030,42 +1083,12 @@ def _build_semantic_map_signals(
                 }
             )
 
-    for index, left in enumerate(points):
-        left_tokens = set(left.get("name_tokens", []))
-        left_sources = set(left.get("source_refs", []))
-        left_vector = left.get("vector") or []
-        for right in points[index + 1 :]:
-            right_tokens = set(right.get("name_tokens", []))
-            right_sources = set(right.get("source_refs", []))
-            right_vector = right.get("vector") or []
-            source_overlap = _jaccard(left_sources, right_sources)
-
-            if mode == "semantic":
-                similarity = _cosine_similarity(left_vector, right_vector)
-                if (
-                    similarity < semantic_duplication_min_similarity
-                    or source_overlap >= semantic_duplication_max_source_overlap
-                ):
-                    continue
-            else:
-                similarity = _jaccard(left_tokens, right_tokens)
-                if (
-                    similarity < semantic_duplication_min_similarity
-                    or source_overlap >= semantic_duplication_max_source_overlap
-                ):
-                    continue
-
-            semantic_duplication.append(
-                {
-                    "left_community_id": left["id"],
-                    "right_community_id": right["id"],
-                    "left_label": left.get("label", left["id"]),
-                    "right_label": right.get("label", right["id"]),
-                    "score": round(similarity, 4),
-                    "anchor_node_id": left.get("anchor_node_id", ""),
-                    "reason": "Two clusters are semantically close but have little source overlap.",
-                }
-            )
+    semantic_duplication = _detect_semantic_duplicates(
+        points,
+        mode=mode,
+        min_similarity=semantic_duplication_min_similarity,
+        max_source_overlap=semantic_duplication_max_source_overlap,
+    )
 
     semantic_duplication.sort(key=lambda item: float(item["score"]), reverse=True)
     mixed_clusters.sort(key=lambda item: float(item["score"]), reverse=True)
@@ -1143,15 +1166,14 @@ def _extract_neighborhood(
         adjacency.setdefault(dst, set()).add(src)
 
     for _ in range(max(hops, 0)):
-        if not frontier:
+        if not frontier or len(seen) >= limit:
             break
         next_frontier: set[str] = set()
         for node_id in frontier:
             for neighbor in adjacency.get(node_id, set()):
-                if neighbor in seen:
-                    continue
-                seen.add(neighbor)
-                next_frontier.add(neighbor)
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    next_frontier.add(neighbor)
                 if len(seen) >= limit:
                     break
             if len(seen) >= limit:
@@ -1290,54 +1312,34 @@ def _community_label(node_ids: list[uuid.UUID], node_by_id: dict[uuid.UUID, Know
     return "Community"
 
 
-def _compute_symbol_communities(
+def _build_adjacency_map(
     symbol_nodes: list[KnowledgeNode],
     symbol_edges: list[KnowledgeEdge],
-) -> tuple[dict[uuid.UUID, str], dict[str, dict[str, Any]]]:
-    if not symbol_nodes:
-        return {}, {}
-
-    node_by_id = {node.id: node for node in symbol_nodes}
+) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """Build a bidirectional adjacency map excluding self-loops."""
     adjacency: dict[uuid.UUID, set[uuid.UUID]] = {node.id: set() for node in symbol_nodes}
     for edge in symbol_edges:
-        src = edge.source_node_id
-        dst = edge.target_node_id
-        if src == dst:
-            continue
-        if src in adjacency and dst in adjacency:
+        src, dst = edge.source_node_id, edge.target_node_id
+        if src != dst and src in adjacency and dst in adjacency:
             adjacency[src].add(dst)
             adjacency[dst].add(src)
+    return adjacency
 
+
+def _find_connected_components(
+    symbol_nodes: list[KnowledgeNode],
+    adjacency: dict[uuid.UUID, set[uuid.UUID]],
+    node_by_id: dict[uuid.UUID, KnowledgeNode],
+) -> list[dict[str, Any]]:
+    """Find connected components via BFS and compute cohesion for each."""
     visited: set[uuid.UUID] = set()
     components: list[dict[str, Any]] = []
 
     for node in sorted(symbol_nodes, key=_symbol_sort_key):
         if node.id in visited:
             continue
-        queue: deque[uuid.UUID] = deque([node.id])
-        visited.add(node.id)
-        members: list[uuid.UUID] = []
-        while queue:
-            current = queue.popleft()
-            members.append(current)
-            for neighbor in sorted(
-                adjacency.get(current, set()),
-                key=lambda node_id: _symbol_sort_key(node_by_id[node_id]),
-            ):
-                if neighbor in visited:
-                    continue
-                visited.add(neighbor)
-                queue.append(neighbor)
-
-        members = sorted(members, key=lambda node_id: _symbol_sort_key(node_by_id[node_id]))
-        member_set = set(members)
-        internal_edges = 0
-        for src in members:
-            for dst in adjacency.get(src, set()):
-                if dst in member_set and str(src) < str(dst):
-                    internal_edges += 1
-        possible_edges = (len(members) * (len(members) - 1)) // 2
-        cohesion = 1.0 if possible_edges == 0 else round(internal_edges / possible_edges, 4)
+        members = _bfs_component(node.id, adjacency, visited, node_by_id)
+        cohesion = _compute_cohesion(members, adjacency)
         label = _community_label(members, node_by_id)
         components.append(
             {
@@ -1351,44 +1353,101 @@ def _compute_symbol_communities(
     components.sort(
         key=lambda comp: (-len(comp["member_ids"]), comp["label"].lower(), comp["first_key"])
     )
+    return components
+
+
+def _bfs_component(
+    start: uuid.UUID,
+    adjacency: dict[uuid.UUID, set[uuid.UUID]],
+    visited: set[uuid.UUID],
+    node_by_id: dict[uuid.UUID, KnowledgeNode],
+) -> list[uuid.UUID]:
+    """BFS from a start node, returning sorted members."""
+    queue: deque[uuid.UUID] = deque([start])
+    visited.add(start)
+    members: list[uuid.UUID] = []
+    while queue:
+        current = queue.popleft()
+        members.append(current)
+        for neighbor in sorted(
+            adjacency.get(current, set()),
+            key=lambda node_id: _symbol_sort_key(node_by_id[node_id]),
+        ):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return sorted(members, key=lambda node_id: _symbol_sort_key(node_by_id[node_id]))
+
+
+def _compute_cohesion(
+    members: list[uuid.UUID],
+    adjacency: dict[uuid.UUID, set[uuid.UUID]],
+) -> float:
+    """Compute the cohesion ratio (internal edges / possible edges)."""
+    member_set = set(members)
+    internal_edges = sum(
+        1
+        for src in members
+        for dst in adjacency.get(src, set())
+        if dst in member_set and str(src) < str(dst)
+    )
+    possible_edges = (len(members) * (len(members) - 1)) // 2
+    return 1.0 if possible_edges == 0 else round(internal_edges / possible_edges, 4)
+
+
+def _build_community_dict(
+    community_id: str,
+    component: dict[str, Any],
+    node_by_id: dict[uuid.UUID, KnowledgeNode],
+) -> tuple[dict[str, Any], list[KnowledgeNode]]:
+    """Build a community payload dict from a connected component."""
+    member_nodes = [node_by_id[node_id] for node_id in component["member_ids"]]
+    kind_counts: dict[str, int] = defaultdict(int)
+    for member in member_nodes:
+        kind_counts[member.kind.value] += 1
+    top_kind_rows = [
+        {"kind": kind, "count": count}
+        for kind, count in sorted(kind_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    community = {
+        "id": community_id,
+        "label": f"{component['label']} ({len(member_nodes)})",
+        "size": len(member_nodes),
+        "cohesion": component["cohesion"],
+        "top_kinds": top_kind_rows,
+        "sample_nodes": [
+            {
+                "id": str(member.id),
+                "name": member.name,
+                "kind": member.kind.value,
+                "natural_key": member.natural_key,
+            }
+            for member in member_nodes[:6]
+        ],
+        "member_node_ids": [member.id for member in member_nodes],
+    }
+    return community, member_nodes
+
+
+def _compute_symbol_communities(
+    symbol_nodes: list[KnowledgeNode],
+    symbol_edges: list[KnowledgeEdge],
+) -> tuple[dict[uuid.UUID, str], dict[str, dict[str, Any]]]:
+    if not symbol_nodes:
+        return {}, {}
+
+    node_by_id = {node.id: node for node in symbol_nodes}
+    adjacency = _build_adjacency_map(symbol_nodes, symbol_edges)
+    components = _find_connected_components(symbol_nodes, adjacency, node_by_id)
 
     node_to_community: dict[uuid.UUID, str] = {}
     communities: dict[str, dict[str, Any]] = {}
     for index, component in enumerate(components, start=1):
         community_id = f"comm_{index}"
-        member_nodes = [node_by_id[node_id] for node_id in component["member_ids"]]
+        community, member_nodes = _build_community_dict(community_id, component, node_by_id)
         for member in member_nodes:
             node_to_community[member.id] = community_id
-        kind_counts: dict[str, int] = defaultdict(int)
-        for member in member_nodes:
-            kind_counts[member.kind.value] += 1
-        top_kind_rows = [
-            {
-                "kind": kind,
-                "count": count,
-            }
-            for kind, count in sorted(
-                kind_counts.items(),
-                key=lambda item: (-item[1], item[0]),
-            )
-        ]
-        communities[community_id] = {
-            "id": community_id,
-            "label": f"{component['label']} ({len(member_nodes)})",
-            "size": len(member_nodes),
-            "cohesion": component["cohesion"],
-            "top_kinds": top_kind_rows,
-            "sample_nodes": [
-                {
-                    "id": str(member.id),
-                    "name": member.name,
-                    "kind": member.kind.value,
-                    "natural_key": member.natural_key,
-                }
-                for member in member_nodes[:6]
-            ],
-            "member_node_ids": [member.id for member in member_nodes],
-        }
+        communities[community_id] = community
 
     return node_to_community, communities
 
@@ -1456,18 +1515,10 @@ USER_FLOWS_RECOVERY_EDGE_KINDS: set[KnowledgeEdgeKind] = {
 }
 
 
-async def _load_community_graph(
-    db: Any,
-    collection_id: uuid.UUID,
-) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], str]:
-    """Load preferred graph for community/process views.
-
-    Preference order:
-    1. SYMBOL nodes with semantic dependency edges (calls/references)
-    2. Semantic/architecture node kinds with non-code edges
-    3. Connectivity recovery graph (domain/UI/flow/test/code links)
-    4. Fallback to all knowledge nodes/edges
-    """
+async def _try_symbol_graph(
+    db: Any, collection_id: uuid.UUID
+) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
+    """Attempt to load SYMBOL nodes with semantic dependency edges."""
     symbol_nodes = (
         (
             await db.execute(
@@ -1480,32 +1531,37 @@ async def _load_community_graph(
         .scalars()
         .all()
     )
-    if symbol_nodes:
-        symbol_node_ids = {node.id for node in symbol_nodes}
-        symbol_edges: list[KnowledgeEdge] = []
-        if symbol_node_ids:
-            symbol_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_id,
-                            KnowledgeEdge.kind.in_(
-                                [
-                                    KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
-                                    KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
-                                ]
-                            ),
-                            KnowledgeEdge.source_node_id.in_(symbol_node_ids),
-                            KnowledgeEdge.target_node_id.in_(symbol_node_ids),
-                        )
-                    )
+    if not symbol_nodes:
+        return None
+    symbol_node_ids = {node.id for node in symbol_nodes}
+    symbol_edges = (
+        (
+            await db.execute(
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.kind.in_(
+                        [
+                            KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
+                            KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+                        ]
+                    ),
+                    KnowledgeEdge.source_node_id.in_(symbol_node_ids),
+                    KnowledgeEdge.target_node_id.in_(symbol_node_ids),
                 )
-                .scalars()
-                .all()
             )
-        if symbol_edges:
-            return symbol_nodes, symbol_edges, "symbol"
+        )
+        .scalars()
+        .all()
+    )
+    if symbol_edges:
+        return symbol_nodes, symbol_edges
+    return None
 
+
+async def _try_semantic_graph(
+    db: Any, collection_id: uuid.UUID
+) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
+    """Attempt to load semantic/architecture nodes with non-code edges."""
     semantic_nodes = (
         (
             await db.execute(
@@ -1518,27 +1574,32 @@ async def _load_community_graph(
         .scalars()
         .all()
     )
-    if semantic_nodes:
-        semantic_node_ids = {node.id for node in semantic_nodes}
-        semantic_edges: list[KnowledgeEdge] = []
-        if semantic_node_ids:
-            semantic_edges = (
-                (
-                    await db.execute(
-                        select(KnowledgeEdge).where(
-                            KnowledgeEdge.collection_id == collection_id,
-                            KnowledgeEdge.kind.in_(GRAPHRAG_SEMANTIC_EDGE_KINDS),
-                            KnowledgeEdge.source_node_id.in_(semantic_node_ids),
-                            KnowledgeEdge.target_node_id.in_(semantic_node_ids),
-                        )
-                    )
+    if not semantic_nodes:
+        return None
+    semantic_node_ids = {node.id for node in semantic_nodes}
+    semantic_edges = (
+        (
+            await db.execute(
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.kind.in_(GRAPHRAG_SEMANTIC_EDGE_KINDS),
+                    KnowledgeEdge.source_node_id.in_(semantic_node_ids),
+                    KnowledgeEdge.target_node_id.in_(semantic_node_ids),
                 )
-                .scalars()
-                .all()
             )
-        if semantic_edges:
-            return semantic_nodes, semantic_edges, "semantic"
+        )
+        .scalars()
+        .all()
+    )
+    if semantic_edges:
+        return semantic_nodes, semantic_edges
+    return None
 
+
+async def _try_recovery_graph(
+    db: Any, collection_id: uuid.UUID
+) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
+    """Attempt to load connectivity recovery graph (domain/UI/flow/test/code links)."""
     recovery_edges = (
         (
             await db.execute(
@@ -1551,33 +1612,60 @@ async def _load_community_graph(
         .scalars()
         .all()
     )
-    if recovery_edges:
-        recovery_node_ids = {edge.source_node_id for edge in recovery_edges} | {
-            edge.target_node_id for edge in recovery_edges
-        }
-        recovery_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_id,
-                        KnowledgeNode.id.in_(recovery_node_ids),
-                        KnowledgeNode.kind != KnowledgeNodeKind.FILE,
-                    )
+    if not recovery_edges:
+        return None
+    recovery_node_ids = {edge.source_node_id for edge in recovery_edges} | {
+        edge.target_node_id for edge in recovery_edges
+    }
+    recovery_nodes = (
+        (
+            await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.id.in_(recovery_node_ids),
+                    KnowledgeNode.kind != KnowledgeNodeKind.FILE,
                 )
             )
-            .scalars()
-            .all()
         )
-        if recovery_nodes:
-            recovery_node_set = {node.id for node in recovery_nodes}
-            recovery_edges = [
-                edge
-                for edge in recovery_edges
-                if edge.source_node_id in recovery_node_set
-                and edge.target_node_id in recovery_node_set
-            ]
-            if recovery_edges:
-                return recovery_nodes, recovery_edges, "connectivity_recovery"
+        .scalars()
+        .all()
+    )
+    if not recovery_nodes:
+        return None
+    recovery_node_set = {node.id for node in recovery_nodes}
+    filtered_edges = [
+        edge
+        for edge in recovery_edges
+        if edge.source_node_id in recovery_node_set and edge.target_node_id in recovery_node_set
+    ]
+    if filtered_edges:
+        return recovery_nodes, filtered_edges
+    return None
+
+
+async def _load_community_graph(
+    db: Any,
+    collection_id: uuid.UUID,
+) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], str]:
+    """Load preferred graph for community/process views.
+
+    Preference order:
+    1. SYMBOL nodes with semantic dependency edges (calls/references)
+    2. Semantic/architecture node kinds with non-code edges
+    3. Connectivity recovery graph (domain/UI/flow/test/code links)
+    4. Fallback to all knowledge nodes/edges
+    """
+    result = await _try_symbol_graph(db, collection_id)
+    if result:
+        return result[0], result[1], "symbol"
+
+    result = await _try_semantic_graph(db, collection_id)
+    if result:
+        return result[0], result[1], "semantic"
+
+    result = await _try_recovery_graph(db, collection_id)
+    if result:
+        return result[0], result[1], "connectivity_recovery"
 
     nodes = (
         (
@@ -1598,6 +1686,28 @@ async def _load_community_graph(
         .all()
     )
     return nodes, edges, "knowledge_fallback"
+
+
+def _find_misplaced_nodes(
+    member_nodes: list[KnowledgeNode],
+    dominant_domain: str | None,
+    dominant_ratio: float,
+    node_domain_by_id: dict,
+    min_ratio: float = 0.6,
+) -> list[dict[str, Any]]:
+    """Return members whose domain diverges from the community's dominant domain."""
+    if not dominant_domain or dominant_ratio < min_ratio:
+        return []
+    return [
+        {
+            "id": str(member.id),
+            "name": member.name,
+            "kind": member.kind.value,
+            "domain": node_domain_by_id.get(member.id),
+        }
+        for member in member_nodes
+        if node_domain_by_id.get(member.id) and node_domain_by_id.get(member.id) != dominant_domain
+    ]
 
 
 async def _build_structural_community_points(
@@ -1679,19 +1789,9 @@ async def _build_structural_community_points(
         profile = _community_profile(member_nodes)
         dominant_domain = profile["dominant_domain"]
         dominant_ratio = float(profile["dominant_ratio"])
-        misplaced_nodes: list[dict[str, Any]] = []
-        if dominant_domain and dominant_ratio >= 0.6:
-            for member in member_nodes:
-                member_domain = profile["node_domain_by_id"].get(member.id)
-                if member_domain and member_domain != dominant_domain:
-                    misplaced_nodes.append(
-                        {
-                            "id": str(member.id),
-                            "name": member.name,
-                            "kind": member.kind.value,
-                            "domain": member_domain,
-                        }
-                    )
+        misplaced_nodes = _find_misplaced_nodes(
+            member_nodes, dominant_domain, dominant_ratio, profile["node_domain_by_id"]
+        )
 
         x, y = positions.get(str(community["id"]), (0.0, 0.0))
         points.append(
@@ -1751,22 +1851,22 @@ def _trace_process_paths(
 ) -> list[list[uuid.UUID]]:
     traces: list[list[uuid.UUID]] = []
     queue: deque[tuple[uuid.UUID, list[uuid.UUID]]] = deque([(entry_id, [entry_id])])
+    max_traces = max_branching * 3
 
-    while queue and len(traces) < max_branching * 3:
+    while queue and len(traces) < max_traces:
         current, path = queue.popleft()
         next_nodes = outgoing.get(current, [])
-        if not next_nodes or len(path) >= max_depth:
+
+        is_terminal = not next_nodes or len(path) >= max_depth
+        if is_terminal:
             if len(path) >= min_steps:
                 traces.append(path)
             continue
 
-        added = False
-        for next_node in next_nodes[:max_branching]:
-            if next_node in path:
-                continue
+        expanded = [n for n in next_nodes[:max_branching] if n not in path]
+        for next_node in expanded:
             queue.append((next_node, [*path, next_node]))
-            added = True
-        if not added and len(path) >= min_steps:
+        if not expanded and len(path) >= min_steps:
             traces.append(path)
 
     return traces
@@ -2814,6 +2914,69 @@ async def twin_export_findings_sarif(
         )
 
 
+def _build_cached_arc42_response(
+    existing: KnowledgeArtifact,
+    collection_uuid: uuid.UUID,
+    scenario: Any,
+    section_key: str | None,
+) -> dict[str, Any] | None:
+    """Build a response from a cached arc42 artifact. Returns None if sections are invalid."""
+    stored_meta = existing.meta or {}
+    stored_sections = stored_meta.get("sections")
+    if not isinstance(stored_sections, dict):
+        return None
+
+    artifact_info = {
+        "id": str(existing.id),
+        "name": existing.name,
+        "kind": existing.kind.value,
+        "cached": True,
+    }
+    base = {
+        "collection_id": str(collection_uuid),
+        "scenario": _serialize_scenario(scenario),
+        "artifact": artifact_info,
+        "section": section_key,
+        "facts_hash": stored_meta.get("facts_hash"),
+        "warnings": stored_meta.get("warnings", []),
+    }
+
+    if section_key:
+        filtered_sections = (
+            {section_key: stored_sections.get(section_key, "")}
+            if section_key in SECTION_TITLES
+            else {}
+        )
+        markdown = ""
+        if section_key in filtered_sections:
+            markdown = (
+                f"# arc42 - {scenario.name}\n\n"
+                f"## {SECTION_TITLES[section_key]}\n"
+                f"{filtered_sections[section_key]}\n"
+            )
+        base["arc42"] = {
+            "title": f"arc42 - {scenario.name}",
+            "generated_at": stored_meta.get("generated_at"),
+            "sections": filtered_sections,
+            "markdown": markdown,
+            "warnings": stored_meta.get("warnings", []),
+            "confidence_summary": stored_meta.get("confidence_summary", {}),
+            "section_coverage": {section_key: bool(filtered_sections.get(section_key))},
+        }
+        return base
+
+    base["arc42"] = {
+        "title": f"arc42 - {scenario.name}",
+        "generated_at": stored_meta.get("generated_at"),
+        "sections": stored_sections,
+        "markdown": existing.content,
+        "warnings": stored_meta.get("warnings", []),
+        "confidence_summary": stored_meta.get("confidence_summary", {}),
+        "section_coverage": stored_meta.get("section_coverage", {}),
+    }
+    return base
+
+
 @router.get(
     "/collections/{collection_id}/views/arc42",
     responses={
@@ -2859,69 +3022,9 @@ async def arc42_view(
         ).scalar_one_or_none()
 
         if existing and not regenerate:
-            stored_meta = existing.meta or {}
-            stored_sections = stored_meta.get("sections")
-            if isinstance(stored_sections, dict):
-                if section_key:
-                    filtered_sections = (
-                        {section_key: stored_sections.get(section_key, "")}
-                        if section_key in SECTION_TITLES
-                        else {}
-                    )
-                    markdown = ""
-                    if section_key in filtered_sections:
-                        markdown = (
-                            f"# arc42 - {scenario.name}\n\n"
-                            f"## {SECTION_TITLES[section_key]}\n"
-                            f"{filtered_sections[section_key]}\n"
-                        )
-                    return {
-                        "collection_id": str(collection_uuid),
-                        "scenario": _serialize_scenario(scenario),
-                        "artifact": {
-                            "id": str(existing.id),
-                            "name": existing.name,
-                            "kind": existing.kind.value,
-                            "cached": True,
-                        },
-                        "section": section_key,
-                        "arc42": {
-                            "title": f"arc42 - {scenario.name}",
-                            "generated_at": stored_meta.get("generated_at"),
-                            "sections": filtered_sections,
-                            "markdown": markdown,
-                            "warnings": stored_meta.get("warnings", []),
-                            "confidence_summary": stored_meta.get("confidence_summary", {}),
-                            "section_coverage": {
-                                section_key: bool(filtered_sections.get(section_key))
-                            },
-                        },
-                        "facts_hash": stored_meta.get("facts_hash"),
-                        "warnings": stored_meta.get("warnings", []),
-                    }
-
-                return {
-                    "collection_id": str(collection_uuid),
-                    "scenario": _serialize_scenario(scenario),
-                    "artifact": {
-                        "id": str(existing.id),
-                        "name": existing.name,
-                        "kind": existing.kind.value,
-                        "cached": True,
-                    },
-                    "section": section_key,
-                    "arc42": {
-                        "title": f"arc42 - {scenario.name}",
-                        "generated_at": stored_meta.get("generated_at"),
-                        "sections": stored_sections,
-                        "markdown": existing.content,
-                        "warnings": stored_meta.get("warnings", []),
-                        "confidence_summary": stored_meta.get("confidence_summary", {}),
-                        "section_coverage": stored_meta.get("section_coverage", {}),
-                    },
-                    "facts_hash": stored_meta.get("facts_hash"),
-                    "warnings": stored_meta.get("warnings", []),
-                }
+            cached = _build_cached_arc42_response(existing, collection_uuid, scenario, section_key)
+            if cached is not None:
+                return cached
 
         if not regenerate:
             raise HTTPException(
@@ -3133,6 +3236,67 @@ async def ports_adapters_view(
         }
 
 
+def _process_erm_edges(
+    edges: list[KnowledgeEdge],
+    table_by_id: dict[uuid.UUID, KnowledgeNode],
+    column_by_id: dict[uuid.UUID, KnowledgeNode],
+) -> tuple[dict[uuid.UUID, list[KnowledgeNode]], list[dict[str, Any]]]:
+    """Classify ERM edges into column-assignments and foreign-key rows."""
+    columns_by_table: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
+    fk_rows: list[dict[str, Any]] = []
+
+    for edge in edges:
+        if edge.kind == KnowledgeEdgeKind.TABLE_HAS_COLUMN:
+            source = table_by_id.get(edge.source_node_id)
+            target = column_by_id.get(edge.target_node_id)
+            if source and target:
+                columns_by_table[source.id].append(target)
+            continue
+
+        source_col = column_by_id.get(edge.source_node_id)
+        target_col = column_by_id.get(edge.target_node_id)
+        if not source_col or not target_col:
+            continue
+        source_meta = source_col.meta if isinstance(source_col.meta, dict) else {}
+        target_meta = target_col.meta if isinstance(target_col.meta, dict) else {}
+        fk_rows.append(
+            {
+                "id": str(edge.id),
+                "fk_name": (edge.meta or {}).get("fk_name"),
+                "source_table": source_meta.get("table")
+                or _parse_db_table_from_natural_key(source_col.natural_key)
+                or "unknown",
+                "source_column": source_col.name,
+                "target_table": target_meta.get("table")
+                or _parse_db_table_from_natural_key(target_col.natural_key)
+                or "unknown",
+                "target_column": target_col.name,
+                "source_column_node_id": str(source_col.id),
+                "target_column_node_id": str(target_col.id),
+            }
+        )
+
+    return columns_by_table, fk_rows
+
+
+def _assign_orphan_columns(
+    column_nodes: list[KnowledgeNode],
+    table_by_name: dict[str, KnowledgeNode],
+    columns_by_table: dict[uuid.UUID, list[KnowledgeNode]],
+) -> None:
+    """Assign columns not already linked via edges to their parent table by name."""
+    for column in column_nodes:
+        meta = column.meta if isinstance(column.meta, dict) else {}
+        table_name = str(meta.get("table") or "").strip()
+        if not table_name:
+            table_name = _parse_db_table_from_natural_key(column.natural_key) or ""
+        if not table_name:
+            continue
+        maybe_table = table_by_name.get(table_name)
+        if maybe_table is not None and column not in columns_by_table[maybe_table.id]:
+            columns_by_table[maybe_table.id].append(column)
+
+
 @router.get(
     "/collections/{collection_id}/views/erm",
     responses={
@@ -3207,59 +3371,8 @@ async def erm_view(
             .all()
         )
 
-        columns_by_table: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
-        fk_rows: list[dict[str, Any]] = []
-
-        for edge in edges:
-            if edge.kind == KnowledgeEdgeKind.TABLE_HAS_COLUMN:
-                source = table_by_id.get(edge.source_node_id)
-                target = column_by_id.get(edge.target_node_id)
-                if not source or not target:
-                    continue
-                columns_by_table[source.id].append(target)
-                continue
-
-            source_col = column_by_id.get(edge.source_node_id)
-            target_col = column_by_id.get(edge.target_node_id)
-            if not source_col or not target_col:
-                continue
-            source_meta = source_col.meta if isinstance(source_col.meta, dict) else {}
-            target_meta = target_col.meta if isinstance(target_col.meta, dict) else {}
-            source_table = (
-                source_meta.get("table")
-                or _parse_db_table_from_natural_key(source_col.natural_key)
-                or "unknown"
-            )
-            target_table = (
-                target_meta.get("table")
-                or _parse_db_table_from_natural_key(target_col.natural_key)
-                or "unknown"
-            )
-            fk_rows.append(
-                {
-                    "id": str(edge.id),
-                    "fk_name": (edge.meta or {}).get("fk_name"),
-                    "source_table": source_table,
-                    "source_column": source_col.name,
-                    "target_table": target_table,
-                    "target_column": target_col.name,
-                    "source_column_node_id": str(source_col.id),
-                    "target_column_node_id": str(target_col.id),
-                }
-            )
-
-        for column in column_nodes:
-            meta = column.meta if isinstance(column.meta, dict) else {}
-            table_name = str(meta.get("table") or "").strip()
-            if not table_name:
-                table_name = _parse_db_table_from_natural_key(column.natural_key) or ""
-            if not table_name:
-                continue
-            maybe_table = table_by_name.get(table_name)
-            if maybe_table is None:
-                continue
-            if column not in columns_by_table[maybe_table.id]:
-                columns_by_table[maybe_table.id].append(column)
+        columns_by_table, fk_rows = _process_erm_edges(edges, table_by_id, column_by_id)
+        _assign_orphan_columns(column_nodes, table_by_name, columns_by_table)
 
         serialized_tables: list[dict[str, Any]] = []
         total_columns = 0
@@ -3987,6 +4100,183 @@ def _default_dup_max_overlap(map_mode: str) -> float:
     return 0.30 if map_mode == "semantic" else 0.35
 
 
+def _is_semantic_entity_excluded(
+    include_node_kinds: set[KnowledgeNodeKind] | None,
+    exclude_node_kinds: set[KnowledgeNodeKind] | None,
+) -> bool:
+    """Check if SEMANTIC_ENTITY is filtered out by kind parameters."""
+    if include_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY not in include_node_kinds:
+        return True
+    return bool(exclude_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY in exclude_node_kinds)
+
+
+async def _load_community_members_and_vectors(
+    db: Any,
+    collection_uuid: uuid.UUID,
+    community_ids: list[uuid.UUID],
+) -> tuple[dict[uuid.UUID, list[KnowledgeNode]], dict[uuid.UUID, list[float]]]:
+    """Load community members and their embedding vectors."""
+    members_by_community: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
+    vectors_by_community: dict[uuid.UUID, list[float]] = {}
+
+    if not community_ids:
+        return members_by_community, vectors_by_community
+
+    member_rows = await db.execute(
+        select(CommunityMember, KnowledgeNode)
+        .join(KnowledgeNode, CommunityMember.node_id == KnowledgeNode.id)
+        .where(CommunityMember.community_id.in_(community_ids))
+        .order_by(
+            CommunityMember.community_id,
+            CommunityMember.score.desc(),
+            KnowledgeNode.name,
+        )
+    )
+    for member, node in member_rows.all():
+        members_by_community[member.community_id].append(node)
+
+    embedding_text = literal_column("knowledge_embeddings.embedding::text").label("embedding_text")
+    embedding_rows = await db.execute(
+        select(
+            KnowledgeEmbedding.target_id,
+            KnowledgeEmbedding.updated_at,
+            embedding_text,
+        )
+        .where(
+            KnowledgeEmbedding.collection_id == collection_uuid,
+            KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
+            KnowledgeEmbedding.target_id.in_(community_ids),
+        )
+        .order_by(
+            KnowledgeEmbedding.target_id,
+            KnowledgeEmbedding.updated_at.desc(),
+        )
+    )
+    for target_id, _updated_at, raw_embedding in embedding_rows.all():
+        if target_id in vectors_by_community:
+            continue
+        parsed = _parse_pgvector_text(str(raw_embedding) if raw_embedding is not None else None)
+        if parsed:
+            vectors_by_community[target_id] = parsed
+
+    return members_by_community, vectors_by_community
+
+
+def _community_to_point(
+    community: Any,
+    member_nodes: list[KnowledgeNode],
+    vectors_by_community: dict[uuid.UUID, list[float]],
+) -> dict[str, Any]:
+    """Convert a KnowledgeCommunity + members into a semantic map point."""
+    profile = _community_profile(member_nodes)
+    misplaced_nodes = _find_misplaced_nodes(
+        member_nodes,
+        profile["dominant_domain"],
+        float(profile["dominant_ratio"]),
+        profile["node_domain_by_id"],
+    )
+    meta = _safe_meta(community.meta)
+    return {
+        "id": str(community.id),
+        "label": community.title or community.natural_key,
+        "x": 0.0,
+        "y": 0.0,
+        "member_count": len(member_nodes),
+        "cohesion": round(float(meta.get("modularity", 0.0)), 4),
+        "top_kinds": profile["top_kinds"],
+        "domain_counts": profile["domain_counts"],
+        "dominant_domain": profile["dominant_domain"],
+        "dominant_ratio": float(profile["dominant_ratio"]),
+        "summary": community.summary,
+        "anchor_node_id": str(member_nodes[0].id),
+        "sample_nodes": [
+            {
+                "id": str(member.id),
+                "name": member.name,
+                "kind": member.kind.value,
+                "natural_key": member.natural_key,
+            }
+            for member in member_nodes[:6]
+        ],
+        "member_node_ids": [str(member.id) for member in member_nodes],
+        "vector": vectors_by_community.get(community.id, []),
+        "source_refs": profile["source_refs"],
+        "name_tokens": profile["name_tokens"],
+        "misplaced_nodes": misplaced_nodes,
+    }
+
+
+async def _build_semantic_community_points(
+    db: Any,
+    *,
+    collection_id: uuid.UUID,
+    include_node_kinds: set[KnowledgeNodeKind] | None,
+    exclude_node_kinds: set[KnowledgeNodeKind] | None,
+    include_edge_kinds: set[KnowledgeEdgeKind] | None,
+    page: int,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build points from semantic (Leiden) communities, falling back to structural."""
+    warnings: list[str] = []
+
+    if _is_semantic_entity_excluded(include_node_kinds, exclude_node_kinds):
+        return [], warnings
+
+    community_rows = (
+        (
+            await db.execute(
+                select(KnowledgeCommunity).where(KnowledgeCommunity.collection_id == collection_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if not community_rows:
+        points, structural_warnings = await _build_structural_community_points(
+            db,
+            collection_id=collection_id,
+            include_node_kinds=include_node_kinds,
+            exclude_node_kinds=exclude_node_kinds,
+            include_edge_kinds=include_edge_kinds,
+            page=page,
+            limit=limit,
+        )
+        warnings.append("No semantic communities found. Falling back to structural communities.")
+        warnings.extend(structural_warnings)
+        return points, warnings
+
+    selected_level = min(c.level for c in community_rows)
+    selected_communities = sorted(
+        [c for c in community_rows if c.level == selected_level],
+        key=lambda c: (c.title, str(c.id)),
+    )
+    if page > 0 or limit > 0:
+        start = page * limit
+        selected_communities = selected_communities[start : start + limit]
+
+    community_ids = [c.id for c in selected_communities]
+    members_by_community, vectors_by_community = await _load_community_members_and_vectors(
+        db, collection_id, community_ids
+    )
+
+    points: list[dict[str, Any]] = []
+    for community in selected_communities:
+        member_nodes = members_by_community.get(community.id, [])
+        if not member_nodes:
+            continue
+        points.append(_community_to_point(community, member_nodes, vectors_by_community))
+
+    _project_vectors(points, "vector")
+    _normalize_xy(points)
+
+    if points and not any(point["vector"] for point in points):
+        warnings.append(
+            "No community embeddings found. Using fallback projection for semantic mode."
+        )
+    return points, warnings
+
+
 @router.get(
     "/collections/{collection_id}/views/semantic-map",
     responses={
@@ -4039,158 +4329,16 @@ async def semantic_map_view(
             warnings.extend(structural_warnings)
 
         else:
-            if (
-                include_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY not in include_node_kinds
-            ) or (exclude_node_kinds and KnowledgeNodeKind.SEMANTIC_ENTITY in exclude_node_kinds):
-                points = []
-            else:
-                community_rows = (
-                    (
-                        await db.execute(
-                            select(KnowledgeCommunity).where(
-                                KnowledgeCommunity.collection_id == collection_uuid
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if community_rows:
-                    selected_level = min(community.level for community in community_rows)
-                    selected_communities = [
-                        community
-                        for community in community_rows
-                        if community.level == selected_level
-                    ]
-
-                    selected_communities.sort(
-                        key=lambda community: (community.title, str(community.id))
-                    )
-                    if page > 0 or limit > 0:
-                        start = page * limit
-                        end = start + limit
-                        selected_communities = selected_communities[start:end]
-
-                    community_ids = [community.id for community in selected_communities]
-                    members_by_community: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
-                    vectors_by_community: dict[uuid.UUID, list[float]] = {}
-
-                    if community_ids:
-                        member_rows = await db.execute(
-                            select(CommunityMember, KnowledgeNode)
-                            .join(KnowledgeNode, CommunityMember.node_id == KnowledgeNode.id)
-                            .where(CommunityMember.community_id.in_(community_ids))
-                            .order_by(
-                                CommunityMember.community_id,
-                                CommunityMember.score.desc(),
-                                KnowledgeNode.name,
-                            )
-                        )
-                        for member, node in member_rows.all():
-                            members_by_community[member.community_id].append(node)
-
-                        embedding_text = literal_column(
-                            "knowledge_embeddings.embedding::text"
-                        ).label("embedding_text")
-                        embedding_rows = await db.execute(
-                            select(
-                                KnowledgeEmbedding.target_id,
-                                KnowledgeEmbedding.updated_at,
-                                embedding_text,
-                            )
-                            .where(
-                                KnowledgeEmbedding.collection_id == collection_uuid,
-                                KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
-                                KnowledgeEmbedding.target_id.in_(community_ids),
-                            )
-                            .order_by(
-                                KnowledgeEmbedding.target_id,
-                                KnowledgeEmbedding.updated_at.desc(),
-                            )
-                        )
-                        for target_id, _updated_at, raw_embedding in embedding_rows.all():
-                            if target_id in vectors_by_community:
-                                continue
-                            parsed = _parse_pgvector_text(
-                                str(raw_embedding) if raw_embedding is not None else None
-                            )
-                            if parsed:
-                                vectors_by_community[target_id] = parsed
-
-                    for community in selected_communities:
-                        member_nodes = members_by_community.get(community.id, [])
-                        if not member_nodes:
-                            continue
-                        profile = _community_profile(member_nodes)
-                        dominant_domain = profile["dominant_domain"]
-                        dominant_ratio = float(profile["dominant_ratio"])
-                        misplaced_nodes: list[dict[str, Any]] = []
-                        if dominant_domain and dominant_ratio >= 0.6:
-                            for member in member_nodes:
-                                member_domain = profile["node_domain_by_id"].get(member.id)
-                                if member_domain and member_domain != dominant_domain:
-                                    misplaced_nodes.append(
-                                        {
-                                            "id": str(member.id),
-                                            "name": member.name,
-                                            "kind": member.kind.value,
-                                            "domain": member_domain,
-                                        }
-                                    )
-
-                        meta = _safe_meta(community.meta)
-                        points.append(
-                            {
-                                "id": str(community.id),
-                                "label": community.title or community.natural_key,
-                                "x": 0.0,
-                                "y": 0.0,
-                                "member_count": len(member_nodes),
-                                "cohesion": round(float(meta.get("modularity", 0.0)), 4),
-                                "top_kinds": profile["top_kinds"],
-                                "domain_counts": profile["domain_counts"],
-                                "dominant_domain": dominant_domain,
-                                "dominant_ratio": dominant_ratio,
-                                "summary": community.summary,
-                                "anchor_node_id": str(member_nodes[0].id),
-                                "sample_nodes": [
-                                    {
-                                        "id": str(member.id),
-                                        "name": member.name,
-                                        "kind": member.kind.value,
-                                        "natural_key": member.natural_key,
-                                    }
-                                    for member in member_nodes[:6]
-                                ],
-                                "member_node_ids": [str(member.id) for member in member_nodes],
-                                "vector": vectors_by_community.get(community.id, []),
-                                "source_refs": profile["source_refs"],
-                                "name_tokens": profile["name_tokens"],
-                                "misplaced_nodes": misplaced_nodes,
-                            }
-                        )
-
-                    _project_vectors(points, "vector")
-                    _normalize_xy(points)
-
-                    if points and not any(point["vector"] for point in points):
-                        warnings.append(
-                            "No community embeddings found. Using fallback projection for semantic mode."
-                        )
-                else:
-                    points, structural_warnings = await _build_structural_community_points(
-                        db,
-                        collection_id=collection_uuid,
-                        include_node_kinds=include_node_kinds,
-                        exclude_node_kinds=exclude_node_kinds,
-                        include_edge_kinds=include_edge_kinds,
-                        page=page,
-                        limit=limit,
-                    )
-                    warnings.append(
-                        "No semantic communities found. Falling back to structural communities."
-                    )
-                    warnings.extend(structural_warnings)
+            points, semantic_warnings = await _build_semantic_community_points(
+                db,
+                collection_id=collection_uuid,
+                include_node_kinds=include_node_kinds,
+                exclude_node_kinds=exclude_node_kinds,
+                include_edge_kinds=include_edge_kinds,
+                page=page,
+                limit=limit,
+            )
+            warnings.extend(semantic_warnings)
 
         signals = _build_semantic_map_signals(
             points,
@@ -4486,6 +4634,52 @@ async def graphrag_process_detail_view(
         }
 
 
+async def _resolve_evidence_text(
+    db: Any,
+    evidence: KnowledgeEvidence,
+    document_by_id: dict[uuid.UUID, Document],
+    document_by_path: dict[str, Document | None],
+) -> tuple[str, str]:
+    """Resolve the display text for a piece of evidence. Returns (text, source)."""
+    if evidence.snippet and evidence.snippet.strip():
+        return _truncate_text(evidence.snippet.strip()), "snippet"
+
+    document = document_by_id.get(evidence.document_id) if evidence.document_id else None
+    if not document and evidence.file_path:
+        document = await _lookup_document_by_path(db, evidence.file_path, document_by_path)
+
+    if document:
+        extracted = _extract_document_lines(
+            document.content_markdown, evidence.start_line, evidence.end_line
+        )
+        if extracted:
+            return extracted, "document_lines"
+
+    return "", "unavailable"
+
+
+async def _lookup_document_by_path(
+    db: Any,
+    file_path: str,
+    cache: dict[str, Document | None],
+) -> Document | None:
+    """Look up a document by file path with caching."""
+    cache_key = file_path.strip().lower()
+    if cache_key in cache:
+        return cache[cache_key]
+    escaped_path = _escape_like_pattern(file_path)
+    document = (
+        await db.execute(
+            select(Document)
+            .where(Document.uri.ilike(f"%{escaped_path}%", escape="\\"))
+            .order_by(Document.updated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    cache[cache_key] = document
+    return document
+
+
 @router.get(
     "/collections/{collection_id}/views/graphrag/evidence",
     responses={
@@ -4582,42 +4776,9 @@ async def graphrag_evidence_view(
         document_by_path: dict[str, Document | None] = {}
         items: list[dict] = []
         for evidence in evidences:
-            text = ""
-            text_source = "unavailable"
-
-            if evidence.snippet and evidence.snippet.strip():
-                text = _truncate_text(evidence.snippet.strip())
-                text_source = "snippet"
-            else:
-                document = (
-                    document_by_id.get(evidence.document_id) if evidence.document_id else None
-                )
-                if not document and evidence.file_path:
-                    cache_key = evidence.file_path.strip().lower()
-                    if cache_key in document_by_path:
-                        document = document_by_path[cache_key]
-                    else:
-                        escaped_path = _escape_like_pattern(evidence.file_path)
-                        document = (
-                            await db.execute(
-                                select(Document)
-                                .where(Document.uri.ilike(f"%{escaped_path}%", escape="\\"))
-                                .order_by(Document.updated_at.desc())
-                                .limit(1)
-                            )
-                        ).scalar_one_or_none()
-                        document_by_path[cache_key] = document
-
-                if document:
-                    extracted = _extract_document_lines(
-                        document.content_markdown,
-                        evidence.start_line,
-                        evidence.end_line,
-                    )
-                    if extracted:
-                        text = extracted
-                        text_source = "document_lines"
-
+            text, text_source = await _resolve_evidence_text(
+                db, evidence, document_by_id, document_by_path
+            )
             items.append(
                 {
                     "evidence_id": str(evidence.id),

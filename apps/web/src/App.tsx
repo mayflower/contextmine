@@ -1598,7 +1598,7 @@ function App() {
                         type="text"
                         placeholder="slug"
                         value={newCollectionSlug}
-                        onChange={(e) => setNewCollectionSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
+                        onChange={(e) => setNewCollectionSlug(e.target.value.toLowerCase().replaceAll(/[^a-z0-9-]/g, '-'))}
                         className="collection-input slug-input"
                       />
                       <select
@@ -1649,7 +1649,7 @@ function App() {
                             {isExpanded ? '▼' : '▶'}
                           </button>
 
-                          <div className="collection-info">
+                          <div className="collection-info" role="group">
                             {isEditing ? (
                               <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                                 <input
@@ -1699,7 +1699,7 @@ function App() {
                             )}
                           </div>
 
-                          <div className="collection-actions-inline" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="collection-actions-inline" role="toolbar" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <button
                               className="action-btn cockpit-btn"
                               onClick={(e) => {
@@ -1743,7 +1743,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="share-popover" role="dialog" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
@@ -1849,11 +1849,11 @@ function App() {
                                                     type="checkbox"
                                                     checked={editSourceEnabled}
                                                     onChange={(e) => setEditSourceEnabled(e.target.checked)}
-                                                  />
+                                                  />{' '}
                                                   Enabled
                                                 </label>
                                                 <label className="select-inline">
-                                                  Interval:
+                                                  Interval:{' '}
                                                   <select
                                                     value={editSourceInterval}
                                                     onChange={(e) => setEditSourceInterval(Number(e.target.value))}
@@ -1869,7 +1869,7 @@ function App() {
                                                 </label>
                                                 {source.type === 'web' && (
                                                   <label className="input-inline">
-                                                    Max pages:
+                                                    Max pages:{' '}
                                                     <input
                                                       type="number"
                                                       min={1}
@@ -2102,8 +2102,9 @@ function App() {
               <h2>Run History</h2>
               <div className="run-filters">
                 <div className="filter-group">
-                  <label>Collection:</label>
+                  <label htmlFor="runs-collection-filter">Collection:</label>
                   <select
+                    id="runs-collection-filter"
                     value={runsCollection?.id || ''}
                     onChange={(e) => {
                       const coll = collections.find(c => c.id === e.target.value) || null
@@ -2128,8 +2129,9 @@ function App() {
                 </div>
                 {runsCollection && (
                   <div className="filter-group">
-                    <label>Source:</label>
+                    <label htmlFor="runs-source-filter">Source:</label>
                     <select
+                      id="runs-source-filter"
                       value={selectedRunSource?.id || ''}
                       onChange={(e) => {
                         const src = runsSources.find(s => s.id === e.target.value) || null

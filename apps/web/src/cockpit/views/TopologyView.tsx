@@ -222,7 +222,7 @@ export default function TopologyView({
       {showDisplayOptions ? (
         <div className="cockpit2-graph-toolbar">
           <label>
-            Density
+            Density{' '}
             <select value={density} onChange={(event) => onDensityChange(Number(event.target.value))}>
               <option value={800}>Focused</option>
               <option value={1200}>Balanced</option>
