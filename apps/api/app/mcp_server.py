@@ -3,7 +3,7 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from contextmine_core import (
     Collection,
@@ -1210,6 +1210,36 @@ def _match_candidates_by_query(all_candidates, query_words: set[str]) -> list:
     return matched
 
 
+def _format_single_rule(rule: Any) -> list[str]:
+    """Format a single business rule into markdown lines."""
+    meta = rule.meta or {}
+    lines = [f"### {rule.name}"]
+    lines.append(
+        f"- **Category**: {meta.get('category', 'unknown')} | **Severity**: {meta.get('severity', 'unknown')}"
+    )
+    if meta.get("natural_language"):
+        lines.append(f"- **Rule**: {meta['natural_language']}")
+    if meta.get("predicate"):
+        lines.append(f"- **Condition**: `{meta['predicate'][:100]}`")
+    if meta.get("failure"):
+        lines.append(f"- **On Failure**: `{meta['failure'][:100]}`")
+    lines.append("")
+    return lines
+
+
+def _format_single_candidate(candidate: Any) -> list[str]:
+    """Format a single validation candidate into markdown lines."""
+    meta = candidate.meta or {}
+    lines = [f"### {meta.get('container_name', candidate.name)}"]
+    lines.append(f"- **File**: `{meta.get('file_path', 'unknown')}`")
+    if meta.get("predicate"):
+        lines.append(f"- **Condition**: `{meta['predicate'][:150]}`")
+    if meta.get("failure"):
+        lines.append(f"- **Failure**: `{meta['failure'][:100]}`")
+    lines.append("")
+    return lines
+
+
 def _format_validation_results(
     code_path: str, matched_rules: list, matched_candidates: list
 ) -> str:
@@ -1218,32 +1248,14 @@ def _format_validation_results(
     if matched_rules:
         lines.append(f"## Business Rules ({len(matched_rules)} found)\n")
         for rule in matched_rules[:10]:
-            meta = rule.meta or {}
-            lines.append(f"### {rule.name}")
-            lines.append(
-                f"- **Category**: {meta.get('category', 'unknown')} | **Severity**: {meta.get('severity', 'unknown')}"
-            )
-            if meta.get("natural_language"):
-                lines.append(f"- **Rule**: {meta['natural_language']}")
-            if meta.get("predicate"):
-                lines.append(f"- **Condition**: `{meta['predicate'][:100]}`")
-            if meta.get("failure"):
-                lines.append(f"- **On Failure**: `{meta['failure'][:100]}`")
-            lines.append("")
+            lines.extend(_format_single_rule(rule))
     if matched_candidates:
         lines.append(f"## Validation Candidates ({len(matched_candidates)} unlabeled)\n")
         lines.append(
             "*These are detected validation patterns not yet labeled as business rules.*\n"
         )
         for candidate in matched_candidates[:5]:
-            meta = candidate.meta or {}
-            lines.append(f"### {meta.get('container_name', candidate.name)}")
-            lines.append(f"- **File**: `{meta.get('file_path', 'unknown')}`")
-            if meta.get("predicate"):
-                lines.append(f"- **Condition**: `{meta['predicate'][:150]}`")
-            if meta.get("failure"):
-                lines.append(f"- **Failure**: `{meta['failure'][:100]}`")
-            lines.append("")
+            lines.extend(_format_single_candidate(candidate))
     return "\n".join(lines)
 
 
@@ -1321,39 +1333,51 @@ async def research_validation(
         return f"# Error\n\nFailed to research validation: {e}"
 
 
+def _format_table_section(tables: list) -> list[str]:
+    """Format database tables into markdown lines."""
+    lines = [f"## Database Tables ({len(tables)} found)\n"]
+    for table in tables[:10]:
+        meta = table.meta or {}
+        pk = f" (PK: `{meta.get('primary_key')}`)" if meta.get("primary_key") else ""
+        lines.append(f"### {table.name}{pk}")
+        lines.append(f"- **Columns**: {meta.get('column_count', 'unknown')}")
+        for col in (meta.get("columns") or [])[:8]:
+            nullable = "" if col.get("nullable", True) else " NOT NULL"
+            lines.append(f"  - `{col['name']}`: {col.get('type', '?')}{nullable}")
+        lines.append("")
+    return lines
+
+
+def _format_column_section(columns: list) -> list[str]:
+    """Format related columns into markdown lines."""
+    cols_by_table: dict[str, list] = {}
+    for col in columns:
+        table_name = col.natural_key.split(":")[1] if ":" in col.natural_key else "unknown"
+        cols_by_table.setdefault(table_name, []).append(col)
+    lines = [f"## Related Columns ({len(columns)} found)\n"]
+    for table_name, cols in cols_by_table.items():
+        lines.append(f"**{table_name}**:")
+        for col in cols[:5]:
+            meta = col.meta or {}
+            lines.append(f"- `{col.name}`: {meta.get('type', '?')}")
+        lines.append("")
+    return lines
+
+
 def _format_data_model_results(
     entity: str,
     entity_lower: str,
     tables: list,
     columns: list,
     endpoints: list,
-    erd_artifact,
+    erd_artifact: Any,
 ) -> str:
     """Format data model research results as markdown."""
     lines = [f"# Data Model: {entity}\n"]
     if tables:
-        lines.append(f"## Database Tables ({len(tables)} found)\n")
-        for table in tables[:10]:
-            meta = table.meta or {}
-            pk = f" (PK: `{meta.get('primary_key')}`)" if meta.get("primary_key") else ""
-            lines.append(f"### {table.name}{pk}")
-            lines.append(f"- **Columns**: {meta.get('column_count', 'unknown')}")
-            for col in (meta.get("columns") or [])[:8]:
-                nullable = "" if col.get("nullable", True) else " NOT NULL"
-                lines.append(f"  - `{col['name']}`: {col.get('type', '?')}{nullable}")
-            lines.append("")
+        lines.extend(_format_table_section(tables))
     if columns:
-        cols_by_table: dict[str, list] = {}
-        for col in columns:
-            table_name = col.natural_key.split(":")[1] if ":" in col.natural_key else "unknown"
-            cols_by_table.setdefault(table_name, []).append(col)
-        lines.append(f"## Related Columns ({len(columns)} found)\n")
-        for table_name, cols in cols_by_table.items():
-            lines.append(f"**{table_name}**:")
-            for col in cols[:5]:
-                meta = col.meta or {}
-                lines.append(f"- `{col.name}`: {meta.get('type', '?')}")
-            lines.append("")
+        lines.extend(_format_column_section(columns))
     if endpoints:
         lines.append(f"## Related API Endpoints ({len(endpoints)} found)\n")
         for ep in endpoints[:8]:

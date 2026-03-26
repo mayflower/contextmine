@@ -253,7 +253,7 @@ class SCIPProvider:
         file_path: str,
         seen_symbols: set[str],
         symbols: list[Symbol],
-        symbol_kinds: dict[str, SymbolKind],
+        _symbol_kinds: dict[str, SymbolKind],
         _remember_symbol: Any,
         _append_relation: Any,
     ) -> None:

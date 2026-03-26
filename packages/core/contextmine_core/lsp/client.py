@@ -97,6 +97,59 @@ SEVERITY_MAP = {
 }
 
 
+def _extract_hover_content(contents: Any) -> str:
+    """Extract a content string from LSP hover contents."""
+    if isinstance(contents, str):
+        return contents
+    if isinstance(contents, dict):
+        return contents.get("value", str(contents))
+    if isinstance(contents, list):
+        parts = []
+        for item in contents:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(item.get("value", str(item)))
+        return "\n".join(parts)
+    return ""
+
+
+def _detect_symbol_kind(content_str: str, first_line: str) -> str:
+    """Detect symbol kind from hover content."""
+    lower = content_str.lower()
+    if "def " in lower or "function" in lower:
+        return "function"
+    if "class " in lower:
+        return "class"
+    if "method" in lower:
+        return "method"
+    if "variable" in lower or ":" in first_line:
+        return "variable"
+    return "unknown"
+
+
+def _extract_symbol_name(signature: str) -> str:
+    """Extract symbol name from a signature string."""
+    if "(" in signature:
+        parts = signature.split("(")[0].split()
+        return parts[-1] if parts else "unknown"
+    if ":" in signature:
+        return signature.split(":")[0].strip()
+    parts = signature.split()
+    return parts[-1] if parts else "unknown"
+
+
+def _build_symbol_info_from_hover(content_str: str) -> SymbolInfo:
+    """Build a SymbolInfo from hover content text."""
+    lines = content_str.strip().split("\n")
+    first_line = lines[0] if lines else ""
+    signature = first_line if first_line else None
+    documentation = "\n".join(lines[1:]).strip() if len(lines) > 1 else None
+    kind = _detect_symbol_kind(content_str, first_line)
+    name = _extract_symbol_name(signature) if signature else "unknown"
+    return SymbolInfo(name=name, kind=kind, signature=signature, documentation=documentation)
+
+
 class LspClient:
     """Wrapper around multilspy LanguageServer with simplified API.
 
@@ -322,86 +375,16 @@ class LspClient:
         return locations
 
     def _parse_hover(self, result: dict[str, Any] | None) -> SymbolInfo | None:
-        """Parse LSP hover result into SymbolInfo.
-
-        Args:
-            result: Raw LSP hover response
-
-        Returns:
-            SymbolInfo if parseable, None otherwise
-        """
+        """Parse LSP hover result into SymbolInfo."""
         if not result:
             return None
-
         contents = result.get("contents")
         if not contents:
             return None
-
-        # Extract content string
-        content_str = ""
-        if isinstance(contents, str):
-            content_str = contents
-        elif isinstance(contents, dict):
-            # MarkedString or MarkupContent
-            content_str = contents.get("value", str(contents))
-        elif isinstance(contents, list):
-            # Array of MarkedStrings
-            parts = []
-            for item in contents:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    parts.append(item.get("value", str(item)))
-            content_str = "\n".join(parts)
-
+        content_str = _extract_hover_content(contents)
         if not content_str:
             return None
-
-        # Parse the content to extract symbol info
-        # This is a best-effort extraction
-        lines = content_str.strip().split("\n")
-        first_line = lines[0] if lines else ""
-
-        # Try to detect signature (often the first line)
-        signature = first_line if first_line else None
-
-        # Try to detect documentation (often after the first line)
-        documentation = "\n".join(lines[1:]).strip() if len(lines) > 1 else None
-
-        # Try to detect kind from common patterns
-        kind = "unknown"
-        lower_content = content_str.lower()
-        if "def " in lower_content or "function" in lower_content:
-            kind = "function"
-        elif "class " in lower_content:
-            kind = "class"
-        elif "method" in lower_content:
-            kind = "method"
-        elif "variable" in lower_content or ":" in first_line:
-            kind = "variable"
-
-        # Extract name from signature if possible
-        name = "unknown"
-        if signature:
-            # Common patterns: "def name(", "class Name", "name: type"
-            if "(" in signature:
-                # Function/method
-                parts = signature.split("(")[0].split()
-                name = parts[-1] if parts else "unknown"
-            elif ":" in signature:
-                # Variable with type annotation
-                name = signature.split(":")[0].strip()
-            else:
-                # Other (class name, etc.)
-                parts = signature.split()
-                name = parts[-1] if parts else "unknown"
-
-        return SymbolInfo(
-            name=name,
-            kind=kind,
-            signature=signature,
-            documentation=documentation,
-        )
+        return _build_symbol_info_from_hover(content_str)
 
 
 async def _noop() -> None:

@@ -272,61 +272,60 @@ def trace_path(
     current_depth = 0
 
     while (forward_frontier or backward_frontier) and current_depth < max_depth:
-        # Expand forward
         if forward_frontier:
-            next_frontier: deque[str] = deque()
-            while forward_frontier:
-                node_id = forward_frontier.popleft()
-                path_so_far = forward_visited[node_id]
-
-                # Get outgoing neighbors
-                neighbors = graph.get_neighbors(node_id, edge_types, direction="outgoing")
-                for neighbor, edge in neighbors:
-                    if neighbor.id in forward_visited:
-                        continue
-
-                    new_path = path_so_far + [
-                        PathStep(node=neighbor, edge_type=edge.edge_type, direction="forward")
-                    ]
-                    forward_visited[neighbor.id] = new_path
-                    next_frontier.append(neighbor.id)
-
-                    # Check for meeting point
-                    if neighbor.id in backward_visited:
-                        combined = _combine_paths(new_path, backward_visited[neighbor.id])
-                        paths.append(combined)
-
-            forward_frontier = next_frontier
-
-        # Expand backward
+            forward_frontier = _expand_bfs_frontier(
+                graph,
+                forward_frontier,
+                forward_visited,
+                backward_visited,
+                edge_types,
+                "forward",
+                paths,
+            )
         if backward_frontier:
-            next_frontier = deque()
-            while backward_frontier:
-                node_id = backward_frontier.popleft()
-                path_so_far = backward_visited[node_id]
-
-                # Get incoming neighbors (traverse edges in reverse)
-                neighbors = graph.get_neighbors(node_id, edge_types, direction="incoming")
-                for neighbor, edge in neighbors:
-                    if neighbor.id in backward_visited:
-                        continue
-
-                    new_path = [
-                        PathStep(node=neighbor, edge_type=edge.edge_type, direction="backward")
-                    ] + path_so_far
-                    backward_visited[neighbor.id] = new_path
-                    next_frontier.append(neighbor.id)
-
-                    # Check for meeting point
-                    if neighbor.id in forward_visited:
-                        combined = _combine_paths(forward_visited[neighbor.id], new_path)
-                        paths.append(combined)
-
-            backward_frontier = next_frontier
-
+            backward_frontier = _expand_bfs_frontier(
+                graph,
+                backward_frontier,
+                backward_visited,
+                forward_visited,
+                edge_types,
+                "backward",
+                paths,
+            )
         current_depth += 1
 
     return paths
+
+
+def _expand_bfs_frontier(
+    graph: CodeGraph,
+    frontier: deque[str],
+    visited: dict[str, list[PathStep]],
+    opposite_visited: dict[str, list[PathStep]],
+    edge_types: list[EdgeType] | None,
+    direction: str,
+    paths: list[list[PathStep]],
+) -> deque[str]:
+    """Expand one BFS frontier by one level. Returns the new frontier."""
+    next_frontier: deque[str] = deque()
+    graph_direction = "outgoing" if direction == "forward" else "incoming"
+    while frontier:
+        node_id = frontier.popleft()
+        path_so_far = visited[node_id]
+        neighbors = graph.get_neighbors(node_id, edge_types, direction=graph_direction)
+        for neighbor, edge in neighbors:
+            if neighbor.id in visited:
+                continue
+            step = PathStep(node=neighbor, edge_type=edge.edge_type, direction=direction)
+            new_path = path_so_far + [step] if direction == "forward" else [step] + path_so_far
+            visited[neighbor.id] = new_path
+            next_frontier.append(neighbor.id)
+            if neighbor.id in opposite_visited:
+                if direction == "forward":
+                    paths.append(_combine_paths(new_path, opposite_visited[neighbor.id]))
+                else:
+                    paths.append(_combine_paths(opposite_visited[neighbor.id], new_path))
+    return next_frontier
 
 
 def _combine_paths(

@@ -259,25 +259,45 @@ def _extract_with_query(
     return symbols
 
 
+def _try_extract_symbol_from_node(
+    node: Any,
+    parent_name: str | None,
+    language: TreeSitterLanguage,
+    symbol_types: dict[str, SymbolKind],
+    file_path: str,
+    lines: list[str],
+    symbols: list[Symbol],
+) -> str | None:
+    """Try to extract a symbol from a tree-sitter node. Return name if found."""
+    name = _extract_name_from_node(node, language)
+    if not name:
+        return None
+    start_line = node.start_point[0] + 1
+    end_line = node.end_point[0] + 1
+    symbols.append(
+        Symbol(
+            name=name,
+            kind=symbol_types[node.type],
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            start_column=node.start_point[1],
+            end_column=node.end_point[1],
+            signature=lines[start_line - 1].strip() if start_line <= len(lines) else None,
+            parent=parent_name,
+            docstring=_extract_docstring(node, language),
+        )
+    )
+    return name
+
+
 def _extract_with_traversal(
     file_path: str,
     content: str,
     language: TreeSitterLanguage,
     include_children: bool,
 ) -> list[Symbol]:
-    """Extract symbols using manual tree traversal.
-
-    Fallback when queries aren't available or fail.
-
-    Args:
-        file_path: Path to source file
-        content: File content
-        language: The programming language
-        include_children: Whether to extract nested symbols
-
-    Returns:
-        List of extracted symbols
-    """
+    """Extract symbols using manual tree traversal."""
     manager = get_treesitter_manager()
     tree = manager.parse(file_path, content)
 
@@ -285,41 +305,22 @@ def _extract_with_traversal(
     lines = content.split("\n")
     symbol_types = _get_symbol_node_types(language)
 
-    def _try_extract_symbol(node: Any, parent_name: str | None) -> str | None:
-        """Try to extract a symbol from node; return symbol name if found."""
-        name = _extract_name_from_node(node, language)
-        if not name:
-            return None
-        kind = symbol_types[node.type]
-        start_line = node.start_point[0] + 1
-        end_line = node.end_point[0] + 1
-        signature = lines[start_line - 1].strip() if start_line <= len(lines) else None
-        docstring = _extract_docstring(node, language)
-        symbols.append(
-            Symbol(
-                name=name,
-                kind=kind,
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                start_column=node.start_point[1],
-                end_column=node.end_point[1],
-                signature=signature,
-                parent=parent_name,
-                docstring=docstring,
-            )
-        )
-        return name
-
     def traverse(node: Any, parent_name: str | None = None) -> None:
         if node.type in symbol_types:
-            extracted_name = _try_extract_symbol(node, parent_name)
+            extracted_name = _try_extract_symbol_from_node(
+                node,
+                parent_name,
+                language,
+                symbol_types,
+                file_path,
+                lines,
+                symbols,
+            )
             if extracted_name:
                 if include_children:
                     for child in node.children:
                         traverse(child, extracted_name)
                 return
-
         for child in node.children:
             traverse(child, parent_name)
 

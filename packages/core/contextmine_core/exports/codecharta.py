@@ -156,19 +156,17 @@ def _coerce_int(value: Any) -> int:
         return 0
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
+    if isinstance(value, (int, float)):
         return int(value)
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return 0
-        try:
-            return int(float(value))
-        except ValueError:
-            return 0
-    return 0
+    if not isinstance(value, str):
+        return 0
+    stripped = value.strip()
+    if not stripped:
+        return 0
+    try:
+        return int(float(stripped))
+    except ValueError:
+        return 0
 
 
 def _coerce_float(value: Any) -> float:
@@ -178,15 +176,15 @@ def _coerce_float(value: Any) -> float:
         return float(value)
     if isinstance(value, (int, float)):
         return float(value)
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return 0.0
-        try:
-            return float(value)
-        except ValueError:
-            return 0.0
-    return 0.0
+    if not isinstance(value, str):
+        return 0.0
+    stripped = value.strip()
+    if not stripped:
+        return 0.0
+    try:
+        return float(stripped)
+    except ValueError:
+        return 0.0
 
 
 def _metric_from_meta(meta: dict[str, Any] | None) -> _MetricValues:

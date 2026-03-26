@@ -665,6 +665,36 @@ def _extract_cross_document_relationships(
 # -----------------------------------------------------------------------------
 
 
+def _create_file_mention_edges(
+    session: Any,
+    collection_id: UUID,
+    entity_name_to_id: dict[str, UUID],
+    entity_source_files: dict[str, list[str]],
+    file_node_by_uri: dict[str, UUID],
+    edge_cls: Any,
+    edge_kind_cls: Any,
+    stats: dict,
+) -> None:
+    """Create FILE_MENTIONS_ENTITY edges for graph connectivity."""
+    created: set[tuple[UUID, UUID]] = set()
+    for entity_name, entity_id in entity_name_to_id.items():
+        for uri in entity_source_files.get(entity_name, []):
+            file_id = file_node_by_uri.get(uri)
+            if not file_id or (file_id, entity_id) in created:
+                continue
+            session.add(
+                edge_cls(
+                    collection_id=collection_id,
+                    source_node_id=file_id,
+                    target_node_id=entity_id,
+                    kind=edge_kind_cls.FILE_MENTIONS_ENTITY,
+                    meta={"source_uri": uri},
+                )
+            )
+            created.add((file_id, entity_id))
+            stats["file_edges_created"] += 1
+
+
 async def persist_semantic_entities(
     session: AsyncSession,
     collection_id: UUID,
@@ -776,23 +806,16 @@ async def persist_semantic_entities(
         stats["relationships_created"] += 1
 
     # Create FILE_MENTIONS_ENTITY edges to connect the code graph to semantic graph
-    # This is critical for GraphRAG retrieval to work properly
-    created_file_edges: set[tuple[UUID, UUID]] = set()
-    for entity_name, entity_id in entity_name_to_id.items():
-        source_uris = entity_source_files.get(entity_name, [])
-        for uri in source_uris:
-            file_id = file_node_by_uri.get(uri)
-            if file_id and (file_id, entity_id) not in created_file_edges:
-                edge = KnowledgeEdge(
-                    collection_id=collection_id,
-                    source_node_id=file_id,
-                    target_node_id=entity_id,
-                    kind=KnowledgeEdgeKind.FILE_MENTIONS_ENTITY,
-                    meta={"source_uri": uri},
-                )
-                session.add(edge)
-                created_file_edges.add((file_id, entity_id))
-                stats["file_edges_created"] += 1
+    _create_file_mention_edges(
+        session,
+        collection_id,
+        entity_name_to_id,
+        entity_source_files,
+        file_node_by_uri,
+        KnowledgeEdge,
+        KnowledgeEdgeKind,
+        stats,
+    )
 
     logger.info(
         "Persisted %d entities, %d relationships, %d file edges",

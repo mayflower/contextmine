@@ -76,7 +76,7 @@ def parse_joern_output(output: str) -> Any:
     if marker_match:
         return marker_match.group(1).strip()
 
-    triple_json = re.search(r'"""(\[.*?\]|\{.*?\})"""', cleaned, re.DOTALL)
+    triple_json = re.search(r'"""(\[[^\]]*\]|\{[^\}]*\})"""', cleaned, re.DOTALL)
     if triple_json:
         try:
             parsed = json.loads(triple_json.group(1))

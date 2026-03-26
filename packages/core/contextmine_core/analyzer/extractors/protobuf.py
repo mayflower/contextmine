@@ -81,20 +81,32 @@ class ProtobufExtraction:
     services: list[ProtoServiceDef] = field(default_factory=list)
 
 
+def _process_proto_syntax(content: str, node: object, result: ProtobufExtraction) -> None:
+    syntax_value = unquote(node_text(content, first_child(node, "string")))
+    if syntax_value:
+        result.syntax = syntax_value
+
+
+def _process_proto_package(content: str, node: object, result: ProtobufExtraction) -> None:
+    package_name = node_text(content, first_child(node, "full_ident")).strip()
+    if package_name:
+        result.package = package_name
+
+
+def _process_proto_import(content: str, node: object, result: ProtobufExtraction) -> None:
+    imported = unquote(node_text(content, first_child(node, "string")))
+    if imported:
+        result.imports.append(imported)
+
+
 def _process_proto_node(content: str, node: object, result: ProtobufExtraction) -> None:
     """Process a single top-level protobuf AST node into the extraction result."""
     if node.type == "syntax":
-        syntax_value = unquote(node_text(content, first_child(node, "string")))
-        if syntax_value:
-            result.syntax = syntax_value
+        _process_proto_syntax(content, node, result)
     elif node.type == "package":
-        package_name = node_text(content, first_child(node, "full_ident")).strip()
-        if package_name:
-            result.package = package_name
+        _process_proto_package(content, node, result)
     elif node.type == "import":
-        imported = unquote(node_text(content, first_child(node, "string")))
-        if imported:
-            result.imports.append(imported)
+        _process_proto_import(content, node, result)
     elif node.type == "enum":
         parsed = _parse_enum(content, node)
         if parsed is not None:

@@ -446,6 +446,38 @@ async def _upsert_job_node(
     return node_id
 
 
+async def _upsert_job_dependency_edge(
+    session: AsyncSession,
+    collection_id: UUID,
+    source_id: UUID,
+    target_id: UUID,
+    stats: dict,
+) -> None:
+    """Create a JOB_DEPENDS_ON edge if it doesn't already exist."""
+    from contextmine_core.models import KnowledgeEdge, KnowledgeEdgeKind
+    from sqlalchemy import select
+
+    edge_exists = await session.execute(
+        select(KnowledgeEdge.id).where(
+            KnowledgeEdge.collection_id == collection_id,
+            KnowledgeEdge.source_node_id == source_id,
+            KnowledgeEdge.target_node_id == target_id,
+            KnowledgeEdge.kind == KnowledgeEdgeKind.JOB_DEPENDS_ON,
+        )
+    )
+    if not edge_exists.scalar_one_or_none():
+        session.add(
+            KnowledgeEdge(
+                collection_id=collection_id,
+                source_node_id=source_id,
+                target_node_id=target_id,
+                kind=KnowledgeEdgeKind.JOB_DEPENDS_ON,
+                meta={},
+            )
+        )
+        stats["edges_created"] += 1
+
+
 async def _create_job_dependency_edges(
     session: AsyncSession,
     collection_id: UUID,
@@ -454,9 +486,6 @@ async def _create_job_dependency_edges(
     stats: dict,
 ) -> None:
     """Create JOB_DEPENDS_ON edges for all job dependencies."""
-    from contextmine_core.models import KnowledgeEdge, KnowledgeEdgeKind
-    from sqlalchemy import select
-
     for extraction in extractions:
         for job in extraction.jobs:
             source_id = job_node_ids.get(job.name)
@@ -466,25 +495,13 @@ async def _create_job_dependency_edges(
                 target_id = job_node_ids.get(dep_name)
                 if not target_id:
                     continue
-                edge_exists = await session.execute(
-                    select(KnowledgeEdge.id).where(
-                        KnowledgeEdge.collection_id == collection_id,
-                        KnowledgeEdge.source_node_id == source_id,
-                        KnowledgeEdge.target_node_id == target_id,
-                        KnowledgeEdge.kind == KnowledgeEdgeKind.JOB_DEPENDS_ON,
-                    )
+                await _upsert_job_dependency_edge(
+                    session,
+                    collection_id,
+                    source_id,
+                    target_id,
+                    stats,
                 )
-                if not edge_exists.scalar_one_or_none():
-                    session.add(
-                        KnowledgeEdge(
-                            collection_id=collection_id,
-                            source_node_id=source_id,
-                            target_node_id=target_id,
-                            kind=KnowledgeEdgeKind.JOB_DEPENDS_ON,
-                            meta={},
-                        )
-                    )
-                    stats["edges_created"] += 1
 
 
 async def build_jobs_graph(

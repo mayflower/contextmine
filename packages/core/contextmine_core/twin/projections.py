@@ -85,23 +85,26 @@ def _resolve_projected_node_name(stat: dict[str, Any]) -> str:
     return stat["domain"]
 
 
-def build_architecture_projection(
+def _make_level_key(
+    level: str, group: tuple[str, str, str, str, float]
+) -> tuple[str, str, str, str]:
+    domain, container, component, _, _ = group
+    if level == "domain":
+        return ("domain", domain, "", "")
+    if level == "component":
+        return ("component", domain, container, component)
+    return ("container", domain, container, "")
+
+
+def _group_nodes_by_arch(
     nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    entity_level: str,
-    include_kinds: set[str] | None = None,
-    exclude_kinds: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
-    """Aggregate raw nodes/edges into architecture entities."""
-    level = (entity_level or "container").lower()
-    if level not in {"domain", "container", "component"}:
-        level = "container"
-
+    include_kinds: set[str] | None,
+    exclude_kinds: set[str] | None,
+) -> tuple[dict[str, tuple[str, str, str, str, float]], int, int]:
+    """Assign each node to its architecture group. Return (mapping, explicit_count, heuristic_count)."""
     group_by_node_id: dict[str, tuple[str, str, str, str, float]] = {}
-
     explicit_count = 0
     heuristic_count = 0
-
     for node in nodes:
         kind = str(node.get("kind") or "")
         if not _kind_allowed(kind, include_kinds, exclude_kinds):
@@ -115,19 +118,75 @@ def build_architecture_projection(
             explicit_count += 1
         else:
             heuristic_count += 1
+    return group_by_node_id, explicit_count, heuristic_count
+
+
+def _aggregate_arch_edges(
+    edges: list[dict[str, Any]],
+    group_by_node_id: dict[str, tuple[str, str, str, str, float]],
+    key_to_node_id: dict[str, str],
+    level: str,
+) -> list[dict[str, Any]]:
+    """Aggregate raw edges into architecture-level projected edges."""
+    edge_stats: dict[tuple[str, str], dict[str, Any]] = {}
+    for edge in edges:
+        src = group_by_node_id.get(str(edge.get("source_node_id")))
+        dst = group_by_node_id.get(str(edge.get("target_node_id")))
+        if not src or not dst:
+            continue
+        src_key = "|".join(_make_level_key(level, src))
+        dst_key = "|".join(_make_level_key(level, dst))
+        if src_key == dst_key:
+            continue
+        src_node_id = key_to_node_id.get(src_key)
+        dst_node_id = key_to_node_id.get(dst_key)
+        if not src_node_id or not dst_node_id:
+            continue
+        bucket = edge_stats.setdefault(
+            (src_node_id, dst_node_id),
+            {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
+        )
+        bucket["weight"] += 1
+        bucket["raw_edge_count"] += 1
+        bucket["sample_edge_kinds"].add(str(edge.get("kind") or "depends_on"))
+
+    projected_edges: list[dict[str, Any]] = []
+    for idx, ((src, dst), stat) in enumerate(sorted(edge_stats.items()), start=1):
+        projected_edges.append(
+            ArchitectureProjectionEdge(
+                id=f"arch-edge:{idx}",
+                source_node_id=src,
+                target_node_id=dst,
+                kind="depends_on",
+                meta={
+                    "weight": stat["weight"],
+                    "sample_edge_kinds": sorted(stat["sample_edge_kinds"]),
+                    "raw_edge_count": stat["raw_edge_count"],
+                },
+            ).__dict__
+        )
+    return projected_edges
+
+
+def build_architecture_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    entity_level: str,
+    include_kinds: set[str] | None = None,
+    exclude_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Aggregate raw nodes/edges into architecture entities."""
+    level = (entity_level or "container").lower()
+    if level not in {"domain", "container", "component"}:
+        level = "container"
+
+    group_by_node_id, explicit_count, heuristic_count = _group_nodes_by_arch(
+        nodes, include_kinds, exclude_kinds
+    )
 
     node_stats: dict[str, dict[str, Any]] = {}
-
-    def make_key(group: tuple[str, str, str, str, float]) -> tuple[str, str, str, str]:
-        domain, container, component, _, _ = group
-        if level == "domain":
-            return ("domain", domain, "", "")
-        if level == "component":
-            return ("component", domain, container, component)
-        return ("container", domain, container, "")
-
     for group in group_by_node_id.values():
-        key = make_key(group)
+        key = _make_level_key(level, group)
         stat = node_stats.setdefault(
             "|".join(key),
             {
@@ -152,7 +211,6 @@ def build_architecture_projection(
         node_id = f"arch:{level}:{idx}"
         key_to_node_id[key] = node_id
         name = _resolve_projected_node_name(stat)
-
         projected_nodes.append(
             ArchitectureProjectionNode(
                 id=node_id,
@@ -171,46 +229,7 @@ def build_architecture_projection(
             ).__dict__
         )
 
-    edge_stats: dict[tuple[str, str], dict[str, Any]] = {}
-    for edge in edges:
-        src = group_by_node_id.get(str(edge.get("source_node_id")))
-        dst = group_by_node_id.get(str(edge.get("target_node_id")))
-        if not src or not dst:
-            continue
-
-        src_key = "|".join(make_key(src))
-        dst_key = "|".join(make_key(dst))
-        if src_key == dst_key:
-            continue
-
-        src_node_id = key_to_node_id.get(src_key)
-        dst_node_id = key_to_node_id.get(dst_key)
-        if not src_node_id or not dst_node_id:
-            continue
-
-        bucket = edge_stats.setdefault(
-            (src_node_id, dst_node_id),
-            {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
-        )
-        bucket["weight"] += 1
-        bucket["raw_edge_count"] += 1
-        bucket["sample_edge_kinds"].add(str(edge.get("kind") or "depends_on"))
-
-    projected_edges: list[dict[str, Any]] = []
-    for idx, ((src, dst), stat) in enumerate(sorted(edge_stats.items()), start=1):
-        projected_edges.append(
-            ArchitectureProjectionEdge(
-                id=f"arch-edge:{idx}",
-                source_node_id=src,
-                target_node_id=dst,
-                kind="depends_on",
-                meta={
-                    "weight": stat["weight"],
-                    "sample_edge_kinds": sorted(stat["sample_edge_kinds"]),
-                    "raw_edge_count": stat["raw_edge_count"],
-                },
-            ).__dict__
-        )
+    projected_edges = _aggregate_arch_edges(edges, group_by_node_id, key_to_node_id, level)
 
     if explicit_count and heuristic_count:
         grouping_strategy = "mixed"
@@ -220,6 +239,27 @@ def build_architecture_projection(
         grouping_strategy = "heuristic"
 
     return projected_nodes, projected_edges, grouping_strategy
+
+
+def _resolve_file_edge_endpoints(
+    edge: dict[str, Any],
+    node_by_id: dict[str, dict[str, Any]],
+    file_id_by_path: dict[str, str],
+) -> tuple[str, str] | None:
+    """Resolve an edge to source/target file IDs, returning None if ineligible."""
+    src_node = node_by_id.get(str(edge.get("source_node_id")))
+    dst_node = node_by_id.get(str(edge.get("target_node_id")))
+    if not src_node or not dst_node:
+        return None
+    src_path = _canonical_file_path(src_node)
+    dst_path = _canonical_file_path(dst_node)
+    if not src_path or not dst_path:
+        return None
+    src_file_id = file_id_by_path.get(src_path)
+    dst_file_id = file_id_by_path.get(dst_path)
+    if not src_file_id or not dst_file_id or src_file_id == dst_file_id:
+        return None
+    return src_file_id, dst_file_id
 
 
 def build_code_file_projection(
@@ -267,25 +307,12 @@ def build_code_file_projection(
             continue
         if include_edge_kinds and edge_kind.lower() not in include_edge_kinds:
             continue
-
-        src_node = node_by_id.get(str(edge.get("source_node_id")))
-        dst_node = node_by_id.get(str(edge.get("target_node_id")))
-        if not src_node or not dst_node:
+        endpoints = _resolve_file_edge_endpoints(edge, node_by_id, file_id_by_path)
+        if not endpoints:
             continue
-
-        src_path = _canonical_file_path(src_node)
-        dst_path = _canonical_file_path(dst_node)
-        if not src_path or not dst_path:
-            continue
-
-        src_file_id = file_id_by_path.get(src_path)
-        dst_file_id = file_id_by_path.get(dst_path)
-        if not src_file_id or not dst_file_id or src_file_id == dst_file_id:
-            continue
-
-        key = (src_file_id, dst_file_id)
+        src_file_id, dst_file_id = endpoints
         bucket = edge_buckets.setdefault(
-            key,
+            (src_file_id, dst_file_id),
             {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
         )
         bucket["weight"] += 1
@@ -342,6 +369,21 @@ def build_code_symbol_projection(
     return projected_nodes, projected_edges
 
 
+def _should_include_edge(
+    src: str,
+    dst: str,
+    node_by_id: dict[str, dict[str, Any]],
+    selected_ids: set[str],
+    include_linked_kinds: set[str],
+) -> bool:
+    """Check if an edge should be included in the subgraph."""
+    if src in selected_ids or dst in selected_ids:
+        return True
+    src_kind = str((node_by_id.get(src) or {}).get("kind") or "").lower()
+    dst_kind = str((node_by_id.get(dst) or {}).get("kind") or "").lower()
+    return src_kind in include_linked_kinds and dst_kind in include_linked_kinds
+
+
 def _subgraph_by_kind(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -352,14 +394,14 @@ def _subgraph_by_kind(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     include_node_kinds = {kind.lower() for kind in include_node_kinds}
     include_edge_kinds = {kind.lower() for kind in include_edge_kinds}
-    include_linked_kinds = {kind.lower() for kind in (include_linked_kinds or set())}
+    linked_kinds = {kind.lower() for kind in (include_linked_kinds or set())}
 
     node_by_id = {str(node.get("id")): node for node in nodes}
-    selected_ids: set[str] = set()
-    for node in nodes:
-        kind = str(node.get("kind") or "").lower()
-        if kind in include_node_kinds:
-            selected_ids.add(str(node.get("id")))
+    selected_ids: set[str] = {
+        str(node.get("id"))
+        for node in nodes
+        if str(node.get("kind") or "").lower() in include_node_kinds
+    }
 
     selected_edges: list[dict[str, Any]] = []
     for edge in edges:
@@ -368,14 +410,7 @@ def _subgraph_by_kind(
             continue
         src = str(edge.get("source_node_id"))
         dst = str(edge.get("target_node_id"))
-        src_kind = str((node_by_id.get(src) or {}).get("kind") or "").lower()
-        dst_kind = str((node_by_id.get(dst) or {}).get("kind") or "").lower()
-        if src in selected_ids or dst in selected_ids:
-            selected_ids.add(src)
-            selected_ids.add(dst)
-            selected_edges.append(edge)
-            continue
-        if src_kind in include_linked_kinds and dst_kind in include_linked_kinds:
+        if _should_include_edge(src, dst, node_by_id, selected_ids, linked_kinds):
             selected_ids.add(src)
             selected_ids.add(dst)
             selected_edges.append(edge)
@@ -513,6 +548,18 @@ def build_test_matrix_projection(
     }
 
 
+def _build_flow_step_dict(dst: str, dst_node: dict[str, Any]) -> dict[str, Any]:
+    """Build a flow step payload dictionary from a destination node."""
+    step_meta = dst_node.get("meta") or {}
+    return {
+        "step_id": dst,
+        "name": str(dst_node.get("name") or ""),
+        "order": int(step_meta.get("order") or 0),
+        "endpoint_hints": list(step_meta.get("endpoint_hints") or []),
+        "evidence_ids": list((step_meta.get("provenance") or {}).get("evidence_ids") or []),
+    }
+
+
 def _classify_flow_edge(
     edge: dict[str, Any],
     node_by_id: dict[str, dict[str, Any]],
@@ -526,22 +573,15 @@ def _classify_flow_edge(
     kind = str(edge.get("kind") or "")
     src_node = node_by_id.get(src) or {}
     dst_node = node_by_id.get(dst) or {}
-    if kind == "user_flow_has_step" and str(src_node.get("kind")) == "user_flow":
-        step_meta = dst_node.get("meta") or {}
-        steps_by_flow.setdefault(src, []).append(
-            {
-                "step_id": dst,
-                "name": str(dst_node.get("name") or ""),
-                "order": int(step_meta.get("order") or 0),
-                "endpoint_hints": list(step_meta.get("endpoint_hints") or []),
-                "evidence_ids": list((step_meta.get("provenance") or {}).get("evidence_ids") or []),
-            }
-        )
-    elif kind == "flow_step_calls_endpoint" and str(src_node.get("kind")) == "flow_step":
+    src_kind = str(src_node.get("kind"))
+    dst_kind = str(dst_node.get("kind"))
+    if kind == "user_flow_has_step" and src_kind == "user_flow":
+        steps_by_flow.setdefault(src, []).append(_build_flow_step_dict(dst, dst_node))
+    elif kind == "flow_step_calls_endpoint" and src_kind == "flow_step":
         endpoint_by_step[src].append(
             str(dst_node.get("name") or dst_node.get("natural_key") or dst)
         )
-    elif kind == "test_case_verifies_flow" and str(dst_node.get("kind")) == "user_flow":
+    elif kind == "test_case_verifies_flow" and dst_kind == "user_flow":
         tests_by_flow[dst].append(str(src_node.get("name") or src_node.get("natural_key") or src))
 
 
@@ -639,68 +679,120 @@ def _collect_critical_inferred_nodes(nodes: list[dict[str, Any]]) -> list[dict[s
     return result
 
 
+def _ids_by_kind(nodes: list[dict[str, Any]], kind: str) -> set[str]:
+    """Return node IDs matching a specific kind."""
+    return {str(node.get("id")) for node in nodes if str(node.get("kind") or "") == kind}
+
+
+@dataclass
+class _ReadinessAccumulator:
+    """Mutable accumulator for rebuild-readiness edge scanning."""
+
+    tested_endpoints: set[str]
+    ui_routed_views: set[str]
+    views_with_endpoint_calls: set[str]
+    flow_evidence_total: int = 0
+    flow_step_count: int = 0
+
+
+def _process_readiness_edge(
+    edge: dict[str, Any],
+    acc: _ReadinessAccumulator,
+    node_by_id: dict[str, dict[str, Any]],
+    endpoint_ids: set[str],
+    test_case_ids: set[str],
+    ui_route_ids: set[str],
+    flow_ids: set[str],
+    flow_step_ids: set[str],
+    flow_endpoint_targets: set[str],
+) -> None:
+    """Classify a single edge for rebuild-readiness scoring."""
+    kind = str(edge.get("kind") or "")
+    src = str(edge.get("source_node_id"))
+    dst = str(edge.get("target_node_id"))
+    if kind == "flow_step_calls_endpoint" and src in flow_step_ids and dst in endpoint_ids:
+        acc.tested_endpoints.add(dst)
+    if kind == "test_case_verifies_flow" and src in test_case_ids and dst in flow_ids:
+        acc.tested_endpoints.update(flow_endpoint_targets)
+    if kind == "ui_route_renders_view" and src in ui_route_ids:
+        acc.ui_routed_views.add(dst)
+    if kind == "flow_step_calls_endpoint":
+        step_meta = (node_by_id.get(src) or {}).get("meta") or {}
+        if step_meta:
+            acc.flow_step_count += 1
+            acc.flow_evidence_total += len(
+                (step_meta.get("provenance") or {}).get("evidence_ids") or []
+            )
+    if kind == "contract_governs_endpoint":
+        acc.views_with_endpoint_calls.add(src)
+
+
+def _compute_readiness_gaps(
+    endpoint_coverage: float,
+    ui_traceability: float,
+    flow_evidence_density: float,
+    critical_inferred_only: list[dict[str, Any]],
+) -> list[str]:
+    """Compile the known-gaps list for rebuild-readiness."""
+    gaps: list[str] = []
+    if endpoint_coverage < 0.5:
+        gaps.append("Low endpoint verification coverage from tests/flows.")
+    if ui_traceability < 0.5:
+        gaps.append("Low UI to endpoint traceability.")
+    if flow_evidence_density < 0.75:
+        gaps.append("Sparse flow evidence on synthesized steps.")
+    if critical_inferred_only:
+        gaps.append("Critical inferred-only nodes require deterministic confirmation.")
+    return gaps
+
+
 def compute_rebuild_readiness(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Compute rebuild-readiness score and explainable contributors."""
     node_by_id = {str(node.get("id")): node for node in nodes}
+    endpoint_ids = _ids_by_kind(nodes, "api_endpoint")
+    test_case_ids = _ids_by_kind(nodes, "test_case")
+    ui_route_ids = _ids_by_kind(nodes, "ui_route")
+    flow_ids = _ids_by_kind(nodes, "user_flow")
+    flow_step_ids = _ids_by_kind(nodes, "flow_step")
 
-    endpoint_ids = {
-        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "api_endpoint"
-    }
-    test_case_ids = {
-        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "test_case"
-    }
-    ui_route_ids = {
-        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "ui_route"
-    }
-    flow_ids = {str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "user_flow"}
-    flow_step_ids = {
-        str(node.get("id")) for node in nodes if str(node.get("kind") or "") == "flow_step"
-    }
-
-    tested_endpoints: set[str] = set()
-    flow_evidence_total = 0
-    flow_step_count = 0
-    ui_routed_views: set[str] = set()
-    views_with_endpoint_calls: set[str] = set()
     critical_inferred_only = _collect_critical_inferred_nodes(nodes)
 
-    # Pre-compute flow-step endpoint targets for test_case_verifies_flow edges
-    _flow_endpoint_targets = {
+    flow_endpoint_targets = {
         str(fe.get("target_node_id"))
         for fe in edges
         if str(fe.get("kind") or "") == "flow_step_calls_endpoint"
         and str(fe.get("source_node_id")) in flow_step_ids
-        and str((node_by_id.get(str(fe.get("source_node_id"))) or {}).get("kind")) == "flow_step"
     }
-    for edge in edges:
-        kind = str(edge.get("kind") or "")
-        src = str(edge.get("source_node_id"))
-        dst = str(edge.get("target_node_id"))
-        if kind in {"test_case_covers_symbol", "test_case_validates_rule"} and src in test_case_ids:
-            continue
-        if kind == "flow_step_calls_endpoint" and src in flow_step_ids and dst in endpoint_ids:
-            tested_endpoints.add(dst)
-        if kind == "test_case_verifies_flow" and src in test_case_ids and dst in flow_ids:
-            tested_endpoints.update(_flow_endpoint_targets)
-        if kind == "ui_route_renders_view" and src in ui_route_ids:
-            ui_routed_views.add(dst)
-        if kind == "flow_step_calls_endpoint":
-            step_meta = (node_by_id.get(src) or {}).get("meta") or {}
-            if step_meta:
-                flow_step_count += 1
-                flow_evidence_total += len(
-                    (step_meta.get("provenance") or {}).get("evidence_ids") or []
-                )
-        if kind == "contract_governs_endpoint":
-            views_with_endpoint_calls.add(src)
 
-    endpoint_coverage = len(tested_endpoints) / len(endpoint_ids) if endpoint_ids else 0.0
-    flow_evidence_density = flow_evidence_total / flow_step_count if flow_step_count > 0 else 0.0
+    acc = _ReadinessAccumulator(
+        tested_endpoints=set(),
+        ui_routed_views=set(),
+        views_with_endpoint_calls=set(),
+    )
+    for edge in edges:
+        _process_readiness_edge(
+            edge,
+            acc,
+            node_by_id,
+            endpoint_ids,
+            test_case_ids,
+            ui_route_ids,
+            flow_ids,
+            flow_step_ids,
+            flow_endpoint_targets,
+        )
+
+    endpoint_coverage = len(acc.tested_endpoints) / len(endpoint_ids) if endpoint_ids else 0.0
+    flow_evidence_density = (
+        acc.flow_evidence_total / acc.flow_step_count if acc.flow_step_count > 0 else 0.0
+    )
     ui_traceability = (
-        len(views_with_endpoint_calls) / len(ui_routed_views) if ui_routed_views else 0.0
+        len(acc.views_with_endpoint_calls) / len(acc.ui_routed_views)
+        if acc.ui_routed_views
+        else 0.0
     )
     inferred_penalty = min(1.0, len(critical_inferred_only) / 10.0)
 
@@ -711,16 +803,6 @@ def compute_rebuild_readiness(
         + ((1.0 - inferred_penalty) * 0.15)
     )
     score_100 = int(round(max(0.0, min(score, 1.0)) * 100))
-
-    known_gaps: list[str] = []
-    if endpoint_coverage < 0.5:
-        known_gaps.append("Low endpoint verification coverage from tests/flows.")
-    if ui_traceability < 0.5:
-        known_gaps.append("Low UI to endpoint traceability.")
-    if flow_evidence_density < 0.75:
-        known_gaps.append("Sparse flow evidence on synthesized steps.")
-    if critical_inferred_only:
-        known_gaps.append("Critical inferred-only nodes require deterministic confirmation.")
 
     return {
         "score": score_100,
@@ -733,5 +815,10 @@ def compute_rebuild_readiness(
             "total_edges": len(edges),
         },
         "critical_inferred_only": critical_inferred_only[:50],
-        "known_gaps": known_gaps,
+        "known_gaps": _compute_readiness_gaps(
+            endpoint_coverage,
+            ui_traceability,
+            flow_evidence_density,
+            critical_inferred_only,
+        ),
     }

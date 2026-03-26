@@ -987,30 +987,40 @@ async def get_full_scenario_graph(
         {kind.lower() for kind in include_edge_kinds} if include_edge_kinds else None
     )
 
+    result = _apply_graph_projection(
+        nodes,
+        edges,
+        projection,
+        entity_level,
+        include_kinds_norm,
+        exclude_kinds_norm,
+        include_edge_kinds_norm,
+    )
+    return result
+
+
+def _apply_graph_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    projection: GraphProjection,
+    entity_level: str | None,
+    include_kinds_norm: set[str] | None,
+    exclude_kinds_norm: set[str] | None,
+    include_edge_kinds_norm: set[str] | None,
+) -> dict[str, Any]:
+    """Apply the selected projection and return a graph response dict."""
     grouping_strategy = "heuristic"
     effective_excluded_kinds = sorted(exclude_kinds_norm or set())
 
     if projection == GraphProjection.ARCHITECTURE:
-        effective_entity_level = (entity_level or "container").lower()
-        default_hidden = {
-            "class",
-            "method",
-            "function",
-            "property",
-            "parameter",
-            "variable",
-            "constant",
-        }
-        effective_excluded = set(exclude_kinds_norm or set()) | default_hidden
-        projected_nodes, projected_edges, grouping_strategy = build_architecture_projection(
-            nodes=nodes,
-            edges=edges,
-            entity_level=effective_entity_level,
-            include_kinds=include_kinds_norm,
-            exclude_kinds=effective_excluded,
+        return _project_architecture(
+            nodes,
+            edges,
+            entity_level,
+            include_kinds_norm,
+            exclude_kinds_norm,
         )
-        effective_excluded_kinds = sorted(effective_excluded)
-    elif projection == GraphProjection.CODE_FILE:
+    if projection == GraphProjection.CODE_FILE:
         effective_entity_level = (entity_level or "file").lower()
         projected_nodes, projected_edges = build_code_file_projection(
             nodes=nodes,
@@ -1038,6 +1048,43 @@ async def get_full_scenario_graph(
     }
 
 
+def _project_architecture(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    entity_level: str | None,
+    include_kinds_norm: set[str] | None,
+    exclude_kinds_norm: set[str] | None,
+) -> dict[str, Any]:
+    """Apply architecture projection with default hidden kinds."""
+    effective_entity_level = (entity_level or "container").lower()
+    default_hidden = {
+        "class",
+        "method",
+        "function",
+        "property",
+        "parameter",
+        "variable",
+        "constant",
+    }
+    effective_excluded = set(exclude_kinds_norm or set()) | default_hidden
+    projected_nodes, projected_edges, grouping_strategy = build_architecture_projection(
+        nodes=nodes,
+        edges=edges,
+        entity_level=effective_entity_level,
+        include_kinds=include_kinds_norm,
+        exclude_kinds=effective_excluded,
+    )
+    return {
+        "nodes": projected_nodes,
+        "edges": projected_edges,
+        "total_nodes": len(projected_nodes),
+        "projection": GraphProjection.ARCHITECTURE.value,
+        "entity_level": effective_entity_level,
+        "grouping_strategy": grouping_strategy,
+        "excluded_kinds": sorted(effective_excluded),
+    }
+
+
 async def refresh_metric_snapshots(
     session: AsyncSession,
     scenario_id: UUID,
@@ -1056,37 +1103,42 @@ async def refresh_metric_snapshots(
     for node in nodes:
         if node.kind != "file":
             continue
-
         meta = node.meta or {}
         if not bool(meta.get("metrics_structural_ready")):
             continue
-
         if any(meta.get(field) is None for field in required_fields):
             continue
-
-        snapshot = MetricSnapshot(
-            id=uuid.uuid4(),
-            scenario_id=scenario_id,
-            node_natural_key=node.natural_key,
-            loc=int(meta["loc"]),
-            symbol_count=int(meta.get("symbol_count", 0) or 0),
-            coupling=float(meta["coupling"]),
-            coverage=float(meta.get("coverage", 0.0) or 0.0),
-            complexity=float(meta["complexity"]),
-            cohesion=float(meta.get("cohesion", 1.0) or 1.0),
-            instability=float(meta.get("instability", 0.0) or 0.0),
-            fan_in=int(meta.get("fan_in", 0) or 0),
-            fan_out=int(meta.get("fan_out", 0) or 0),
-            cycle_participation=bool(meta.get("cycle_participation", False)),
-            cycle_size=int(meta.get("cycle_size", 0) or 0),
-            duplication_ratio=float(meta.get("duplication_ratio", 0.0) or 0.0),
-            crap_score=(float(meta["crap_score"]) if meta.get("crap_score") is not None else None),
-            change_frequency=float(meta.get("change_frequency", 0.0) or 0.0),
-            meta=meta,
-        )
-        session.add(snapshot)
+        session.add(_build_metric_snapshot(scenario_id, node.natural_key, meta))
         created += 1
     return created
+
+
+def _build_metric_snapshot(
+    scenario_id: UUID,
+    natural_key: str,
+    meta: dict[str, Any],
+) -> MetricSnapshot:
+    """Build a MetricSnapshot from node metadata."""
+    return MetricSnapshot(
+        id=uuid.uuid4(),
+        scenario_id=scenario_id,
+        node_natural_key=natural_key,
+        loc=int(meta["loc"]),
+        symbol_count=int(meta.get("symbol_count", 0) or 0),
+        coupling=float(meta["coupling"]),
+        coverage=float(meta.get("coverage", 0.0) or 0.0),
+        complexity=float(meta["complexity"]),
+        cohesion=float(meta.get("cohesion", 1.0) or 1.0),
+        instability=float(meta.get("instability", 0.0) or 0.0),
+        fan_in=int(meta.get("fan_in", 0) or 0),
+        fan_out=int(meta.get("fan_out", 0) or 0),
+        cycle_participation=bool(meta.get("cycle_participation", False)),
+        cycle_size=int(meta.get("cycle_size", 0) or 0),
+        duplication_ratio=float(meta.get("duplication_ratio", 0.0) or 0.0),
+        crap_score=(float(meta["crap_score"]) if meta.get("crap_score") is not None else None),
+        change_frequency=float(meta.get("change_frequency", 0.0) or 0.0),
+        meta=meta,
+    )
 
 
 async def apply_file_metrics_to_scenario(
@@ -1133,44 +1185,49 @@ async def apply_file_metrics_to_scenario(
         if not metric:
             continue
         metric_file_path = canonicalize_repo_relative_path(str(metric.get("file_path", "")).strip())
-        if not metric_file_path:
+        if not metric_file_path or metric_file_path in updated_file_paths:
             continue
-        if metric_file_path in updated_file_paths:
-            continue
-
-        meta = dict(node.meta or {})
-        meta.update(
-            {
-                "metrics_real": False,
-                "metrics_structural_ready": True,
-                "coverage_ready": False,
-                "file_path": metric_file_path,
-                "loc": int(metric["loc"]),
-                "complexity": float(metric["complexity"]),
-                "coupling_in": int(metric["coupling_in"]),
-                "coupling_out": int(metric["coupling_out"]),
-                "coupling": float(metric["coupling"]),
-                "cohesion": float(metric.get("cohesion", 1.0) or 1.0),
-                "instability": float(metric.get("instability", 0.0) or 0.0),
-                "fan_in": int(metric.get("fan_in", 0) or 0),
-                "fan_out": int(metric.get("fan_out", 0) or 0),
-                "cycle_participation": bool(metric.get("cycle_participation", False)),
-                "cycle_size": int(metric.get("cycle_size", 0) or 0),
-                "duplication_ratio": float(metric.get("duplication_ratio", 0.0) or 0.0),
-                "crap_score": (
-                    float(metric["crap_score"]) if metric.get("crap_score") is not None else None
-                ),
-                "change_frequency": float(metric.get("change_frequency", 0.0) or 0.0),
-                "churn": float(metric.get("churn", 0.0) or 0.0),
-                "coverage": None,
-                "metrics_sources": metric.get("sources", {}),
-                "metrics_language": metric.get("language"),
-            }
-        )
-        node.meta = meta
+        node.meta = _build_structural_meta(dict(node.meta or {}), metric, metric_file_path)
         updated_file_paths.add(metric_file_path)
 
     return len(updated_file_paths)
+
+
+def _build_structural_meta(
+    meta: dict[str, Any],
+    metric: dict[str, Any],
+    file_path: str,
+) -> dict[str, Any]:
+    """Build updated meta dict with structural file metrics."""
+    meta.update(
+        {
+            "metrics_real": False,
+            "metrics_structural_ready": True,
+            "coverage_ready": False,
+            "file_path": file_path,
+            "loc": int(metric["loc"]),
+            "complexity": float(metric["complexity"]),
+            "coupling_in": int(metric["coupling_in"]),
+            "coupling_out": int(metric["coupling_out"]),
+            "coupling": float(metric["coupling"]),
+            "cohesion": float(metric.get("cohesion", 1.0) or 1.0),
+            "instability": float(metric.get("instability", 0.0) or 0.0),
+            "fan_in": int(metric.get("fan_in", 0) or 0),
+            "fan_out": int(metric.get("fan_out", 0) or 0),
+            "cycle_participation": bool(metric.get("cycle_participation", False)),
+            "cycle_size": int(metric.get("cycle_size", 0) or 0),
+            "duplication_ratio": float(metric.get("duplication_ratio", 0.0) or 0.0),
+            "crap_score": (
+                float(metric["crap_score"]) if metric.get("crap_score") is not None else None
+            ),
+            "change_frequency": float(metric.get("change_frequency", 0.0) or 0.0),
+            "churn": float(metric.get("churn", 0.0) or 0.0),
+            "coverage": None,
+            "metrics_sources": metric.get("sources", {}),
+            "metrics_language": metric.get("language"),
+        }
+    )
+    return meta
 
 
 async def apply_coverage_metrics_to_scenario(
@@ -1196,43 +1253,197 @@ async def apply_coverage_metrics_to_scenario(
     updated = 0
     source_id_str = str(source_id)
     for node in nodes:
-        if node.kind != "file":
+        if not _is_coverage_eligible(node, source_id_str):
             continue
-        if not node.natural_key.startswith(_FILE_PREFIX):
-            continue
-
         meta = dict(node.meta or {})
-        if str(meta.get("source_id") or "") != source_id_str:
-            continue
-
         natural_path = node.natural_key.removeprefix(_FILE_PREFIX)
         canonical_path = canonicalize_repo_relative_path(natural_path)
         coverage_key = canonical_path if canonical_path in coverage_map else natural_path
         if coverage_key not in coverage_map:
             continue
-
-        metrics_sources = dict(meta.get("metrics_sources") or {})
-        metrics_sources["coverage"] = coverage_sources.get(coverage_key, {})
-        complexity_value = float(meta["complexity"]) if meta.get("complexity") is not None else None
-        coverage_value = float(coverage_map[coverage_key])
-        meta.update(
-            {
-                "file_path": canonical_path or natural_path,
-                "coverage": coverage_value,
-                "coverage_ready": True,
-                "metrics_real": bool(meta.get("metrics_structural_ready")),
-                "metrics_sources": metrics_sources,
-                "crap_score": _compute_crap_score(complexity_value, coverage_value),
-            }
+        _apply_coverage_to_meta(
+            meta,
+            coverage_map[coverage_key],
+            coverage_key,
+            canonical_path or natural_path,
+            coverage_sources,
+            commit_sha,
+            ingest_job_id,
         )
-        if commit_sha:
-            meta["coverage_commit_sha"] = commit_sha
-        if ingest_job_id:
-            meta["coverage_ingest_job_id"] = str(ingest_job_id)
         node.meta = meta
         node.updated_at = datetime.now(UTC)
         updated += 1
 
+    return updated
+
+
+def _is_coverage_eligible(node: Any, source_id_str: str) -> bool:
+    """Check if a node is eligible for coverage metric application."""
+    if node.kind != "file":
+        return False
+    if not node.natural_key.startswith(_FILE_PREFIX):
+        return False
+    meta = node.meta or {}
+    return str(meta.get("source_id") or "") == source_id_str
+
+
+def _apply_coverage_to_meta(
+    meta: dict[str, Any],
+    coverage_value_raw: float,
+    coverage_key: str,
+    file_path: str,
+    coverage_sources: dict[str, dict[str, Any]],
+    commit_sha: str | None,
+    ingest_job_id: UUID | None,
+) -> None:
+    """Update meta dict with coverage metrics in place."""
+    metrics_sources = dict(meta.get("metrics_sources") or {})
+    metrics_sources["coverage"] = coverage_sources.get(coverage_key, {})
+    complexity_value = float(meta["complexity"]) if meta.get("complexity") is not None else None
+    coverage_value = float(coverage_value_raw)
+    meta.update(
+        {
+            "file_path": file_path,
+            "coverage": coverage_value,
+            "coverage_ready": True,
+            "metrics_real": bool(meta.get("metrics_structural_ready")),
+            "metrics_sources": metrics_sources,
+            "crap_score": _compute_crap_score(complexity_value, coverage_value),
+        }
+    )
+    if commit_sha:
+        meta["coverage_commit_sha"] = commit_sha
+    if ingest_job_id:
+        meta["coverage_ingest_job_id"] = str(ingest_job_id)
+
+
+async def _canonicalize_single_node(
+    session: AsyncSession,
+    node: Any,
+    scenario_to_collection: dict[UUID, UUID],
+    changed_scenarios: set[UUID],
+    changed_collections: set[UUID],
+) -> str | None:
+    """Canonicalize a single legacy twin node. Returns 'in_place', 'deactivated', or None."""
+    legacy_path = node.natural_key.removeprefix(_FILE_PREFIX)
+    canonical_path = canonicalize_repo_relative_path(legacy_path)
+    if not canonical_path:
+        return None
+    canonical_key = f"file:{canonical_path}"
+    if canonical_key == node.natural_key:
+        return None
+
+    canonical_target = (
+        await session.execute(
+            select(TwinNode).where(
+                TwinNode.scenario_id == node.scenario_id,
+                TwinNode.natural_key == canonical_key,
+            )
+        )
+    ).scalar_one_or_none()
+
+    changed_scenarios.add(node.scenario_id)
+    changed_collections.add(scenario_to_collection[node.scenario_id])
+
+    if canonical_target is None:
+        node.natural_key = canonical_key
+        node.name = canonical_path
+        node_meta = dict(node.meta or {})
+        node_meta["file_path"] = canonical_path
+        node.meta = node_meta
+        node.is_active = True
+        return "in_place"
+
+    # Deactivate the legacy node and point to canonical.
+    legacy_meta = dict(node.meta or {})
+    legacy_meta["canonical_replaced_by"] = canonical_key
+    legacy_meta["is_duplicate_of"] = str(canonical_target.id)
+    node.meta = legacy_meta
+    node.is_active = False
+
+    canonical_meta = dict(canonical_target.meta or {})
+    canonical_meta["file_path"] = canonical_path
+    canonical_target.meta = canonical_meta
+    canonical_target.is_active = True
+    return "deactivated"
+
+
+async def _rewire_legacy_edges(session: AsyncSession, node: Any) -> int:
+    """Rewire edges from a legacy node to its canonical replacement and delete originals."""
+    canonical_key = (node.meta or {}).get("canonical_replaced_by")
+    canonical_target = (
+        await session.execute(
+            select(TwinNode).where(
+                TwinNode.scenario_id == node.scenario_id,
+                TwinNode.natural_key == canonical_key,
+            )
+        )
+    ).scalar_one_or_none()
+    if canonical_target is None:
+        return 0
+
+    legacy_edges = (
+        (
+            await session.execute(
+                select(TwinEdge).where(
+                    TwinEdge.scenario_id == node.scenario_id,
+                    or_(TwinEdge.source_node_id == node.id, TwinEdge.target_node_id == node.id),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    count = 0
+    for edge in legacy_edges:
+        source_id = canonical_target.id if edge.source_node_id == node.id else edge.source_node_id
+        target_id = canonical_target.id if edge.target_node_id == node.id else edge.target_node_id
+        await _upsert_twin_edge(
+            session=session,
+            scenario_id=node.scenario_id,
+            source_node_id=source_id,
+            target_node_id=target_id,
+            kind=edge.kind,
+            meta=dict(edge.meta or {}),
+        )
+        count += 1
+
+    await session.execute(
+        delete(TwinEdge).where(
+            TwinEdge.scenario_id == node.scenario_id,
+            or_(TwinEdge.source_node_id == node.id, TwinEdge.target_node_id == node.id),
+        )
+    )
+    return count
+
+
+async def _canonicalize_meta_paths(
+    session: AsyncSession,
+    scenario_ids: set[UUID],
+    scenario_to_collection: dict[UUID, UUID],
+    changed_scenarios: set[UUID],
+    changed_collections: set[UUID],
+) -> int:
+    """Canonicalize file_path in meta for all nodes across scenarios."""
+    all_nodes = (
+        (await session.execute(select(TwinNode).where(TwinNode.scenario_id.in_(scenario_ids))))
+        .scalars()
+        .all()
+    )
+    updated = 0
+    for node in all_nodes:
+        meta = dict(node.meta or {})
+        raw_path = meta.get("file_path")
+        if not isinstance(raw_path, str):
+            continue
+        canonical_path = canonicalize_repo_relative_path(raw_path)
+        if not canonical_path or canonical_path == raw_path:
+            continue
+        meta["file_path"] = canonical_path
+        node.meta = meta
+        updated += 1
+        changed_scenarios.add(node.scenario_id)
+        changed_collections.add(scenario_to_collection[node.scenario_id])
     return updated
 
 
@@ -1289,116 +1500,26 @@ async def repair_twin_file_path_canonicalization(
     changed_collections: set[UUID] = set()
 
     for node in legacy_nodes:
-        legacy_path = node.natural_key.removeprefix(_FILE_PREFIX)
-        canonical_path = canonicalize_repo_relative_path(legacy_path)
-        if not canonical_path:
-            continue
-        canonical_key = f"file:{canonical_path}"
-        if canonical_key == node.natural_key:
-            continue
-
-        canonical_target = (
-            await session.execute(
-                select(TwinNode).where(
-                    TwinNode.scenario_id == node.scenario_id,
-                    TwinNode.natural_key == canonical_key,
-                )
-            )
-        ).scalar_one_or_none()
-
-        if canonical_target is None:
-            node.natural_key = canonical_key
-            node.name = canonical_path
-            node_meta = dict(node.meta or {})
-            node_meta["file_path"] = canonical_path
-            node.meta = node_meta
-            node.is_active = True
+        result = await _canonicalize_single_node(
+            session,
+            node,
+            scenario_to_collection,
+            changed_scenarios,
+            changed_collections,
+        )
+        if result == "in_place":
             updated_in_place += 1
-            changed_scenarios.add(node.scenario_id)
-            changed_collections.add(scenario_to_collection[node.scenario_id])
-            continue
+        elif result == "deactivated":
+            duplicates_deactivated += 1
+            edges_rewired += await _rewire_legacy_edges(session, node)
 
-        # Merge connectivity into the canonical node before removing legacy edges.
-        legacy_edges = (
-            (
-                await session.execute(
-                    select(TwinEdge).where(
-                        TwinEdge.scenario_id == node.scenario_id,
-                        or_(
-                            TwinEdge.source_node_id == node.id,
-                            TwinEdge.target_node_id == node.id,
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for edge in legacy_edges:
-            source_node_id = edge.source_node_id
-            target_node_id = edge.target_node_id
-            if source_node_id == node.id:
-                source_node_id = canonical_target.id
-            if target_node_id == node.id:
-                target_node_id = canonical_target.id
-            await _upsert_twin_edge(
-                session=session,
-                scenario_id=node.scenario_id,
-                source_node_id=source_node_id,
-                target_node_id=target_node_id,
-                kind=edge.kind,
-                meta=dict(edge.meta or {}),
-            )
-            edges_rewired += 1
-
-        await session.execute(
-            delete(TwinEdge).where(
-                TwinEdge.scenario_id == node.scenario_id,
-                or_(
-                    TwinEdge.source_node_id == node.id,
-                    TwinEdge.target_node_id == node.id,
-                ),
-            )
-        )
-        legacy_meta = dict(node.meta or {})
-        legacy_meta["canonical_replaced_by"] = canonical_key
-        legacy_meta["is_duplicate_of"] = str(canonical_target.id)
-        node.meta = legacy_meta
-        node.is_active = False
-        duplicates_deactivated += 1
-        changed_scenarios.add(node.scenario_id)
-        changed_collections.add(scenario_to_collection[node.scenario_id])
-
-        canonical_meta = dict(canonical_target.meta or {})
-        canonical_meta["file_path"] = canonical_path
-        canonical_target.meta = canonical_meta
-        canonical_target.is_active = True
-
-    all_nodes = (
-        (
-            await session.execute(
-                select(TwinNode).where(
-                    TwinNode.scenario_id.in_(scenario_ids),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    meta_paths_updated = await _canonicalize_meta_paths(
+        session,
+        scenario_ids,
+        scenario_to_collection,
+        changed_scenarios,
+        changed_collections,
     )
-    meta_paths_updated = 0
-    for node in all_nodes:
-        meta = dict(node.meta or {})
-        raw_path = meta.get("file_path")
-        if not isinstance(raw_path, str):
-            continue
-        canonical_path = canonicalize_repo_relative_path(raw_path)
-        if not canonical_path or canonical_path == raw_path:
-            continue
-        meta["file_path"] = canonical_path
-        node.meta = meta
-        meta_paths_updated += 1
-        changed_scenarios.add(node.scenario_id)
-        changed_collections.add(scenario_to_collection[node.scenario_id])
 
     return {
         "legacy_candidates": len(legacy_nodes),

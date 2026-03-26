@@ -317,6 +317,39 @@ def _collect_component_facts(bundle: ArchitectureFactsBundle, component_graph: d
         )
 
 
+def _make_c4_fact(
+    scenario_id: UUID,
+    c4_view: str,
+    view_result: Any,
+) -> ArchitectureFact:
+    """Build a C4 view ArchitectureFact."""
+    has_warnings = bool(view_result.warnings)
+    return ArchitectureFact(
+        fact_id=f"c4_{c4_view}:{scenario_id}",
+        fact_type=f"c4_{c4_view}",
+        title=f"C4 {c4_view} view",
+        description=f"Rendered C4 {c4_view} view for {'system-level boundaries' if c4_view == 'context' else 'runtime/deployment mapping'}",
+        source="hybrid" if has_warnings else "deterministic",
+        confidence=HYBRID_CONFIDENCE if has_warnings else DETERMINISTIC_CONFIDENCE,
+        tags=("c4", c4_view),
+        attributes={"warnings": list(view_result.warnings), "mermaid": view_result.content},
+        evidence=(),
+    )
+
+
+async def _collect_c4_view_facts(
+    session: AsyncSession,
+    scenario_id: UUID,
+    bundle: ArchitectureFactsBundle,
+) -> None:
+    """Collect C4 context and deployment view facts."""
+    for c4_view in ("context", "deployment"):
+        view_result = await export_mermaid_c4_result(session, scenario_id, c4_view=c4_view)
+        if view_result.warnings:
+            bundle.warnings.extend([f"c4_{c4_view}: {w}" for w in view_result.warnings])
+        bundle.facts.append(_make_c4_fact(scenario_id, c4_view, view_result))
+
+
 async def build_architecture_facts(
     session: AsyncSession,
     *,
@@ -369,60 +402,7 @@ async def build_architecture_facts(
     _collect_container_facts(bundle, container_graph)
     _collect_component_facts(bundle, component_graph)
 
-    context_view = await export_mermaid_c4_result(
-        session,
-        scenario_id,
-        c4_view="context",
-    )
-    deployment_view = await export_mermaid_c4_result(
-        session,
-        scenario_id,
-        c4_view="deployment",
-    )
-
-    if context_view.warnings:
-        bundle.warnings.extend([f"c4_context: {warning}" for warning in context_view.warnings])
-    if deployment_view.warnings:
-        bundle.warnings.extend(
-            [f"c4_deployment: {warning}" for warning in deployment_view.warnings]
-        )
-
-    bundle.facts.append(
-        ArchitectureFact(
-            fact_id=f"c4_context:{scenario_id}",
-            fact_type="c4_context",
-            title="C4 context view",
-            description="Rendered C4 context view for system-level boundaries",
-            source="deterministic" if not context_view.warnings else "hybrid",
-            confidence=(
-                DETERMINISTIC_CONFIDENCE if not context_view.warnings else HYBRID_CONFIDENCE
-            ),
-            tags=("c4", "context"),
-            attributes={
-                "warnings": list(context_view.warnings),
-                "mermaid": context_view.content,
-            },
-            evidence=(),
-        )
-    )
-    bundle.facts.append(
-        ArchitectureFact(
-            fact_id=f"c4_deployment:{scenario_id}",
-            fact_type="c4_deployment",
-            title="C4 deployment view",
-            description="Rendered C4 deployment view for runtime/deployment mapping",
-            source="deterministic" if not deployment_view.warnings else "hybrid",
-            confidence=(
-                DETERMINISTIC_CONFIDENCE if not deployment_view.warnings else HYBRID_CONFIDENCE
-            ),
-            tags=("c4", "deployment"),
-            attributes={
-                "warnings": list(deployment_view.warnings),
-                "mermaid": deployment_view.content,
-            },
-            evidence=(),
-        )
-    )
+    await _collect_c4_view_facts(session, scenario_id, bundle)
 
     metrics = (
         (

@@ -474,6 +474,34 @@ async def _resolve_status_scenario(
     ).scalar_one_or_none()
 
 
+async def _collect_pipeline_stage_info(
+    session: AsyncSession,
+    collection_id: UUID,
+) -> tuple[dict[str, UUID], dict[str, float]]:
+    """Collect pipeline stage latest event IDs and cumulative timings."""
+    events = (
+        (
+            await session.execute(
+                select(TwinEvent)
+                .where(TwinEvent.collection_id == collection_id)
+                .order_by(TwinEvent.event_ts.desc())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stage_latest: dict[str, UUID] = {}
+    stage_timings: dict[str, float] = defaultdict(float)
+    for event in events:
+        stage_latest.setdefault(event.event_type, event.id)
+        payload = event.payload or {}
+        duration = payload.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            stage_timings[event.event_type] += float(duration)
+    return stage_latest, stage_timings
+
+
 async def get_collection_twin_status(
     session: AsyncSession,
     *,
@@ -540,8 +568,7 @@ async def get_collection_twin_status(
         scip_projects_detected += _safe_int(latest_stats, "scip_projects_detected")
         scip_projects_indexed += _safe_int(latest_stats, "scip_projects_indexed")
         scip_projects_failed += _safe_int(latest_stats, "scip_projects_failed")
-        if latest_stats.get("scip_degraded", False):
-            scip_has_degraded = True
+        scip_has_degraded = scip_has_degraded or bool(latest_stats.get("scip_degraded", False))
         metrics_requested_files, metrics_mapped_files, metrics_gate_failed = (
             _accumulate_metrics_stats(
                 latest_stats,
@@ -552,24 +579,7 @@ async def get_collection_twin_status(
             )
         )
 
-    events = (
-        (
-            await session.execute(
-                select(TwinEvent)
-                .where(TwinEvent.collection_id == collection_id)
-                .order_by(TwinEvent.event_ts.desc())
-                .limit(200)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for event in events:
-        stage_latest.setdefault(event.event_type, event.id)
-        payload = event.payload or {}
-        duration = payload.get("duration_seconds")
-        if isinstance(duration, (int, float)):
-            stage_timings[event.event_type] += float(duration)
+    stage_latest, stage_timings = await _collect_pipeline_stage_info(session, collection_id)
 
     freshness = _resolve_freshness(sources, ready_count, failed_count, in_progress_count)
     behavioral_layers_status = _resolve_behavioral_layers_status(behavioral_status_values)
@@ -1671,6 +1681,34 @@ def _is_sanitizer(
     return any(token in lower_name for token in sanitizer_tokens)
 
 
+def _bfs_from_source(
+    source_id: UUID,
+    sink_ids: set[UUID],
+    outgoing: dict[UUID, list[UUID]],
+    node_map: dict[UUID, Any],
+    sanitizer_tokens: list[str],
+    max_hops: int,
+    max_results: int,
+    flows: list[dict[str, Any]],
+) -> None:
+    """Run BFS from a single source, appending discovered flows."""
+    queue: deque[list[UUID]] = deque([[source_id]])
+    while queue and len(flows) < max_results:
+        path = queue.popleft()
+        current = path[-1]
+        if current in sink_ids and len(path) > 1:
+            flows.append(_render_taint_path(path, node_map, source_id))
+            continue
+        if len(path) - 1 >= max_hops:
+            continue
+        for target in outgoing.get(current, [])[:20]:
+            if target in path:
+                continue
+            if _is_sanitizer(target, node_map, sanitizer_tokens):
+                continue
+            queue.append([*path, target])
+
+
 def _find_taint_flow_paths(
     *,
     source_ids: list[UUID],
@@ -1684,21 +1722,16 @@ def _find_taint_flow_paths(
     """BFS-based taint flow discovery from sources to sinks."""
     flows: list[dict[str, Any]] = []
     for source_id in source_ids:
-        queue: deque[list[UUID]] = deque([[source_id]])
-        while queue and len(flows) < max_results:
-            path = queue.popleft()
-            current = path[-1]
-            if current in sink_ids and len(path) > 1:
-                flows.append(_render_taint_path(path, node_map, source_id))
-                continue
-            if len(path) - 1 >= max_hops:
-                continue
-            for target in outgoing.get(current, [])[:20]:
-                if target in path:
-                    continue
-                if _is_sanitizer(target, node_map, sanitizer_tokens):
-                    continue
-                queue.append([*path, target])
+        _bfs_from_source(
+            source_id,
+            sink_ids,
+            outgoing,
+            node_map,
+            sanitizer_tokens,
+            max_hops,
+            max_results,
+            flows,
+        )
     return flows
 
 

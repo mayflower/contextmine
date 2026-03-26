@@ -319,54 +319,50 @@ def clone_or_pull_repo(
             os.unlink(key_file_path)
 
 
+def _all_blob_paths(repo: Repo, sha: str) -> list[str]:
+    """Return all blob paths in a commit tree."""
+    return [
+        item.path  # type: ignore[union-attr]
+        for item in repo.commit(sha).tree.traverse()
+        if item.type == "blob"  # type: ignore[union-attr]
+    ]
+
+
+def _classify_diff_item(
+    diff_item: Any,
+    changed: list[str],
+    deleted: list[str],
+) -> None:
+    """Classify a single diff item into changed or deleted lists."""
+    if diff_item.deleted_file:
+        if diff_item.a_path:
+            deleted.append(diff_item.a_path)
+        return
+    if diff_item.new_file or diff_item.renamed_file or diff_item.a_blob != diff_item.b_blob:
+        if diff_item.b_path:
+            changed.append(diff_item.b_path)
+        if diff_item.renamed_file and diff_item.a_path:
+            deleted.append(diff_item.a_path)
+
+
 def get_changed_files(
     repo: Repo,
     old_sha: str | None,
     new_sha: str,
 ) -> tuple[list[str], list[str]]:
-    """Get list of changed and deleted files between commits.
-
-    Args:
-        repo: Git repo object
-        old_sha: Previous commit SHA (None for full index)
-        new_sha: Current commit SHA
-
-    Returns:
-        Tuple of (changed_files, deleted_files)
-    """
+    """Get list of changed and deleted files between commits."""
     if old_sha is None:
-        # Full index - get all files in current tree
-        changed = []
-        for item in repo.commit(new_sha).tree.traverse():
-            if item.type == "blob":  # type: ignore[union-attr]
-                changed.append(item.path)  # type: ignore[union-attr]
-        return changed, []
+        return _all_blob_paths(repo, new_sha), []
 
-    # Incremental - diff between commits
     try:
         diff = repo.commit(old_sha).diff(repo.commit(new_sha))
     except GitCommandError:
-        # Old commit might be gone (force push), do full index
-        changed = []
-        for item in repo.commit(new_sha).tree.traverse():
-            if item.type == "blob":  # type: ignore[union-attr]
-                changed.append(item.path)  # type: ignore[union-attr]
-        return changed, []
+        return _all_blob_paths(repo, new_sha), []
 
-    changed = []
-    deleted = []
-
+    changed: list[str] = []
+    deleted: list[str] = []
     for diff_item in diff:
-        if diff_item.deleted_file:
-            if diff_item.a_path:
-                deleted.append(diff_item.a_path)
-        elif diff_item.new_file or diff_item.renamed_file or diff_item.a_blob != diff_item.b_blob:
-            if diff_item.b_path:
-                changed.append(diff_item.b_path)
-            # Handle renamed files - delete old path
-            if diff_item.renamed_file and diff_item.a_path:
-                deleted.append(diff_item.a_path)
-
+        _classify_diff_item(diff_item, changed, deleted)
     return changed, deleted
 
 
@@ -474,6 +470,128 @@ def compute_git_change_metrics(
     return metrics
 
 
+def _evo_author_key(name: str, email: str) -> str:
+    candidate = (email or name or "unknown").strip().lower()
+    return candidate or "unknown"
+
+
+def _evo_canonical_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _evo_entity_for(path: str, level: str, derive_arch_group: Any) -> str | None:
+    group = derive_arch_group(path, {})
+    if not group:
+        return None
+    if level == "container":
+        return f"container:{group.domain}/{group.container}"
+    if level == "component":
+        return f"component:{group.domain}/{group.container}/{group.component}"
+    return None
+
+
+def _evo_safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _evo_coerce_pairing_churn(file_stats: object) -> int:
+    if isinstance(file_stats, tuple):
+        insertions = int(file_stats[0] or 0) if len(file_stats) > 0 else 0
+        deletions = int(file_stats[1] or 0) if len(file_stats) > 1 else 0
+        return insertions + deletions
+    if isinstance(file_stats, dict):
+        insertions = int(file_stats.get("insertions", 0) or 0)
+        deletions = int(file_stats.get("deletions", 0) or 0)
+        return insertions + deletions
+    return 0
+
+
+def _evo_limit_paths_for_pairing(
+    paths: list[str],
+    max_files_per_commit: int,
+    file_stats_by_path: dict[str, object],
+) -> tuple[list[str], bool]:
+    if max_files_per_commit <= 0 or len(paths) <= max_files_per_commit:
+        return paths, False
+    ranked = sorted(
+        paths,
+        key=lambda p: (_evo_coerce_pairing_churn(file_stats_by_path.get(p)), p),
+        reverse=True,
+    )
+    return sorted(ranked[:max_files_per_commit]), True
+
+
+def _evo_pair_row(
+    source: str,
+    target: str,
+    co_change_count: int,
+    change_counts: dict[str, int],
+    file_to_container: dict[str, str | None],
+    entity_level: str,
+    window_days: int,
+) -> dict[str, object]:
+    """Build a single coupling pair row."""
+    source_count = int(change_counts.get(source, 0))
+    target_count = int(change_counts.get(target, 0))
+    union = source_count + target_count - int(co_change_count)
+    jaccard = _evo_safe_ratio(float(co_change_count), float(union))
+    cross_boundary = source != target
+    if entity_level == "file":
+        sc = file_to_container.get(source)
+        tc = file_to_container.get(target)
+        if sc and tc:
+            cross_boundary = sc != tc
+    return {
+        "entity_level": entity_level,
+        "source_key": (f"file:{source}" if entity_level == "file" else source),
+        "target_key": (f"file:{target}" if entity_level == "file" else target),
+        "co_change_count": int(co_change_count),
+        "source_change_count": source_count,
+        "target_change_count": target_count,
+        "ratio_source_to_target": round(
+            _evo_safe_ratio(float(co_change_count), float(source_count)), 4
+        ),
+        "ratio_target_to_source": round(
+            _evo_safe_ratio(float(co_change_count), float(target_count)), 4
+        ),
+        "jaccard": round(jaccard, 4),
+        "cross_boundary": bool(cross_boundary),
+        "window_days": int(window_days),
+    }
+
+
+def _evo_pair_rows(
+    *,
+    entity_level: str,
+    pair_counts: dict[tuple[str, str], int],
+    change_counts: dict[str, int],
+    file_to_container: dict[str, str | None],
+    window_days: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for (source, target), co_change_count in sorted(
+        pair_counts.items(),
+        key=lambda item: (item[1], item[0][0], item[0][1]),
+        reverse=True,
+    ):
+        rows.append(
+            _evo_pair_row(
+                source,
+                target,
+                co_change_count,
+                change_counts,
+                file_to_container,
+                entity_level,
+                window_days,
+            )
+        )
+    return rows
+
+
 def compute_git_evolution_snapshots(
     repo: Repo,
     target_files: set[str],
@@ -501,105 +619,6 @@ def compute_git_evolution_snapshots(
 
     from contextmine_core.twin import derive_arch_group
 
-    def _author_key(name: str, email: str) -> str:
-        candidate = (email or name or "unknown").strip().lower()
-        return candidate or "unknown"
-
-    def _canonical_utc(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-
-    def _entity_for(path: str, level: str) -> str | None:
-        group = derive_arch_group(path, {})
-        if not group:
-            return None
-        if level == "container":
-            return f"container:{group.domain}/{group.container}"
-        if level == "component":
-            return f"component:{group.domain}/{group.container}/{group.component}"
-        return None
-
-    def _safe_ratio(numerator: float, denominator: float) -> float:
-        if denominator <= 0:
-            return 0.0
-        return numerator / denominator
-
-    def _coerce_pairing_churn(file_stats: object) -> int:
-        if isinstance(file_stats, tuple):
-            insertions = int(file_stats[0] or 0) if len(file_stats) > 0 else 0
-            deletions = int(file_stats[1] or 0) if len(file_stats) > 1 else 0
-            return insertions + deletions
-        if isinstance(file_stats, dict):
-            insertions = int(file_stats.get("insertions", 0) or 0)
-            deletions = int(file_stats.get("deletions", 0) or 0)
-            return insertions + deletions
-        return 0
-
-    def _limit_paths_for_pairing(
-        paths: list[str],
-        *,
-        file_stats_by_path: dict[str, object],
-    ) -> tuple[list[str], bool]:
-        if max_files_per_commit <= 0 or len(paths) <= max_files_per_commit:
-            return paths, False
-
-        ranked = sorted(
-            paths,
-            key=lambda path: (
-                _coerce_pairing_churn(file_stats_by_path.get(path)),
-                path,
-            ),
-            reverse=True,
-        )
-        return sorted(ranked[:max_files_per_commit]), True
-
-    def _pair_rows(
-        *,
-        entity_level: str,
-        pair_counts: dict[tuple[str, str], int],
-        change_counts: dict[str, int],
-        file_to_container: dict[str, str | None],
-    ) -> list[dict[str, object]]:
-        rows: list[dict[str, object]] = []
-        for (source, target), co_change_count in sorted(
-            pair_counts.items(),
-            key=lambda item: (item[1], item[0][0], item[0][1]),
-            reverse=True,
-        ):
-            source_count = int(change_counts.get(source, 0))
-            target_count = int(change_counts.get(target, 0))
-            union = source_count + target_count - int(co_change_count)
-            jaccard = _safe_ratio(float(co_change_count), float(union))
-
-            cross_boundary = source != target
-            if entity_level == "file":
-                source_container = file_to_container.get(source)
-                target_container = file_to_container.get(target)
-                if source_container and target_container:
-                    cross_boundary = source_container != target_container
-
-            rows.append(
-                {
-                    "entity_level": entity_level,
-                    "source_key": (f"file:{source}" if entity_level == "file" else source),
-                    "target_key": (f"file:{target}" if entity_level == "file" else target),
-                    "co_change_count": int(co_change_count),
-                    "source_change_count": source_count,
-                    "target_change_count": target_count,
-                    "ratio_source_to_target": round(
-                        _safe_ratio(float(co_change_count), float(source_count)), 4
-                    ),
-                    "ratio_target_to_source": round(
-                        _safe_ratio(float(co_change_count), float(target_count)), 4
-                    ),
-                    "jaccard": round(jaccard, 4),
-                    "cross_boundary": bool(cross_boundary),
-                    "window_days": int(window_days),
-                }
-            )
-        return rows
-
     since_dt = datetime.now(UTC) - timedelta(days=max(1, int(window_days)))
 
     ownership_acc: dict[tuple[str, str], dict[str, object]] = {}
@@ -626,13 +645,10 @@ def compute_git_evolution_snapshots(
             scoped = []
         if scoped:
             return scoped
-
-        # Some git/python combinations can produce empty results with since filtering.
-        # Fall back to full history scan and apply the time filter in Python.
         try:
             fallback: list = []
             for commit in repo.iter_commits("HEAD", no_merges=True):
-                commit_dt = _canonical_utc(commit.authored_datetime)
+                commit_dt = _evo_canonical_utc(commit.authored_datetime)
                 if commit_dt >= since_dt:
                     fallback.append(commit)
             if fallback:
@@ -649,7 +665,6 @@ def compute_git_evolution_snapshots(
         author_label: str,
         commit_dt: datetime,
     ) -> None:
-        """Accumulate ownership and change stats for a single file touch."""
         file_change_counts[path] += 1
         key = (path, author_key)
         current = ownership_acc.get(key)
@@ -671,29 +686,33 @@ def compute_git_evolution_snapshots(
         last = current.get("last_touched_at")
         if isinstance(last, datetime) and commit_dt > last:
             current["last_touched_at"] = commit_dt
-        file_to_container[path] = _entity_for(path, "container")
+        file_to_container[path] = _evo_entity_for(path, "container", derive_arch_group)
 
-    def _accumulate_pairings(
-        touched: list[str],
-        file_stats_by_path: dict[str, object],
-    ) -> None:
-        """Accumulate file, container, and component co-change pairs."""
+    def _accumulate_pairings(touched: list[str], file_stats_by_path: dict[str, object]) -> None:
         nonlocal pairing_truncated_commits
-        pairing_paths, pairing_truncated = _limit_paths_for_pairing(
+        pairing_paths, truncated = _evo_limit_paths_for_pairing(
             touched,
-            file_stats_by_path=file_stats_by_path,
+            max_files_per_commit,
+            file_stats_by_path,
         )
-        if pairing_truncated:
+        if truncated:
             pairing_truncated_commits += 1
         for source, target in combinations(pairing_paths, 2):
             file_pair_counts[tuple(sorted((source, target)))] += 1
-
         pairing_set = set(pairing_paths)
         container_entities = sorted(
-            {v for v in (_entity_for(p, "container") for p in pairing_set) if v}
+            {
+                v
+                for v in (_evo_entity_for(p, "container", derive_arch_group) for p in pairing_set)
+                if v
+            }
         )
         component_entities = sorted(
-            {v for v in (_entity_for(p, "component") for p in pairing_set) if v}
+            {
+                v
+                for v in (_evo_entity_for(p, "component", derive_arch_group) for p in pairing_set)
+                if v
+            }
         )
         for container in container_entities:
             container_change_counts[container] += 1
@@ -705,33 +724,31 @@ def compute_git_evolution_snapshots(
             component_pair_counts[tuple(sorted((source, target)))] += 1
 
     def _process_fast_path_commit(commit: _GitCommitTouch) -> None:
-        """Process a single _GitCommitTouch from the numstat fast path."""
         nonlocal commits_scanned
         touched = sorted(commit.files.keys())
         if not touched:
             return
         commits_scanned += 1
-        commit_dt = _canonical_utc(commit.authored_at)
+        commit_dt = _evo_canonical_utc(commit.authored_at)
         author_label = (commit.author_name or commit.author_email or "unknown").strip() or "unknown"
-        ak = _author_key(commit.author_name or "", commit.author_email or "")
+        ak = _evo_author_key(commit.author_name or "", commit.author_email or "")
         for path in set(touched):
             ins, dels = commit.files.get(path, (0, 0))
             _accumulate_ownership(path, int(ins or 0), int(dels or 0), ak, author_label, commit_dt)
         _accumulate_pairings(touched, dict(commit.files.items()))
 
     def _process_slow_path_commit(commit: object) -> None:
-        """Process a single GitPython commit object."""
         nonlocal commits_scanned
         files = commit.stats.files or {}  # type: ignore[attr-defined]
         touched = sorted(path for path in files if path in target_files)
         if not touched:
             return
         commits_scanned += 1
-        commit_dt = _canonical_utc(commit.authored_datetime)  # type: ignore[attr-defined]
+        commit_dt = _evo_canonical_utc(commit.authored_datetime)  # type: ignore[attr-defined]
         author_label = (
             commit.author.name or commit.author.email or "unknown"  # type: ignore[attr-defined]
         ).strip() or "unknown"
-        ak = _author_key(
+        ak = _evo_author_key(
             commit.author.name or "",  # type: ignore[attr-defined]
             commit.author.email or "",  # type: ignore[attr-defined]
         )
@@ -787,7 +804,7 @@ def compute_git_evolution_snapshots(
         touches = int(row["touches"])
         denominator = float(total_additions if total_additions > 0 else touches)
         numerator = float(row["additions"] if total_additions > 0 else touches)
-        ownership_share = _safe_ratio(numerator, denominator)
+        ownership_share = _evo_safe_ratio(numerator, denominator)
         ownership_rows.append(
             {
                 **row,
@@ -797,27 +814,30 @@ def compute_git_evolution_snapshots(
 
     coupling_rows: list[dict[str, object]] = []
     coupling_rows.extend(
-        _pair_rows(
+        _evo_pair_rows(
             entity_level="file",
             pair_counts=file_pair_counts,
             change_counts=file_change_counts,
             file_to_container=file_to_container,
+            window_days=window_days,
         )
     )
     coupling_rows.extend(
-        _pair_rows(
+        _evo_pair_rows(
             entity_level="container",
             pair_counts=container_pair_counts,
             change_counts=container_change_counts,
             file_to_container=file_to_container,
+            window_days=window_days,
         )
     )
     coupling_rows.extend(
-        _pair_rows(
+        _evo_pair_rows(
             entity_level="component",
             pair_counts=component_pair_counts,
             change_counts=component_change_counts,
             file_to_container=file_to_container,
+            window_days=window_days,
         )
     )
 
@@ -841,6 +861,30 @@ def compute_git_evolution_snapshots(
         },
         "warnings": warnings,
     }
+
+
+def _run_git_numstat_log(
+    git_log: Any,
+    pathspec: list[str],
+    since_dt: datetime | None,
+    include_since: bool,
+) -> str:
+    """Execute git log --numstat and return raw output."""
+    args = [
+        "--no-merges",
+        "--numstat",
+        "--date=unix",
+        "--format=__CM__%at%x09%an%x09%ae",
+    ]
+    if include_since and since_dt is not None:
+        args.append(f"--since={since_dt.isoformat()}")
+    args.append("HEAD")
+    if pathspec:
+        try:
+            return str(git_log(*args, "--", *pathspec))
+        except Exception:
+            pass
+    return str(git_log(*args))
 
 
 def _load_git_numstat_commits(
@@ -867,26 +911,8 @@ def _load_git_numstat_commits(
 
     pathspec = sorted(path for path in target_files if path)
 
-    def _run_log(include_since: bool) -> str:
-        args = [
-            "--no-merges",
-            "--numstat",
-            "--date=unix",
-            "--format=__CM__%at%x09%an%x09%ae",
-        ]
-        if include_since and since_dt is not None:
-            args.append(f"--since={since_dt.isoformat()}")
-        args.append("HEAD")
-        if pathspec:
-            try:
-                return str(git_log(*args, "--", *pathspec))
-            except Exception:
-                # Fallback to unfiltered history when pathspec exceeds backend limits.
-                pass
-        return str(git_log(*args))
-
     try:
-        raw = _run_log(include_since=True)
+        raw = _run_git_numstat_log(git_log, pathspec, since_dt, include_since=True)
     except Exception:
         return None
 
@@ -894,13 +920,55 @@ def _load_git_numstat_commits(
     fallback_used = False
     if since_dt is not None and not commits:
         try:
-            fallback_raw = _run_log(include_since=False)
+            fallback_raw = _run_git_numstat_log(git_log, pathspec, since_dt, include_since=False)
             commits = _parse_git_numstat_output(fallback_raw, target_files, since_dt=since_dt)
-            if commits:
-                fallback_used = True
+            fallback_used = bool(commits)
         except Exception:
             pass
     return commits, fallback_used
+
+
+def _parse_commit_header(
+    payload: str,
+    since_dt: datetime | None,
+) -> _GitCommitTouch | None:
+    """Parse a __CM__ commit header line. Returns None if outside time window or malformed."""
+    parts = payload.split("\t", 2)
+    if len(parts) != 3:
+        return None
+    epoch_raw, author_name, author_email = parts
+    try:
+        authored_at = datetime.fromtimestamp(int(epoch_raw), tz=UTC)
+    except Exception:
+        authored_at = datetime.now(UTC)
+    if since_dt is not None and authored_at < since_dt:
+        return None
+    return _GitCommitTouch(
+        authored_at=authored_at,
+        author_name=author_name,
+        author_email=author_email,
+        files={},
+    )
+
+
+def _parse_numstat_file_line(
+    line: str,
+    current: _GitCommitTouch,
+    target_files: set[str],
+) -> None:
+    """Parse a numstat file line and accumulate into the current commit."""
+    parts = line.split("\t", 2)
+    if len(parts) != 3:
+        return
+    insertions_raw, deletions_raw, raw_path = parts
+    insertions = int(insertions_raw) if insertions_raw.isdigit() else 0
+    deletions = int(deletions_raw) if deletions_raw.isdigit() else 0
+    variants = _numstat_path_variants(raw_path)
+    matched_path = next((path for path in variants if path in target_files), None)
+    if not matched_path:
+        return
+    previous = current.files.get(matched_path, (0, 0))
+    current.files[matched_path] = (int(previous[0]) + insertions, int(previous[1]) + deletions)
 
 
 def _parse_git_numstat_output(
@@ -911,7 +979,6 @@ def _parse_git_numstat_output(
 ) -> list[_GitCommitTouch]:
     commits: list[_GitCommitTouch] = []
     current: _GitCommitTouch | None = None
-    skip_current = False
 
     for raw_line in raw_output.splitlines():
         line = raw_line.strip("\n")
@@ -921,54 +988,12 @@ def _parse_git_numstat_output(
         if line.startswith("__CM__"):
             if current is not None and current.files:
                 commits.append(current)
-
-            payload = line.removeprefix("__CM__")
-            parts = payload.split("\t", 2)
-            if len(parts) != 3:
-                current = None
-                skip_current = True
-                continue
-
-            epoch_raw, author_name, author_email = parts
-            try:
-                authored_at = datetime.fromtimestamp(int(epoch_raw), tz=UTC)
-            except Exception:
-                authored_at = datetime.now(UTC)
-
-            skip_current = since_dt is not None and authored_at < since_dt
-            if skip_current:
-                current = None
-                continue
-
-            current = _GitCommitTouch(
-                authored_at=authored_at,
-                author_name=author_name,
-                author_email=author_email,
-                files={},
-            )
+            current = _parse_commit_header(line.removeprefix("__CM__"), since_dt)
             continue
 
-        if skip_current or current is None:
+        if current is None:
             continue
-
-        parts = line.split("\t", 2)
-        if len(parts) != 3:
-            continue
-
-        insertions_raw, deletions_raw, raw_path = parts
-        insertions = int(insertions_raw) if insertions_raw.isdigit() else 0
-        deletions = int(deletions_raw) if deletions_raw.isdigit() else 0
-        variants = _numstat_path_variants(raw_path)
-
-        matched_path = next((path for path in variants if path in target_files), None)
-        if not matched_path:
-            continue
-
-        previous = current.files.get(matched_path, (0, 0))
-        current.files[matched_path] = (
-            int(previous[0]) + insertions,
-            int(previous[1]) + deletions,
-        )
+        _parse_numstat_file_line(line, current, target_files)
 
     if current is not None and current.files:
         commits.append(current)

@@ -236,7 +236,7 @@ interface PrefectFlowRuns {
   error?: string
 }
 
-function MemberChip({ member, onRemove }: { member: { user_id: string; github_login: string; is_owner: boolean }; onRemove: (id: string) => void }) {
+function MemberChip({ member, onRemove }: Readonly<{ member: { user_id: string; github_login: string; is_owner: boolean }; onRemove: (id: string) => void }>) {
   return (
     <span className="member-chip">
       @{member.github_login}
@@ -248,12 +248,206 @@ function MemberChip({ member, onRemove }: { member: { user_id: string; github_lo
   )
 }
 
-function InviteChip({ invite, onRemove }: { invite: { github_login: string }; onRemove: (login: string) => void }) {
+function InviteChip({ invite, onRemove }: Readonly<{ invite: { github_login: string }; onRemove: (login: string) => void }>) {
   return (
     <span className="member-chip pending">
       @{invite.github_login}
       <button className="remove-chip" onClick={() => onRemove(invite.github_login)}>×</button>
     </span>
+  )
+}
+
+interface SourceRowProps {
+  source: Source
+  collection: Collection
+  isEditingThis: boolean
+  isManagingKey: boolean
+  editSourceEnabled: boolean
+  editSourceInterval: number
+  editSourceMaxPages: number
+  editSourceLoading: boolean
+  editSourceError: string | null
+  deployKeyInput: string
+  deployKeyLoading: boolean
+  deployKeyError: string | null
+  syncingSources: Set<string>
+  onSetEditSourceEnabled: (v: boolean) => void
+  onSetEditSourceInterval: (v: number) => void
+  onSetEditSourceMaxPages: (v: number) => void
+  onSaveSource: (e: React.FormEvent) => void
+  onCancelEditSource: () => void
+  onFetchCollectionSources: (id: string) => void
+  onSetSelectedSource: (s: Source | null) => void
+  onSetDeployKeyInput: (v: string) => void
+  onSetDeployKeyError: (v: string | null) => void
+  onDeleteDeployKey: () => void
+  onSetDeployKey: (e?: React.FormEvent | React.MouseEvent) => void
+  onSyncNow: (id: string) => void
+  onSetSelectedCollection: (c: Collection) => void
+  onSetSources: (s: Source[]) => void
+  onEditSource: (s: Source) => void
+  onDeleteSource: (sourceId: string, collection: Collection) => void
+  allSources: Source[]
+}
+
+function SourceRow({
+  source, collection, isEditingThis, isManagingKey,
+  editSourceEnabled, editSourceInterval, editSourceMaxPages,
+  editSourceLoading, editSourceError,
+  deployKeyInput, deployKeyLoading, deployKeyError,
+  syncingSources,
+  onSetEditSourceEnabled, onSetEditSourceInterval, onSetEditSourceMaxPages,
+  onSaveSource, onCancelEditSource, onFetchCollectionSources,
+  onSetSelectedSource, onSetDeployKeyInput, onSetDeployKeyError,
+  onDeleteDeployKey, onSetDeployKey,
+  onSyncNow, onSetSelectedCollection, onSetSources, onEditSource, onDeleteSource,
+  allSources,
+}: Readonly<SourceRowProps>) {
+  return (
+    <div className={`source-row ${source.enabled ? '' : 'disabled'} ${isEditingThis || isManagingKey ? 'editing' : ''}`}>
+      {isEditingThis && (
+        <div className="source-edit-inline">
+          <div className="edit-row">
+            <span className={`source-type-badge ${source.type}`}>{source.type}</span>
+            <span className="source-url-static">{formatSourceUrl(source.url)}</span>
+          </div>
+          <div className="edit-row">
+            <label className="checkbox-inline">
+              <input
+                type="checkbox"
+                checked={editSourceEnabled}
+                onChange={(e) => onSetEditSourceEnabled(e.target.checked)}
+              />{' '}
+              Enabled
+            </label>
+            <label className="select-inline">
+              Interval:{' '}
+              <select
+                value={editSourceInterval}
+                onChange={(e) => onSetEditSourceInterval(Number(e.target.value))}
+              >
+                <option value={15}>15 min</option>
+                <option value={30}>30 min</option>
+                <option value={60}>Hourly</option>
+                <option value={120}>2 hours</option>
+                <option value={360}>6 hours</option>
+                <option value={720}>12 hours</option>
+                <option value={1440}>Daily</option>
+              </select>
+            </label>
+            {source.type === 'web' && (
+              <label className="input-inline">
+                Max pages:{' '}
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={editSourceMaxPages}
+                  onChange={(e) => onSetEditSourceMaxPages(Number(e.target.value))}
+                />
+              </label>
+            )}
+          </div>
+          <div className="edit-actions">
+            <button
+              onClick={(e) => { e.preventDefault(); onSaveSource(e as React.FormEvent); onFetchCollectionSources(collection.id); }}
+              className="save-btn"
+              disabled={editSourceLoading}
+            >
+              {editSourceLoading ? 'Saving...' : 'Save'}
+            </button>
+            <button onClick={onCancelEditSource} className="cancel-btn">Cancel</button>
+          </div>
+          {editSourceError && <p className="inline-error">{editSourceError}</p>}
+        </div>
+      )}
+      {!isEditingThis && isManagingKey && (
+        <div className="source-key-inline">
+          <div className="edit-row">
+            <span className={`source-type-badge ${source.type}`}>{source.type}</span>
+            <span className="source-url-static">{formatSourceUrl(source.url)}</span>
+            <button onClick={() => onSetSelectedSource(null)} className="close-inline">×</button>
+          </div>
+          {source.deploy_key_fingerprint ? (
+            <div className="key-info">
+              <span className="key-status has">Key configured</span>
+              <code className="fingerprint">{source.deploy_key_fingerprint}</code>
+              <button
+                onClick={onDeleteDeployKey}
+                className="remove-key-btn"
+                disabled={deployKeyLoading}
+              >
+                {deployKeyLoading ? 'Removing...' : 'Remove Key'}
+              </button>
+            </div>
+          ) : (
+            <div className="key-form">
+              <p className="key-hint">Paste SSH private key for private repo access:</p>
+              <textarea
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                value={deployKeyInput}
+                onChange={(e) => onSetDeployKeyInput(e.target.value)}
+                rows={4}
+              />
+              <button
+                onClick={onSetDeployKey}
+                className="save-key-btn"
+                disabled={deployKeyLoading || !deployKeyInput.trim()}
+              >
+                {deployKeyLoading ? 'Saving...' : 'Save Key'}
+              </button>
+            </div>
+          )}
+          {deployKeyError && <p className="inline-error">{deployKeyError}</p>}
+        </div>
+      )}
+      {!isEditingThis && !isManagingKey && (
+        <>
+          <span className={`source-type-badge ${source.type}`}>{source.type}</span>
+          <a href={source.url} target="_blank" rel="noopener noreferrer" className="source-url">
+            {formatSourceUrl(source.url)}
+          </a>
+          <span className="source-docs">{source.document_count} docs</span>
+          <span className="source-last-sync">
+            {source.last_run_at
+              ? `Synced ${new Date(source.last_run_at).toLocaleDateString()}`
+              : 'Never synced'}
+          </span>
+          {collection.is_owner && (
+            <div className="source-actions">
+              {source.type === 'github' && (
+                <button
+                  onClick={() => { onSetSelectedSource(source); onSetDeployKeyInput(''); onSetDeployKeyError(null); }}
+                  className={`key-btn ${source.deploy_key_fingerprint ? 'has-key' : ''}`}
+                  title={source.deploy_key_fingerprint ? 'Manage deploy key' : 'Add deploy key'}
+                >
+                  {source.deploy_key_fingerprint ? '🔑' : '🔐'}
+                </button>
+              )}
+              <button
+                onClick={() => onSyncNow(source.id)}
+                className={`sync-btn ${syncingSources.has(source.id) ? 'syncing' : ''}`}
+                disabled={syncingSources.has(source.id)}
+              >
+                {syncingSources.has(source.id) ? 'Syncing...' : 'Sync'}
+              </button>
+              <button
+                onClick={() => { onSetSelectedCollection(collection); onSetSources(allSources); onEditSource(source); }}
+                className="edit-btn"
+              >
+                Edit
+              </button>
+              <button
+                onClick={async () => { onSetSelectedCollection(collection); await onDeleteSource(source.id, collection) }}
+                className="delete-btn"
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -288,7 +482,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [_sources, setSources] = useState<Source[]>([])
+  const [, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1663,14 +1857,14 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
+                        <div className="collection-header-row" role="button" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
 
                           <div className="collection-info">
                             {isEditing ? (
-                              <form onSubmit={handleSaveCollection} className="edit-collection-form" role="presentation" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                              <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                                 <input
                                   type="text"
                                   value={editCollectionName}
@@ -1762,7 +1956,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" role="presentation" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="share-popover" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
@@ -1839,160 +2033,41 @@ function App() {
                                   <p className="no-sources-text">No sources yet. Add a GitHub repo or documentation URL above.</p>
                                 ) : (
                                   <div className="sources-list">
-                                    {sources.map(source => {
-                                      const isEditingThis = editingSource?.id === source.id
-                                      const isManagingKey = selectedSource?.id === source.id
-
-                                      return (
-                                        <div key={source.id} className={`source-row ${source.enabled ? '' : 'disabled'} ${isEditingThis || isManagingKey ? 'editing' : ''}`}>
-                                          {isEditingThis && (
-                                            /* Inline Edit Form */
-                                            <div className="source-edit-inline">
-                                              <div className="edit-row">
-                                                <span className={`source-type-badge ${source.type}`}>{source.type}</span>
-                                                <span className="source-url-static">{formatSourceUrl(source.url)}</span>
-                                              </div>
-                                              <div className="edit-row">
-                                                <label className="checkbox-inline">
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={editSourceEnabled}
-                                                    onChange={(e) => setEditSourceEnabled(e.target.checked)}
-                                                  />{' '}
-                                                  Enabled
-                                                </label>
-                                                <label className="select-inline">
-                                                  Interval:{' '}
-                                                  <select
-                                                    value={editSourceInterval}
-                                                    onChange={(e) => setEditSourceInterval(Number(e.target.value))}
-                                                  >
-                                                    <option value={15}>15 min</option>
-                                                    <option value={30}>30 min</option>
-                                                    <option value={60}>Hourly</option>
-                                                    <option value={120}>2 hours</option>
-                                                    <option value={360}>6 hours</option>
-                                                    <option value={720}>12 hours</option>
-                                                    <option value={1440}>Daily</option>
-                                                  </select>
-                                                </label>
-                                                {source.type === 'web' && (
-                                                  <label className="input-inline">
-                                                    Max pages:{' '}
-                                                    <input
-                                                      type="number"
-                                                      min={1}
-                                                      max={1000}
-                                                      value={editSourceMaxPages}
-                                                      onChange={(e) => setEditSourceMaxPages(Number(e.target.value))}
-                                                    />
-                                                  </label>
-                                                )}
-                                              </div>
-                                              <div className="edit-actions">
-                                                <button
-                                                  onClick={(e) => { e.preventDefault(); handleSaveSource(e as React.FormEvent); fetchCollectionSources(collection.id); }}
-                                                  className="save-btn"
-                                                  disabled={editSourceLoading}
-                                                >
-                                                  {editSourceLoading ? 'Saving...' : 'Save'}
-                                                </button>
-                                                <button onClick={handleCancelEditSource} className="cancel-btn">Cancel</button>
-                                              </div>
-                                              {editSourceError && <p className="inline-error">{editSourceError}</p>}
-                                            </div>
-                                          )}
-                                          {!isEditingThis && isManagingKey && (
-                                            /* Inline Deploy Key Management */
-                                            <div className="source-key-inline">
-                                              <div className="edit-row">
-                                                <span className={`source-type-badge ${source.type}`}>{source.type}</span>
-                                                <span className="source-url-static">{formatSourceUrl(source.url)}</span>
-                                                <button onClick={() => setSelectedSource(null)} className="close-inline">×</button>
-                                              </div>
-                                              {source.deploy_key_fingerprint ? (
-                                                <div className="key-info">
-                                                  <span className="key-status has">Key configured</span>
-                                                  <code className="fingerprint">{source.deploy_key_fingerprint}</code>
-                                                  <button
-                                                    onClick={handleDeleteDeployKey}
-                                                    className="remove-key-btn"
-                                                    disabled={deployKeyLoading}
-                                                  >
-                                                    {deployKeyLoading ? 'Removing...' : 'Remove Key'}
-                                                  </button>
-                                                </div>
-                                              ) : (
-                                                <div className="key-form">
-                                                  <p className="key-hint">Paste SSH private key for private repo access:</p>
-                                                  <textarea
-                                                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                                                    value={deployKeyInput}
-                                                    onChange={(e) => setDeployKeyInput(e.target.value)}
-                                                    rows={4}
-                                                  />
-                                                  <button
-                                                    onClick={handleSetDeployKey}
-                                                    className="save-key-btn"
-                                                    disabled={deployKeyLoading || !deployKeyInput.trim()}
-                                                  >
-                                                    {deployKeyLoading ? 'Saving...' : 'Save Key'}
-                                                  </button>
-                                                </div>
-                                              )}
-                                              {deployKeyError && <p className="inline-error">{deployKeyError}</p>}
-                                            </div>
-                                          )}
-                                          {!isEditingThis && !isManagingKey && (
-                                            /* Normal Source Row */
-                                            <>
-                                              <span className={`source-type-badge ${source.type}`}>{source.type}</span>
-                                              <a href={source.url} target="_blank" rel="noopener noreferrer" className="source-url">
-                                                {formatSourceUrl(source.url)}
-                                              </a>
-                                              <span className="source-docs">{source.document_count} docs</span>
-                                              <span className="source-last-sync">
-                                                {source.last_run_at
-                                                  ? `Synced ${new Date(source.last_run_at).toLocaleDateString()}`
-                                                  : 'Never synced'}
-                                              </span>
-                                              {collection.is_owner && (
-                                                <div className="source-actions">
-                                                  {source.type === 'github' && (
-                                                    <button
-                                                      onClick={() => { setSelectedSource(source); setDeployKeyInput(''); setDeployKeyError(null); }}
-                                                      className={`key-btn ${source.deploy_key_fingerprint ? 'has-key' : ''}`}
-                                                      title={source.deploy_key_fingerprint ? 'Manage deploy key' : 'Add deploy key'}
-                                                    >
-                                                      {source.deploy_key_fingerprint ? '🔑' : '🔐'}
-                                                    </button>
-                                                  )}
-                                                  <button
-                                                    onClick={() => handleSyncNow(source.id)}
-                                                    className={`sync-btn ${syncingSources.has(source.id) ? 'syncing' : ''}`}
-                                                    disabled={syncingSources.has(source.id)}
-                                                  >
-                                                    {syncingSources.has(source.id) ? 'Syncing...' : 'Sync'}
-                                                  </button>
-                                                  <button
-                                                    onClick={() => { setSelectedCollection(collection); setSources(sources); handleEditSource(source); }}
-                                                    className="edit-btn"
-                                                  >
-                                                    Edit
-                                                  </button>
-                                                  <button
-                                                    onClick={async () => { setSelectedCollection(collection); await handleDeleteSource(source.id, collection) }}
-                                                    className="delete-btn"
-                                                  >
-                                                    ×
-                                                  </button>
-                                                </div>
-                                              )}
-                                            </>
-                                          )}
-                                        </div>
-                                      )
-                                    })}
+                                    {sources.map(source => (
+                                      <SourceRow
+                                        key={source.id}
+                                        source={source}
+                                        collection={collection}
+                                        isEditingThis={editingSource?.id === source.id}
+                                        isManagingKey={selectedSource?.id === source.id}
+                                        editSourceEnabled={editSourceEnabled}
+                                        editSourceInterval={editSourceInterval}
+                                        editSourceMaxPages={editSourceMaxPages}
+                                        editSourceLoading={editSourceLoading}
+                                        editSourceError={editSourceError}
+                                        deployKeyInput={deployKeyInput}
+                                        deployKeyLoading={deployKeyLoading}
+                                        deployKeyError={deployKeyError}
+                                        syncingSources={syncingSources}
+                                        onSetEditSourceEnabled={setEditSourceEnabled}
+                                        onSetEditSourceInterval={setEditSourceInterval}
+                                        onSetEditSourceMaxPages={setEditSourceMaxPages}
+                                        onSaveSource={handleSaveSource}
+                                        onCancelEditSource={handleCancelEditSource}
+                                        onFetchCollectionSources={fetchCollectionSources}
+                                        onSetSelectedSource={setSelectedSource}
+                                        onSetDeployKeyInput={setDeployKeyInput}
+                                        onSetDeployKeyError={setDeployKeyError}
+                                        onDeleteDeployKey={handleDeleteDeployKey}
+                                        onSetDeployKey={handleSetDeployKey}
+                                        onSyncNow={handleSyncNow}
+                                        onSetSelectedCollection={setSelectedCollection}
+                                        onSetSources={setSources}
+                                        onEditSource={handleEditSource}
+                                        onDeleteSource={handleDeleteSource}
+                                        allSources={sources}
+                                      />
+                                    ))}
                                   </div>
                                 )}
                               </>
@@ -2205,7 +2280,10 @@ function App() {
                             <td>{durationStr}</td>
                             <td>
                               {(() => {
-                                const statusClass = run.status === 'success' ? 'ok' : (run.status === 'failed' ? 'error' : 'loading')
+                                let statusClass: string
+                                if (run.status === 'success') statusClass = 'ok'
+                                else if (run.status === 'failed') statusClass = 'error'
+                                else statusClass = 'loading'
                                 return <span className={`status ${statusClass}`}>{run.status}</span>
                               })()}
                             </td>

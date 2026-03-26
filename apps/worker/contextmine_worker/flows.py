@@ -1515,6 +1515,55 @@ async def build_twin_graph(
     return stats
 
 
+async def _finalize_behavioral_version(
+    session: Any,
+    source_version_uuid: Any,
+    collection_uuid: Any,
+    scenario_uuid: Any,
+    source_uuid: Any,
+    source_id: str,
+    source_version_id: str | None,
+    now_iso: str,
+    deep_warnings: list[str],
+    behavioral_stats: dict[str, int],
+) -> None:
+    """Update source version stats and record completion event."""
+    from contextmine_core.models import TwinSourceVersion
+    from contextmine_core.twin import record_twin_event
+
+    source_version = (
+        await session.execute(
+            select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_uuid)
+        )
+    ).scalar_one_or_none()
+    if source_version:
+        merged = dict(source_version.stats or {})
+        merged.update(
+            {
+                "behavioral_layers_status": "ready",
+                "last_behavioral_materialized_at": now_iso,
+                "deep_warnings": deep_warnings,
+                "behavioral_extract": behavioral_stats,
+            }
+        )
+        source_version.stats = merged
+    await record_twin_event(
+        session,
+        collection_id=collection_uuid,
+        scenario_id=scenario_uuid,
+        source_id=source_uuid,
+        source_version_id=source_version_uuid,
+        event_type="behavioral_extract_ready",
+        status="ready",
+        payload={
+            "finished_at": now_iso,
+            "deep_warnings": deep_warnings,
+            "stats": behavioral_stats,
+        },
+        idempotency_key=f"behavioral_extract_ready:{source_id}:{source_version_id}",
+    )
+
+
 async def _materialize_behavioral_layers_impl(
     *,
     source_id: str,
@@ -1532,7 +1581,7 @@ async def _materialize_behavioral_layers_impl(
     )
     from contextmine_core.analyzer.extractors.ui import build_ui_graph, extract_ui_from_files
     from contextmine_core.graph.age import sync_scenario_to_age
-    from contextmine_core.models import Document, TwinSourceVersion
+    from contextmine_core.models import Document
     from contextmine_core.twin import record_twin_event, seed_scenario_from_knowledge_graph
 
     settings = get_settings()
@@ -1627,40 +1676,18 @@ async def _materialize_behavioral_layers_impl(
             )
             await sync_scenario_to_age(session, scenario_uuid)
 
-        source_version = None
         if source_version_uuid:
-            source_version = (
-                await session.execute(
-                    select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_uuid)
-                )
-            ).scalar_one_or_none()
-        if source_version:
-            merged = dict(source_version.stats or {})
-            merged.update(
-                {
-                    "behavioral_layers_status": "ready",
-                    "last_behavioral_materialized_at": now_iso,
-                    "deep_warnings": deep_warnings,
-                    "behavioral_extract": behavioral_stats,
-                }
-            )
-            source_version.stats = merged
-
-        if source_version_uuid:
-            await record_twin_event(
+            await _finalize_behavioral_version(
                 session,
-                collection_id=collection_uuid,
-                scenario_id=scenario_uuid,
-                source_id=source_uuid,
-                source_version_id=source_version_uuid,
-                event_type="behavioral_extract_ready",
-                status="ready",
-                payload={
-                    "finished_at": now_iso,
-                    "deep_warnings": deep_warnings,
-                    "stats": behavioral_stats,
-                },
-                idempotency_key=f"behavioral_extract_ready:{source_id}:{source_version_id}",
+                source_version_uuid,
+                collection_uuid,
+                scenario_uuid,
+                source_uuid,
+                source_id,
+                source_version_id,
+                now_iso,
+                deep_warnings,
+                behavioral_stats,
             )
         await session.commit()
 

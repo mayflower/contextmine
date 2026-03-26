@@ -144,47 +144,65 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
     return sorted_values[index]
 
 
+@dataclass
+class _TarjanState:
+    """Mutable state for iterative Tarjan SCC."""
+
+    index: int = 0
+    stack: list[str] = None  # type: ignore[assignment]
+    on_stack: set[str] = None  # type: ignore[assignment]
+    indices: dict[str, int] = None  # type: ignore[assignment]
+    lowlink: dict[str, int] = None  # type: ignore[assignment]
+    cycles: list[list[str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        self.stack = []
+        self.on_stack = set()
+        self.indices = {}
+        self.lowlink = {}
+        self.cycles = []
+
+
+def _tarjan_visit(
+    node: str,
+    graph: dict[str, set[str]],
+    state: _TarjanState,
+) -> None:
+    """Visit a node in Tarjan's SCC algorithm (recursive)."""
+    state.indices[node] = state.index
+    state.lowlink[node] = state.index
+    state.index += 1
+    state.stack.append(node)
+    state.on_stack.add(node)
+
+    for neighbor in graph.get(node, set()):
+        if neighbor not in state.indices:
+            _tarjan_visit(neighbor, graph, state)
+            state.lowlink[node] = min(state.lowlink[node], state.lowlink[neighbor])
+        elif neighbor in state.on_stack:
+            state.lowlink[node] = min(state.lowlink[node], state.indices[neighbor])
+
+    if state.lowlink[node] != state.indices[node]:
+        return
+    component: list[str] = []
+    while state.stack:
+        current = state.stack.pop()
+        state.on_stack.discard(current)
+        component.append(current)
+        if current == node:
+            break
+    if len(component) > 1:
+        state.cycles.append(sorted(component))
+
+
 def _topological_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
     """Return SCCs larger than 1 as cycle candidates."""
-    index = 0
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    indices: dict[str, int] = {}
-    lowlink: dict[str, int] = {}
-    cycles: list[list[str]] = []
-
-    def strongconnect(node: str) -> None:
-        nonlocal index
-        indices[node] = index
-        lowlink[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-
-        for neighbor in graph.get(node, set()):
-            if neighbor not in indices:
-                strongconnect(neighbor)
-                lowlink[node] = min(lowlink[node], lowlink[neighbor])
-            elif neighbor in on_stack:
-                lowlink[node] = min(lowlink[node], indices[neighbor])
-
-        if lowlink[node] == indices[node]:
-            component: list[str] = []
-            while stack:
-                current = stack.pop()
-                on_stack.discard(current)
-                component.append(current)
-                if current == node:
-                    break
-            if len(component) > 1:
-                cycles.append(sorted(component))
-
+    state = _TarjanState()
     for node in sorted(graph):
-        if node not in indices:
-            strongconnect(node)
-
-    cycles.sort(key=lambda component: (-len(component), component))
-    return cycles
+        if node not in state.indices:
+            _tarjan_visit(node, graph, state)
+    state.cycles.sort(key=lambda component: (-len(component), component))
+    return state.cycles
 
 
 async def replace_evolution_snapshots(
@@ -304,6 +322,63 @@ def _classify_quadrant(investment_score: float, utilization_score: float | None)
     return "opportunity_or_retire"
 
 
+def _empty_investment_response(window_days: int, reason: str, warning: str) -> dict[str, Any]:
+    """Build an unavailable investment/utilization response."""
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "window_days": window_days,
+        "summary": {
+            "total_entities": 0,
+            "coverage_entity_ratio": 0.0,
+            "utilization_available": False,
+            "quadrants": {
+                "strength": 0,
+                "overinvestment": 0,
+                "efficient_core": 0,
+                "opportunity_or_retire": 0,
+                "unknown": 0,
+            },
+        },
+        "items": [],
+        "warnings": [warning],
+    }
+
+
+def _group_metrics_by_entity(
+    metrics: list[Any],
+    node_meta: dict[str, dict[str, Any]],
+    entity_level: str,
+) -> dict[str, dict[str, Any]]:
+    """Group metric rows into architecture entities with summed stats."""
+    groups: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "loc": 0,
+            "change_frequency_sum": 0.0,
+            "churn_sum": 0.0,
+            "coverage_sum": 0.0,
+            "coverage_count": 0,
+            "files": 0,
+        }
+    )
+    for metric in metrics:
+        path = _file_path_from_natural_key(metric.node_natural_key)
+        meta = node_meta.get(metric.node_natural_key, {})
+        entity_key = build_entity_key(path, meta, entity_level)
+        if not entity_key:
+            continue
+        row = groups[entity_key]
+        row["loc"] += _safe_int(metric.loc)
+        row["files"] += 1
+        row["change_frequency_sum"] += _safe_float(metric.change_frequency)
+        row["churn_sum"] += _safe_float((metric.meta or {}).get("churn"))
+        coverage = _coverage_value(metric.coverage)
+        if coverage is not None:
+            row["coverage_sum"] += coverage
+            row["coverage_count"] += 1
+    return dict(groups)
+
+
 async def get_investment_utilization_payload(
     session: AsyncSession,
     *,
@@ -316,74 +391,19 @@ async def get_investment_utilization_payload(
 
     metrics, node_meta, _ = await _metric_context(session, scenario_id)
     if not metrics:
-        return {
-            "status": "unavailable",
-            "reason": "no_real_metrics",
-            "window_days": window_days,
-            "summary": {
-                "total_entities": 0,
-                "coverage_entity_ratio": 0.0,
-                "utilization_available": False,
-                "quadrants": {
-                    "strength": 0,
-                    "overinvestment": 0,
-                    "efficient_core": 0,
-                    "opportunity_or_retire": 0,
-                    "unknown": 0,
-                },
-            },
-            "items": [],
-            "warnings": ["No metric snapshots available for selected scenario."],
-        }
+        return _empty_investment_response(
+            window_days,
+            "no_real_metrics",
+            "No metric snapshots available for selected scenario.",
+        )
 
-    groups: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {
-            "loc": 0,
-            "change_frequency_sum": 0.0,
-            "churn_sum": 0.0,
-            "coverage_sum": 0.0,
-            "coverage_count": 0,
-            "files": 0,
-        }
-    )
-
-    for metric in metrics:
-        path = _file_path_from_natural_key(metric.node_natural_key)
-        meta = node_meta.get(metric.node_natural_key, {})
-        entity_key = build_entity_key(path, meta, entity_level)
-        if not entity_key:
-            continue
-
-        row = groups[entity_key]
-        row["loc"] += _safe_int(metric.loc)
-        row["files"] += 1
-        row["change_frequency_sum"] += _safe_float(metric.change_frequency)
-        row["churn_sum"] += _safe_float((metric.meta or {}).get("churn"))
-        coverage = _coverage_value(metric.coverage)
-        if coverage is not None:
-            row["coverage_sum"] += coverage
-            row["coverage_count"] += 1
-
+    groups = _group_metrics_by_entity(metrics, node_meta, entity_level)
     if not groups:
-        return {
-            "status": "unavailable",
-            "reason": "no_mappable_entities",
-            "window_days": window_days,
-            "summary": {
-                "total_entities": 0,
-                "coverage_entity_ratio": 0.0,
-                "utilization_available": False,
-                "quadrants": {
-                    "strength": 0,
-                    "overinvestment": 0,
-                    "efficient_core": 0,
-                    "opportunity_or_retire": 0,
-                    "unknown": 0,
-                },
-            },
-            "items": [],
-            "warnings": ["No metrics could be mapped to architecture entities."],
-        }
+        return _empty_investment_response(
+            window_days,
+            "no_mappable_entities",
+            "No metrics could be mapped to architecture entities.",
+        )
 
     churn_values: list[float] = []
     change_values: list[float] = []
@@ -484,6 +504,40 @@ async def get_investment_utilization_payload(
     }
 
 
+def _build_ownership_file_row(
+    node_natural_key: str,
+    rows: list[Any],
+    entity_level: str,
+    ownership_threshold: float,
+    churn_by_file: dict[str, float],
+    coverage_by_file: dict[str, float | None],
+) -> dict[str, Any] | None:
+    """Build an ownership file row from ownership snapshots. Returns None if unmappable."""
+    path = _file_path_from_natural_key(node_natural_key)
+    entity_key = build_entity_key(path, {}, entity_level)
+    if not entity_key:
+        return None
+    dominant = max(rows, key=lambda row: (float(row.ownership_share), int(row.additions)))
+    dominant_share = float(dominant.ownership_share)
+    last_touched = max(
+        (row.last_touched_at for row in rows if row.last_touched_at),
+        default=None,
+    )
+    return {
+        "node_natural_key": node_natural_key,
+        "path": path,
+        "entity_key": entity_key,
+        "dominant_owner": dominant.author_label,
+        "dominant_share": round(dominant_share, 4),
+        "additions_total": int(sum(int(row.additions) for row in rows)),
+        "touches": int(sum(int(row.touches) for row in rows)),
+        "single_owner": dominant_share >= ownership_threshold,
+        "churn": round(churn_by_file.get(node_natural_key, 0.0), 4),
+        "coverage": coverage_by_file.get(node_natural_key),
+        "last_touched_at": last_touched.isoformat() if last_touched else None,
+    }
+
+
 async def get_knowledge_islands_payload(
     session: AsyncSession,
     *,
@@ -548,37 +602,20 @@ async def get_knowledge_islands_payload(
     dominant_files: list[dict[str, Any]] = []
 
     for node_natural_key, rows in by_file.items():
-        path = _file_path_from_natural_key(node_natural_key)
-        entity_key = build_entity_key(path, {}, entity_level)
-        if not entity_key:
-            continue
-
-        dominant = max(rows, key=lambda row: (float(row.ownership_share), int(row.additions)))
-        dominant_share = float(dominant.ownership_share)
-        additions_total = float(sum(int(row.additions) for row in rows))
-        last_touched = max(
-            (row.last_touched_at for row in rows if row.last_touched_at), default=None
+        file_row = _build_ownership_file_row(
+            node_natural_key,
+            rows,
+            entity_level,
+            ownership_threshold,
+            churn_by_file,
+            coverage_by_file,
         )
-
+        if file_row is None:
+            continue
+        entity_key = file_row["entity_key"]
         for row in rows:
             entity_contrib[entity_key][row.author_label] += float(row.additions)
             global_contrib[row.author_label] += float(row.additions)
-
-        single_owner = dominant_share >= ownership_threshold
-        file_row = {
-            "node_natural_key": node_natural_key,
-            "path": path,
-            "entity_key": entity_key,
-            "dominant_owner": dominant.author_label,
-            "dominant_share": round(dominant_share, 4),
-            "additions_total": int(additions_total),
-            "touches": int(sum(int(row.touches) for row in rows)),
-            "single_owner": single_owner,
-            "churn": round(churn_by_file.get(node_natural_key, 0.0), 4),
-            "coverage": coverage_by_file.get(node_natural_key),
-            "last_touched_at": last_touched.isoformat() if last_touched else None,
-        }
-
         entity_files[entity_key].append(file_row)
         dominant_files.append(file_row)
 
@@ -861,27 +898,16 @@ def _maybe_add_ff005(
     )
 
 
-async def evaluate_and_store_fitness_findings(
+async def _evaluate_ff001_cycles(
     session: AsyncSession,
-    *,
-    collection_id: UUID,
     scenario_id: UUID,
-    window_days: int,
-) -> dict[str, Any]:
-    """Evaluate advisory fitness rules and persist findings for the scenario."""
-
-    findings: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    now = datetime.now(UTC)
-
-    # FF001: Cyclic dependencies on derived component graph.
+    findings: list[dict[str, Any]],
+) -> dict[str, str]:
+    """FF001: Detect cyclic dependencies on derived component graph. Returns file_path_by_component."""
     file_nodes = (
         (
             await session.execute(
-                select(TwinNode).where(
-                    TwinNode.scenario_id == scenario_id,
-                    TwinNode.kind == "file",
-                )
+                select(TwinNode).where(TwinNode.scenario_id == scenario_id, TwinNode.kind == "file")
             )
         )
         .scalars()
@@ -909,25 +935,23 @@ async def evaluate_and_store_fitness_findings(
         kind = str(edge.kind or "").lower()
         if not any(token in kind for token in dep_tokens):
             continue
-
         source_component = node_to_component.get(edge.source_node_id)
         target_component = node_to_component.get(edge.target_node_id)
-        if not source_component or not target_component:
-            continue
-        if source_component == target_component:
+        if not source_component or not target_component or source_component == target_component:
             continue
         component_graph[source_component].add(target_component)
 
     for cycle in _topological_cycles(component_graph)[:200]:
         subject = " -> ".join(cycle)
-        anchor = cycle[0]
         findings.append(
             {
                 "finding_type": "fitness.ff001_cyclic_dependencies",
                 "severity": "high",
                 "confidence": "high",
                 "status": "open",
-                "filename": file_path_by_component.get(anchor, "__architecture__/component_cycle"),
+                "filename": file_path_by_component.get(
+                    cycle[0], "__architecture__/component_cycle"
+                ),
                 "line_number": 1,
                 "message": f"Cyclic component dependency detected: {subject}",
                 "meta": {
@@ -937,45 +961,62 @@ async def evaluate_and_store_fitness_findings(
                 },
             }
         )
+    return file_path_by_component
 
-    # FF002: Overinvestment low utilization (component).
+
+async def _evaluate_ff002_overinvestment(
+    session: AsyncSession,
+    scenario_id: UUID,
+    window_days: int,
+    file_path_by_component: dict[str, str],
+    findings: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """FF002: Overinvestment low utilization (component)."""
     investment_payload = await get_investment_utilization_payload(
         session,
         scenario_id=scenario_id,
         entity_level="component",
         window_days=window_days,
     )
-    if investment_payload.get("status") == "ready":
-        for item in investment_payload.get("items", [])[:400]:
-            if item.get("quadrant") != "overinvestment":
-                continue
-            entity_key = str(item.get("entity_key", ""))
-            findings.append(
-                {
-                    "finding_type": "fitness.ff002_overinvestment_low_utilization",
-                    "severity": "medium",
-                    "confidence": "medium",
-                    "status": "open",
-                    "filename": file_path_by_component.get(
-                        entity_key, "__architecture__/investment"
-                    ),
-                    "line_number": 1,
-                    "message": (
-                        f"Overinvestment detected for {item.get('label')}: "
-                        f"investment={item.get('investment_score')}, utilization={item.get('utilization_score')}"
-                    ),
-                    "meta": {
-                        "rule_id": "FF002_overinvestment_low_utilization",
-                        "subject": entity_key,
-                        "investment_score": item.get("investment_score"),
-                        "utilization_score": item.get("utilization_score"),
-                    },
-                }
-            )
-    else:
+    if investment_payload.get("status") != "ready":
         warnings.append("FF002 skipped: investment/utilization payload unavailable")
+        return
+    for item in investment_payload.get("items", [])[:400]:
+        if item.get("quadrant") != "overinvestment":
+            continue
+        entity_key = str(item.get("entity_key", ""))
+        findings.append(
+            {
+                "finding_type": "fitness.ff002_overinvestment_low_utilization",
+                "severity": "medium",
+                "confidence": "medium",
+                "status": "open",
+                "filename": file_path_by_component.get(entity_key, "__architecture__/investment"),
+                "line_number": 1,
+                "message": (
+                    f"Overinvestment detected for {item.get('label')}: "
+                    f"investment={item.get('investment_score')}, utilization={item.get('utilization_score')}"
+                ),
+                "meta": {
+                    "rule_id": "FF002_overinvestment_low_utilization",
+                    "subject": entity_key,
+                    "investment_score": item.get("investment_score"),
+                    "utilization_score": item.get("utilization_score"),
+                },
+            }
+        )
 
-    # FF003 and FF005 use ownership + metric overlays.
+
+async def _evaluate_ff003_ff005_ownership(
+    session: AsyncSession,
+    scenario_id: UUID,
+    window_days: int,
+    now: datetime,
+    findings: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """FF003 and FF005 use ownership + metric overlays."""
     ownership_rows = (
         (
             await session.execute(
@@ -988,6 +1029,9 @@ async def evaluate_and_store_fitness_findings(
         .scalars()
         .all()
     )
+    if not ownership_rows:
+        warnings.append("FF003/FF005 skipped: ownership snapshots unavailable")
+        return
     metrics_rows = (
         (
             await session.execute(
@@ -1001,19 +1045,16 @@ async def evaluate_and_store_fitness_findings(
         row.node_natural_key: _safe_float((row.meta or {}).get("churn")) for row in metrics_rows
     }
     coverage_by_file = {row.node_natural_key: _coverage_value(row.coverage) for row in metrics_rows}
+    _evaluate_ownership_findings(ownership_rows, churn_by_file, coverage_by_file, now, findings)
 
-    if ownership_rows:
-        _evaluate_ownership_findings(
-            ownership_rows,
-            churn_by_file,
-            coverage_by_file,
-            now,
-            findings,
-        )
-    else:
-        warnings.append("FF003/FF005 skipped: ownership snapshots unavailable")
 
-    # FF004: Cross-boundary coupling with high jaccard.
+async def _evaluate_ff004_coupling(
+    session: AsyncSession,
+    scenario_id: UUID,
+    window_days: int,
+    findings: list[dict[str, Any]],
+) -> None:
+    """FF004: Cross-boundary coupling with high jaccard."""
     coupling_rows = (
         (
             await session.execute(
@@ -1029,7 +1070,6 @@ async def evaluate_and_store_fitness_findings(
         .scalars()
         .all()
     )
-
     for row in sorted(coupling_rows, key=lambda item: item.jaccard, reverse=True)[:200]:
         subject = f"{row.source_key} <-> {row.target_key}"
         findings.append(
@@ -1040,9 +1080,7 @@ async def evaluate_and_store_fitness_findings(
                 "status": "open",
                 "filename": "__architecture__/temporal_coupling",
                 "line_number": 1,
-                "message": (
-                    f"Strong cross-boundary coupling detected: {subject} (jaccard={round(float(row.jaccard), 4)})"
-                ),
+                "message": f"Strong cross-boundary coupling detected: {subject} (jaccard={round(float(row.jaccard), 4)})",
                 "meta": {
                     "rule_id": "FF004_cross_boundary_strong_coupling",
                     "subject": subject,
@@ -1053,6 +1091,41 @@ async def evaluate_and_store_fitness_findings(
                 },
             }
         )
+
+
+async def evaluate_and_store_fitness_findings(
+    session: AsyncSession,
+    *,
+    collection_id: UUID,
+    scenario_id: UUID,
+    window_days: int,
+) -> dict[str, Any]:
+    """Evaluate advisory fitness rules and persist findings for the scenario."""
+
+    findings: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    now = datetime.now(UTC)
+
+    file_path_by_component = await _evaluate_ff001_cycles(
+        session,
+        scenario_id,
+        findings,
+    )
+
+    await _evaluate_ff002_overinvestment(
+        session,
+        scenario_id,
+        window_days,
+        file_path_by_component,
+        findings,
+        warnings,
+    )
+
+    await _evaluate_ff003_ff005_ownership(
+        session, scenario_id, window_days, now, findings, warnings
+    )
+
+    await _evaluate_ff004_coupling(session, scenario_id, window_days, findings)
 
     if findings:
         from contextmine_core.twin.ops import store_findings

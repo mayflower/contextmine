@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -358,6 +358,16 @@ def _parse_sql_column_def(parts: list[str], line: str, line_upper: str) -> Colum
     )
 
 
+def _finalize_table_pks(table: TableDef) -> None:
+    """Mark columns as primary key based on the table's primary_keys list."""
+    if not table.primary_keys:
+        return
+    pk_set = set(table.primary_keys)
+    for col in table.columns:
+        if col.name in pk_set:
+            col.primary_key = True
+
+
 def _extract_schema_from_sql_ddl(file_path: str, content: str) -> SchemaExtraction:
     extraction = SchemaExtraction(file_path=file_path, framework="sql")
     matches = list(SQL_CREATE_TABLE_RE.finditer(content))
@@ -369,17 +379,9 @@ def _extract_schema_from_sql_ddl(file_path: str, content: str) -> SchemaExtracti
         if not table_name:
             continue
         table = TableDef(name=table_name)
-        body = match.group(2)
-        items = _split_sql_items(body)
-
-        for item in items:
+        for item in _split_sql_items(match.group(2)):
             _process_sql_ddl_item(item, table, table_name, extraction)
-
-        if table.primary_keys:
-            for col in table.columns:
-                if col.name in table.primary_keys:
-                    col.primary_key = True
-
+        _finalize_table_pks(table)
         if table.columns:
             extraction.tables.append(table)
 
@@ -609,79 +611,71 @@ class AggregatedSchema:
     sources: list[str] = field(default_factory=list)
 
 
+def _fk_signature(fk: ForeignKeyDef) -> tuple[str, tuple[str, ...], str, tuple[str, ...]]:
+    """Return a deduplication key for a foreign key definition."""
+    return (fk.source_table, tuple(fk.source_columns), fk.target_table, tuple(fk.target_columns))
+
+
+def _merge_table(schema: AggregatedSchema, table: TableDef) -> None:
+    """Merge a table into the schema, combining columns if it already exists."""
+    if table.name not in schema.tables:
+        schema.tables[table.name] = table
+        return
+    existing = schema.tables[table.name]
+    existing_col_names = {c.name for c in existing.columns}
+    for col in table.columns:
+        if col.name not in existing_col_names:
+            existing.columns.append(col)
+            if col.primary_key and col.name not in existing.primary_keys:
+                existing.primary_keys.append(col.name)
+
+
+def _collect_column_fks(
+    tables: list[TableDef],
+    existing_fks: set[tuple[str, tuple[str, ...], str, tuple[str, ...]]],
+    schema: AggregatedSchema,
+) -> None:
+    """Extract FK definitions from column-level foreign_key references."""
+    for table in tables:
+        for col in table.columns:
+            if not col.foreign_key:
+                continue
+            parts = col.foreign_key.split(".")
+            if len(parts) != 2:
+                continue
+            fk = ForeignKeyDef(
+                name=None,
+                source_table=table.name,
+                source_columns=[col.name],
+                target_table=parts[0],
+                target_columns=[parts[1]],
+            )
+            sig = _fk_signature(fk)
+            if sig not in existing_fks:
+                schema.foreign_keys.append(fk)
+                existing_fks.add(sig)
+
+
 def aggregate_schema_extractions(extractions: list[SchemaExtraction]) -> AggregatedSchema:
-    """Aggregate multiple schema extractions into a unified schema.
-
-    Handles:
-    - Merging tables with the same name from different files
-    - Combining columns from multiple sources
-    - Deduplicating foreign keys
-
-    Args:
-        extractions: List of schema extractions from individual files
-
-    Returns:
-        AggregatedSchema with consolidated schema
-    """
+    """Aggregate multiple schema extractions into a unified schema."""
     schema = AggregatedSchema()
 
     for extraction in extractions:
         if extraction.tables or extraction.foreign_keys:
             schema.sources.append(extraction.file_path)
 
-        # Merge tables
         for table in extraction.tables:
-            if table.name in schema.tables:
-                # Merge columns into existing table
-                existing = schema.tables[table.name]
-                existing_col_names = {c.name for c in existing.columns}
-                for col in table.columns:
-                    if col.name not in existing_col_names:
-                        existing.columns.append(col)
-                        if col.primary_key and col.name not in existing.primary_keys:
-                            existing.primary_keys.append(col.name)
-            else:
-                schema.tables[table.name] = table
+            _merge_table(schema, table)
 
-        # Add foreign keys (dedupe by signature)
-        existing_fks = {
-            (fk.source_table, tuple(fk.source_columns), fk.target_table, tuple(fk.target_columns))
-            for fk in schema.foreign_keys
-        }
+        existing_fks = {_fk_signature(fk) for fk in schema.foreign_keys}
 
         for fk in extraction.foreign_keys:
-            fk_sig = (
-                fk.source_table,
-                tuple(fk.source_columns),
-                fk.target_table,
-                tuple(fk.target_columns),
-            )
-            if fk_sig not in existing_fks:
+            sig = _fk_signature(fk)
+            if sig not in existing_fks:
                 schema.foreign_keys.append(fk)
-                existing_fks.add(fk_sig)
+                existing_fks.add(sig)
 
-        # Also extract FKs from column definitions
-        for table in extraction.tables:
-            for col in table.columns:
-                if col.foreign_key:
-                    parts = col.foreign_key.split(".")
-                    if len(parts) == 2:
-                        fk = ForeignKeyDef(
-                            name=None,
-                            source_table=table.name,
-                            source_columns=[col.name],
-                            target_table=parts[0],
-                            target_columns=[parts[1]],
-                        )
-                        fk_sig = (
-                            fk.source_table,
-                            tuple(fk.source_columns),
-                            fk.target_table,
-                            tuple(fk.target_columns),
-                        )
-                        if fk_sig not in existing_fks:
-                            schema.foreign_keys.append(fk)
-                            existing_fks.add(fk_sig)
+        _collect_column_fks(extraction.tables, existing_fks, schema)
 
     return schema
 
@@ -702,39 +696,41 @@ def generate_mermaid_erd(schema: AggregatedSchema) -> str:
     """
     lines = ["erDiagram"]
 
-    # Add tables with columns
     for table_name, table in sorted(schema.tables.items()):
-        lines.append(f"    {_mermaid_safe(table_name)} {{")
-        for col in table.columns:
-            pk = "PK" if col.primary_key else ""
-            fk = "FK" if col.foreign_key else ""
-            markers = ",".join(filter(None, [pk, fk]))
-            type_str = _mermaid_type(col.type_name)
-            if markers:
-                lines.append(f"        {type_str} {_mermaid_safe(col.name)} {markers}")
-            else:
-                lines.append(f"        {type_str} {_mermaid_safe(col.name)}")
-        lines.append("    }")
+        _render_mermaid_table(lines, table_name, table)
 
-    # Add relationships from foreign keys
-    seen_relationships: set[tuple[str, str]] = set()
+    _render_mermaid_relationships(lines, schema)
+    return "\n".join(lines)
+
+
+def _render_mermaid_table(lines: list[str], table_name: str, table: TableDef) -> None:
+    """Render a single table into mermaid ERD lines."""
+    lines.append(f"    {_mermaid_safe(table_name)} {{")
+    for col in table.columns:
+        pk = "PK" if col.primary_key else ""
+        fk = "FK" if col.foreign_key else ""
+        markers = ",".join(filter(None, [pk, fk]))
+        type_str = _mermaid_type(col.type_name)
+        if markers:
+            lines.append(f"        {type_str} {_mermaid_safe(col.name)} {markers}")
+        else:
+            lines.append(f"        {type_str} {_mermaid_safe(col.name)}")
+    lines.append("    }")
+
+
+def _render_mermaid_relationships(lines: list[str], schema: AggregatedSchema) -> None:
+    """Render FK relationships into mermaid ERD lines."""
+    seen: set[tuple[str, str]] = set()
     for fk in schema.foreign_keys:
-        source = _mermaid_safe(fk.source_table)
-        target = _mermaid_safe(fk.target_table)
-
-        # Skip if either table doesn't exist in schema
         if fk.source_table not in schema.tables or fk.target_table not in schema.tables:
             continue
-
+        source = _mermaid_safe(fk.source_table)
+        target = _mermaid_safe(fk.target_table)
         rel_key = (source, target)
-        if rel_key in seen_relationships:
+        if rel_key in seen:
             continue
-        seen_relationships.add(rel_key)
-
-        # Use ||--o{ for one-to-many relationship
+        seen.add(rel_key)
         lines.append(f"    {target} ||--o{{ {source} : has")
-
-    return "\n".join(lines)
 
 
 def _mermaid_safe(name: str) -> str:
@@ -779,6 +775,104 @@ def get_table_natural_key(table_name: str) -> str:
 def get_column_natural_key(table_name: str, column_name: str) -> str:
     """Generate a natural key for a column."""
     return f"db:{table_name}.{column_name}"
+
+
+async def _upsert_column_node(
+    session: AsyncSession,
+    collection_id: UUID,
+    table_name: str,
+    col: ColumnDef,
+    table_node_id: UUID,
+    pg_insert: Any,
+    knowledge_node_cls: Any,
+    node_kind_cls: Any,
+    edge_cls: Any,
+    edge_kind_cls: Any,
+    select_fn: Any,
+    stats: dict,
+) -> UUID:
+    """Upsert a column node and its TABLE_HAS_COLUMN edge. Returns the column node id."""
+    col_natural_key = get_column_natural_key(table_name, col.name)
+    col_stmt = pg_insert(knowledge_node_cls).values(
+        collection_id=collection_id,
+        kind=node_kind_cls.DB_COLUMN,
+        natural_key=col_natural_key,
+        name=col.name,
+        meta={
+            "table": table_name,
+            "type": col.type_name,
+            "nullable": col.nullable,
+            "primary_key": col.primary_key,
+            "foreign_key": col.foreign_key,
+            "description": col.description,
+        },
+    )
+    col_stmt = col_stmt.on_conflict_do_update(
+        constraint="uq_knowledge_node_natural",
+        set_={"name": col_stmt.excluded.name, "meta": col_stmt.excluded.meta},
+    ).returning(knowledge_node_cls.id)
+    col_result = await session.execute(col_stmt)
+    col_node_id = col_result.scalar_one()
+    stats["column_nodes_created"] += 1
+
+    edge_exists = await session.execute(
+        select_fn(edge_cls.id).where(
+            edge_cls.collection_id == collection_id,
+            edge_cls.source_node_id == table_node_id,
+            edge_cls.target_node_id == col_node_id,
+            edge_cls.kind == edge_kind_cls.TABLE_HAS_COLUMN,
+        )
+    )
+    if not edge_exists.scalar_one_or_none():
+        session.add(
+            edge_cls(
+                collection_id=collection_id,
+                source_node_id=table_node_id,
+                target_node_id=col_node_id,
+                kind=edge_kind_cls.TABLE_HAS_COLUMN,
+                meta={},
+            )
+        )
+        stats["edges_created"] += 1
+    return col_node_id
+
+
+async def _create_fk_edges(
+    session: AsyncSession,
+    collection_id: UUID,
+    foreign_keys: list[ForeignKeyDef],
+    column_node_ids: dict[str, UUID],
+    edge_cls: Any,
+    edge_kind_cls: Any,
+    select_fn: Any,
+    stats: dict,
+) -> None:
+    """Create COLUMN_FK_TO_COLUMN edges from foreign key definitions."""
+    for fk in foreign_keys:
+        for src_col, tgt_col in zip(fk.source_columns, fk.target_columns, strict=False):
+            src_node_id = column_node_ids.get(f"{fk.source_table}.{src_col}")
+            tgt_node_id = column_node_ids.get(f"{fk.target_table}.{tgt_col}")
+            if not src_node_id or not tgt_node_id:
+                continue
+            edge_exists = await session.execute(
+                select_fn(edge_cls.id).where(
+                    edge_cls.collection_id == collection_id,
+                    edge_cls.source_node_id == src_node_id,
+                    edge_cls.target_node_id == tgt_node_id,
+                    edge_cls.kind == edge_kind_cls.COLUMN_FK_TO_COLUMN,
+                )
+            )
+            if not edge_exists.scalar_one_or_none():
+                session.add(
+                    edge_cls(
+                        collection_id=collection_id,
+                        source_node_id=src_node_id,
+                        target_node_id=tgt_node_id,
+                        kind=edge_kind_cls.COLUMN_FK_TO_COLUMN,
+                        meta={"fk_name": fk.name},
+                    )
+                )
+                stats["edges_created"] += 1
 
 
 async def build_schema_graph(
@@ -851,87 +945,33 @@ async def build_schema_graph(
         table_node_ids[table_name] = node_id
         stats["table_nodes_created"] += 1
 
-        # Create column nodes
         for col in table.columns:
-            col_natural_key = get_column_natural_key(table_name, col.name)
-
-            col_stmt = pg_insert(KnowledgeNode).values(
-                collection_id=collection_id,
-                kind=KnowledgeNodeKind.DB_COLUMN,
-                natural_key=col_natural_key,
-                name=col.name,
-                meta={
-                    "table": table_name,
-                    "type": col.type_name,
-                    "nullable": col.nullable,
-                    "primary_key": col.primary_key,
-                    "foreign_key": col.foreign_key,
-                    "description": col.description,
-                },
+            col_node_id = await _upsert_column_node(
+                session,
+                collection_id,
+                table_name,
+                col,
+                node_id,
+                pg_insert,
+                KnowledgeNode,
+                KnowledgeNodeKind,
+                KnowledgeEdge,
+                KnowledgeEdgeKind,
+                select,
+                stats,
             )
-            col_stmt = col_stmt.on_conflict_do_update(
-                constraint="uq_knowledge_node_natural",
-                set_={
-                    "name": col_stmt.excluded.name,
-                    "meta": col_stmt.excluded.meta,
-                },
-            ).returning(KnowledgeNode.id)
-
-            col_result = await session.execute(col_stmt)
-            col_node_id = col_result.scalar_one()
             column_node_ids[f"{table_name}.{col.name}"] = col_node_id
-            stats["column_nodes_created"] += 1
 
-            # Create TABLE_HAS_COLUMN edge
-            edge_exists = await session.execute(
-                select(KnowledgeEdge.id).where(
-                    KnowledgeEdge.collection_id == collection_id,
-                    KnowledgeEdge.source_node_id == node_id,
-                    KnowledgeEdge.target_node_id == col_node_id,
-                    KnowledgeEdge.kind == KnowledgeEdgeKind.TABLE_HAS_COLUMN,
-                )
-            )
-            if not edge_exists.scalar_one_or_none():
-                session.add(
-                    KnowledgeEdge(
-                        collection_id=collection_id,
-                        source_node_id=node_id,
-                        target_node_id=col_node_id,
-                        kind=KnowledgeEdgeKind.TABLE_HAS_COLUMN,
-                        meta={},
-                    )
-                )
-                stats["edges_created"] += 1
-
-    # Create FK edges
-    for fk in schema.foreign_keys:
-        for src_col, tgt_col in zip(fk.source_columns, fk.target_columns, strict=False):
-            src_key = f"{fk.source_table}.{src_col}"
-            tgt_key = f"{fk.target_table}.{tgt_col}"
-
-            src_node_id = column_node_ids.get(src_key)
-            tgt_node_id = column_node_ids.get(tgt_key)
-
-            if src_node_id and tgt_node_id:
-                edge_exists = await session.execute(
-                    select(KnowledgeEdge.id).where(
-                        KnowledgeEdge.collection_id == collection_id,
-                        KnowledgeEdge.source_node_id == src_node_id,
-                        KnowledgeEdge.target_node_id == tgt_node_id,
-                        KnowledgeEdge.kind == KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN,
-                    )
-                )
-                if not edge_exists.scalar_one_or_none():
-                    session.add(
-                        KnowledgeEdge(
-                            collection_id=collection_id,
-                            source_node_id=src_node_id,
-                            target_node_id=tgt_node_id,
-                            kind=KnowledgeEdgeKind.COLUMN_FK_TO_COLUMN,
-                            meta={"fk_name": fk.name},
-                        )
-                    )
-                    stats["edges_created"] += 1
+    await _create_fk_edges(
+        session,
+        collection_id,
+        schema.foreign_keys,
+        column_node_ids,
+        KnowledgeEdge,
+        KnowledgeEdgeKind,
+        select,
+        stats,
+    )
 
     # Create evidence for source files
     for source_file in schema.sources:

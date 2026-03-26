@@ -15,7 +15,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies for LSP servers
+# Install system dependencies for LSP servers and TypeScript language server
 # - Node.js: Required for TypeScript/JavaScript language server
 # - git: Required by some language servers for project detection
 # - curl: For downloading language server binaries
@@ -24,10 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     git \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install TypeScript language server globally and uv
-RUN npm install -g typescript typescript-language-server
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g typescript typescript-language-server
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy workspace files
