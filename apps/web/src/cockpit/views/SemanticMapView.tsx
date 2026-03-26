@@ -192,12 +192,11 @@ export default function SemanticMapView({
         return
       }
       const overlaps = new Map<string, number>()
-      point.member_node_ids.forEach((memberId) => {
-        const otherPointIds = nodeToOtherPointIds.get(memberId) || []
-        otherPointIds.forEach((otherPointId) => {
+      for (const memberId of point.member_node_ids) {
+        for (const otherPointId of nodeToOtherPointIds.get(memberId) || []) {
           overlaps.set(otherPointId, (overlaps.get(otherPointId) || 0) + 1)
-        })
-      })
+        }
+      }
       if (overlaps.size === 0) {
         return
       }

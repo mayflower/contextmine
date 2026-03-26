@@ -41,6 +41,7 @@ import type {
   MermaidPayload,
   ScenarioLite,
   TemporalCouplingPayload,
+  PortsDirection,
   TwinGraphResponse,
 } from '../types'
 
@@ -113,7 +114,7 @@ interface UseCockpitDataArgs {
   c4Scope: string
   c4MaxNodes: number
   architectureSection: string
-  portsDirection: 'all' | 'inbound' | 'outbound'
+  portsDirection: PortsDirection
   portsContainer: string
   driftBaselineScenarioId: string
   graphFilters: GraphFilters

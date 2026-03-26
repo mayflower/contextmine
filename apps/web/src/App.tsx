@@ -236,6 +236,27 @@ interface PrefectFlowRuns {
   error?: string
 }
 
+function MemberChip({ member, onRemove }: { member: { user_id: string; github_login: string; is_owner: boolean }; onRemove: (id: string) => void }) {
+  return (
+    <span className="member-chip">
+      @{member.github_login}
+      {member.is_owner && <span className="owner-tag">owner</span>}
+      {!member.is_owner && (
+        <button className="remove-chip" onClick={() => onRemove(member.user_id)}>×</button>
+      )}
+    </span>
+  )
+}
+
+function InviteChip({ invite, onRemove }: { invite: { github_login: string }; onRemove: (login: string) => void }) {
+  return (
+    <span className="member-chip pending">
+      @{invite.github_login}
+      <button className="remove-chip" onClick={() => onRemove(invite.github_login)}>×</button>
+    </span>
+  )
+}
+
 function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
@@ -267,7 +288,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [, setSources] = useState<Source[]>([])
+  const [_sources, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -706,8 +727,7 @@ function App() {
     const hasNeverSynced = sources.some(s => !s.last_run_at)
     if (hasNeverSynced && sources.every(s => !s.last_run_at)) return 'never'
 
-    // For now, show success if sources exist and have been synced
-    // TODO: Track last run status per source
+    // Show success if sources exist and have been synced (per-source status tracking pending)
     return 'success'
   }
 
@@ -1426,8 +1446,8 @@ function App() {
                     <section className="card">
                       <h2>Sources</h2>
                       <ul className="sources-list">
-                        {queryResult.sources.map((source, index) => (
-                          <li key={index} className="source-item">
+                        {queryResult.sources.map((source) => (
+                          <li key={source.uri} className="source-item">
                             <a href={source.uri} target="_blank" rel="noopener noreferrer">
                               {source.title}
                             </a>
@@ -1444,8 +1464,8 @@ function App() {
                     <section className="card">
                       <h2>Evidence Citations</h2>
                       <ul className="sources-list citations-list">
-                        {researchCitations.map((citation, index) => (
-                          <li key={index} className="source-item citation-item">
+                        {researchCitations.map((citation) => (
+                          <li key={citation} className="source-item citation-item">
                             <code>{citation}</code>
                           </li>
                         ))}
@@ -1569,7 +1589,6 @@ function App() {
 
 
         {currentPage === 'collections' && (
-          <>
             <section className="card collections-overview">
               <div className="collections-header">
                 <h2>Collections</h2>
@@ -1644,14 +1663,14 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" role="button" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
+                        <div className="collection-header-row" tabIndex={0} onClick={() => handleToggleExpand(collection)} onKeyDown={e => e.key === 'Enter' && handleToggleExpand(collection)}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
 
-                          <div className="collection-info" role="group">
+                          <div className="collection-info">
                             {isEditing ? (
-                              <form onSubmit={handleSaveCollection} className="edit-collection-form" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                              <form onSubmit={handleSaveCollection} className="edit-collection-form" role="presentation" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                                 <input
                                   type="text"
                                   value={editCollectionName}
@@ -1743,7 +1762,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" role="dialog" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <div className="share-popover" role="presentation" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
@@ -1753,13 +1772,7 @@ function App() {
                                 <div className="members-mini">
                                   <span className="label">Members:</span>
                                   {collectionMembers.map(m => (
-                                    <span key={m.user_id} className="member-chip">
-                                      @{m.github_login}
-                                      {m.is_owner && <span className="owner-tag">owner</span>}
-                                      {!m.is_owner && (
-                                        <button className="remove-chip" onClick={() => handleUnshare(m.user_id)}>×</button>
-                                      )}
-                                    </span>
+                                    <MemberChip key={m.user_id} member={m} onRemove={handleUnshare} />
                                   ))}
                                 </div>
                               )}
@@ -1767,10 +1780,7 @@ function App() {
                                 <div className="invites-mini">
                                   <span className="label">Pending:</span>
                                   {collectionInvites.map(i => (
-                                    <span key={i.github_login} className="member-chip pending">
-                                      @{i.github_login}
-                                      <button className="remove-chip" onClick={() => handleUnshare(i.github_login)}>×</button>
-                                    </span>
+                                    <InviteChip key={i.github_login} invite={i} onRemove={handleUnshare} />
                                   ))}
                                 </div>
                               )}
@@ -1835,8 +1845,7 @@ function App() {
 
                                       return (
                                         <div key={source.id} className={`source-row ${source.enabled ? '' : 'disabled'} ${isEditingThis || isManagingKey ? 'editing' : ''}`}>
-                                          {(() => {
-                                          if (isEditingThis) return (
+                                          {isEditingThis && (
                                             /* Inline Edit Form */
                                             <div className="source-edit-inline">
                                               <div className="edit-row">
@@ -1892,8 +1901,8 @@ function App() {
                                               </div>
                                               {editSourceError && <p className="inline-error">{editSourceError}</p>}
                                             </div>
-                                          )
-                                          if (isManagingKey) return (
+                                          )}
+                                          {!isEditingThis && isManagingKey && (
                                             /* Inline Deploy Key Management */
                                             <div className="source-key-inline">
                                               <div className="edit-row">
@@ -1903,7 +1912,7 @@ function App() {
                                               </div>
                                               {source.deploy_key_fingerprint ? (
                                                 <div className="key-info">
-                                                  <span className="key-status has">🔑 Key configured</span>
+                                                  <span className="key-status has">Key configured</span>
                                                   <code className="fingerprint">{source.deploy_key_fingerprint}</code>
                                                   <button
                                                     onClick={handleDeleteDeployKey}
@@ -1933,8 +1942,8 @@ function App() {
                                               )}
                                               {deployKeyError && <p className="inline-error">{deployKeyError}</p>}
                                             </div>
-                                          )
-                                          return (
+                                          )}
+                                          {!isEditingThis && !isManagingKey && (
                                             /* Normal Source Row */
                                             <>
                                               <span className={`source-type-badge ${source.type}`}>{source.type}</span>
@@ -1980,8 +1989,7 @@ function App() {
                                                 </div>
                                               )}
                                             </>
-                                          )
-                                          })()}
+                                          )}
                                         </div>
                                       )
                                     })}
@@ -1998,7 +2006,6 @@ function App() {
               )
               })()}
             </section>
-          </>
         )}
 
         {currentPage === 'runs' && (

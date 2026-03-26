@@ -7,12 +7,10 @@ without making actual API calls.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, TypeVar
+from typing import Any
 
 from contextmine_core.research.llm.provider import LLMProvider
 from pydantic import BaseModel
-
-T = TypeVar("T", bound=BaseModel)
 
 
 class MockLLMProvider(LLMProvider):
@@ -87,7 +85,7 @@ class MockLLMProvider(LLMProvider):
         )
         return self._default_text_response
 
-    async def generate_structured(
+    async def generate_structured[T: BaseModel](
         self,
         *,
         system: str,
@@ -203,7 +201,7 @@ class FailingMockProvider(LLMProvider):
             raise self._error_type(f"Mock failure {self._call_count}/{self._fail_count}")
         return self._success_response
 
-    async def generate_structured(
+    async def generate_structured[T: BaseModel](
         self,
         *,
         system: str,

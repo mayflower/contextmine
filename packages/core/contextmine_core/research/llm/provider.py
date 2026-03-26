@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T", bound=BaseModel)
 
 
 class LLMProvider(ABC):
@@ -68,7 +66,7 @@ class LLMProvider(ABC):
         ...
 
     @abstractmethod
-    async def generate_structured(
+    async def generate_structured[T: BaseModel](
         self,
         *,
         system: str,
@@ -214,7 +212,7 @@ class LangChainProvider(LLMProvider):
         stop=stop_after_attempt(3),
         reraise=True,
     )
-    async def generate_structured(
+    async def generate_structured[T: BaseModel](
         self,
         *,
         system: str,
@@ -262,7 +260,7 @@ class LangChainProvider(LLMProvider):
                 temperature=temperature,
             )
 
-    async def _generate_with_parser(
+    async def _generate_with_parser[T: BaseModel](
         self,
         *,
         system: str,

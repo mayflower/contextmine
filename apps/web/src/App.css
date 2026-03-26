@@ -69,13 +69,13 @@
 }
 
 .sidebar li:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: #1e2d4a;
   color: white;
 }
 
 .sidebar li.active {
   background: rgba(99, 102, 241, 0.2);
-  color: #a5b4fc;
+  color: #c7d2fe;
   border-left: 3px solid #818cf8;
 }
 
@@ -141,7 +141,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 6px;
@@ -153,7 +153,7 @@
 }
 
 .header-cta:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .header-cta svg {
@@ -586,17 +586,21 @@
 
 .runs-table th,
 .runs-table td {
-  padding: 10px 12px;
+  padding: 12px;
   text-align: left;
   border-bottom: 1px solid #e2e8f0;
 }
 
 .runs-table th {
   font-weight: 600;
-  color: #64748b;
-  font-size: 0.8rem;
+  color: #4a5568;
+  font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.runs-table tbody tr:hover {
+  background: #f8fafc;
 }
 
 .card {
@@ -608,6 +612,9 @@
 }
 
 .card h2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 1.1rem;
   font-weight: 600;
   color: #1a1a2e;
@@ -911,7 +918,7 @@ code {
 
 .manage-button {
   padding: 4px 12px;
-  background: #6366f1;
+  background: #4f46e5;
   color: white;
   border: none;
   border-radius: 4px;
@@ -921,13 +928,7 @@ code {
 }
 
 .manage-button:hover {
-  background: #6366f1;
-}
-
-.card h2 {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  background: #4f46e5;
 }
 
 .close-button {
@@ -1065,7 +1066,7 @@ code {
 
 .share-button {
   padding: 8px 16px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1076,7 +1077,7 @@ code {
 }
 
 .share-button:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .share-error {
@@ -1107,7 +1108,7 @@ code {
 }
 
 .collection-chip.active {
-  background: #6366f1;
+  background: #4f46e5;
   color: white;
   border-color: #818cf8;
 }
@@ -1142,14 +1143,15 @@ code {
 }
 
 .interval-select {
-  padding: 10px 14px;
+  padding: 6px 10px;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 4px;
   font-size: 0.9rem;
   background: white;
   color: #4a5568;
   cursor: pointer;
   min-width: 130px;
+  margin-left: 8px;
 }
 
 .interval-select:focus {
@@ -1169,14 +1171,6 @@ code {
   gap: 8px;
   font-size: 0.9rem;
   color: #4a5568;
-}
-
-.interval-select {
-  padding: 6px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
-  font-size: 0.9rem;
-  margin-left: 8px;
 }
 
 .source-error {
@@ -1242,7 +1236,7 @@ code {
 
 .sync-button {
   padding: 4px 10px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 4px;
@@ -1252,7 +1246,7 @@ code {
 }
 
 .sync-button:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .sync-button.syncing {
@@ -1336,32 +1330,8 @@ code {
 }
 
 .source-type-badge.web {
-  background: #0284c7;
+  background: #0369a1;
   color: white;
-}
-
-.runs-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.runs-table th,
-.runs-table td {
-  padding: 12px;
-  text-align: left;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.runs-table th {
-  font-weight: 600;
-  color: #4a5568;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.runs-table tbody tr:hover {
-  background: #f8fafc;
 }
 
 .run-running {
@@ -1508,7 +1478,7 @@ code {
 
 .query-button {
   padding: 12px 24px;
-  background: #6366f1;
+  background: #4f46e5;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1520,7 +1490,7 @@ code {
 }
 
 .query-button:hover:not(:disabled) {
-  background: #6366f1;
+  background: #4f46e5;
 }
 
 .query-button:disabled {
@@ -1782,7 +1752,7 @@ code {
 
 .save-button {
   padding: 8px 16px;
-  background: #6366f1;
+  background: #4f46e5;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1791,7 +1761,7 @@ code {
 }
 
 .save-button:hover {
-  background: #6366f1;
+  background: #4f46e5;
 }
 
 .save-button:disabled {
@@ -1876,7 +1846,7 @@ code {
   gap: 8px;
 }
 
-.stat-item {
+.stats-cell .stat-item {
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
@@ -1886,24 +1856,24 @@ code {
   font-size: 0.8rem;
 }
 
-.stat-value {
+.stats-cell .stat-value {
   font-weight: 600;
   color: #1e293b;
 }
 
-.stat-value.created {
+.stats-cell .stat-value.created {
   color: #16a34a;
 }
 
-.stat-value.updated {
+.stats-cell .stat-value.updated {
   color: #ca8a04;
 }
 
-.stat-value.deleted {
+.stats-cell .stat-value.deleted {
   color: #dc2626;
 }
 
-.stat-label {
+.stats-cell .stat-label {
   color: #64748b;
   font-size: 0.75rem;
 }
@@ -2081,7 +2051,7 @@ tr.state-running {
 
 .create-button-inline {
   padding: 8px 16px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2092,7 +2062,7 @@ tr.state-running {
 }
 
 .create-button-inline:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 /* Create Collection Inline Form */
@@ -2137,7 +2107,7 @@ tr.state-running {
 
 .collection-form-inline .create-button {
   padding: 10px 20px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2147,7 +2117,7 @@ tr.state-running {
 }
 
 .collection-form-inline .create-button:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .collection-form-inline .cancel-button {
@@ -2182,7 +2152,7 @@ tr.state-running {
 .empty-state .create-button {
   margin-top: 16px;
   padding: 12px 24px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 8px;
@@ -2192,7 +2162,7 @@ tr.state-running {
 }
 
 .empty-state .create-button:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .loading-text {
@@ -2203,6 +2173,7 @@ tr.state-running {
 
 /* Collection Row */
 .collection-row {
+  position: relative;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   margin-bottom: 12px;
@@ -2391,7 +2362,7 @@ tr.state-running {
 
 .edit-collection-form .save-btn {
   padding: 6px 12px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 4px;
@@ -2400,7 +2371,7 @@ tr.state-running {
 }
 
 .edit-collection-form .save-btn:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .edit-collection-form .save-btn:disabled {
@@ -2434,10 +2405,6 @@ tr.state-running {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
   border: 1px solid #e2e8f0;
   margin-top: 4px;
-}
-
-.collection-row {
-  position: relative;
 }
 
 .popover-header {
@@ -2551,7 +2518,7 @@ tr.state-running {
 
 .share-form-mini .add-btn {
   padding: 8px 14px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2561,7 +2528,7 @@ tr.state-running {
 }
 
 .share-form-mini .add-btn:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .share-error-mini {
@@ -2614,7 +2581,7 @@ tr.state-running {
 
 .add-source-btn {
   padding: 8px 16px;
-  background: #6366f1;
+  background: #4f46e5;
   color: white;
   border: none;
   border-radius: 6px;
@@ -2624,7 +2591,7 @@ tr.state-running {
 }
 
 .add-source-btn:hover {
-  background: #6366f1;
+  background: #4f46e5;
 }
 
 .add-source-btn:disabled {
@@ -2703,7 +2670,7 @@ tr.state-running {
 
 .source-row .sync-btn {
   padding: 4px 10px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 4px;
@@ -2712,7 +2679,7 @@ tr.state-running {
 }
 
 .source-row .sync-btn:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .source-row .sync-btn.syncing {
@@ -2839,7 +2806,7 @@ tr.state-running {
 .source-edit-inline .save-btn,
 .source-key-inline .save-key-btn {
   padding: 6px 14px;
-  background: #16a34a;
+  background: #15803d;
   color: white;
   border: none;
   border-radius: 4px;
@@ -2849,7 +2816,7 @@ tr.state-running {
 
 .source-edit-inline .save-btn:hover,
 .source-key-inline .save-key-btn:hover {
-  background: #16a34a;
+  background: #15803d;
 }
 
 .source-edit-inline .save-btn:disabled,
@@ -2900,12 +2867,12 @@ tr.state-running {
   flex-wrap: wrap;
 }
 
-.key-status {
+.key-info .key-status {
   font-size: 0.85rem;
   font-weight: 500;
 }
 
-.key-status.has {
+.key-info .key-status.has {
   color: #16a34a;
 }
 

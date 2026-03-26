@@ -5,6 +5,8 @@ import {
   type C4ViewMode,
   type CockpitLayer,
   type GraphRagCommunityMode,
+  type OverlayMode,
+  type PortsDirection,
   type SemanticMapMode,
   type SemanticMapThresholds,
   type CockpitView,
@@ -28,7 +30,7 @@ interface CockpitCommandBarProps {
   includeKinds: string[]
   excludeKinds: string[]
   edgeKinds: string[]
-  overlayMode: 'none' | 'runtime' | 'risk'
+  overlayMode: OverlayMode
   graphRagCommunityMode: GraphRagCommunityMode
   graphRagCommunityId: string
   graphRagCommunities: GraphRagCommunity[]
@@ -40,7 +42,7 @@ interface CockpitCommandBarProps {
   c4Scope: string
   c4MaxNodes: number
   architectureSection: string
-  portsDirection: 'all' | 'inbound' | 'outbound'
+  portsDirection: PortsDirection
   portsContainer: string
   driftBaselineScenarioId: string
   driftScenarioOptions: ScenarioLite[]
@@ -57,7 +59,7 @@ interface CockpitCommandBarProps {
   onIncludeKindsChange: (value: string[]) => void
   onExcludeKindsChange: (value: string[]) => void
   onEdgeKindsChange: (value: string[]) => void
-  onOverlayModeChange: (mode: 'none' | 'runtime' | 'risk') => void
+  onOverlayModeChange: (mode: OverlayMode) => void
   onGraphRagCommunityModeChange: (mode: GraphRagCommunityMode) => void
   onGraphRagCommunityIdChange: (communityId: string) => void
   onSemanticMapModeChange: (mode: SemanticMapMode) => void
@@ -68,7 +70,7 @@ interface CockpitCommandBarProps {
   onC4ScopeChange: (value: string) => void
   onC4MaxNodesChange: (value: number) => void
   onArchitectureSectionChange: (value: string) => void
-  onPortsDirectionChange: (value: 'all' | 'inbound' | 'outbound') => void
+  onPortsDirectionChange: (value: PortsDirection) => void
   onPortsContainerChange: (value: string) => void
   onDriftBaselineScenarioIdChange: (scenarioId: string) => void
   onRefresh: () => void
@@ -268,7 +270,7 @@ export default function CockpitCommandBar({
           <span>Ports direction</span>
           <select
             value={portsDirection}
-            onChange={(event) => onPortsDirectionChange(event.target.value as 'all' | 'inbound' | 'outbound')}
+            onChange={(event) => onPortsDirectionChange(event.target.value as PortsDirection)}
           >
             <option value="all">All</option>
             <option value="inbound">Inbound</option>
@@ -435,7 +437,7 @@ export default function CockpitCommandBar({
               <span>Overlay</span>
               <select
                 value={overlayMode}
-                onChange={(event) => onOverlayModeChange(event.target.value as 'none' | 'runtime' | 'risk')}
+                onChange={(event) => onOverlayModeChange(event.target.value as OverlayMode)}
               >
                 <option value="none">None</option>
                 <option value="runtime">Runtime</option>

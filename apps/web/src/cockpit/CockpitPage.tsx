@@ -31,6 +31,7 @@ import {
   type GraphRagCommunityMode,
   type LayoutEngine,
   type OverlayState,
+  type PortsDirection,
   type SemanticMapMode,
   type SemanticMapThresholds,
   EXPORT_FORMATS,
@@ -149,7 +150,7 @@ export default function CockpitPage({
   const [c4Scope, setC4Scope] = useState('')
   const [c4MaxNodes, setC4MaxNodes] = useState(120)
   const [architectureSection, setArchitectureSection] = useState('')
-  const [portsDirection, setPortsDirection] = useState<'all' | 'inbound' | 'outbound'>('all')
+  const [portsDirection, setPortsDirection] = useState<PortsDirection>('all')
   const [portsContainer, setPortsContainer] = useState('')
   const [driftBaselineScenarioId, setDriftBaselineScenarioId] = useState('')
   const [graphRagCommunityMode, setGraphRagCommunityMode] = useState<GraphRagCommunityMode>('color')

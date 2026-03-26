@@ -36,6 +36,7 @@ export type TopologyEntityLevel = 'domain' | 'container' | 'component'
 export type DeepDiveMode = 'file_dependency' | 'symbol_callgraph' | 'contains_hierarchy'
 export type LayoutEngine = 'grid' | 'elk_layered' | 'elk_force_like'
 export type OverlayMode = 'none' | 'runtime' | 'risk'
+export type PortsDirection = 'all' | 'inbound' | 'outbound'
 export type C4ViewMode = 'context' | 'container' | 'component' | 'code' | 'deployment'
 export type GraphRagCommunityMode = 'none' | 'color' | 'focus'
 export type SemanticMapMode = 'code_structure' | 'semantic'
@@ -615,20 +616,22 @@ export interface TemporalCouplingPayload {
   warnings: string[]
 }
 
+export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low'
+
 export interface FitnessRuleSummary {
   rule_id: string
   finding_type: string
   count: number
   open: number
   resolved: number
-  highest_severity: 'critical' | 'high' | 'medium' | 'low'
+  highest_severity: SeverityLevel
 }
 
 export interface FitnessViolationItem {
   id: string
   rule_id: string
   finding_type: string
-  severity: 'critical' | 'high' | 'medium' | 'low'
+  severity: SeverityLevel
   confidence: string
   status: string
   subject: string | null
@@ -652,7 +655,7 @@ export interface FitnessFunctionsPayload {
     violations: number
     open: number
     resolved: number
-    highest_severity: 'critical' | 'high' | 'medium' | 'low'
+    highest_severity: SeverityLevel
   }
   rules: FitnessRuleSummary[]
   violations: FitnessViolationItem[]

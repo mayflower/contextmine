@@ -9,7 +9,7 @@ interface LayoutWorkerRequest {
   columns: number
 }
 
-self.onmessage = async (event: MessageEvent<LayoutWorkerRequest>) => {
+globalThis.onmessage = async (event: MessageEvent<LayoutWorkerRequest>) => {
   const { nodes, edges, engine, columns } = event.data
   const startedAt = performance.now()
   try {

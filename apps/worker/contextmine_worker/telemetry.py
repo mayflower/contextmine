@@ -21,20 +21,18 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-F = TypeVar("F", bound=Callable[..., Any])
-
 # W3C Trace Context propagator for cross-service trace propagation
 propagator = TraceContextTextMapPropagator()
 
 
-def traced_flow(name: str | None = None) -> Callable[[F], F]:
+def traced_flow[F: Callable[..., Any]](name: str | None = None) -> Callable[[F], F]:
     """Decorator to add tracing to Prefect flows.
 
     Creates a parent span for the entire flow execution. Should be applied
@@ -79,7 +77,7 @@ def traced_flow(name: str | None = None) -> Callable[[F], F]:
     return decorator
 
 
-def traced_task(name: str | None = None) -> Callable[[F], F]:
+def traced_task[F: Callable[..., Any]](name: str | None = None) -> Callable[[F], F]:
     """Decorator to add tracing to Prefect tasks.
 
     Creates a child span for the task execution. Should be applied

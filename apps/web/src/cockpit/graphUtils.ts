@@ -2,7 +2,7 @@ import type { GraphFilters, TwinGraphEdge, TwinGraphNode, TwinGraphResponse } fr
 
 function nodeSearchText(node: TwinGraphNode): string {
   const metaText = Object.values(node.meta || {})
-    .map((value) => String(value))
+    .map(String)
     .join(' ')
   return `${node.id} ${node.natural_key} ${node.kind} ${node.name} ${metaText}`.toLowerCase()
 }

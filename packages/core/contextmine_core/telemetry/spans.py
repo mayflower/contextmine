@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -17,14 +17,12 @@ from opentelemetry.trace import Status, StatusCode
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-F = TypeVar("F", bound=Callable[..., Any])
-
 # OpenTelemetry GenAI semantic convention attribute keys (S1192)
 _ATTR_GEN_AI_SYSTEM = "gen_ai.system"
 _ATTR_GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 
 
-def trace_llm_call(
+def trace_llm_call[F: Callable[..., Any]](
     provider: str,
     model: str,
     operation: str = "chat",
@@ -165,7 +163,7 @@ async def trace_db_operation(
             raise
 
 
-def trace_sync_llm_call(
+def trace_sync_llm_call[F: Callable[..., Any]](
     provider: str,
     model: str,
     operation: str = "chat",

@@ -7,7 +7,7 @@ import json
 import math
 import uuid
 from collections import defaultdict, deque
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -102,7 +102,7 @@ from contextmine_core.twin.projections import (
     build_user_flows_projection,
     compute_rebuild_readiness,
 )
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, literal_column, select
@@ -4277,6 +4277,17 @@ async def _build_semantic_community_points(
     return points, warnings
 
 
+@dataclass
+class SemanticMapThresholdParams:
+    """Query params for semantic-map signal thresholds."""
+
+    mixed_cluster_max_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.55
+    isolated_distance_multiplier: Annotated[float, Query(ge=0.1, le=10.0)] = 1.2
+    semantic_duplication_min_similarity: Annotated[float | None, Query(ge=0.0, le=1.0)] = None
+    semantic_duplication_max_source_overlap: Annotated[float | None, Query(ge=0.0, le=1.0)] = None
+    misplaced_min_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.6
+
+
 @router.get(
     "/collections/{collection_id}/views/semantic-map",
     responses={
@@ -4294,13 +4305,10 @@ async def semantic_map_view(
     include_kinds: Annotated[str | None, Query()] = None,
     exclude_kinds: Annotated[str | None, Query()] = None,
     edge_kinds: Annotated[str | None, Query()] = None,
-    mixed_cluster_max_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.55,
-    isolated_distance_multiplier: Annotated[float, Query(ge=0.1, le=10.0)] = 1.2,
-    semantic_duplication_min_similarity: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
-    semantic_duplication_max_source_overlap: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
-    misplaced_min_dominant_ratio: Annotated[float, Query(ge=0.0, le=1.0)] = 0.6,
     page: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+    *,
+    thresholds: Annotated[SemanticMapThresholdParams, Depends()],
 ) -> dict:
     user_id = _user_id_or_401(request)
     collection_uuid = _parse_collection_id(collection_id)
@@ -4343,11 +4351,11 @@ async def semantic_map_view(
         signals = _build_semantic_map_signals(
             points,
             mode=resolved_map_mode,
-            mixed_cluster_max_dominant_ratio=mixed_cluster_max_dominant_ratio,
-            isolated_distance_multiplier=isolated_distance_multiplier,
-            semantic_duplication_min_similarity=semantic_duplication_min_similarity,
-            semantic_duplication_max_source_overlap=semantic_duplication_max_source_overlap,
-            misplaced_min_dominant_ratio=misplaced_min_dominant_ratio,
+            mixed_cluster_max_dominant_ratio=thresholds.mixed_cluster_max_dominant_ratio,
+            isolated_distance_multiplier=thresholds.isolated_distance_multiplier,
+            semantic_duplication_min_similarity=thresholds.semantic_duplication_min_similarity,
+            semantic_duplication_max_source_overlap=thresholds.semantic_duplication_max_source_overlap,
+            misplaced_min_dominant_ratio=thresholds.misplaced_min_dominant_ratio,
         )
 
         status = {"status": "ready", "reason": "ok"}
@@ -4389,22 +4397,26 @@ async def semantic_map_view(
             "status": status,
             "thresholds": {
                 "mixed_cluster_max_dominant_ratio": round(
-                    float(mixed_cluster_max_dominant_ratio), 4
+                    float(thresholds.mixed_cluster_max_dominant_ratio), 4
                 ),
-                "isolated_distance_multiplier": round(float(isolated_distance_multiplier), 4),
+                "isolated_distance_multiplier": round(
+                    float(thresholds.isolated_distance_multiplier), 4
+                ),
                 "semantic_duplication_min_similarity": round(
-                    float(semantic_duplication_min_similarity)
-                    if semantic_duplication_min_similarity is not None
+                    float(thresholds.semantic_duplication_min_similarity)
+                    if thresholds.semantic_duplication_min_similarity is not None
                     else _default_dup_min_sim(resolved_map_mode),
                     4,
                 ),
                 "semantic_duplication_max_source_overlap": round(
-                    float(semantic_duplication_max_source_overlap)
-                    if semantic_duplication_max_source_overlap is not None
+                    float(thresholds.semantic_duplication_max_source_overlap)
+                    if thresholds.semantic_duplication_max_source_overlap is not None
                     else _default_dup_max_overlap(resolved_map_mode),
                     4,
                 ),
-                "misplaced_min_dominant_ratio": round(float(misplaced_min_dominant_ratio), 4),
+                "misplaced_min_dominant_ratio": round(
+                    float(thresholds.misplaced_min_dominant_ratio), 4
+                ),
             },
             "summary": {
                 "points": len(public_points),
