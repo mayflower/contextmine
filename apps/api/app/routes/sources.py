@@ -353,6 +353,35 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
         return {"status": "deleted"}
 
 
+def _apply_source_updates(source: Source, body: UpdateSourceRequest) -> None:
+    """Apply update fields to a source, raising HTTPException on invalid values."""
+    if body.enabled is not None:
+        source.enabled = body.enabled
+
+    if body.schedule_interval_minutes is not None:
+        if body.schedule_interval_minutes < 1:
+            raise HTTPException(
+                status_code=400, detail="Schedule interval must be at least 1 minute"
+            )
+        source.schedule_interval_minutes = body.schedule_interval_minutes
+
+    if body.max_pages is not None:
+        if source.type != SourceType.WEB:
+            raise HTTPException(
+                status_code=400, detail="max_pages is only supported for web sources"
+            )
+        if body.max_pages < 1 or body.max_pages > 1000:
+            raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
+        config = dict(source.config or {})
+        config["max_pages"] = body.max_pages
+        source.config = config
+
+    if body.coverage_report_patterns is not None:
+        source.config = mark_coverage_patterns_deprecated(
+            source.config or {}, body.coverage_report_patterns
+        )
+
+
 @router.patch(
     "/sources/{source_id}",
     responses={
@@ -384,32 +413,7 @@ async def update_source(
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can update sources")
 
-        if body.enabled is not None:
-            source.enabled = body.enabled
-
-        if body.schedule_interval_minutes is not None:
-            if body.schedule_interval_minutes < 1:
-                raise HTTPException(
-                    status_code=400, detail="Schedule interval must be at least 1 minute"
-                )
-            source.schedule_interval_minutes = body.schedule_interval_minutes
-
-        if body.max_pages is not None:
-            if source.type != SourceType.WEB:
-                raise HTTPException(
-                    status_code=400, detail="max_pages is only supported for web sources"
-                )
-            if body.max_pages < 1 or body.max_pages > 1000:
-                raise HTTPException(status_code=400, detail="max_pages must be between 1 and 1000")
-            config = dict(source.config or {})
-            config["max_pages"] = body.max_pages
-            source.config = config
-
-        if body.coverage_report_patterns is not None:
-            source.config = mark_coverage_patterns_deprecated(
-                source.config or {}, body.coverage_report_patterns
-            )
-
+        _apply_source_updates(source, body)
         await db.flush()
 
         doc_count_result = await db.execute(

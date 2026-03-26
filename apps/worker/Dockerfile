@@ -1,19 +1,15 @@
 # Build stage for Rust spider_md binary
-FROM rust:latest AS rust-builder
+FROM rust:1.84-slim AS rust-builder
 
 WORKDIR /build
 
-# Install build dependencies
+# Install build dependencies, copy source, and build release binary
+COPY rust/spider_md/ ./
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Rust source
-COPY rust/spider_md/ ./
-
-# Build release binary
-RUN cargo build --release
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo build --release
 
 # Python worker stage
 FROM python:3.12-slim
@@ -42,20 +38,18 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     openjdk-21-jre-headless \
     php-cli \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable \
+    && npm install -g \
+       @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \
+       @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}
 
-# Install Node.js (for scip-python, scip-typescript)
-RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    corepack enable
-
-# Install npm-based SCIP indexers globally
-RUN npm install -g \
-    @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \
-    @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}
-
-# Install Coursier and scip-java (--contrib required for scip-java channel)
+# Install Coursier/scip-java, Composer/scip-php, and verify SCIP tools
+ENV COMPOSER_HOME=/opt/composer
+ENV PATH="${PATH}:${COMPOSER_HOME}/vendor/bin"
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
       CS_URL="https://github.com/coursier/launchers/raw/master/cs-aarch64-pc-linux.gz"; \
@@ -64,22 +58,19 @@ RUN ARCH=$(dpkg --print-architecture) && \
     fi && \
     curl -fL "$CS_URL" | gzip -d > /usr/local/bin/cs && \
     chmod +x /usr/local/bin/cs && \
-    /usr/local/bin/cs install --contrib scip-java:${SCIP_JAVA_VERSION} --install-dir /usr/local/bin
-
-# Install Composer
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-
-# Install scip-php via Composer global
-ENV COMPOSER_HOME=/opt/composer
-ENV PATH="${PATH}:${COMPOSER_HOME}/vendor/bin"
-RUN composer global config repositories.scip-php vcs ${SCIP_PHP_REPO_URL} && \
+    /usr/local/bin/cs install --contrib \
+      scip-java:${SCIP_JAVA_VERSION} \
+      --install-dir /usr/local/bin && \
+    curl -sS https://getcomposer.org/installer \
+      | php -- --install-dir=/usr/local/bin --filename=composer && \
+    composer global config repositories.scip-php vcs ${SCIP_PHP_REPO_URL} && \
     composer global require davidrjenni/scip-php:${SCIP_PHP_VERSION} && \
-    composer install --working-dir=${COMPOSER_HOME}/vendor/davidrjenni/scip-php --no-interaction --prefer-dist --no-progress --no-dev && \
+    composer install \
+      --working-dir=${COMPOSER_HOME}/vendor/davidrjenni/scip-php \
+      --no-interaction --prefer-dist --no-progress --no-dev && \
     test -f ${COMPOSER_HOME}/vendor/davidrjenni/scip-php/vendor/autoload.php && \
-    chmod -R 755 ${COMPOSER_HOME}
-
-# Verify SCIP tools are installed (smoke test)
-RUN scip-typescript --version && \
+    chmod -R 755 ${COMPOSER_HOME} && \
+    scip-typescript --version && \
     scip-python --version && \
     scip-java --help | head -1 && \
     test -x ${COMPOSER_HOME}/vendor/bin/scip-php && \
@@ -87,12 +78,10 @@ RUN scip-typescript --version && \
 
 WORKDIR /app
 
-# Copy spider_md binary from Rust build stage
+# Copy spider_md binary and uv from build stages
 COPY --from=rust-builder /build/target/release/spider_md /usr/local/bin/spider_md
-RUN chmod +x /usr/local/bin/spider_md
-
-# Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN chmod +x /usr/local/bin/spider_md
 
 # Copy workspace files
 COPY pyproject.toml uv.lock ./
@@ -100,22 +89,17 @@ COPY packages/ packages/
 COPY apps/worker/ apps/worker/
 COPY apps/api/pyproject.toml apps/api/
 
-# Sync dependencies
-RUN uv sync --frozen --no-dev
-
-# Create non-root user and data directory
-# Also create cache directories for build tools
-RUN useradd --create-home --shell /bin/bash appuser && \
-    mkdir -p /data/repos && \
-    mkdir -p /home/appuser/.npm && \
-    mkdir -p /home/appuser/.m2 && \
-    mkdir -p /home/appuser/.gradle && \
-    mkdir -p /home/appuser/.cache/pip && \
-    mkdir -p /home/appuser/.composer/cache && \
-    chown -R appuser:appuser /app /data /home/appuser
-
-# Set environment for SCIP tools
-RUN ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/java-21-openjdk
+# Sync dependencies, create non-root user and data/cache directories
+RUN uv sync --frozen --no-dev && \
+    useradd --create-home --shell /bin/bash appuser && \
+    mkdir -p /data/repos \
+      /home/appuser/.npm \
+      /home/appuser/.m2 \
+      /home/appuser/.gradle \
+      /home/appuser/.cache/pip \
+      /home/appuser/.composer/cache && \
+    chown -R appuser:appuser /app /data /home/appuser && \
+    ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/java-21-openjdk
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 ENV PATH="${PATH}:${JAVA_HOME}/bin"
 ENV NPM_CONFIG_CACHE=/home/appuser/.npm

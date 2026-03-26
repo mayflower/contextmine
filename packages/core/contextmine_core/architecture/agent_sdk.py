@@ -72,6 +72,20 @@ class ClaudeSDKSessionManager:
             self._entries[key] = entry
             return entry
 
+    @staticmethod
+    def _extract_text_from_messages(raw_messages: list[Any]) -> str:
+        """Extract text content from raw assistant messages as fallback."""
+        from claude_code_sdk import AssistantMessage, TextBlock
+
+        parts: list[str] = []
+        for msg in raw_messages:
+            if not isinstance(msg, AssistantMessage):
+                continue
+            for block in getattr(msg, "content", []) or []:
+                if isinstance(block, TextBlock):
+                    parts.append(str(getattr(block, "text", "")))
+        return "\n".join(p for p in parts if p.strip()).strip()
+
     async def run_prompt(
         self,
         *,
@@ -103,28 +117,22 @@ class ClaudeSDKSessionManager:
             total_cost_usd: float | None = None
             returned_session_id: str | None = None
 
-            from claude_code_sdk import AssistantMessage, ResultMessage, TextBlock
+            from claude_code_sdk import ResultMessage
 
             async for message in entry.client.receive_response():
                 raw_messages.append(message)
-                if isinstance(message, ResultMessage):
-                    returned_session_id = str(message.session_id or "")
-                    usage = message.usage
-                    total_cost_usd = message.total_cost_usd
-                    if message.is_error:
-                        raise RuntimeError(message.result or "Claude SDK returned an error")
-                    if message.result:
-                        result_text = str(message.result)
+                if not isinstance(message, ResultMessage):
+                    continue
+                returned_session_id = str(message.session_id or "")
+                usage = message.usage
+                total_cost_usd = message.total_cost_usd
+                if message.is_error:
+                    raise RuntimeError(message.result or "Claude SDK returned an error")
+                if message.result:
+                    result_text = str(message.result)
 
             if not result_text:
-                parts: list[str] = []
-                for msg in raw_messages:
-                    if not isinstance(msg, AssistantMessage):
-                        continue
-                    for block in getattr(msg, "content", []) or []:
-                        if isinstance(block, TextBlock):
-                            parts.append(str(getattr(block, "text", "")))
-                result_text = "\n".join(p for p in parts if p.strip()).strip()
+                result_text = self._extract_text_from_messages(raw_messages)
 
             if returned_session_id:
                 (entry.session_ids or {})[scope_key] = returned_session_id

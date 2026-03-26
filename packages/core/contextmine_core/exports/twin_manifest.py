@@ -15,6 +15,27 @@ from contextmine_core.twin.projections import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+_INTERFACE_KINDS = {"api_endpoint", "graphql_operation", "service_rpc", "interface_contract"}
+
+
+def _extract_interfaces(nodes: list[dict]) -> list[dict]:
+    """Extract interface nodes from graph nodes."""
+    interfaces = []
+    for node in nodes:
+        kind = str(node.get("kind") or "")
+        if kind not in _INTERFACE_KINDS:
+            continue
+        interfaces.append(
+            {
+                "id": str(node.get("id")),
+                "kind": kind,
+                "name": str(node.get("name") or ""),
+                "natural_key": str(node.get("natural_key") or ""),
+                "meta": node.get("meta") or {},
+            }
+        )
+    return interfaces
+
 
 async def export_twin_manifest(
     session: AsyncSession,
@@ -42,35 +63,14 @@ async def export_twin_manifest(
     user_flows = build_user_flows_projection(nodes, edges)
     readiness = compute_rebuild_readiness(nodes, edges)
 
-    interfaces = []
-    for node in nodes:
-        kind = str(node.get("kind") or "")
-        if kind not in {"api_endpoint", "graphql_operation", "service_rpc", "interface_contract"}:
-            continue
-        interfaces.append(
-            {
-                "id": str(node.get("id")),
-                "kind": kind,
-                "name": str(node.get("name") or ""),
-                "natural_key": str(node.get("natural_key") or ""),
-                "meta": node.get("meta") or {},
-            }
-        )
-
     manifest = {
         "manifest_version": "1.0",
         "generated_at": datetime.now(UTC).isoformat(),
         "scenario_id": str(scenario_id),
         "sections": {
-            "architecture": {
-                "projection": "architecture/container",
-                "graph": architecture_graph,
-            },
-            "interfaces": interfaces,
-            "ui_map": {
-                "summary": ui_map.get("summary") or {},
-                "graph": ui_map.get("graph") or {},
-            },
+            "architecture": {"projection": "architecture/container", "graph": architecture_graph},
+            "interfaces": _extract_interfaces(nodes),
+            "ui_map": {"summary": ui_map.get("summary") or {}, "graph": ui_map.get("graph") or {}},
             "user_flows": {
                 "summary": user_flows.get("summary") or {},
                 "flows": user_flows.get("flows") or [],

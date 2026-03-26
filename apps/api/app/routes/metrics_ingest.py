@@ -163,6 +163,72 @@ def _serialize_job(
     )
 
 
+def _validate_ingest_inputs(
+    token: str | None,
+    commit_sha: str,
+    source_id: str,
+    reports: list[UploadFile],
+) -> uuid.UUID:
+    """Validate ingest request inputs and return parsed source UUID."""
+    if token is None:
+        raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
+    if not SHA1_RE.match(commit_sha.lower()):
+        raise HTTPException(status_code=400, detail="commit_sha must be 40-char lowercase hex")
+    try:
+        src_uuid = uuid.UUID(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid source_id") from e
+    if not reports:
+        raise HTTPException(status_code=400, detail="At least one report file is required")
+    return src_uuid
+
+
+def _parse_manifest(manifest: str | None) -> dict[str, Any] | None:
+    """Parse optional manifest JSON string."""
+    if not manifest:
+        return None
+    try:
+        loaded = json.loads(manifest)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid manifest JSON: {e}") from e
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail="manifest must be a JSON object")
+    return loaded
+
+
+async def _verify_source_and_token(
+    db: Any,
+    src_uuid: uuid.UUID,
+    token: str,
+    commit_sha: str,
+) -> Source:
+    """Load source, verify type/token/cursor, raise on mismatch."""
+    source = (await db.execute(select(Source).where(Source.id == src_uuid))).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if source.type != SourceType.GITHUB:
+        raise HTTPException(
+            status_code=400, detail="Coverage ingest is only supported for GitHub sources"
+        )
+
+    token_row = (
+        await db.execute(select(SourceIngestToken).where(SourceIngestToken.source_id == source.id))
+    ).scalar_one_or_none()
+    if not token_row:
+        raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
+
+    digest = _hash_ingest_token(token)
+    if not hmac.compare_digest(token_row.token_hash, digest):
+        raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
+
+    if not source.cursor or source.cursor != commit_sha:
+        raise HTTPException(
+            status_code=409,
+            detail=f"INGEST_SHA_MISMATCH: source cursor is {source.cursor}, payload is {commit_sha}",
+        )
+    return source
+
+
 @router.post(
     "/sources/{source_id}/metrics/coverage-ingest",
     responses={
@@ -190,60 +256,23 @@ async def upload_coverage_ingest(
     """Upload CI coverage reports and enqueue async ingest processing."""
     del request
 
-    if x_contextmine_ingest_token is None:
-        raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
-    if not SHA1_RE.match(commit_sha.lower()):
-        raise HTTPException(status_code=400, detail="commit_sha must be 40-char lowercase hex")
-
-    try:
-        src_uuid = uuid.UUID(source_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid source_id") from e
-
-    if not reports:
-        raise HTTPException(status_code=400, detail="At least one report file is required")
-
+    src_uuid = _validate_ingest_inputs(
+        x_contextmine_ingest_token,
+        commit_sha,
+        source_id,
+        reports,
+    )
     settings = get_settings()
     max_payload_bytes = settings.coverage_ingest_max_payload_mb * 1024 * 1024
-
-    manifest_payload: dict[str, Any] | None = None
-    if manifest:
-        try:
-            loaded = json.loads(manifest)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid manifest JSON: {e}") from e
-        if not isinstance(loaded, dict):
-            raise HTTPException(status_code=400, detail="manifest must be a JSON object")
-        manifest_payload = loaded
+    manifest_payload = _parse_manifest(manifest)
 
     async with get_db_session() as db:
-        source = (
-            await db.execute(select(Source).where(Source.id == src_uuid))
-        ).scalar_one_or_none()
-        if not source:
-            raise HTTPException(status_code=404, detail="Source not found")
-        if source.type != SourceType.GITHUB:
-            raise HTTPException(
-                status_code=400, detail="Coverage ingest is only supported for GitHub sources"
-            )
-
-        token_row = (
-            await db.execute(
-                select(SourceIngestToken).where(SourceIngestToken.source_id == source.id)
-            )
-        ).scalar_one_or_none()
-        if not token_row:
-            raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
-
-        digest = _hash_ingest_token(x_contextmine_ingest_token)
-        if not hmac.compare_digest(token_row.token_hash, digest):
-            raise HTTPException(status_code=401, detail="INGEST_AUTH_INVALID")
-
-        if not source.cursor or source.cursor != commit_sha:
-            raise HTTPException(
-                status_code=409,
-                detail=f"INGEST_SHA_MISMATCH: source cursor is {source.cursor}, payload is {commit_sha}",
-            )
+        source = await _verify_source_and_token(
+            db,
+            src_uuid,
+            x_contextmine_ingest_token,
+            commit_sha,  # type: ignore[arg-type]
+        )
 
         total_bytes = 0
         report_payloads: list[tuple[UploadFile, bytes]] = []
@@ -299,7 +328,13 @@ async def upload_coverage_ingest(
             )
             db.add(report)
 
-        token_row.last_used_at = datetime.now(UTC)
+        token_row = (
+            await db.execute(
+                select(SourceIngestToken).where(SourceIngestToken.source_id == source.id)
+            )
+        ).scalar_one_or_none()
+        if token_row:
+            token_row.last_used_at = datetime.now(UTC)
         await db.commit()
 
     try:

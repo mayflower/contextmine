@@ -557,94 +557,73 @@ def _merge_entity_groups(groups: dict[int, list[ExtractedEntity]]) -> list[Seman
     return merged
 
 
+def _build_entity_name_resolver(
+    resolved_entities: list[SemanticEntity],
+) -> dict[str, str]:
+    """Build a lowercase name/alias -> canonical entity name mapping."""
+    name_to_resolved: dict[str, str] = {}
+    for entity in resolved_entities:
+        name_to_resolved[entity.name.lower()] = entity.name
+        for alias in entity.aliases:
+            name_to_resolved[alias.lower()] = entity.name
+    return name_to_resolved
+
+
+def _build_existing_pairs(
+    existing_relationships: list[SemanticRelationship],
+) -> set[tuple[str, str]]:
+    """Build a bidirectional set of existing relationship pairs (lowercase)."""
+    pairs: set[tuple[str, str]] = set()
+    for rel in existing_relationships:
+        src, tgt = rel.source_entity.lower(), rel.target_entity.lower()
+        pairs.add((src, tgt))
+        pairs.add((tgt, src))
+    return pairs
+
+
+def _co_occurrence_strength(count: int) -> float:
+    """Calculate relationship strength from co-occurrence count."""
+    if count >= 5:
+        return 0.8
+    if count >= 3:
+        return 0.6
+    if count >= 2:
+        return 0.5
+    return 0.3
+
+
 def _extract_cross_document_relationships(
     resolved_entities: list[SemanticEntity],
     entity_occurrences: dict[str, list[str]],
     existing_relationships: list[SemanticRelationship],
 ) -> list[SemanticRelationship]:
-    """Extract relationships between entities that co-occur across documents.
+    """Extract relationships between entities that co-occur across documents."""
+    name_to_resolved = _build_entity_name_resolver(resolved_entities)
+    existing_pairs = _build_existing_pairs(existing_relationships)
 
-    This implements the cross-document relationship inference from GraphRAG:
-    - Entities appearing in the same document are implicitly related
-    - Relationship strength is based on co-occurrence frequency
-    - Only creates relationships not already captured by LLM extraction
-
-    Args:
-        resolved_entities: Merged semantic entities
-        entity_occurrences: Map of document_uri -> list of original entity names
-        existing_relationships: Already extracted relationships (to avoid duplicates)
-
-    Returns:
-        List of co-occurrence relationships
-    """
-    relationships: list[SemanticRelationship] = []
-
-    # Build mapping from original names/aliases to resolved entity names
-    # This handles entity resolution (e.g., "User" -> "User Management")
-    name_to_resolved: dict[str, str] = {}
-    for entity in resolved_entities:
-        # Map the canonical name
-        name_to_resolved[entity.name.lower()] = entity.name
-        # Map all aliases
-        for alias in entity.aliases:
-            name_to_resolved[alias.lower()] = entity.name
-
-    # Track existing relationship pairs to avoid duplicates
-    existing_pairs: set[tuple[str, str]] = set()
-    for rel in existing_relationships:
-        # Normalize to lowercase for comparison
-        src = rel.source_entity.lower()
-        tgt = rel.target_entity.lower()
-        existing_pairs.add((src, tgt))
-        existing_pairs.add((tgt, src))  # Bidirectional check
-
-    # Count co-occurrences across documents
-    # co_occurrence[(entity_a, entity_b)] = number of documents they share
     co_occurrence: dict[tuple[str, str], int] = {}
     co_occurrence_docs: dict[tuple[str, str], list[str]] = {}
 
     for doc_uri, original_names in entity_occurrences.items():
-        # Resolve original names to canonical entity names
         resolved_names_in_doc: set[str] = set()
         for orig_name in original_names:
             resolved = name_to_resolved.get(orig_name.lower())
             if resolved:
                 resolved_names_in_doc.add(resolved)
 
-        # Create pairs of co-occurring entities in this document
         resolved_list = sorted(resolved_names_in_doc)
         for i, entity_a in enumerate(resolved_list):
             for entity_b in resolved_list[i + 1 :]:
-                # Skip self-relationships
                 if entity_a == entity_b:
                     continue
-
-                # Canonical ordering for consistent keys
                 pair = (entity_a, entity_b) if entity_a < entity_b else (entity_b, entity_a)
-
-                # Skip if already have explicit relationship
                 if (entity_a.lower(), entity_b.lower()) in existing_pairs:
                     continue
-
                 co_occurrence[pair] = co_occurrence.get(pair, 0) + 1
-                if pair not in co_occurrence_docs:
-                    co_occurrence_docs[pair] = []
-                co_occurrence_docs[pair].append(doc_uri)
+                co_occurrence_docs.setdefault(pair, []).append(doc_uri)
 
-    # Create relationships for co-occurring entity pairs
+    relationships: list[SemanticRelationship] = []
     for (entity_a, entity_b), count in co_occurrence.items():
-        # Calculate strength based on co-occurrence frequency
-        # More co-occurrences = stronger implicit relationship
-        # Use logarithmic scaling: 1 doc = 0.3, 2 docs = 0.5, 5+ docs = 0.8
-        if count >= 5:
-            strength = 0.8
-        elif count >= 3:
-            strength = 0.6
-        elif count >= 2:
-            strength = 0.5
-        else:
-            strength = 0.3
-
         doc_list = co_occurrence_docs.get((entity_a, entity_b), [])
         doc_summary = ", ".join(doc_list[:3])
         if len(doc_list) > 3:
@@ -656,7 +635,7 @@ def _extract_cross_document_relationships(
                 target_entity=entity_b,
                 relationship_type="CO_OCCURS",
                 description=f"Co-occur in {count} document(s): {doc_summary}",
-                strength=strength,
+                strength=_co_occurrence_strength(count),
             )
         )
 

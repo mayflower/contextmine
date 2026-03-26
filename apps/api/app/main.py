@@ -62,6 +62,55 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await shutdown_telemetry()
 
 
+def _register_api_routes(app: FastAPI) -> None:
+    """Register all API route modules."""
+    for router_module in (
+        health,
+        db,
+        auth,
+        collections,
+        sources,
+        runs,
+        documents,
+        search,
+        context,
+        prefect,
+        twin,
+        metrics_ingest,
+        validation,
+    ):
+        app.include_router(router_module.router, prefix="/api")
+
+
+def _register_spa_routes(app: FastAPI, instrumentator: Instrumentator) -> None:
+    """Mount static assets and SPA catch-all if the static directory exists."""
+    if not (STATIC_DIR.exists() and STATIC_DIR.is_dir()):
+        instrumentator.expose(app, include_in_schema=False)
+        return
+
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+    instrumentator.expose(app, include_in_schema=False)
+
+    @app.get("/{path:path}", response_model=None)
+    async def serve_spa(path: str) -> FileResponse | PlainTextResponse:
+        """Serve the SPA frontend for all non-API routes."""
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        if path == "metrics":
+            return PlainTextResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+        file_path = (STATIC_DIR / path).resolve()
+        if not file_path.is_relative_to(STATIC_DIR.resolve()):
+            return FileResponse(_INDEX_HTML)
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_INDEX_HTML)
+
+    @app.get("/")
+    async def serve_index() -> FileResponse:
+        """Serve index.html at root."""
+        return FileResponse(_INDEX_HTML)
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
@@ -71,14 +120,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Rate limiting
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-    # Session middleware (must be added before CORS)
     app.add_middleware(SessionMiddleware)
-
-    # CORS middleware - allow same-origin requests
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:8000"],
@@ -87,29 +131,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Include API routes
-    app.include_router(health.router, prefix="/api")
-    app.include_router(db.router, prefix="/api")
-    app.include_router(auth.router, prefix="/api")
-    app.include_router(collections.router, prefix="/api")
-    app.include_router(sources.router, prefix="/api")
-    app.include_router(runs.router, prefix="/api")
-    app.include_router(documents.router, prefix="/api")
-    app.include_router(search.router, prefix="/api")
-    app.include_router(context.router, prefix="/api")
-    app.include_router(prefect.router, prefix="/api")
-    app.include_router(twin.router, prefix="/api")
-    app.include_router(metrics_ingest.router, prefix="/api")
-    app.include_router(validation.router, prefix="/api")
-
-    # Mount MCP server at /mcp
+    _register_api_routes(app)
     app.mount("/mcp", mcp_app)
 
-    # Forward .well-known OAuth discovery requests to the MCP sub-app.
-    # MCP clients (per RFC 8414) look for OAuth metadata at root-level
-    # .well-known paths, but FastMCP serves them within its mount point
-    # at /mcp/.well-known/... Without these forwarding routes, the SPA
-    # catch-all intercepts .well-known requests and returns index.html.
     @app.get("/.well-known/{well_known_type}")
     @app.get("/.well-known/{well_known_type}/{path:path}")
     async def forward_well_known(
@@ -118,7 +142,6 @@ def create_app() -> FastAPI:
         """Forward .well-known requests to MCP sub-app for OAuth discovery."""
         import httpx
 
-        # Build the internal URL to the MCP sub-app's .well-known endpoint
         mcp_url = (
             f"http://localhost:{os.getenv('API_PORT', '8000')}/mcp/.well-known/{well_known_type}"
         )
@@ -131,8 +154,6 @@ def create_app() -> FastAPI:
         except Exception:
             return JSONResponse(content={"error": "mcp_unavailable"}, status_code=503)
 
-    # Prometheus metrics instrumentation
-    # Exposes /metrics endpoint with request latency, count, and Python process metrics
     instrumentator = Instrumentator(
         should_group_status_codes=True,
         should_ignore_untemplated=True,
@@ -143,45 +164,7 @@ def create_app() -> FastAPI:
         inprogress_labels=True,
     )
     instrumentator.instrument(app)
-
-    # Serve static frontend files if directory exists
-    if STATIC_DIR.exists() and STATIC_DIR.is_dir():
-        # Mount static assets (js, css, images)
-        app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
-
-        # Expose metrics BEFORE SPA catch-all to ensure it takes priority
-        instrumentator.expose(app, include_in_schema=False)
-
-        # SPA catch-all: serve index.html for all non-API routes
-        # Note: paths like /api, /mcp, /metrics are handled by their own routes
-        @app.get("/{path:path}", response_model=None)
-        async def serve_spa(path: str) -> FileResponse | PlainTextResponse:
-            """Serve the SPA frontend for all non-API routes."""
-            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
-            # Handle /metrics directly - generate Prometheus metrics
-            if path == "metrics":
-                return PlainTextResponse(
-                    content=generate_latest(),
-                    media_type=CONTENT_TYPE_LATEST,
-                )
-            # Try to serve the exact file if it exists
-            file_path = (STATIC_DIR / path).resolve()
-            # Prevent path traversal attacks
-            if not file_path.is_relative_to(STATIC_DIR.resolve()):
-                return FileResponse(_INDEX_HTML)
-            if file_path.exists() and file_path.is_file():
-                return FileResponse(file_path)
-            # Otherwise serve index.html for SPA routing
-            return FileResponse(_INDEX_HTML)
-
-        @app.get("/")
-        async def serve_index() -> FileResponse:
-            """Serve index.html at root."""
-            return FileResponse(_INDEX_HTML)
-    else:
-        # No static files - just expose metrics
-        instrumentator.expose(app, include_in_schema=False)
+    _register_spa_routes(app, instrumentator)
 
     return app
 

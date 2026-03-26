@@ -131,6 +131,19 @@ def _metric_averages(metrics: list[MetricSnapshot]) -> dict[str, float | None]:
     }
 
 
+def _resolve_port_location(
+    evidence: tuple[EvidenceRef, ...],
+    meta: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Resolve (file_path, adapter_name, container, component) from evidence/meta."""
+    file_path = evidence[0].ref if evidence else None
+    group = _derive_arch_group(file_path, meta) if file_path else None
+    container = group[1] if group else None
+    component = group[2] if group else None
+    adapter_name = PurePosixPath(file_path).stem if file_path else None
+    return file_path, adapter_name, container, component
+
+
 def _extract_inbound_ports(
     nodes: list[KnowledgeNode],
     evidence_by_node: dict[UUID, tuple[EvidenceRef, ...]],
@@ -142,12 +155,10 @@ def _extract_inbound_ports(
             continue
 
         evidence = evidence_by_node.get(node.id, ())
-        file_path = evidence[0].ref if evidence else None
-        group = _derive_arch_group(file_path, node.meta or {}) if file_path else None
-        container = group[1] if group else None
-        component = group[2] if group else None
-        adapter_name = PurePosixPath(file_path).stem if file_path else None
-
+        _, adapter_name, container, component = _resolve_port_location(
+            evidence,
+            node.meta or {},
+        )
         source = "deterministic" if evidence else "hybrid"
         confidence = DETERMINISTIC_CONFIDENCE if evidence else HYBRID_CONFIDENCE
 
@@ -188,13 +199,9 @@ def _extract_outbound_ports(
         if not source_symbol or not target_node:
             continue
 
-        file_path = _canonical_file_path(None, source_symbol.meta or {})
-        group = _derive_arch_group(file_path, source_symbol.meta or {}) if file_path else None
-        container = group[1] if group else None
-        component = group[2] if group else None
-
-        source = "deterministic" if group else "hybrid"
-        confidence = DETERMINISTIC_CONFIDENCE if group else HYBRID_CONFIDENCE
+        meta = source_symbol.meta or {}
+        file_path = _canonical_file_path(None, meta)
+        group = _derive_arch_group(file_path, meta) if file_path else None
 
         facts.append(
             PortAdapterFact(
@@ -204,11 +211,11 @@ def _extract_outbound_ports(
                 direction="outbound",
                 port_name=target_node.name,
                 adapter_name=source_symbol.name,
-                container=container,
-                component=component,
+                container=group[1] if group else None,
+                component=group[2] if group else None,
                 protocol=OUTBOUND_PROTOCOL_BY_KIND.get(target_node.kind),
-                source=source,
-                confidence=confidence,
+                source="deterministic" if group else "hybrid",
+                confidence=DETERMINISTIC_CONFIDENCE if group else HYBRID_CONFIDENCE,
                 attributes={
                     "edge_kind": edge.kind.value,
                     "target_kind": target_node.kind.value,

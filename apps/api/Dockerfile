@@ -26,10 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install TypeScript language server globally
+# Install TypeScript language server globally and uv
 RUN npm install -g typescript typescript-language-server
-
-# Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy workspace files
@@ -44,12 +42,10 @@ RUN uv sync --frozen --no-dev
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /app/dist /app/static
 
-# Copy and make entrypoint executable
+# Copy entrypoint, make executable, and create non-root user
 COPY apps/api/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash appuser && \
+RUN chmod +x /entrypoint.sh && \
+    useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 

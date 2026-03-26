@@ -10,6 +10,38 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
+def _arch_group_from_meta(meta: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Try to resolve arch group from explicit architecture metadata."""
+    architecture_meta = meta.get("architecture")
+    if not isinstance(architecture_meta, dict):
+        return None
+    explicit_domain = str(architecture_meta.get("domain") or "").strip()
+    explicit_container = str(architecture_meta.get("container") or "").strip()
+    if not explicit_domain or not explicit_container:
+        return None
+    explicit_component = str(architecture_meta.get("component") or "").strip()
+    return explicit_domain, explicit_container, explicit_component or explicit_container
+
+
+def _arch_group_from_path(path: str) -> tuple[str, str, str] | None:
+    """Derive arch group from file path heuristics."""
+    normalized = path.strip("/")
+    parts = [p for p in normalized.split("/") if p]
+    if not parts:
+        return None
+
+    if parts[0] == "services" and len(parts) >= 3:
+        domain, container = parts[1], parts[2]
+    elif parts[0] == "apps" and len(parts) >= 2:
+        domain, container = parts[1], parts[1]
+    else:
+        domain = parts[0]
+        container = parts[1] if len(parts) > 1 else parts[0]
+
+    component = PurePosixPath(normalized).stem or container
+    return domain, container, component
+
+
 def derive_arch_group(
     path: str | None, meta: dict[str, Any] | None = None
 ) -> tuple[str, str, str] | None:
@@ -17,36 +49,12 @@ def derive_arch_group(
 
     Returns ``None`` when the group cannot be determined.
     """
-    payload = meta or {}
-    architecture_meta = payload.get("architecture")
-    if isinstance(architecture_meta, dict):
-        explicit_domain = str(architecture_meta.get("domain") or "").strip()
-        explicit_container = str(architecture_meta.get("container") or "").strip()
-        explicit_component = str(architecture_meta.get("component") or "").strip()
-        if explicit_domain and explicit_container:
-            component = explicit_component or explicit_container
-            return explicit_domain, explicit_container, component
-
+    result = _arch_group_from_meta(meta or {})
+    if result is not None:
+        return result
     if not path:
         return None
-
-    normalized = path.strip("/")
-    parts = [p for p in normalized.split("/") if p]
-    if not parts:
-        return None
-
-    if parts[0] == "services" and len(parts) >= 3:
-        domain = parts[1]
-        container = parts[2]
-    elif parts[0] == "apps" and len(parts) >= 2:
-        domain = parts[1]
-        container = parts[1]
-    else:
-        domain = parts[0]
-        container = parts[1] if len(parts) > 1 else parts[0]
-
-    component = PurePosixPath(normalized).stem or container
-    return domain, container, component
+    return _arch_group_from_path(path)
 
 
 def canonical_file_path_from_node(node: dict[str, Any]) -> str | None:

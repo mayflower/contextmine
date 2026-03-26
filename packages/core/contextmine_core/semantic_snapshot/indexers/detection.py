@@ -67,6 +67,26 @@ def detect_projects(repo_root: Path | str) -> list[ProjectTarget]:
     return projects
 
 
+def _build_project_metadata(
+    entry: LanguageCensusEntry | None,
+    candidate_root: Path,
+    language: Language,
+    report: LanguageCensusReport,
+    root_reason: str,
+) -> dict[str, object]:
+    """Build metadata dict for a detected project target."""
+    marker_meta = _language_marker_metadata(candidate_root, language)
+    return {
+        **marker_meta,
+        "detection_basis": "cloc" if report.tool_name == "cloc" else report.tool_name,
+        "root_reason": root_reason,
+        "confidence": _confidence_for_language(entry, report.total_code),
+        "census_code_lines": int(entry.code if entry else 0),
+        "census_file_count": int(entry.files if entry else 0),
+        "census_total_code_lines": int(report.total_code),
+    }
+
+
 def detect_projects_with_diagnostics(
     repo_root: Path | str,
 ) -> tuple[list[ProjectTarget], DetectionDiagnostics]:
@@ -76,8 +96,6 @@ def detect_projects_with_diagnostics(
 
     qualified = _qualify_languages(report)
     if report.total_code < SMALL_REPO_TOTAL_CODE:
-        # Tiny repos/fixtures may not have enough code lines for census thresholds
-        # but still provide explicit build markers.
         qualified.update(_marker_languages(root))
 
     projects: list[ProjectTarget] = []
@@ -95,22 +113,15 @@ def detect_projects_with_diagnostics(
             root_reason = "repo_fallback"
 
         for candidate_root in roots:
-            marker_meta = _language_marker_metadata(candidate_root, language)
-            metadata = {
-                **marker_meta,
-                "detection_basis": "cloc" if report.tool_name == "cloc" else report.tool_name,
-                "root_reason": root_reason,
-                "confidence": _confidence_for_language(entry, report.total_code),
-                "census_code_lines": int(entry.code if entry else 0),
-                "census_file_count": int(entry.files if entry else 0),
-                "census_total_code_lines": int(report.total_code),
-            }
+            metadata = _build_project_metadata(
+                entry,
+                candidate_root,
+                language,
+                report,
+                root_reason,
+            )
             projects.append(
-                ProjectTarget(
-                    language=language,
-                    root_path=candidate_root,
-                    metadata=metadata,
-                )
+                ProjectTarget(language=language, root_path=candidate_root, metadata=metadata)
             )
 
     projects = _dedupe_projects(projects)
@@ -277,22 +288,34 @@ def _code_under_root(report: LanguageCensusReport, language: Language, root: Pat
     return total
 
 
+def _should_skip_dir(path: Path, skipped_paths: set[Path]) -> bool:
+    """Check if a directory should be skipped during marker root search."""
+    if path.name in IGNORE_DIRS or path.name.startswith("."):
+        return True
+    resolved = path.resolve()
+    return any(resolved == skipped or resolved.is_relative_to(skipped) for skipped in skipped_paths)
+
+
+def _register_composer_vendor_skips(
+    current: Path, file_names: set[str], skipped_paths: set[Path]
+) -> None:
+    """Register vendor directories from composer.json as skipped paths."""
+    if _COMPOSER_JSON not in file_names:
+        return
+    for vendor_dir in _composer_vendor_dirs(current):
+        vendor_path = (current / vendor_dir).resolve()
+        if vendor_path.exists() and vendor_path.is_dir():
+            skipped_paths.add(vendor_path)
+
+
 def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
     roots: set[Path] = set()
     skipped_paths: set[Path] = set()
 
-    def should_skip(path: Path) -> bool:
-        if path.name in IGNORE_DIRS or path.name.startswith("."):
-            return True
-        resolved = path.resolve()
-        return any(
-            resolved == skipped or resolved.is_relative_to(skipped) for skipped in skipped_paths
-        )
-
     stack = [repo_root]
     while stack:
         current = stack.pop()
-        if should_skip(current):
+        if _should_skip_dir(current, skipped_paths):
             continue
 
         try:
@@ -302,17 +325,13 @@ def _find_marker_roots(repo_root: Path, language: Language) -> list[Path]:
             continue
 
         file_names = {child.name for child in children if child.is_file()}
-        if _COMPOSER_JSON in file_names:
-            for vendor_dir in _composer_vendor_dirs(current):
-                vendor_path = (current / vendor_dir).resolve()
-                if vendor_path.exists() and vendor_path.is_dir():
-                    skipped_paths.add(vendor_path)
+        _register_composer_vendor_skips(current, file_names, skipped_paths)
 
         if _directory_matches_language_markers(file_names, language):
             roots.add(current.resolve())
 
         for child in children:
-            if child.is_dir() and not should_skip(child):
+            if child.is_dir() and not _should_skip_dir(child, skipped_paths):
                 stack.append(child)
 
     return sorted(roots, key=lambda p: len(p.parts), reverse=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable
@@ -58,6 +59,16 @@ def _coverage_from_counts(covered: int, total: int) -> float | None:
     return (covered / total) * 100.0
 
 
+def _parse_lcov_da_line(line: str) -> tuple[bool, bool]:
+    """Parse a DA: line, returning (is_valid, is_covered)."""
+    try:
+        _, counts = line.split(":", 1)
+        _, hits = counts.split(",", 1)
+        return True, int(hits) > 0
+    except ValueError:
+        return False, False
+
+
 def parse_lcov_report(
     report_path: Path,
     repo_root: Path,
@@ -71,10 +82,8 @@ def parse_lcov_report(
 
     def flush() -> None:
         nonlocal current_file, covered, total
-        if current_file:
-            pct = _coverage_from_counts(covered, total)
-            if pct is not None:
-                per_file[current_file] = [covered, total]
+        if current_file and _coverage_from_counts(covered, total) is not None:
+            per_file[current_file] = [covered, total]
         current_file = None
         covered = 0
         total = 0
@@ -83,25 +92,19 @@ def parse_lcov_report(
         line = raw_line.strip()
         if line.startswith("SF:"):
             flush()
-            raw_file = line[3:]
             current_file = to_repo_relative_path(
-                raw_file,
+                line[3:],
                 repo_root=repo_root,
                 project_root=project_root,
                 base_dir=report_path.parent,
             )
-            continue
-        if line.startswith("DA:"):
-            try:
-                _, counts = line.split(":", 1)
-                _, hits = counts.split(",", 1)
+        elif line.startswith("DA:"):
+            valid, hit = _parse_lcov_da_line(line)
+            if valid:
                 total += 1
-                if int(hits) > 0:
+                if hit:
                     covered += 1
-            except ValueError:
-                continue
-            continue
-        if line == "end_of_record":
+        elif line == "end_of_record":
             flush()
 
     flush()
@@ -112,6 +115,23 @@ def parse_lcov_report(
         if pct is not None:
             result[file_path] = pct
     return result
+
+
+def _count_line_coverage(line_nodes: Iterable[Any], *, attr: str = "hits") -> tuple[int, int]:
+    """Count covered/total from line nodes using the given attribute name."""
+    covered = 0
+    total = 0
+    for line_node in line_nodes:
+        raw = line_node.attrib.get(attr)
+        if raw is None:
+            continue
+        total += 1
+        try:
+            if int(raw) > 0:
+                covered += 1
+        except ValueError:
+            continue
+    return covered, total
 
 
 def parse_cobertura_xml(
@@ -137,34 +157,32 @@ def parse_cobertura_xml(
         if not file_path:
             continue
 
-        line_nodes = list(_iter_nodes(class_node, "line"))
-        covered = 0
-        total = 0
-        for line_node in line_nodes:
-            hits_raw = line_node.attrib.get("hits")
-            if hits_raw is None:
-                continue
-            total += 1
-            try:
-                if int(hits_raw) > 0:
-                    covered += 1
-            except ValueError:
-                continue
-
+        covered, total = _count_line_coverage(_iter_nodes(class_node, "line"))
         if total > 0:
             result[file_path] = (covered / total) * 100.0
             continue
 
         line_rate_raw = class_node.attrib.get("line-rate")
-        if line_rate_raw is None:
-            continue
-
-        try:
-            result[file_path] = float(line_rate_raw) * 100.0
-        except ValueError:
-            continue
+        if line_rate_raw is not None:
+            with contextlib.suppress(ValueError):
+                result[file_path] = float(line_rate_raw) * 100.0
 
     return result
+
+
+def _jacoco_line_counter(source_node: Any) -> tuple[int, int]:
+    """Extract (covered, missed) from a JaCoCo sourcefile's LINE counter."""
+    for counter_node in _iter_nodes(source_node, "counter"):
+        if counter_node.attrib.get("type") != "LINE":
+            continue
+        try:
+            return (
+                int(counter_node.attrib.get("covered", "0")),
+                int(counter_node.attrib.get("missed", "0")),
+            )
+        except ValueError:
+            return 0, 0
+    return 0, 0
 
 
 def parse_jacoco_xml(
@@ -194,24 +212,30 @@ def parse_jacoco_xml(
             if not file_path:
                 continue
 
-            covered = 0
-            missed = 0
-            for counter_node in _iter_nodes(source_node, "counter"):
-                if counter_node.attrib.get("type") != "LINE":
-                    continue
-                try:
-                    covered = int(counter_node.attrib.get("covered", "0"))
-                    missed = int(counter_node.attrib.get("missed", "0"))
-                except ValueError:
-                    covered = 0
-                    missed = 0
-                break
-
+            covered, missed = _jacoco_line_counter(source_node)
             pct = _coverage_from_counts(covered, covered + missed)
             if pct is not None:
                 result[file_path] = pct
 
     return result
+
+
+def _clover_metrics_coverage(metric_node: Any) -> float | None:
+    """Extract coverage from a Clover <metrics> node."""
+    try:
+        covered_total = (
+            int(metric_node.attrib.get("coveredstatements", "0"))
+            + int(metric_node.attrib.get("coveredconditionals", "0"))
+            + int(metric_node.attrib.get("coveredmethods", "0"))
+        )
+        total_all = (
+            int(metric_node.attrib.get("statements", "0"))
+            + int(metric_node.attrib.get("conditionals", "0"))
+            + int(metric_node.attrib.get("methods", "0"))
+        )
+    except ValueError:
+        return None
+    return _coverage_from_counts(covered_total, total_all)
 
 
 def parse_clover_xml(
@@ -237,55 +261,27 @@ def parse_clover_xml(
         if not file_path:
             continue
 
-        covered = 0
-        total = 0
-        line_nodes = list(_iter_nodes(file_node, "line"))
-        for line_node in line_nodes:
-            count_raw = line_node.attrib.get("count")
-            if count_raw is None:
-                continue
-            total += 1
-            try:
-                if int(count_raw) > 0:
-                    covered += 1
-            except ValueError:
-                continue
-
+        covered, total = _count_line_coverage(_iter_nodes(file_node, "line"), attr="count")
         if total > 0:
             result[file_path] = (covered / total) * 100.0
             continue
 
         metric_node = next(_iter_nodes(file_node, "metrics"), None)
         if metric_node is not None:
-            try:
-                covered_total = (
-                    int(metric_node.attrib.get("coveredstatements", "0"))
-                    + int(metric_node.attrib.get("coveredconditionals", "0"))
-                    + int(metric_node.attrib.get("coveredmethods", "0"))
-                )
-                total_all = (
-                    int(metric_node.attrib.get("statements", "0"))
-                    + int(metric_node.attrib.get("conditionals", "0"))
-                    + int(metric_node.attrib.get("methods", "0"))
-                )
-            except ValueError:
-                covered_total = 0
-                total_all = 0
-
-            pct = _coverage_from_counts(covered_total, total_all)
+            pct = _clover_metrics_coverage(metric_node)
             if pct is not None:
                 result[file_path] = pct
 
     return result
 
 
-def parse_opencover_xml(
+def _build_opencover_file_map(
     root: Any,
-    report_path: Path,
     repo_root: Path,
     project_root: Path,
-) -> dict[str, float]:
-    """Parse OpenCover XML coverage into file->percentage."""
+    base_dir: Path,
+) -> dict[str, str]:
+    """Build file_id->repo_relative_path mapping from OpenCover File nodes."""
     file_id_to_path: dict[str, str] = {}
     for file_node in _iter_nodes(root, "File"):
         file_id = file_node.attrib.get("uid")
@@ -296,10 +292,26 @@ def parse_opencover_xml(
             full_path,
             repo_root=repo_root,
             project_root=project_root,
-            base_dir=report_path.parent,
+            base_dir=base_dir,
         )
         if normalized:
             file_id_to_path[file_id] = normalized
+    return file_id_to_path
+
+
+def parse_opencover_xml(
+    root: Any,
+    report_path: Path,
+    repo_root: Path,
+    project_root: Path,
+) -> dict[str, float]:
+    """Parse OpenCover XML coverage into file->percentage."""
+    file_id_to_path = _build_opencover_file_map(
+        root,
+        repo_root,
+        project_root,
+        report_path.parent,
+    )
 
     coverage_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
 
@@ -368,6 +380,22 @@ def parse_generic_file_coverage_json(
     return result
 
 
+def _detect_xml_coverage_protocol(root: Any) -> str | None:
+    """Detect coverage protocol from a parsed XML root element."""
+    root_tag = _tag_local_name(root.tag).lower()
+    all_tags = {_tag_local_name(node.tag) for node in root.iter()}
+
+    if root_tag == "coveragesession":
+        return PROTOCOL_OPENCOVER
+    if root_tag == "report" and "sourcefile" in all_tags:
+        return PROTOCOL_JACOCO
+    if "class" in all_tags and "line" in all_tags:
+        return PROTOCOL_COBERTURA
+    if "file" in all_tags and ("metrics" in all_tags or root_tag in {"coverage", "project"}):
+        return PROTOCOL_CLOVER
+    return None
+
+
 def detect_coverage_protocol(report_path: Path) -> str | None:
     """Detect coverage report protocol by filename/signatures."""
     lower_name = report_path.name.lower()
@@ -388,22 +416,7 @@ def detect_coverage_protocol(report_path: Path) -> str | None:
     except safe_et.ParseError:
         return None
 
-    root_tag = _tag_local_name(root.tag).lower()
-    all_tags = {_tag_local_name(node.tag) for node in root.iter()}
-
-    if root_tag == "coveragesession":
-        return PROTOCOL_OPENCOVER
-
-    if root_tag == "report" and "sourcefile" in all_tags:
-        return PROTOCOL_JACOCO
-
-    if "class" in all_tags and "line" in all_tags:
-        return PROTOCOL_COBERTURA
-
-    if "file" in all_tags and ("metrics" in all_tags or root_tag in {"coverage", "project"}):
-        return PROTOCOL_CLOVER
-
-    return None
+    return _detect_xml_coverage_protocol(root)
 
 
 def parse_coverage_report(
