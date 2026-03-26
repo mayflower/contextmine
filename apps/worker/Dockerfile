@@ -1,5 +1,5 @@
 # Build stage for Rust spider_md binary
-FROM rust:1.84-slim AS rust-builder
+FROM rust:1.86-slim AS rust-builder
 
 WORKDIR /build
 
