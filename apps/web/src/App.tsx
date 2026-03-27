@@ -236,6 +236,19 @@ interface PrefectFlowRuns {
   error?: string
 }
 
+function SyncStatusIndicator({ syncStatus }: Readonly<{ syncStatus: string }>) {
+  if (syncStatus === 'success') return <>●</>
+  if (syncStatus === 'syncing') return <>◐</>
+  if (syncStatus === 'failed') return <>●</>
+  return <>○</>
+}
+
+function SourceCountLabel({ sourceCount }: Readonly<{ sourceCount: number }>) {
+  if (sourceCount === 0) return <>No sources</>
+  const plural = sourceCount === 1 ? '' : 's'
+  return <>{sourceCount} source{plural}</>
+}
+
 function MemberChip({ member, onRemove }: Readonly<{ member: { user_id: string; github_login: string; is_owner: boolean }; onRemove: (id: string) => void }>) {
   return (
     <span className="member-chip">
@@ -512,8 +525,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [sources, setSources] = useState<Source[]>([])
-  void sources // used via setSources; value read by child components via collectionSources
+  const [, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1862,7 +1874,7 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" role="button" tabIndex={0} aria-label={`Toggle collection ${collection.name}`} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
+                        <div className="collection-header-row" tabIndex={0} aria-label={`Toggle collection ${collection.name}`} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
@@ -1901,18 +1913,11 @@ function App() {
                           </div>
 
                           <div className="collection-stats">
-                            <span className="stat">{(() => {
-                              if (sourceCount === 0) return 'No sources'
-                              const plural = sourceCount === 1 ? '' : 's'
-                              return `${sourceCount} source${plural}`
-                            })()}</span>
+                            <span className="stat"><SourceCountLabel sourceCount={sourceCount} /></span>
                             <span className="stat">{docCount > 0 ? `${docCount} docs` : ''}</span>
                             {sourceCount > 0 && (
                               <span className={`sync-status status-${syncStatus}`}>
-                                {syncStatus === 'success' && '●'}
-                                {syncStatus === 'syncing' && '◐'}
-                                {syncStatus === 'failed' && '●'}
-                                {syncStatus === 'never' && '○'}
+                                <SyncStatusIndicator syncStatus={syncStatus} />
                               </span>
                             )}
                           </div>

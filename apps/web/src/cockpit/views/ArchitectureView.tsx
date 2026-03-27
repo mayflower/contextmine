@@ -95,6 +95,99 @@ function groupPortsByContainer(items: PortAdapterItem[], direction: 'inbound' | 
     .map(([container, rows]) => ({ container, rows }))
 }
 
+function PortCard({ item, variant }: { item: PortAdapterItem; variant: 'inbound' | 'outbound' }) {
+  return (
+    <article key={item.fact_id} className={`cockpit2-port-card ${variant}`}>
+      <div className="cockpit2-port-row">
+        <strong>{item.port_name}</strong>
+        <span>{item.protocol || 'n/a'}</span>
+      </div>
+      <p>
+        {item.adapter_name || 'unmapped adapter'}
+        {' · '}
+        {item.component || 'unmapped component'}
+      </p>
+      <div className="cockpit2-confidence-bar" aria-label="confidence">
+        <span style={{ width: toPercentage(item.confidence) }} />
+        <small>{toPercentage(item.confidence)}</small>
+      </div>
+    </article>
+  )
+}
+
+function PortLane({
+  direction,
+  groups,
+  count,
+}: {
+  direction: 'inbound' | 'outbound'
+  groups: { container: string; rows: PortAdapterItem[] }[]
+  count: number
+}) {
+  return (
+    <section className={`cockpit2-ports-lane ${direction}`}>
+      <header>
+        <h5>{direction === 'inbound' ? 'Inbound' : 'Outbound'} ports</h5>
+        <span>{count}</span>
+      </header>
+      {groups.map((group) => (
+        <div key={`${direction.slice(0, 2)}-${group.container}`} className="cockpit2-port-cluster">
+          <h6>{group.container}</h6>
+          <div className="cockpit2-port-list">
+            {group.rows.map((item) => (
+              <PortCard key={item.fact_id} item={item} variant={direction} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function DriftList({ drift, onRetry, panelError }: {
+  drift: Arc42DriftPayload | null
+  onRetry: () => void
+  panelError: string
+}) {
+  return (
+    <article className="cockpit2-architecture-card">
+      <div className="cockpit2-panel-header-row">
+        <h4>Advisory drift report</h4>
+        <p className="muted">
+          Severity: <strong>{drift?.summary.severity || 'n/a'}</strong>
+        </p>
+      </div>
+
+      {panelError ? (
+        <div className="cockpit2-alert error inline">
+          <p>{panelError}</p>
+          <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+        </div>
+      ) : null}
+
+      {drift && drift.deltas.length > 0 ? (
+        <div className="cockpit2-drift-list">
+          {drift.deltas.slice(0, 48).map((delta) => (
+            <article key={`${delta.delta_type}-${delta.subject}-${delta.detail}`} className={`cockpit2-drift-item tone-${driftTone(delta)}`}>
+              <header>
+                <span className="cockpit2-drift-type">{delta.delta_type}</span>
+                <span className="cockpit2-drift-confidence">{toPercentage(delta.confidence)}</span>
+              </header>
+              <p>{delta.detail}</p>
+              <code>{delta.subject}</code>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="cockpit2-empty">
+          <h3>No architecture drift detected</h3>
+          <p>Compared scenario snapshots are stable for the extracted architecture facts.</p>
+        </div>
+      )}
+    </article>
+  )
+}
+
 export default function ArchitectureView({
   state,
   error,
@@ -351,67 +444,8 @@ export default function ArchitectureView({
 
           {portsAdapters && portsAdapters.items.length > 0 ? (
             <div className="cockpit2-ports-lanes">
-              <section className="cockpit2-ports-lane inbound">
-                <header>
-                  <h5>Inbound ports</h5>
-                  <span>{portsAdapters.summary.inbound}</span>
-                </header>
-                {inboundGroups.map((group) => (
-                  <div key={`in-${group.container}`} className="cockpit2-port-cluster">
-                    <h6>{group.container}</h6>
-                    <div className="cockpit2-port-list">
-                      {group.rows.map((item) => (
-                        <article key={item.fact_id} className="cockpit2-port-card inbound">
-                          <div className="cockpit2-port-row">
-                            <strong>{item.port_name}</strong>
-                            <span>{item.protocol || 'n/a'}</span>
-                          </div>
-                          <p>
-                            {item.adapter_name || 'unmapped adapter'}
-                            {' · '}
-                            {item.component || 'unmapped component'}
-                          </p>
-                          <div className="cockpit2-confidence-bar" aria-label="confidence">
-                            <span style={{ width: toPercentage(item.confidence) }} />
-                            <small>{toPercentage(item.confidence)}</small>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </section>
-
-              <section className="cockpit2-ports-lane outbound">
-                <header>
-                  <h5>Outbound ports</h5>
-                  <span>{portsAdapters.summary.outbound}</span>
-                </header>
-                {outboundGroups.map((group) => (
-                  <div key={`out-${group.container}`} className="cockpit2-port-cluster">
-                    <h6>{group.container}</h6>
-                    <div className="cockpit2-port-list">
-                      {group.rows.map((item) => (
-                        <article key={item.fact_id} className="cockpit2-port-card outbound">
-                          <div className="cockpit2-port-row">
-                            <strong>{item.port_name}</strong>
-                            <span>{item.protocol || 'n/a'}</span>
-                          </div>
-                          <p>
-                            {item.adapter_name || 'unmapped adapter'}
-                            {' · '}
-                            {item.component || 'unmapped component'}
-                          </p>
-                          <div className="cockpit2-confidence-bar" aria-label="confidence">
-                            <span style={{ width: toPercentage(item.confidence) }} />
-                            <small>{toPercentage(item.confidence)}</small>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </section>
+              <PortLane direction="inbound" groups={inboundGroups} count={portsAdapters.summary.inbound} />
+              <PortLane direction="outbound" groups={outboundGroups} count={portsAdapters.summary.outbound} />
             </div>
           ) : (
             <div className="cockpit2-empty">
@@ -483,41 +517,7 @@ export default function ArchitectureView({
       </div>
 
       {activeTab === 'drift' ? (
-        <article className="cockpit2-architecture-card">
-        <div className="cockpit2-panel-header-row">
-          <h4>Advisory drift report</h4>
-          <p className="muted">
-            Severity: <strong>{drift?.summary.severity || 'n/a'}</strong>
-          </p>
-        </div>
-
-        {panelErrors.drift ? (
-          <div className="cockpit2-alert error inline">
-            <p>{panelErrors.drift}</p>
-            <button type="button" className="secondary" onClick={onRetry}>Retry</button>
-          </div>
-        ) : null}
-
-        {drift && drift.deltas.length > 0 ? (
-          <div className="cockpit2-drift-list">
-            {drift.deltas.slice(0, 48).map((delta) => (
-              <article key={`${delta.delta_type}-${delta.subject}-${delta.detail}`} className={`cockpit2-drift-item tone-${driftTone(delta)}`}>
-                <header>
-                  <span className="cockpit2-drift-type">{delta.delta_type}</span>
-                  <span className="cockpit2-drift-confidence">{toPercentage(delta.confidence)}</span>
-                </header>
-                <p>{delta.detail}</p>
-                <code>{delta.subject}</code>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="cockpit2-empty">
-            <h3>No architecture drift detected</h3>
-            <p>Compared scenario snapshots are stable for the extracted architecture facts.</p>
-          </div>
-        )}
-        </article>
+        <DriftList drift={drift} onRetry={onRetry} panelError={panelErrors.drift} />
       ) : null}
 
       {warnings.length > 0 ? (

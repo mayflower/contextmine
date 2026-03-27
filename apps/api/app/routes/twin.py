@@ -1768,6 +1768,20 @@ def _build_community_points(
     return points
 
 
+def _community_graph_source_warnings(graph_source: str) -> list[str]:
+    """Convert graph source into human-readable warnings."""
+    warnings: list[str] = []
+    if graph_source == "connectivity_recovery":
+        warnings.append(
+            "Recovered community graph from architecture/UI/flow links because symbol graph was sparse."
+        )
+    if graph_source == "knowledge_fallback":
+        warnings.append(
+            "No symbol dependency graph found. Using knowledge graph communities as fallback."
+        )
+    return warnings
+
+
 async def _build_structural_community_points(
     db: Any,
     *,
@@ -1778,16 +1792,8 @@ async def _build_structural_community_points(
     page: int,
     limit: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    warnings: list[str] = []
     graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
-    if graph_source == "connectivity_recovery":
-        warnings.append(
-            "Recovered community graph from architecture/UI/flow links because symbol graph was sparse."
-        )
-    if graph_source == "knowledge_fallback":
-        warnings.append(
-            "No symbol dependency graph found. Using knowledge graph communities as fallback."
-        )
+    warnings = _community_graph_source_warnings(graph_source)
 
     if include_node_kinds:
         graph_nodes = [node for node in graph_nodes if node.kind in include_node_kinds]
@@ -3999,6 +4005,55 @@ def _graphrag_status(
     return {"status": "ready", "reason": "ok"}
 
 
+def _build_graphrag_node_query(
+    collection_uuid: uuid.UUID,
+    *,
+    include_node_kinds: set[KnowledgeNodeKind] | None,
+    exclude_node_kinds: set[KnowledgeNodeKind] | None,
+    community_id: str | None,
+    communities: dict[str, dict[str, Any]],
+) -> Any | None:
+    """Build the KnowledgeNode query for graphrag. Returns None if the community is empty."""
+    node_query = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_uuid)
+    if include_node_kinds:
+        node_query = node_query.where(KnowledgeNode.kind.in_(include_node_kinds))
+    if exclude_node_kinds:
+        node_query = node_query.where(~KnowledgeNode.kind.in_(exclude_node_kinds))
+    if community_id:
+        member_ids = communities[community_id]["member_node_ids"]
+        if not member_ids:
+            return None
+        node_query = node_query.where(KnowledgeNode.id.in_(member_ids))
+    return node_query
+
+
+def _empty_graphrag_response(
+    collection_uuid: uuid.UUID,
+    scenario: Any,
+    community_mode: str,
+    community_id: str | None,
+    page: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Return an empty graphrag response for an empty community."""
+    return {
+        "collection_id": str(collection_uuid),
+        "scenario": _serialize_scenario(scenario),
+        "projection": "graphrag",
+        "entity_level": "knowledge_node",
+        "community_mode": community_mode,
+        "community_id": community_id,
+        "status": {"status": "unavailable", "reason": "no_knowledge_graph"},
+        "graph": {
+            "nodes": [],
+            "edges": [],
+            "page": page,
+            "limit": limit,
+            "total_nodes": 0,
+        },
+    }
+
+
 @router.get(
     "/collections/{collection_id}/views/graphrag",
     responses={
@@ -4050,32 +4105,22 @@ async def graphrag_view(
         if resolved_community_id and resolved_community_id not in communities:
             raise HTTPException(status_code=404, detail="Community not found")
 
-        node_query = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_uuid)
-        if include_node_kinds:
-            node_query = node_query.where(KnowledgeNode.kind.in_(include_node_kinds))
-        if exclude_node_kinds:
-            node_query = node_query.where(~KnowledgeNode.kind.in_(exclude_node_kinds))
-        if resolved_community_id:
-            member_ids = communities[resolved_community_id]["member_node_ids"]
-            if not member_ids:
-                status = {"status": "unavailable", "reason": "no_knowledge_graph"}
-                return {
-                    "collection_id": str(collection_uuid),
-                    "scenario": _serialize_scenario(scenario),
-                    "projection": "graphrag",
-                    "entity_level": "knowledge_node",
-                    "community_mode": resolved_community_mode,
-                    "community_id": resolved_community_id,
-                    "status": status,
-                    "graph": {
-                        "nodes": [],
-                        "edges": [],
-                        "page": page,
-                        "limit": limit,
-                        "total_nodes": 0,
-                    },
-                }
-            node_query = node_query.where(KnowledgeNode.id.in_(member_ids))
+        node_query = _build_graphrag_node_query(
+            collection_uuid,
+            include_node_kinds=include_node_kinds,
+            exclude_node_kinds=exclude_node_kinds,
+            community_id=resolved_community_id,
+            communities=communities,
+        )
+        if node_query is None:
+            return _empty_graphrag_response(
+                collection_uuid,
+                scenario,
+                resolved_community_mode,
+                resolved_community_id,
+                page,
+                limit,
+            )
 
         total_nodes = (
             await db.execute(select(func.count()).select_from(node_query.subquery()))
@@ -5470,6 +5515,28 @@ async def _export_mermaid_c4_format(
     }
 
 
+async def _export_graph_format(
+    db: Any,
+    scenario: Any,
+    projection: GraphProjection,
+    entity_level: str | None,
+    *,
+    symbol_exporter: Any,
+    graph_exporter: Any,
+) -> str:
+    """Export using the symbol exporter for CODE_SYMBOL, otherwise build graph and use graph exporter."""
+    if projection == GraphProjection.CODE_SYMBOL:
+        return await symbol_exporter(db, scenario.id)  # type: ignore[no-any-return]
+    graph = await get_full_scenario_graph(
+        session=db,
+        scenario_id=scenario.id,
+        layer=None,
+        projection=projection,
+        entity_level=entity_level,
+    )
+    return graph_exporter(scenario.id, graph)  # type: ignore[no-any-return]
+
+
 async def _generate_export_content(
     db: Any,
     scenario: Any,
@@ -5478,17 +5545,14 @@ async def _generate_export_content(
 ) -> tuple[dict | None, str, Any, str, GraphProjection]:
     """Dispatch to the correct export format and return (early_return, content, kind, name, projection)."""
     if body.format == "lpg_jsonl":
-        if projection == GraphProjection.CODE_SYMBOL:
-            content = await export_lpg_jsonl(db, scenario.id)
-        else:
-            graph = await get_full_scenario_graph(
-                session=db,
-                scenario_id=scenario.id,
-                layer=None,
-                projection=projection,
-                entity_level=body.entity_level,
-            )
-            content = export_lpg_jsonl_from_graph(scenario.id, graph)
+        content = await _export_graph_format(
+            db,
+            scenario,
+            projection,
+            body.entity_level,
+            symbol_exporter=export_lpg_jsonl,
+            graph_exporter=export_lpg_jsonl_from_graph,
+        )
         return (
             None,
             content,
@@ -5507,30 +5571,24 @@ async def _generate_export_content(
         )
         return None, content, KnowledgeArtifactKind.CC_JSON, f"{scenario.name}.cc.json", projection
     if body.format == "cx2":
-        if projection == GraphProjection.CODE_SYMBOL:
-            content = await export_cx2(db, scenario.id)
-        else:
-            graph = await get_full_scenario_graph(
-                session=db,
-                scenario_id=scenario.id,
-                layer=None,
-                projection=projection,
-                entity_level=body.entity_level,
-            )
-            content = export_cx2_from_graph(scenario.id, graph)
+        content = await _export_graph_format(
+            db,
+            scenario,
+            projection,
+            body.entity_level,
+            symbol_exporter=export_cx2,
+            graph_exporter=export_cx2_from_graph,
+        )
         return None, content, KnowledgeArtifactKind.CX2, f"{scenario.name}.cx2.json", projection
     if body.format == "jgf":
-        if projection == GraphProjection.CODE_SYMBOL:
-            content = await export_jgf(db, scenario.id)
-        else:
-            graph = await get_full_scenario_graph(
-                session=db,
-                scenario_id=scenario.id,
-                layer=None,
-                projection=projection,
-                entity_level=body.entity_level,
-            )
-            content = export_jgf_from_graph(scenario.id, graph)
+        content = await _export_graph_format(
+            db,
+            scenario,
+            projection,
+            body.entity_level,
+            symbol_exporter=export_jgf,
+            graph_exporter=export_jgf_from_graph,
+        )
         return None, content, KnowledgeArtifactKind.JGF, f"{scenario.name}.jgf.json", projection
     if body.format == "twin_manifest":
         content = await export_twin_manifest(db, scenario.id)

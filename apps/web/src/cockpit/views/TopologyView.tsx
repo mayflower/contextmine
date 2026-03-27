@@ -120,6 +120,41 @@ function buildRFNode(
   }
 }
 
+function EmptyGraphState({
+  graph,
+  layer,
+  onSwitchToCodeLayer,
+}: {
+  graph: TwinGraphResponse
+  layer: CockpitLayer
+  onSwitchToCodeLayer: () => void
+}) {
+  if (graph.total_nodes > 0) {
+    return (
+      <section className="cockpit2-empty">
+        <h3>No nodes for this layer</h3>
+        <p>
+          The selected layer (<strong>{layerLabel(layer)}</strong>) is currently empty for this scenario.
+        </p>
+        {layer !== 'code_controlflow' ? (
+          <button type="button" onClick={onSwitchToCodeLayer}>
+            Switch to Code / Controlflow
+          </button>
+        ) : null}
+      </section>
+    )
+  }
+  return (
+    <section className="cockpit2-empty">
+      <h3>No nodes for this layer</h3>
+      <p>
+        This scenario has no extracted twin nodes yet. Run sync again and verify SCIP indexing produced
+        symbols.
+      </p>
+    </section>
+  )
+}
+
 export default function TopologyView({
   graph,
   state,
@@ -296,26 +331,7 @@ export default function TopologyView({
             <Background gap={20} size={1} />
           </ReactFlow>
         ) : (
-          <section className="cockpit2-empty">
-            <h3>No nodes for this layer</h3>
-            {graph.total_nodes > 0 ? (
-              <>
-                <p>
-                  The selected layer (<strong>{layerLabel(layer)}</strong>) is currently empty for this scenario.
-                </p>
-                {layer === 'code_controlflow' ? null : (
-                  <button type="button" onClick={onSwitchToCodeLayer}>
-                    Switch to Code / Controlflow
-                  </button>
-                )}
-              </>
-            ) : (
-              <p>
-                This scenario has no extracted twin nodes yet. Run sync again and verify SCIP indexing produced
-                symbols.
-              </p>
-            )}
-          </section>
+          <EmptyGraphState graph={graph} layer={layer} onSwitchToCodeLayer={onSwitchToCodeLayer} />
         )}
       </div>
     </section>

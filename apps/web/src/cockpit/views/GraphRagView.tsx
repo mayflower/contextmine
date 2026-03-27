@@ -81,6 +81,66 @@ function metaString(value: unknown): string {
   return ''
 }
 
+interface FocusFlags {
+  hasPathFocus: boolean
+  hasProcessFocus: boolean
+  hasCommunityFocus: boolean
+  hasNodeFocus: boolean
+}
+
+function resolveDimmed(
+  flags: FocusFlags,
+  membership: { inPath: boolean; inProcess: boolean; inFocusedCommunity: boolean; isSelected: boolean; isNeighbor: boolean },
+): boolean {
+  if (flags.hasPathFocus) return !membership.inPath
+  if (flags.hasProcessFocus) return !membership.inProcess
+  if (flags.hasCommunityFocus) return !membership.inFocusedCommunity
+  if (flags.hasNodeFocus) return !membership.isSelected && !membership.isNeighbor
+  return false
+}
+
+function resolveEdgeDimmed(
+  flags: FocusFlags,
+  membership: { edgeInPath: boolean; edgeInProcess: boolean; edgeInCommunity: boolean; edgeTouchesSelected: boolean },
+): boolean {
+  if (flags.hasPathFocus) return !membership.edgeInPath
+  if (flags.hasProcessFocus) return !membership.edgeInProcess
+  if (flags.hasCommunityFocus) return !membership.edgeInCommunity
+  if (flags.hasNodeFocus) return !membership.edgeTouchesSelected
+  return false
+}
+
+function ProcessArticle({
+  process,
+  focusedProcessId,
+  showFocus,
+  onViewFlow,
+  onToggleFocus,
+}: {
+  process: GraphRagProcessSummary
+  focusedProcessId: string
+  showFocus: boolean
+  onViewFlow: (processId: string) => void
+  onToggleFocus: (processId: string) => void
+}) {
+  return (
+    <article key={process.id}>
+      <strong>{process.label}</strong>
+      <span className="muted">{process.step_count} steps</span>
+      <div className="actions">
+        <button type="button" className="secondary" onClick={() => onViewFlow(process.id)}>
+          View flow
+        </button>
+        {showFocus ? (
+          <button type="button" className="secondary" onClick={() => onToggleFocus(process.id)}>
+            {focusedProcessId === process.id ? 'Clear focus' : 'Focus'}
+          </button>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
 export default function GraphRagView({
   graph,
   state,
@@ -167,38 +227,33 @@ export default function GraphRagView({
       })
     }
 
-    const hasPathFocus = pathNodeIds.size > 0
-    const hasProcessFocus = focusedProcessNodeIds.size > 0
-    const hasCommunityFocus = communityMode === 'focus' && communityId.trim().length > 0
-    const hasNodeFocus = selectedNodeId.trim().length > 0
+    const flags: FocusFlags = {
+      hasPathFocus: pathNodeIds.size > 0,
+      hasProcessFocus: focusedProcessNodeIds.size > 0,
+      hasCommunityFocus: communityMode === 'focus' && communityId.trim().length > 0,
+      hasNodeFocus: selectedNodeId.trim().length > 0,
+    }
 
     const next = cytoscape({
       container: containerRef.current,
       elements: [
         ...graph.nodes.map((node) => {
           const community = String((node.meta?.community_id as string) || '')
-          const inPath = pathNodeIds.has(node.id)
-          const inProcess = focusedProcessNodeIds.has(node.id)
-          const inFocusedCommunity = Boolean(hasCommunityFocus && community && community === communityId)
           const isSelected = selectedNodeId === node.id
           const isNeighbor = neighborIds.has(node.id)
-
-          let dimmed = false
-          if (hasPathFocus) {
-            dimmed = !inPath
-          } else if (hasProcessFocus) {
-            dimmed = !inProcess
-          } else if (hasCommunityFocus) {
-            dimmed = !inFocusedCommunity
-          } else if (hasNodeFocus) {
-            dimmed = !isSelected && !isNeighbor
-          }
+          const dimmed = resolveDimmed(flags, {
+            inPath: pathNodeIds.has(node.id),
+            inProcess: focusedProcessNodeIds.has(node.id),
+            inFocusedCommunity: Boolean(flags.hasCommunityFocus && community && community === communityId),
+            isSelected,
+            isNeighbor,
+          })
 
           const classes: string[] = []
           if (isSelected) classes.push('selected-focus')
           if (isNeighbor) classes.push('focus-neighbor')
-          if (inPath) classes.push('path-node')
-          if (inProcess) classes.push('process-node')
+          if (pathNodeIds.has(node.id)) classes.push('path-node')
+          if (focusedProcessNodeIds.has(node.id)) classes.push('process-node')
           if (dimmed) classes.push('dimmed')
 
           const color =
@@ -222,7 +277,7 @@ export default function GraphRagView({
           const edgeInProcess =
             focusedProcessNodeIds.has(edge.source_node_id) && focusedProcessNodeIds.has(edge.target_node_id)
           const edgeInCommunity =
-            hasCommunityFocus
+            flags.hasCommunityFocus
               ? graph.nodes.some(
                   (node) =>
                     node.id === edge.source_node_id &&
@@ -238,16 +293,7 @@ export default function GraphRagView({
             selectedNodeId &&
             (edge.source_node_id === selectedNodeId || edge.target_node_id === selectedNodeId)
 
-          let dimmed = false
-          if (hasPathFocus) {
-            dimmed = !edgeInPath
-          } else if (hasProcessFocus) {
-            dimmed = !edgeInProcess
-          } else if (hasCommunityFocus) {
-            dimmed = !edgeInCommunity
-          } else if (hasNodeFocus) {
-            dimmed = !edgeTouchesSelected
-          }
+          const dimmed = resolveEdgeDimmed(flags, { edgeInPath, edgeInProcess, edgeInCommunity, edgeTouchesSelected: Boolean(edgeTouchesSelected) })
 
           const classes: string[] = []
           if (edgeInPath) classes.push('path-edge')
@@ -567,39 +613,27 @@ export default function GraphRagView({
               <summary>Cross-community ({processGroups.cross.length})</summary>
               <div className="cockpit2-process-list">
                 {processGroups.cross.map((process) => (
-                  <article key={process.id}>
-                    <strong>{process.label}</strong>
-                    <span className="muted">{process.step_count} steps</span>
-                    <div className="actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={async () => {
-                          const detail = await onLoadProcessDetail(process.id)
-                          if (detail) setModalOpen(true)
-                        }}
-                      >
-                        View flow
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={async () => {
-                          if (focusedProcessId === process.id) {
-                            setFocusedProcessId('')
-                            setFocusedProcessNodeIds(new Set())
-                            return
-                          }
-                          const detail = await onLoadProcessDetail(process.id)
-                          if (!detail) return
-                          setFocusedProcessId(process.id)
-                          setFocusedProcessNodeIds(new Set(detail.steps.map((step) => step.node_id)))
-                        }}
-                      >
-                        {focusedProcessId === process.id ? 'Clear focus' : 'Focus'}
-                      </button>
-                    </div>
-                  </article>
+                  <ProcessArticle
+                    key={process.id}
+                    process={process}
+                    focusedProcessId={focusedProcessId}
+                    showFocus
+                    onViewFlow={async (id) => {
+                      const detail = await onLoadProcessDetail(id)
+                      if (detail) setModalOpen(true)
+                    }}
+                    onToggleFocus={async (id) => {
+                      if (focusedProcessId === id) {
+                        setFocusedProcessId('')
+                        setFocusedProcessNodeIds(new Set())
+                        return
+                      }
+                      const detail = await onLoadProcessDetail(id)
+                      if (!detail) return
+                      setFocusedProcessId(id)
+                      setFocusedProcessNodeIds(new Set(detail.steps.map((step) => step.node_id)))
+                    }}
+                  />
                 ))}
               </div>
             </details>
@@ -607,22 +641,17 @@ export default function GraphRagView({
               <summary>Intra-community ({processGroups.intra.length})</summary>
               <div className="cockpit2-process-list">
                 {processGroups.intra.map((process) => (
-                  <article key={process.id}>
-                    <strong>{process.label}</strong>
-                    <span className="muted">{process.step_count} steps</span>
-                    <div className="actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={async () => {
-                          const detail = await onLoadProcessDetail(process.id)
-                          if (detail) setModalOpen(true)
-                        }}
-                      >
-                        View flow
-                      </button>
-                    </div>
-                  </article>
+                  <ProcessArticle
+                    key={process.id}
+                    process={process}
+                    focusedProcessId={focusedProcessId}
+                    showFocus={false}
+                    onViewFlow={async (id) => {
+                      const detail = await onLoadProcessDetail(id)
+                      if (detail) setModalOpen(true)
+                    }}
+                    onToggleFocus={() => {}}
+                  />
                 ))}
               </div>
             </details>

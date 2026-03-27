@@ -1633,6 +1633,51 @@ async def _finalize_behavioral_version(
     )
 
 
+async def _build_behavioral_graphs(
+    session: Any,
+    settings: Any,
+    collection_uuid: Any,
+    source_uuid: Any,
+    files: list[tuple[str, str]],
+) -> tuple[dict[str, int], list[str]]:
+    """Extract tests, UI, and flows and build their knowledge graph nodes/edges."""
+    from contextmine_core.analyzer.extractors.flows import build_flows_graph, synthesize_user_flows
+    from contextmine_core.analyzer.extractors.tests import (
+        build_tests_graph,
+        extract_tests_from_files,
+    )
+    from contextmine_core.analyzer.extractors.ui import build_ui_graph, extract_ui_from_files
+
+    deep_warnings: list[str] = []
+    test_extractions = (
+        extract_tests_from_files(files) if settings.digital_twin_behavioral_enabled else []
+    )
+    ui_extractions = extract_ui_from_files(files) if settings.digital_twin_ui_enabled else []
+
+    behavioral_stats: dict[str, int] = {}
+    if test_extractions:
+        behavioral_stats.update(
+            await build_tests_graph(
+                session, collection_uuid, test_extractions, source_id=source_uuid
+            )
+        )
+    if ui_extractions:
+        behavioral_stats.update(
+            await build_ui_graph(session, collection_uuid, ui_extractions, source_id=source_uuid)
+        )
+    if settings.digital_twin_flows_enabled:
+        synthesis = synthesize_user_flows(ui_extractions, test_extractions)
+        behavioral_stats.update(
+            await build_flows_graph(session, collection_uuid, synthesis, source_id=source_uuid)
+        )
+
+    if not test_extractions:
+        deep_warnings.append("No test semantics extracted from current source.")
+    if settings.digital_twin_ui_enabled and not ui_extractions:
+        deep_warnings.append("No UI semantics extracted from current source.")
+    return behavioral_stats, deep_warnings
+
+
 async def _materialize_behavioral_layers_impl(
     *,
     source_id: str,
@@ -1643,12 +1688,6 @@ async def _materialize_behavioral_layers_impl(
     """Build deep behavioral layers (tests/ui/flows) and append twin status metadata."""
     import uuid as uuid_module
 
-    from contextmine_core.analyzer.extractors.flows import build_flows_graph, synthesize_user_flows
-    from contextmine_core.analyzer.extractors.tests import (
-        build_tests_graph,
-        extract_tests_from_files,
-    )
-    from contextmine_core.analyzer.extractors.ui import build_ui_graph, extract_ui_from_files
     from contextmine_core.graph.age import sync_scenario_to_age
     from contextmine_core.models import Document
     from contextmine_core.twin import record_twin_event, seed_scenario_from_knowledge_graph
@@ -1695,46 +1734,13 @@ async def _materialize_behavioral_layers_impl(
             file_path = _uri_to_file_path(uri)
             files.append((file_path, content))
 
-        deep_warnings: list[str] = []
-        test_extractions = (
-            extract_tests_from_files(files) if settings.digital_twin_behavioral_enabled else []
+        behavioral_stats, deep_warnings = await _build_behavioral_graphs(
+            session,
+            settings,
+            collection_uuid,
+            source_uuid,
+            files,
         )
-        ui_extractions = extract_ui_from_files(files) if settings.digital_twin_ui_enabled else []
-
-        behavioral_stats: dict[str, int] = {}
-        if test_extractions:
-            behavioral_stats.update(
-                await build_tests_graph(
-                    session,
-                    collection_uuid,
-                    test_extractions,
-                    source_id=source_uuid,
-                )
-            )
-        if ui_extractions:
-            behavioral_stats.update(
-                await build_ui_graph(
-                    session,
-                    collection_uuid,
-                    ui_extractions,
-                    source_id=source_uuid,
-                )
-            )
-        if settings.digital_twin_flows_enabled:
-            synthesis = synthesize_user_flows(ui_extractions, test_extractions)
-            behavioral_stats.update(
-                await build_flows_graph(
-                    session,
-                    collection_uuid,
-                    synthesis,
-                    source_id=source_uuid,
-                )
-            )
-
-        if not test_extractions:
-            deep_warnings.append("No test semantics extracted from current source.")
-        if settings.digital_twin_ui_enabled and not ui_extractions:
-            deep_warnings.append("No UI semantics extracted from current source.")
 
         if scenario_uuid:
             await seed_scenario_from_knowledge_graph(
@@ -2043,6 +2049,129 @@ async def get_deploy_key_for_source(source_id: str) -> str | None:
 
         # Decrypt and return key
         return decrypt_token(encrypted_key)
+
+
+async def _scip_run_language_recovery(
+    language: str,
+    project_dicts: list[dict],
+    repo_path: Path,
+    attempted_targets: set[tuple[str, str, str]],
+    project_key_fn: Any,
+    index_fn: Any,
+    *,
+    relation: bool = False,
+) -> dict[str, int]:
+    """Run recovery pass for a missing language (file or relation). Returns {attempts, successes}."""
+    result = {"attempts": 0, "successes": 0}
+    candidates = [
+        proj for proj in project_dicts if _scip_normalize_language(proj.get("language")) == language
+    ]
+    target = dict(candidates[0]) if candidates else {}
+    target["language"] = language
+    if relation:
+        target["root_path"] = str(Path(str(target.get("root_path", repo_path))).resolve())
+    else:
+        target["root_path"] = str(repo_path.resolve())
+    metadata = dict(target.get("metadata") or {})
+    metadata["recovery_pass"] = True
+    if relation:
+        metadata["relation_recovery"] = True
+        if language == "php":
+            metadata["force_install_deps"] = True
+    target["metadata"] = metadata
+
+    key = project_key_fn(target)
+    if key in attempted_targets:
+        return result
+
+    attempted_targets.add(key)
+    result["attempts"] = 1
+    recovered = await index_fn(target)
+    if recovered:
+        result["successes"] = 1
+    return result
+
+
+def _scip_finalize_coverage_stats(
+    scip_stats: dict[str, Any],
+    detected_files_by_language: dict[str, int],
+    indexed_files_by_language: dict[str, int],
+    relation_counts_by_language: dict[str, int],
+    relation_kinds_by_language: dict[str, dict[str, int]],
+    missing_relation_languages: list[str],
+) -> None:
+    """Compute final SCIP coverage stats and degradation flags."""
+    missing_languages = sorted(
+        language
+        for language, file_count in detected_files_by_language.items()
+        if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
+    )
+    scip_stats["scip_indexed_files_by_language"] = indexed_files_by_language
+    scip_stats["scip_missing_languages"] = missing_languages
+    scip_stats["scip_coverage_complete"] = len(missing_languages) == 0
+    scip_stats["scip_relation_counts_by_language"] = relation_counts_by_language
+    scip_stats["scip_relation_kinds_by_language"] = relation_kinds_by_language
+    scip_stats["scip_missing_relation_languages"] = missing_relation_languages
+    scip_stats["scip_relation_coverage_complete"] = len(missing_relation_languages) == 0
+    if missing_languages:
+        scip_stats["scip_detection_warnings"] = list(
+            scip_stats.get("scip_detection_warnings") or []
+        ) + [f"missing_language_index_coverage:{language}" for language in missing_languages]
+    if missing_relation_languages:
+        scip_stats["scip_detection_warnings"] = list(
+            scip_stats.get("scip_detection_warnings") or []
+        ) + [f"missing_relation_coverage:{language}" for language in missing_relation_languages]
+    scip_stats["scip_degraded"] = bool(scip_stats["scip_projects_failed"])
+    if not scip_stats["scip_coverage_complete"]:
+        scip_stats["scip_degraded"] = True
+    if not scip_stats["scip_relation_coverage_complete"]:
+        scip_stats["scip_degraded"] = True
+
+
+def _enrich_file_metrics_with_git(
+    file_metric_dicts: list[dict],
+    git_metrics_by_file: dict[str, dict],
+    evolution_window_days: int,
+) -> dict[str, float]:
+    """Merge git change metrics into file metric dicts (in-place). Returns aggregate stats."""
+    _empty_git_values = {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
+    files_with_history = 0
+    total_change_frequency = 0.0
+    total_churn = 0.0
+
+    for metric in file_metric_dicts:
+        file_path = str(metric.get("file_path", "")).strip()
+        git_values = git_metrics_by_file.get(file_path, _empty_git_values)
+        change_frequency = float(git_values.get("change_frequency", 0) or 0.0)
+        churn = float(git_values.get("churn", 0) or 0.0)
+        if change_frequency > 0:
+            files_with_history += 1
+        total_change_frequency += change_frequency
+        total_churn += churn
+
+        sources = dict(metric.get("sources") or {})
+        sources["change_frequency"] = {
+            "provider": "git",
+            "window": f"{evolution_window_days}d",
+            "no_merges": True,
+            "renames_followed": False,
+            "unit": "commits",
+        }
+        sources["churn"] = {
+            "provider": "git",
+            "window": f"{evolution_window_days}d",
+            "unit": "lines_changed",
+            "formula": "insertions+deletions",
+        }
+        metric["sources"] = sources
+        metric["change_frequency"] = change_frequency
+        metric["churn"] = churn
+
+    return {
+        "files_with_history": files_with_history,
+        "total_change_frequency": total_change_frequency,
+        "total_churn": total_churn,
+    }
 
 
 @traced_task()
@@ -2556,27 +2685,17 @@ async def sync_github_source(
                 ]
 
             for language in missing_languages:
-                candidates = [
-                    proj
-                    for proj in project_dicts
-                    if _scip_normalize_language(proj.get("language")) == language
-                ]
-                fallback_target = dict(candidates[0]) if candidates else {}
-                fallback_target["language"] = language
-                fallback_target["root_path"] = str(repo_path.resolve())
-                fallback_metadata = dict(fallback_target.get("metadata") or {})
-                fallback_metadata["recovery_pass"] = True
-                fallback_target["metadata"] = fallback_metadata
-
-                key = _project_key_for(fallback_target)
-                if key in attempted_targets:
-                    continue
-
-                attempted_targets.add(key)
-                scip_stats["scip_recovery_attempts"] += 1
-                recovered = await _index_project_target(fallback_target)
-                if recovered:
-                    scip_stats["scip_recovery_successes"] += 1
+                recovery_result = await _scip_run_language_recovery(
+                    language,
+                    project_dicts,
+                    repo_path,
+                    attempted_targets,
+                    _project_key_for,
+                    _index_project_target,
+                    relation=False,
+                )
+                scip_stats["scip_recovery_attempts"] += recovery_result["attempts"]
+                scip_stats["scip_recovery_successes"] += recovery_result["successes"]
 
             indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
             relation_counts_by_language, relation_kinds_by_language = (
@@ -2588,32 +2707,17 @@ async def sync_github_source(
             )
 
             for language in missing_relation_languages:
-                candidates = [
-                    proj
-                    for proj in project_dicts
-                    if _scip_normalize_language(proj.get("language")) == language
-                ]
-                relation_recovery_target = dict(candidates[0]) if candidates else {}
-                relation_recovery_target["language"] = language
-                relation_recovery_target["root_path"] = str(
-                    Path(str(relation_recovery_target.get("root_path", repo_path))).resolve()
+                recovery_result = await _scip_run_language_recovery(
+                    language,
+                    project_dicts,
+                    repo_path,
+                    attempted_targets,
+                    _project_key_for,
+                    _index_project_target,
+                    relation=True,
                 )
-                relation_recovery_metadata = dict(relation_recovery_target.get("metadata") or {})
-                relation_recovery_metadata["recovery_pass"] = True
-                relation_recovery_metadata["relation_recovery"] = True
-                if language == "php":
-                    relation_recovery_metadata["force_install_deps"] = True
-                relation_recovery_target["metadata"] = relation_recovery_metadata
-
-                relation_recovery_key = _project_key_for(relation_recovery_target)
-                if relation_recovery_key in attempted_targets:
-                    continue
-
-                attempted_targets.add(relation_recovery_key)
-                scip_stats["scip_relation_recovery_attempts"] += 1
-                recovered = await _index_project_target(relation_recovery_target)
-                if recovered:
-                    scip_stats["scip_relation_recovery_successes"] += 1
+                scip_stats["scip_relation_recovery_attempts"] += recovery_result["attempts"]
+                scip_stats["scip_relation_recovery_successes"] += recovery_result["successes"]
 
             indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
             relation_counts_by_language, relation_kinds_by_language = (
@@ -2638,38 +2742,14 @@ async def sync_github_source(
                 ]
                 indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
 
-            missing_languages = sorted(
-                language
-                for language, file_count in detected_files_by_language.items()
-                if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
+            _scip_finalize_coverage_stats(
+                scip_stats,
+                detected_files_by_language,
+                indexed_files_by_language,
+                relation_counts_by_language,
+                relation_kinds_by_language,
+                missing_relation_languages,
             )
-
-            scip_stats["scip_indexed_files_by_language"] = indexed_files_by_language
-            scip_stats["scip_missing_languages"] = missing_languages
-            scip_stats["scip_coverage_complete"] = len(missing_languages) == 0
-            scip_stats["scip_relation_counts_by_language"] = relation_counts_by_language
-            scip_stats["scip_relation_kinds_by_language"] = relation_kinds_by_language
-            scip_stats["scip_missing_relation_languages"] = missing_relation_languages
-            scip_stats["scip_relation_coverage_complete"] = len(missing_relation_languages) == 0
-            if missing_languages:
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [
-                    f"missing_language_index_coverage:{language}" for language in missing_languages
-                ]
-            if missing_relation_languages:
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [
-                    f"missing_relation_coverage:{language}"
-                    for language in missing_relation_languages
-                ]
-
-            scip_stats["scip_degraded"] = bool(scip_stats["scip_projects_failed"])
-            if not scip_stats["scip_coverage_complete"]:
-                scip_stats["scip_degraded"] = True
-            if not scip_stats["scip_relation_coverage_complete"]:
-                scip_stats["scip_degraded"] = True
 
             logger.info(
                 "SCIP indexing complete: %d/%d projects (%d failed), %d snapshots, %d symbols, %d relations",
@@ -2681,21 +2761,14 @@ async def sync_github_source(
                 scip_stats["scip_relations"],
             )
         else:
-            missing_languages = sorted(detected_files_by_language.keys())
-            scip_stats["scip_indexed_files_by_language"] = {}
-            scip_stats["scip_missing_languages"] = missing_languages
-            scip_stats["scip_coverage_complete"] = len(missing_languages) == 0
-            scip_stats["scip_relation_counts_by_language"] = {}
-            scip_stats["scip_relation_kinds_by_language"] = {}
-            scip_stats["scip_missing_relation_languages"] = []
-            scip_stats["scip_relation_coverage_complete"] = True
-            if missing_languages:
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [
-                    f"missing_language_index_coverage:{language}" for language in missing_languages
-                ]
-                scip_stats["scip_degraded"] = True
+            _scip_finalize_coverage_stats(
+                scip_stats,
+                detected_files_by_language,
+                indexed_files_by_language={},
+                relation_counts_by_language={},
+                relation_kinds_by_language={},
+                missing_relation_languages=[],
+            )
     except Exception as e:
         logger.warning("SCIP indexing failed: %s", e)
         scip_stats["scip_degraded"] = True
@@ -2782,45 +2855,17 @@ async def sync_github_source(
                     path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
                     for path in target_files
                 }
-            files_with_history = 0
-            total_change_frequency = 0.0
-            total_churn = 0.0
-
-            for metric in file_metric_dicts:
-                file_path = str(metric.get("file_path", "")).strip()
-                git_values = git_metrics_by_file.get(
-                    file_path,
-                    {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0},
-                )
-                change_frequency = float(git_values.get("change_frequency", 0) or 0.0)
-                churn = float(git_values.get("churn", 0) or 0.0)
-                if change_frequency > 0:
-                    files_with_history += 1
-                total_change_frequency += change_frequency
-                total_churn += churn
-
-                sources = dict(metric.get("sources") or {})
-                sources["change_frequency"] = {
-                    "provider": "git",
-                    "window": f"{evolution_window_days}d",
-                    "no_merges": True,
-                    "renames_followed": False,
-                    "unit": "commits",
-                }
-                sources["churn"] = {
-                    "provider": "git",
-                    "window": f"{evolution_window_days}d",
-                    "unit": "lines_changed",
-                    "formula": "insertions+deletions",
-                }
-                metric["sources"] = sources
-                metric["change_frequency"] = change_frequency
-                metric["churn"] = churn
-
+            git_enrich_stats = _enrich_file_metrics_with_git(
+                file_metric_dicts,
+                git_metrics_by_file,
+                evolution_window_days,
+            )
             scip_stats["git_metric_files_targeted"] = len(target_files)
-            scip_stats["git_metric_files_with_history"] = files_with_history
-            scip_stats["git_metric_total_change_frequency"] = total_change_frequency
-            scip_stats["git_metric_total_churn"] = total_churn
+            scip_stats["git_metric_files_with_history"] = git_enrich_stats["files_with_history"]
+            scip_stats["git_metric_total_change_frequency"] = git_enrich_stats[
+                "total_change_frequency"
+            ]
+            scip_stats["git_metric_total_churn"] = git_enrich_stats["total_churn"]
             try:
                 temporal_pair_cap = _sync_temporal_coupling_max_files_per_commit()
                 evolution_payload = await _run_blocking_with_timeout(
@@ -3959,13 +4004,118 @@ def _find_relevant_metric_files(file_nodes: list, source_id_str: str) -> set[str
 
 
 @traced_flow()
+async def _validate_coverage_source(
+    job_id: str,
+    source: Source | None,
+    commit_sha: str | None,
+) -> dict | None:
+    """Validate the source for coverage ingest. Returns an error dict or None if valid."""
+    if not source:
+        return await _fail_coverage_ingest_job(
+            job_id,
+            status="rejected",
+            error_code="INGEST_APPLY_FAILED",
+            error_detail="Source not found",
+        )
+    if source.type != SourceType.GITHUB:
+        return await _fail_coverage_ingest_job(
+            job_id,
+            status="rejected",
+            error_code="INGEST_APPLY_FAILED",
+            error_detail="Coverage ingest is only supported for GitHub sources",
+        )
+    if not source.cursor or str(source.cursor) != str(commit_sha):
+        return await _fail_coverage_ingest_job(
+            job_id,
+            status="rejected",
+            error_code="INGEST_SHA_MISMATCH",
+            error_detail=f"Expected source cursor {source.cursor}, got {commit_sha}",
+        )
+    return None
+
+
+async def _parse_and_match_coverage(
+    job_id: str,
+    job: CoverageIngestJob,
+    reports: list,
+    repo_path: Path,
+    relevant_files: set[str],
+    session: Any,
+) -> tuple[dict, dict, int] | dict:
+    """Parse coverage reports and match to relevant files. Returns (matched, sources, reports_total) or error dict."""
+    import tempfile
+
+    from contextmine_core.metrics.coverage_reports import parse_coverage_reports
+
+    settings = get_settings()
+    max_payload = settings.coverage_ingest_max_payload_mb * 1024 * 1024
+    total_bytes = sum(len(report.report_bytes or b"") for report in reports)
+    if total_bytes > max_payload:
+        await session.commit()
+        return await _fail_coverage_ingest_job(
+            job_id,
+            status="rejected",
+            error_code="INGEST_PAYLOAD_TOO_LARGE",
+            error_detail=f"Payload size {total_bytes} exceeds limit {settings.coverage_ingest_max_payload_mb}MB",
+        )
+
+    with tempfile.TemporaryDirectory(prefix=f"coverage_ingest_{job.id}_") as tmp_dir:
+        report_paths: list[Path] = []
+        for idx, report in enumerate(reports):
+            safe_name = Path(report.filename or f"report_{idx}").name
+            temp_path = Path(tmp_dir) / safe_name
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_bytes(report.report_bytes or b"")
+            report_paths.append(temp_path)
+
+        coverage_map, coverage_sources, protocol_by_report = parse_coverage_reports(
+            report_paths=report_paths,
+            repo_root=repo_path,
+            project_root=repo_path,
+        )
+
+        for report, report_path in zip(reports, report_paths, strict=True):
+            report.protocol_detected = protocol_by_report.get(str(report_path))
+            diagnostics = dict(report.diagnostics or {})
+            diagnostics["file_size"] = len(report.report_bytes or b"")
+            if report.protocol_detected is None:
+                diagnostics["warning"] = "unsupported_or_unrecognized_protocol"
+            report.diagnostics = diagnostics
+
+    if not coverage_map:
+        await session.commit()
+        return await _fail_coverage_ingest_job(
+            job_id,
+            error_code="INGEST_PROTOCOL_UNSUPPORTED",
+            error_detail="No supported coverage protocol detected in uploaded reports",
+            stats={"reports_total": len(reports)},
+        )
+
+    matched_coverage = {k: v for k, v in coverage_map.items() if k in relevant_files}
+    if not matched_coverage:
+        await session.commit()
+        return await _fail_coverage_ingest_job(
+            job_id,
+            error_code="INGEST_COVERAGE_PATH_MISMATCH",
+            error_detail="Coverage parsed successfully, but no files matched relevant Twin file nodes",
+            stats={
+                "reports_total": len(reports),
+                "coverage_files": len(coverage_map),
+                "relevant_files": len(relevant_files),
+            },
+        )
+
+    matched_sources = {
+        file_path: coverage_sources.get(file_path, {}) for file_path in matched_coverage
+    }
+    return matched_coverage, matched_sources, len(reports)
+
+
 @flow(name="ingest_coverage_metrics", retries=2, retry_delay_seconds=5)
 async def ingest_coverage_metrics(job_id: str) -> dict:
     """Ingest CI-pushed coverage reports and apply coverage to Twin metrics."""
-    import tempfile
     import uuid as uuid_module
 
-    from contextmine_core.metrics.coverage_reports import parse_coverage_reports
     from contextmine_core.models import TwinNode
     from contextmine_core.twin import (
         apply_coverage_metrics_to_scenario,
@@ -4015,27 +4165,9 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
         source = (
             await session.execute(select(Source).where(Source.id == job.source_id))
         ).scalar_one_or_none()
-        if not source:
-            return await _fail_coverage_ingest_job(
-                job_id,
-                status="rejected",
-                error_code="INGEST_APPLY_FAILED",
-                error_detail="Source not found",
-            )
-        if source.type != SourceType.GITHUB:
-            return await _fail_coverage_ingest_job(
-                job_id,
-                status="rejected",
-                error_code="INGEST_APPLY_FAILED",
-                error_detail="Coverage ingest is only supported for GitHub sources",
-            )
-        if not source.cursor or str(source.cursor) != str(job.commit_sha):
-            return await _fail_coverage_ingest_job(
-                job_id,
-                status="rejected",
-                error_code="INGEST_SHA_MISMATCH",
-                error_detail=f"Expected source cursor {source.cursor}, got {job.commit_sha}",
-            )
+        validation_error = await _validate_coverage_source(job_id, source, job.commit_sha)
+        if validation_error is not None:
+            return validation_error
 
         scenario = await get_or_create_as_is_scenario(session, source.collection_id, user_id=None)
         job.scenario_id = scenario.id
@@ -4082,71 +4214,18 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
                 error_detail="No report files attached to ingest job",
             )
 
-        settings = get_settings()
-        max_payload = settings.coverage_ingest_max_payload_mb * 1024 * 1024
-        total_bytes = sum(len(report.report_bytes or b"") for report in reports)
-        if total_bytes > max_payload:
-            await session.commit()
-            return await _fail_coverage_ingest_job(
-                job_id,
-                status="rejected",
-                error_code="INGEST_PAYLOAD_TOO_LARGE",
-                error_detail=(
-                    f"Payload size {total_bytes} exceeds limit {settings.coverage_ingest_max_payload_mb}MB"
-                ),
-            )
+        parse_result = await _parse_and_match_coverage(
+            job_id,
+            job,
+            reports,
+            repo_path,
+            relevant_files,
+            session,
+        )
+        if isinstance(parse_result, dict):
+            return parse_result
+        matched_coverage, matched_sources, reports_total = parse_result
 
-        with tempfile.TemporaryDirectory(prefix=f"coverage_ingest_{job.id}_") as tmp_dir:
-            report_paths: list[Path] = []
-            for idx, report in enumerate(reports):
-                safe_name = Path(report.filename or f"report_{idx}").name
-                temp_path = Path(tmp_dir) / safe_name
-                temp_path.parent.mkdir(parents=True, exist_ok=True)
-                temp_path.write_bytes(report.report_bytes or b"")
-                report_paths.append(temp_path)
-
-            coverage_map, coverage_sources, protocol_by_report = parse_coverage_reports(
-                report_paths=report_paths,
-                repo_root=repo_path,
-                project_root=repo_path,
-            )
-
-            for report, report_path in zip(reports, report_paths, strict=True):
-                report.protocol_detected = protocol_by_report.get(str(report_path))
-                diagnostics = dict(report.diagnostics or {})
-                diagnostics["file_size"] = len(report.report_bytes or b"")
-                if report.protocol_detected is None:
-                    diagnostics["warning"] = "unsupported_or_unrecognized_protocol"
-                report.diagnostics = diagnostics
-
-        if not coverage_map:
-            await session.commit()
-            return await _fail_coverage_ingest_job(
-                job_id,
-                error_code="INGEST_PROTOCOL_UNSUPPORTED",
-                error_detail="No supported coverage protocol detected in uploaded reports",
-                stats={"reports_total": len(reports)},
-            )
-
-        matched_coverage = {k: v for k, v in coverage_map.items() if k in relevant_files}
-        if not matched_coverage:
-            await session.commit()
-            return await _fail_coverage_ingest_job(
-                job_id,
-                error_code="INGEST_COVERAGE_PATH_MISMATCH",
-                error_detail=(
-                    "Coverage parsed successfully, but no files matched relevant Twin file nodes"
-                ),
-                stats={
-                    "reports_total": len(reports),
-                    "coverage_files": len(coverage_map),
-                    "relevant_files": len(relevant_files),
-                },
-            )
-
-        matched_sources = {
-            file_path: coverage_sources.get(file_path, {}) for file_path in matched_coverage
-        }
         applied_files = await apply_coverage_metrics_to_scenario(
             session=session,
             scenario_id=scenario.id,
@@ -4169,8 +4248,8 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
         job.error_code = None
         job.error_detail = None
         job.stats = {
-            "reports_total": len(reports),
-            "files_parsed": len(coverage_map),
+            "reports_total": reports_total,
+            "files_parsed": len(matched_coverage),
             "files_matched": len(matched_coverage),
             "files_applied": applied_files,
             "metric_snapshots": snapshot_rows,

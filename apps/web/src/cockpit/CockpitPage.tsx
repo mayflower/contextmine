@@ -107,6 +107,35 @@ async function parseOverlayFile(file: File): Promise<Pick<OverlayState, 'runtime
   return { runtimeByNodeKey, riskByNodeKey }
 }
 
+function WorkspaceWithInspector({
+  children,
+  showInspector,
+  inspectorProps,
+}: {
+  children: React.ReactNode
+  showInspector: boolean
+  inspectorProps: {
+    selectedNodeId: string
+    graph: ReturnType<typeof filterGraph>
+    neighborhood: ReturnType<typeof useCockpitData>['neighborhood']
+    neighborhoodState: ReturnType<typeof useCockpitData>['neighborhoodState']
+    neighborhoodError: ReturnType<typeof useCockpitData>['neighborhoodError']
+    overlay: OverlayState
+    onClearSelection: () => void
+  }
+}) {
+  return (
+    <section className="cockpit2-workspace">
+      <div className="cockpit2-main">{children}</div>
+      {showInspector ? (
+        <div className="cockpit2-rail">
+          <NodeInspector {...inspectorProps} />
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 export default function CockpitPage({
   collections,
   onOpenCollections,
@@ -527,6 +556,16 @@ export default function CockpitPage({
     })
   }, [selection.view, selection.layer])
 
+  const inspectorProps = useMemo(() => ({
+    selectedNodeId: resolvedNodeId,
+    graph,
+    neighborhood,
+    neighborhoodState,
+    neighborhoodError,
+    overlay: overlayData,
+    onClearSelection: () => setSelectedNodeId(''),
+  }), [resolvedNodeId, graph, neighborhood, neighborhoodState, neighborhoodError, overlayData, setSelectedNodeId])
+
   useEffect(() => {
     const isGraphView =
       selection.view === 'topology' ||
@@ -747,8 +786,7 @@ export default function CockpitPage({
       ) : null}
 
       {selection.view === 'topology' ? (
-        <section className="cockpit2-workspace">
-          <div className="cockpit2-main">
+        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
             <TopologyView
               graph={filteredGraph}
               state={activeState}
@@ -772,26 +810,11 @@ export default function CockpitPage({
               }}
               onRetry={refreshActiveView}
             />
-          </div>
-          {cockpitFlags.inspector ? (
-            <div className="cockpit2-rail">
-              <NodeInspector
-                selectedNodeId={resolvedNodeId}
-                graph={graph}
-                neighborhood={neighborhood}
-                neighborhoodState={neighborhoodState}
-                neighborhoodError={neighborhoodError}
-                overlay={overlayData}
-                onClearSelection={() => setSelectedNodeId('')}
-              />
-            </div>
-          ) : null}
-        </section>
+        </WorkspaceWithInspector>
       ) : null}
 
       {selection.view === 'deep_dive' ? (
-        <section className="cockpit2-workspace">
-          <div className="cockpit2-main">
+        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
             <DeepDiveView
               graph={filteredGraph}
               state={activeState}
@@ -807,21 +830,7 @@ export default function CockpitPage({
               onSwitchToCodeLayer={() => setLayer('code_controlflow')}
               onRetry={refreshActiveView}
             />
-          </div>
-          {cockpitFlags.inspector ? (
-            <div className="cockpit2-rail">
-              <NodeInspector
-                selectedNodeId={resolvedNodeId}
-                graph={graph}
-                neighborhood={neighborhood}
-                neighborhoodState={neighborhoodState}
-                neighborhoodError={neighborhoodError}
-                overlay={overlayData}
-                onClearSelection={() => setSelectedNodeId('')}
-              />
-            </div>
-          ) : null}
-        </section>
+        </WorkspaceWithInspector>
       ) : null}
 
       {selection.view === 'c4_diff' ? (
@@ -911,8 +920,7 @@ export default function CockpitPage({
       ) : null}
 
       {selection.view === 'semantic_map' ? (
-        <section className="cockpit2-workspace">
-          <div className="cockpit2-main">
+        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
             <SemanticMapView
               state={activeState}
               error={activeError}
@@ -926,21 +934,7 @@ export default function CockpitPage({
               onSelectNodeId={handleSelectNodeId}
               onRetry={refreshActiveView}
             />
-          </div>
-          {cockpitFlags.inspector ? (
-            <div className="cockpit2-rail">
-              <NodeInspector
-                selectedNodeId={resolvedNodeId}
-                graph={graph}
-                neighborhood={neighborhood}
-                neighborhoodState={neighborhoodState}
-                neighborhoodError={neighborhoodError}
-                overlay={overlayData}
-                onClearSelection={() => setSelectedNodeId('')}
-              />
-            </div>
-          ) : null}
-        </section>
+        </WorkspaceWithInspector>
       ) : null}
 
       {selection.view === 'ui_map' ? (
