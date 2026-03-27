@@ -11,18 +11,21 @@ import ReactFlow, {
 import ViewShell from '../components/ViewShell'
 import { runElkLayout, runGridLayout, type LayoutEngine } from '../layout/layoutCore'
 
+interface ElkLayoutParams {
+  nodes: Array<{ id: string }>
+  edges: Array<{ source: string; target: string }>
+  engine: LayoutEngine
+  columns: number
+  cancelled: { current: boolean }
+  startedAt: number
+  onPositions: (positions: Record<string, { x: number; y: number }>) => void
+  onCompleted: (engine: LayoutEngine, durationMs: number, nodeCount: number) => void
+  onFinish: () => void
+}
+
 /** Run ELK layout (in-thread or via worker), calling back with positions on completion. */
-async function applyElkLayout(
-  nodes: Array<{ id: string }>,
-  edges: Array<{ source: string; target: string }>,
-  engine: LayoutEngine,
-  columns: number,
-  cancelled: { current: boolean },
-  startedAt: number,
-  onPositions: (positions: Record<string, { x: number; y: number }>) => void,
-  onCompleted: (engine: LayoutEngine, durationMs: number, nodeCount: number) => void,
-  onFinish: () => void,
-): Promise<void> {
+async function applyElkLayout(params: Readonly<ElkLayoutParams>): Promise<void> {
+  const { nodes, edges, engine, columns, cancelled, startedAt, onPositions, onCompleted, onFinish } = params
   try {
     if (nodes.length > 1000) {
       const worker = new Worker(new URL('../layout/layoutWorker.ts', import.meta.url), {
@@ -88,6 +91,35 @@ function overlayColorForNode(overlay: OverlayState, naturalKey: string, fallback
   return '#1d4ed8'
 }
 
+function buildRFNode(
+  node: TwinGraphResponse['nodes'][number],
+  index: number,
+  overlay: OverlayState,
+  selectedNodeId: string,
+  layoutPositions: Record<string, { x: number; y: number }>,
+  columns: number,
+  showLabels: boolean,
+): RFNode {
+  const runtime = overlay.runtimeByNodeKey[node.natural_key] || overlay.runtimeByNodeKey[node.name]
+  const isSelected = selectedNodeId === node.id
+  const position = layoutPositions[node.id] || { x: (index % columns) * 260, y: Math.floor(index / columns) * 130 }
+  const nodeOpacity = overlay.mode === 'runtime' && runtime?.error_rate === undefined ? 0.84 : 1
+  return {
+    id: node.id,
+    data: { label: showLabels ? node.name : '' },
+    position,
+    style: {
+      width: 210,
+      fontSize: 11,
+      borderRadius: 10,
+      border: isSelected ? '2px solid #f59e0b' : `1px solid ${overlayColorForNode(overlay, node.natural_key, node.name)}`,
+      background: '#ffffff',
+      boxShadow: isSelected ? '0 0 0 3px rgba(245, 158, 11, 0.22)' : 'none',
+      opacity: nodeOpacity,
+    },
+  }
+}
+
 export default function TopologyView({
   graph,
   state,
@@ -134,44 +166,24 @@ export default function TopologyView({
     }
 
     const cancelRef = { current: false }
-    applyElkLayout(
-      graph.nodes.map((node) => ({ id: node.id })),
-      graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
-      preferredEngine,
+    applyElkLayout({
+      nodes: graph.nodes.map((node) => ({ id: node.id })),
+      edges: graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
+      engine: preferredEngine,
       columns,
-      cancelRef,
-      performance.now(),
-      setLayoutPositions,
-      onLayoutCompleted,
-      () => setLayoutStatus('refined'),
-    )
+      cancelled: cancelRef,
+      startedAt: performance.now(),
+      onPositions: setLayoutPositions,
+      onCompleted: onLayoutCompleted,
+      onFinish: () => setLayoutStatus('refined'),
+    })
     return () => {
       cancelRef.current = true
     }
   }, [graph.edges, graph.nodes, columns, preferredEngine, onLayoutCompleted])
 
   const nodes = useMemo<RFNode[]>(() => {
-    return graph.nodes.map((node, index) => {
-      const runtime = overlay.runtimeByNodeKey[node.natural_key] || overlay.runtimeByNodeKey[node.name]
-      const isSelected = selectedNodeId === node.id
-      const position = layoutPositions[node.id] || { x: (index % columns) * 260, y: Math.floor(index / columns) * 130 }
-      return {
-        id: node.id,
-        data: {
-          label: showLabels ? node.name : '',
-        },
-        position,
-        style: {
-          width: 210,
-          fontSize: 11,
-          borderRadius: 10,
-          border: isSelected ? '2px solid #f59e0b' : `1px solid ${overlayColorForNode(overlay, node.natural_key, node.name)}`,
-          background: '#ffffff',
-          boxShadow: isSelected ? '0 0 0 3px rgba(245, 158, 11, 0.22)' : 'none',
-          opacity: overlay.mode === 'runtime' && runtime?.error_rate === undefined ? 0.84 : 1,
-        },
-      }
-    })
+    return graph.nodes.map((node, index) => buildRFNode(node, index, overlay, selectedNodeId, layoutPositions, columns, showLabels))
   }, [graph.nodes, showLabels, layoutPositions, columns, overlay, selectedNodeId])
 
   const edges = useMemo<RFEdge[]>(() => {

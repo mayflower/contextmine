@@ -252,6 +252,157 @@ async def _query_goto_definition(symbol_name: str, file_path: str | None, run: R
     return f"Found {len(symbols)} definition(s):\n\n" + "\n\n".join(output_parts)
 
 
+async def _query_find_references(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
+    """Fetch references from DB and return formatted output."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+    from sqlalchemy import or_, select
+    from sqlalchemy.orm import selectinload
+
+    async with get_async_session() as session:
+        target_stmt = select(Symbol).join(Document).where(Symbol.name == symbol_name)
+        if file_path:
+            target_stmt = target_stmt.where(Document.uri == file_path)
+        target_stmt = target_stmt.limit(3)
+
+        target_result = await session.execute(target_stmt)
+        targets = target_result.scalars().all()
+
+    if not targets:
+        return f"Symbol '{symbol_name}' not found"
+
+    output_parts: list[str] = []
+    total_refs = 0
+
+    async with get_async_session() as session:
+        for target in targets:
+            edges_stmt = (
+                select(SymbolEdge)
+                .where(SymbolEdge.target_symbol_id == target.id)
+                .where(
+                    or_(
+                        SymbolEdge.edge_type == SymbolEdgeType.CALLS,
+                        SymbolEdge.edge_type == SymbolEdgeType.REFERENCES,
+                    )
+                )
+                .options(selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document))
+                .limit(15)
+            )
+
+            edges_result = await session.execute(edges_stmt)
+            edges = edges_result.scalars().all()
+
+            for edge in edges[:10]:
+                part, _ = _format_reference_evidence(edge, symbol_name, run)
+                output_parts.append(part)
+                total_refs += 1
+
+    if not output_parts:
+        return f"No references found for '{symbol_name}'"
+
+    summary = f"Found {total_refs} reference(s) to '{symbol_name}'"
+    if total_refs > 10:
+        summary += " (showing first 10)"
+    return summary + ":\n\n" + "\n\n".join(output_parts[:10])
+
+
+def _format_reference_evidence(
+    edge: Any, symbol_name: str, run: ResearchRun
+) -> tuple[str, Evidence]:
+    """Format a single reference edge into evidence and output text."""
+    ref_sym = edge.source_symbol
+    doc = ref_sym.document
+    lines = (doc.content_markdown or "").split("\n")
+
+    ref_line = edge.source_line or ref_sym.start_line
+    start_idx = max(0, ref_line - 3)
+    end_idx = min(len(lines), ref_line + 3)
+    snippet = "\n".join(lines[start_idx:end_idx])
+
+    evidence = Evidence(
+        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+        file_path=doc.uri or "unknown",
+        start_line=max(1, ref_line - 2),
+        end_line=ref_line + 2,
+        content=snippet[:1500],
+        reason=f"{edge.edge_type.value} '{symbol_name}' from '{ref_sym.name}'",
+        provenance="symbol_index",
+        symbol_id=ref_sym.qualified_name,
+        symbol_kind=ref_sym.kind.value,
+    )
+    run.add_evidence(evidence)
+    text = (
+        f"[{evidence.id}] {edge.edge_type.value} in {ref_sym.kind.value} "
+        f"'{ref_sym.name}' at {doc.uri}:{ref_line}\n```\n{snippet[:300]}\n```"
+    )
+    return text, evidence
+
+
+async def _query_get_signature(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
+    """Fetch symbol signature/docs from DB and return formatted output."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    async with get_async_session() as session:
+        stmt = (
+            select(Symbol)
+            .join(Document)
+            .where(Symbol.name == symbol_name)
+            .options(selectinload(Symbol.document))
+        )
+        if file_path:
+            stmt = stmt.where(Document.uri == file_path)
+        stmt = stmt.limit(5)
+
+        result = await session.execute(stmt)
+        symbols = result.scalars().all()
+
+    if not symbols:
+        return f"Symbol '{symbol_name}' not found"
+
+    output_parts = []
+    for sym in symbols:
+        doc = sym.document
+        content = _build_signature_content(sym, doc)
+
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=doc.uri or "unknown",
+            start_line=sym.start_line,
+            end_line=sym.start_line,
+            content=content[:2000],
+            reason=f"Signature/docs for '{symbol_name}'",
+            provenance="symbol_index",
+            symbol_id=sym.qualified_name,
+            symbol_kind=sym.kind.value,
+        )
+        run.add_evidence(evidence)
+        output_parts.append(
+            f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
+            f"at {doc.uri}:{sym.start_line}\n{content}"
+        )
+
+    return "\n\n".join(output_parts)
+
+
+def _build_signature_content(sym: Any, doc: Any) -> str:
+    """Build signature/documentation content for a symbol."""
+    content_parts: list[str] = []
+    if sym.signature:
+        content_parts.append(f"Signature: {sym.signature}")
+    if sym.meta.get("docstring"):
+        content_parts.append(f"Documentation:\n{sym.meta['docstring']}")
+    if not content_parts:
+        lines = (doc.content_markdown or "").split("\n")
+        start_idx = max(0, sym.start_line - 1)
+        end_idx = min(len(lines), sym.start_line + 5)
+        snippet = "\n".join(lines[start_idx:end_idx])
+        content_parts.append(f"Source:\n{snippet}")
+    return "\n\n".join(content_parts)
+
+
 def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
     """Create definition/reference lookup tools."""
 
@@ -275,86 +426,8 @@ def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
         Uses pre-indexed SymbolEdge table to find where a symbol is referenced.
         Returns both callers (CALLS edges) and references (REFERENCES edges).
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
-            from sqlalchemy import or_, select
-            from sqlalchemy.orm import selectinload
-
-            async with get_async_session() as session:
-                # Find target symbol
-                target_stmt = select(Symbol).join(Document).where(Symbol.name == symbol_name)
-                if file_path:
-                    target_stmt = target_stmt.where(Document.uri == file_path)
-                target_stmt = target_stmt.limit(3)
-
-                target_result = await session.execute(target_stmt)
-                targets = target_result.scalars().all()
-
-                if not targets:
-                    return f"Symbol '{symbol_name}' not found"
-
-                output_parts = []
-                total_refs = 0
-
-                for target in targets:
-                    # Get incoming CALLS and REFERENCES edges
-                    edges_stmt = (
-                        select(SymbolEdge)
-                        .where(SymbolEdge.target_symbol_id == target.id)
-                        .where(
-                            or_(
-                                SymbolEdge.edge_type == SymbolEdgeType.CALLS,
-                                SymbolEdge.edge_type == SymbolEdgeType.REFERENCES,
-                            )
-                        )
-                        .options(
-                            selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document)
-                        )
-                        .limit(15)
-                    )
-
-                    edges_result = await session.execute(edges_stmt)
-                    edges = edges_result.scalars().all()
-
-                    for edge in edges[:10]:
-                        ref_sym = edge.source_symbol
-                        doc = ref_sym.document
-                        lines = (doc.content_markdown or "").split("\n")
-
-                        # Show context around the reference line
-                        ref_line = edge.source_line or ref_sym.start_line
-                        start_idx = max(0, ref_line - 3)
-                        end_idx = min(len(lines), ref_line + 3)
-                        snippet = "\n".join(lines[start_idx:end_idx])
-
-                        evidence = Evidence(
-                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                            file_path=doc.uri or "unknown",
-                            start_line=max(1, ref_line - 2),
-                            end_line=ref_line + 2,
-                            content=snippet[:1500],
-                            reason=f"{edge.edge_type.value} '{symbol_name}' from '{ref_sym.name}'",
-                            provenance="symbol_index",
-                            symbol_id=ref_sym.qualified_name,
-                            symbol_kind=ref_sym.kind.value,
-                        )
-                        run.add_evidence(evidence)
-                        output_parts.append(
-                            f"[{evidence.id}] {edge.edge_type.value} in {ref_sym.kind.value} "
-                            f"'{ref_sym.name}' at {doc.uri}:{ref_line}\n```\n{snippet[:300]}\n```"
-                        )
-                        total_refs += 1
-
-                if not output_parts:
-                    return f"No references found for '{symbol_name}'"
-
-                summary = f"Found {total_refs} reference(s) to '{symbol_name}'"
-                if total_refs > 10:
-                    summary += " (showing first 10)"
-                return summary + ":\n\n" + "\n\n".join(output_parts[:10])
-
+            return await _query_find_references(symbol_name, file_path, run_holder["run"])
         except Exception as e:
             logger.warning("find_references failed: %s", e)
             return f"Find references failed: {e}"
@@ -365,74 +438,49 @@ def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
 
         Uses pre-indexed Symbol table to retrieve signature and docstring.
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
-
-            async with get_async_session() as session:
-                stmt = (
-                    select(Symbol)
-                    .join(Document)
-                    .where(Symbol.name == symbol_name)
-                    .options(selectinload(Symbol.document))
-                )
-                if file_path:
-                    stmt = stmt.where(Document.uri == file_path)
-                stmt = stmt.limit(5)
-
-                result = await session.execute(stmt)
-                symbols = result.scalars().all()
-
-                if not symbols:
-                    return f"Symbol '{symbol_name}' not found"
-
-                output_parts = []
-                for sym in symbols:
-                    doc = sym.document
-                    content_parts = []
-
-                    if sym.signature:
-                        content_parts.append(f"Signature: {sym.signature}")
-                    if sym.meta.get("docstring"):
-                        content_parts.append(f"Documentation:\n{sym.meta['docstring']}")
-
-                    if not content_parts:
-                        # Fall back to showing the first few lines of the symbol
-                        lines = (doc.content_markdown or "").split("\n")
-                        start_idx = max(0, sym.start_line - 1)
-                        end_idx = min(len(lines), sym.start_line + 5)
-                        snippet = "\n".join(lines[start_idx:end_idx])
-                        content_parts.append(f"Source:\n{snippet}")
-
-                    content = "\n\n".join(content_parts)
-
-                    evidence = Evidence(
-                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                        file_path=doc.uri or "unknown",
-                        start_line=sym.start_line,
-                        end_line=sym.start_line,
-                        content=content[:2000],
-                        reason=f"Signature/docs for '{symbol_name}'",
-                        provenance="symbol_index",
-                        symbol_id=sym.qualified_name,
-                        symbol_kind=sym.kind.value,
-                    )
-                    run.add_evidence(evidence)
-                    output_parts.append(
-                        f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
-                        f"at {doc.uri}:{sym.start_line}\n{content}"
-                    )
-
-                return "\n\n".join(output_parts)
-
+            return await _query_get_signature(symbol_name, file_path, run_holder["run"])
         except Exception as e:
             logger.warning("get_signature failed: %s", e)
             return f"Get signature failed: {e}"
 
     return [goto_definition, find_references, get_signature]
+
+
+async def _query_symbol_outline(file_path: str) -> str:
+    """Fetch symbol outline for a file from DB."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol
+    from sqlalchemy import select
+
+    async with get_async_session() as session:
+        doc_stmt = select(Document).where(Document.uri == file_path)
+        doc_result = await session.execute(doc_stmt)
+        doc = doc_result.scalar_one_or_none()
+
+        if not doc:
+            return f"File not found in index: {file_path}"
+
+        sym_stmt = select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
+        sym_result = await session.execute(sym_stmt)
+        symbols = sym_result.scalars().all()
+
+    if not symbols:
+        return f"No symbols indexed for {file_path}"
+
+    outline_lines = []
+    for sym in symbols:
+        indent = "  " if sym.parent_name else ""
+        sig = f" - {sym.signature}" if sym.signature else ""
+        outline_lines.append(
+            f"{indent}{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line}){sig}"
+        )
+
+    summary = f"Found {len(symbols)} indexed symbols:\n" + "\n".join(outline_lines[:40])
+    if len(outline_lines) > 40:
+        summary += f"\n... and {len(outline_lines) - 40} more"
+
+    return summary
 
 
 def _create_symbol_outline_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -447,46 +495,219 @@ def _create_symbol_outline_tool(run_holder: dict[str, ResearchRun]) -> list:
         Returns a list of symbols with their line numbers and signatures.
         """
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol
-            from sqlalchemy import select
-
-            async with get_async_session() as session:
-                doc_stmt = select(Document).where(Document.uri == file_path)
-                doc_result = await session.execute(doc_stmt)
-                doc = doc_result.scalar_one_or_none()
-
-                if not doc:
-                    return f"File not found in index: {file_path}"
-
-                sym_stmt = (
-                    select(Symbol).where(Symbol.document_id == doc.id).order_by(Symbol.start_line)
-                )
-                sym_result = await session.execute(sym_stmt)
-                symbols = sym_result.scalars().all()
-
-            if not symbols:
-                return f"No symbols indexed for {file_path}"
-
-            outline_lines = []
-            for sym in symbols:
-                indent = "  " if sym.parent_name else ""
-                sig = f" - {sym.signature}" if sym.signature else ""
-                outline_lines.append(
-                    f"{indent}{sym.kind.value} {sym.name} (L{sym.start_line}-{sym.end_line}){sig}"
-                )
-
-            summary = f"Found {len(symbols)} indexed symbols:\n" + "\n".join(outline_lines[:40])
-            if len(outline_lines) > 40:
-                summary += f"\n... and {len(outline_lines) - 40} more"
-
-            return summary
-
+            return await _query_symbol_outline(file_path)
         except Exception as e:
             logger.warning("symbol_outline failed: %s", e)
             return f"Symbol outline failed: {e}"
 
     return [symbol_outline]
+
+
+async def _query_symbol_find(name: str, file_path: str | None, run: ResearchRun) -> str:
+    """Find a symbol by name in the indexed codebase."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol
+    from sqlalchemy import select
+
+    async with get_async_session() as session:
+        stmt = select(Symbol).join(Document)
+        if file_path:
+            stmt = stmt.where(Document.uri == file_path)
+        stmt = stmt.where(Symbol.name == name)
+        result = await session.execute(stmt)
+        symbols = result.scalars().all()
+
+        if not symbols:
+            escaped_name = _escape_like_pattern(name)
+            stmt = (
+                select(Symbol)
+                .join(Document)
+                .where(Symbol.name.ilike(f"%{escaped_name}%", escape="\\"))
+            )
+            if file_path:
+                stmt = stmt.where(Document.uri == file_path)
+            stmt = stmt.limit(10)
+            result = await session.execute(stmt)
+            symbols = result.scalars().all()
+
+    if not symbols:
+        return f"Symbol '{name}' not found in index"
+
+    output_parts = []
+    for sym in symbols[:5]:
+        doc = sym.document
+        lines = (doc.content_markdown or "").split("\n")
+        start_idx = max(0, sym.start_line - 1)
+        end_idx = min(len(lines), sym.end_line)
+        content = "\n".join(lines[start_idx:end_idx])
+
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=doc.uri or "unknown",
+            start_line=sym.start_line,
+            end_line=sym.end_line,
+            content=content[:2000],
+            reason=f"Found indexed {sym.kind.value} '{sym.name}'",
+            provenance="symbol_index",
+            symbol_id=sym.qualified_name,
+            symbol_kind=sym.kind.value,
+        )
+        run.add_evidence(evidence)
+        output_parts.append(
+            f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' at {doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:800]}\n```"
+        )
+
+    return f"Found {len(symbols)} symbol(s):\n\n" + "\n\n".join(output_parts)
+
+
+async def _query_symbol_callers(name: str, file_path: str | None, run: ResearchRun) -> str:
+    """Find all functions/methods that call a given symbol."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    async with get_async_session() as session:
+        stmt = select(Symbol).join(Document).where(Symbol.name == name)
+        if file_path:
+            stmt = stmt.where(Document.uri == file_path)
+        stmt = stmt.options(selectinload(Symbol.incoming_edges))
+        result = await session.execute(stmt)
+        target_symbols = result.scalars().all()
+
+        if not target_symbols:
+            return f"Symbol '{name}' not found in index"
+
+        output_parts = []
+        for target in target_symbols[:3]:
+            edges_stmt = (
+                select(SymbolEdge)
+                .where(SymbolEdge.target_symbol_id == target.id)
+                .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
+                .options(selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document))
+            )
+            edges_result = await session.execute(edges_stmt)
+            edges = edges_result.scalars().all()
+
+            for edge in edges[:10]:
+                caller = edge.source_symbol
+                doc = caller.document
+                lines = (doc.content_markdown or "").split("\n")
+                start_idx = max(0, caller.start_line - 1)
+                end_idx = min(len(lines), caller.end_line)
+                content = "\n".join(lines[start_idx:end_idx])
+
+                evidence = Evidence(
+                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                    file_path=doc.uri or "unknown",
+                    start_line=caller.start_line,
+                    end_line=caller.end_line,
+                    content=content[:2000],
+                    reason=f"Caller of '{name}' (line {edge.source_line})",
+                    provenance="symbol_graph",
+                    symbol_id=caller.qualified_name,
+                    symbol_kind=caller.kind.value,
+                )
+                run.add_evidence(evidence)
+                output_parts.append(
+                    f"[{evidence.id}] {caller.kind.value} '{caller.qualified_name}' calls '{name}' at line {edge.source_line}\n  {doc.uri}:{caller.start_line}"
+                )
+
+    if not output_parts:
+        return f"No callers found for '{name}'"
+
+    return f"Found {len(output_parts)} caller(s):\n" + "\n".join(output_parts)
+
+
+async def _query_symbol_callees(name: str, file_path: str | None) -> str:
+    """Find all functions/methods that a given symbol calls."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    async with get_async_session() as session:
+        stmt = select(Symbol).join(Document).where(Symbol.name == name)
+        if file_path:
+            stmt = stmt.where(Document.uri == file_path)
+        stmt = stmt.options(selectinload(Symbol.outgoing_edges))
+        result = await session.execute(stmt)
+        source_symbols = result.scalars().all()
+
+        if not source_symbols:
+            return f"Symbol '{name}' not found in index"
+
+        output_parts = []
+        for source in source_symbols[:3]:
+            edges_stmt = (
+                select(SymbolEdge)
+                .where(SymbolEdge.source_symbol_id == source.id)
+                .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
+                .options(selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document))
+            )
+            edges_result = await session.execute(edges_stmt)
+            edges = edges_result.scalars().all()
+
+            for edge in edges[:10]:
+                callee = edge.target_symbol
+                doc = callee.document
+                sig = f" - {callee.signature}" if callee.signature else ""
+                output_parts.append(
+                    f"{callee.kind.value} '{callee.qualified_name}'{sig}\n  {doc.uri}:{callee.start_line}"
+                )
+
+    if not output_parts:
+        return f"No callees found for '{name}'"
+
+    return f"'{name}' calls {len(output_parts)} function(s):\n" + "\n".join(output_parts)
+
+
+async def _query_symbol_enclosing(file_path: str, line: int, run: ResearchRun) -> str:
+    """Find what function, class, or method contains a specific line."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Document, Symbol
+    from sqlalchemy import and_, select
+
+    async with get_async_session() as session:
+        doc_stmt = select(Document).where(Document.uri == file_path)
+        doc_result = await session.execute(doc_stmt)
+        doc = doc_result.scalar_one_or_none()
+
+        if not doc:
+            return f"File not found in index: {file_path}"
+
+        sym_stmt = (
+            select(Symbol)
+            .where(Symbol.document_id == doc.id)
+            .where(and_(Symbol.start_line <= line, Symbol.end_line >= line))
+            .order_by(Symbol.end_line - Symbol.start_line)
+        )
+        sym_result = await session.execute(sym_stmt)
+        symbols = sym_result.scalars().all()
+
+    if not symbols:
+        return f"Line {line} is not inside any indexed symbol in {file_path}"
+
+    sym = symbols[0]
+    lines = (doc.content_markdown or "").split("\n")
+    start_idx = max(0, sym.start_line - 1)
+    end_idx = min(len(lines), sym.end_line)
+    content = "\n".join(lines[start_idx:end_idx])
+
+    evidence = Evidence(
+        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+        file_path=file_path,
+        start_line=sym.start_line,
+        end_line=sym.end_line,
+        content=content[:2000],
+        reason=f"Enclosing {sym.kind.value} for line {line}",
+        provenance="symbol_index",
+        symbol_id=sym.qualified_name,
+        symbol_kind=sym.kind.value,
+    )
+    run.add_evidence(evidence)
+
+    return f"[{evidence.id}] Line {line} is inside {sym.kind.value} '{sym.name}' (L{sym.start_line}-{sym.end_line})\n```\n{content[:1000]}\n```"
 
 
 def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
@@ -499,67 +720,8 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
         Uses the pre-indexed symbol database. Optionally filter by file path.
         Returns the symbol's source code as evidence.
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol
-            from sqlalchemy import select
-
-            async with get_async_session() as session:
-                stmt = select(Symbol).join(Document)
-
-                if file_path:
-                    stmt = stmt.where(Document.uri == file_path)
-
-                # Search by name (exact match first, then contains)
-                stmt = stmt.where(Symbol.name == name)
-                result = await session.execute(stmt)
-                symbols = result.scalars().all()
-
-                if not symbols:
-                    # Try partial match
-                    escaped_name = _escape_like_pattern(name)
-                    stmt = (
-                        select(Symbol)
-                        .join(Document)
-                        .where(Symbol.name.ilike(f"%{escaped_name}%", escape="\\"))
-                    )
-                    if file_path:
-                        stmt = stmt.where(Document.uri == file_path)
-                    stmt = stmt.limit(10)
-                    result = await session.execute(stmt)
-                    symbols = result.scalars().all()
-
-                if not symbols:
-                    return f"Symbol '{name}' not found in index"
-
-                output_parts = []
-                for sym in symbols[:5]:
-                    # Get document content for the symbol
-                    doc = sym.document
-                    lines = (doc.content_markdown or "").split("\n")
-                    start_idx = max(0, sym.start_line - 1)
-                    end_idx = min(len(lines), sym.end_line)
-                    content = "\n".join(lines[start_idx:end_idx])
-
-                    evidence = Evidence(
-                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                        file_path=doc.uri or "unknown",
-                        start_line=sym.start_line,
-                        end_line=sym.end_line,
-                        content=content[:2000],
-                        reason=f"Found indexed {sym.kind.value} '{sym.name}'",
-                        provenance="symbol_index",
-                        symbol_id=sym.qualified_name,
-                        symbol_kind=sym.kind.value,
-                    )
-                    run.add_evidence(evidence)
-                    output_parts.append(
-                        f"[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' at {doc.uri}:{sym.start_line}-{sym.end_line}\n```\n{content[:800]}\n```"
-                    )
-
-                return f"Found {len(symbols)} symbol(s):\n\n" + "\n\n".join(output_parts)
-
+            return await _query_symbol_find(name, file_path, run_holder["run"])
         except Exception as e:
             logger.warning("symbol_find failed: %s", e)
             return f"Symbol find failed: {e}"
@@ -571,68 +733,8 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
         Uses the pre-indexed symbol graph (SymbolEdge table).
         Returns callers as evidence.
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
-
-            async with get_async_session() as session:
-                # Find the target symbol
-                stmt = select(Symbol).join(Document).where(Symbol.name == name)
-                if file_path:
-                    stmt = stmt.where(Document.uri == file_path)
-                stmt = stmt.options(selectinload(Symbol.incoming_edges))
-                result = await session.execute(stmt)
-                target_symbols = result.scalars().all()
-
-                if not target_symbols:
-                    return f"Symbol '{name}' not found in index"
-
-                output_parts = []
-                for target in target_symbols[:3]:
-                    # Get incoming CALLS edges
-                    edges_stmt = (
-                        select(SymbolEdge)
-                        .where(SymbolEdge.target_symbol_id == target.id)
-                        .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
-                        .options(
-                            selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document)
-                        )
-                    )
-                    edges_result = await session.execute(edges_stmt)
-                    edges = edges_result.scalars().all()
-
-                    for edge in edges[:10]:
-                        caller = edge.source_symbol
-                        doc = caller.document
-                        lines = (doc.content_markdown or "").split("\n")
-                        start_idx = max(0, caller.start_line - 1)
-                        end_idx = min(len(lines), caller.end_line)
-                        content = "\n".join(lines[start_idx:end_idx])
-
-                        evidence = Evidence(
-                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                            file_path=doc.uri or "unknown",
-                            start_line=caller.start_line,
-                            end_line=caller.end_line,
-                            content=content[:2000],
-                            reason=f"Caller of '{name}' (line {edge.source_line})",
-                            provenance="symbol_graph",
-                            symbol_id=caller.qualified_name,
-                            symbol_kind=caller.kind.value,
-                        )
-                        run.add_evidence(evidence)
-                        output_parts.append(
-                            f"[{evidence.id}] {caller.kind.value} '{caller.qualified_name}' calls '{name}' at line {edge.source_line}\n  {doc.uri}:{caller.start_line}"
-                        )
-
-                if not output_parts:
-                    return f"No callers found for '{name}'"
-
-                return f"Found {len(output_parts)} caller(s):\n" + "\n".join(output_parts)
-
+            return await _query_symbol_callers(name, file_path, run_holder["run"])
         except Exception as e:
             logger.warning("symbol_callers failed: %s", e)
             return f"Symbol callers failed: {e}"
@@ -645,53 +747,7 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
         Returns callees as a list.
         """
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
-
-            async with get_async_session() as session:
-                # Find the source symbol
-                stmt = select(Symbol).join(Document).where(Symbol.name == name)
-                if file_path:
-                    stmt = stmt.where(Document.uri == file_path)
-                stmt = stmt.options(selectinload(Symbol.outgoing_edges))
-                result = await session.execute(stmt)
-                source_symbols = result.scalars().all()
-
-                if not source_symbols:
-                    return f"Symbol '{name}' not found in index"
-
-                output_parts = []
-                for source in source_symbols[:3]:
-                    # Get outgoing CALLS edges
-                    edges_stmt = (
-                        select(SymbolEdge)
-                        .where(SymbolEdge.source_symbol_id == source.id)
-                        .where(SymbolEdge.edge_type == SymbolEdgeType.CALLS)
-                        .options(
-                            selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document)
-                        )
-                    )
-                    edges_result = await session.execute(edges_stmt)
-                    edges = edges_result.scalars().all()
-
-                    for edge in edges[:10]:
-                        callee = edge.target_symbol
-                        doc = callee.document
-                        sig = f" - {callee.signature}" if callee.signature else ""
-
-                        output_parts.append(
-                            f"{callee.kind.value} '{callee.qualified_name}'{sig}\n  {doc.uri}:{callee.start_line}"
-                        )
-
-                if not output_parts:
-                    return f"No callees found for '{name}'"
-
-                return f"'{name}' calls {len(output_parts)} function(s):\n" + "\n".join(
-                    output_parts
-                )
-
+            return await _query_symbol_callees(name, file_path)
         except Exception as e:
             logger.warning("symbol_callees failed: %s", e)
             return f"Symbol callees failed: {e}"
@@ -703,56 +759,8 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
         Uses the pre-indexed symbol database.
         Returns the enclosing symbol's information.
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Document, Symbol
-            from sqlalchemy import and_, select
-
-            async with get_async_session() as session:
-                # Find document by URI
-                doc_stmt = select(Document).where(Document.uri == file_path)
-                doc_result = await session.execute(doc_stmt)
-                doc = doc_result.scalar_one_or_none()
-
-                if not doc:
-                    return f"File not found in index: {file_path}"
-
-                # Find symbols that contain this line
-                sym_stmt = (
-                    select(Symbol)
-                    .where(Symbol.document_id == doc.id)
-                    .where(and_(Symbol.start_line <= line, Symbol.end_line >= line))
-                    .order_by(Symbol.end_line - Symbol.start_line)  # Smallest first
-                )
-                sym_result = await session.execute(sym_stmt)
-                symbols = sym_result.scalars().all()
-
-                if not symbols:
-                    return f"Line {line} is not inside any indexed symbol in {file_path}"
-
-                # Get the innermost (smallest) symbol
-                sym = symbols[0]
-                lines = (doc.content_markdown or "").split("\n")
-                start_idx = max(0, sym.start_line - 1)
-                end_idx = min(len(lines), sym.end_line)
-                content = "\n".join(lines[start_idx:end_idx])
-
-                evidence = Evidence(
-                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                    file_path=file_path,
-                    start_line=sym.start_line,
-                    end_line=sym.end_line,
-                    content=content[:2000],
-                    reason=f"Enclosing {sym.kind.value} for line {line}",
-                    provenance="symbol_index",
-                    symbol_id=sym.qualified_name,
-                    symbol_kind=sym.kind.value,
-                )
-                run.add_evidence(evidence)
-
-                return f"[{evidence.id}] Line {line} is inside {sym.kind.value} '{sym.name}' (L{sym.start_line}-{sym.end_line})\n```\n{content[:1000]}\n```"
-
+            return await _query_symbol_enclosing(file_path, line, run_holder["run"])
         except Exception as e:
             logger.warning("symbol_enclosing failed: %s", e)
             return f"Symbol enclosing failed: {e}"
@@ -813,6 +821,130 @@ Reference evidence IDs like [ev-xxx-001] when making claims."""
     ]
 
 
+async def _query_graph_expand(
+    seed_names: list[str],
+    edge_types: list[str] | None,
+    depth: int,
+    limit: int,
+    run: ResearchRun,
+) -> str:
+    """BFS expansion from seed symbols following relationship types."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Symbol, SymbolEdgeType
+    from sqlalchemy import or_, select
+
+    depth = max(1, min(5, depth))
+    limit = max(1, min(100, limit))
+
+    edge_type_map = {
+        "calls": SymbolEdgeType.CALLS,
+        "references": SymbolEdgeType.REFERENCES,
+        "imports": SymbolEdgeType.IMPORTS,
+        "inherits": SymbolEdgeType.INHERITS,
+        "contains": SymbolEdgeType.CONTAINS,
+    }
+    filter_types = (
+        [edge_type_map[t] for t in edge_types if t in edge_type_map] if edge_types else None
+    )
+
+    async with get_async_session() as session:
+        seed_stmt = select(Symbol).where(or_(*[Symbol.name == name for name in seed_names]))
+        seed_result = await session.execute(seed_stmt)
+        seeds = {s.id: s for s in seed_result.scalars().all()}
+
+        if not seeds:
+            return f"No symbols found matching: {seed_names}"
+
+        collected_symbols = dict(seeds)
+        visited = set(seeds.keys())
+        frontier = set(seeds.keys())
+
+        for _d in range(depth):
+            if not frontier or len(collected_symbols) >= limit:
+                break
+            frontier = await _bfs_expand_frontier(
+                session, frontier, filter_types, visited, collected_symbols, limit
+            )
+
+    output_parts = _format_expansion_evidence(collected_symbols, seed_names, limit, run)
+
+    return (
+        f"Expanded to {len(collected_symbols)} symbols "
+        f"(depth={depth}, seeds={len(seeds)}):\n" + "\n".join(output_parts[:30])
+    )
+
+
+async def _bfs_expand_frontier(
+    session: Any,
+    frontier: set,
+    filter_types: list | None,
+    visited: set,
+    collected: dict,
+    limit: int,
+) -> set:
+    """Perform one BFS expansion step, returning the new frontier."""
+    from contextmine_core.models import Symbol, SymbolEdge
+    from sqlalchemy import or_, select
+    from sqlalchemy.orm import selectinload
+
+    edge_stmt = select(SymbolEdge).where(
+        or_(
+            SymbolEdge.source_symbol_id.in_(frontier),
+            SymbolEdge.target_symbol_id.in_(frontier),
+        )
+    )
+    if filter_types:
+        edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
+    edge_stmt = edge_stmt.options(
+        selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document),
+        selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document),
+    )
+
+    edge_result = await session.execute(edge_stmt)
+    edges = edge_result.scalars().all()
+
+    new_frontier: set = set()
+    for edge in edges:
+        for sym in [edge.source_symbol, edge.target_symbol]:
+            if sym.id not in visited and len(collected) < limit:
+                visited.add(sym.id)
+                new_frontier.add(sym.id)
+                collected[sym.id] = sym
+    return new_frontier
+
+
+def _format_expansion_evidence(
+    collected_symbols: dict, seed_names: list[str], limit: int, run: ResearchRun
+) -> list[str]:
+    """Create evidence items for BFS-expanded symbols."""
+    output_parts = []
+    for sym in list(collected_symbols.values())[:limit]:
+        doc = sym.document
+        marker = "[SEED] " if sym.name in seed_names else ""
+        lines = (doc.content_markdown or "").split("\n")
+        start_idx = max(0, sym.start_line - 1)
+        end_idx = min(len(lines), sym.end_line)
+        content = "\n".join(lines[start_idx:end_idx])
+
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=doc.uri or "unknown",
+            start_line=sym.start_line,
+            end_line=sym.end_line,
+            content=content[:1500],
+            reason=f"Graph expansion from {seed_names}",
+            provenance="symbol_graph",
+            symbol_id=sym.qualified_name,
+            symbol_kind=sym.kind.value,
+        )
+        run.add_evidence(evidence)
+        output_parts.append(
+            f"{marker}[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
+            f"at {doc.uri}:{sym.start_line}"
+        )
+    return output_parts
+
+
 def _create_graph_expand_tool(run_holder: dict[str, ResearchRun]) -> list:
     """Create graph_expand tool."""
 
@@ -834,114 +966,46 @@ def _create_graph_expand_tool(run_holder: dict[str, ResearchRun]) -> list:
             depth: Max traversal depth (1-5)
             limit: Max nodes to return
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Symbol, SymbolEdge, SymbolEdgeType
-            from sqlalchemy import or_, select
-            from sqlalchemy.orm import selectinload
-
-            depth = max(1, min(5, depth))
-            limit = max(1, min(100, limit))
-
-            # Map edge type strings to enum
-            edge_type_map = {
-                "calls": SymbolEdgeType.CALLS,
-                "references": SymbolEdgeType.REFERENCES,
-                "imports": SymbolEdgeType.IMPORTS,
-                "inherits": SymbolEdgeType.INHERITS,
-                "contains": SymbolEdgeType.CONTAINS,
-            }
-
-            filter_types = None
-            if edge_types:
-                filter_types = [edge_type_map[t] for t in edge_types if t in edge_type_map]
-
-            async with get_async_session() as session:
-                # Find seed symbols
-                seed_stmt = select(Symbol).where(or_(*[Symbol.name == name for name in seed_names]))
-                seed_result = await session.execute(seed_stmt)
-                seeds = {s.id: s for s in seed_result.scalars().all()}
-
-                if not seeds:
-                    return f"No symbols found matching: {seed_names}"
-
-                visited = set(seeds.keys())
-                frontier = set(seeds.keys())
-                collected_symbols = dict(seeds)
-
-                # BFS traversal
-                for _d in range(depth):
-                    if not frontier or len(collected_symbols) >= limit:
-                        break
-
-                    # Get edges from frontier
-                    edge_stmt = select(SymbolEdge).where(
-                        or_(
-                            SymbolEdge.source_symbol_id.in_(frontier),
-                            SymbolEdge.target_symbol_id.in_(frontier),
-                        )
-                    )
-                    if filter_types:
-                        edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
-
-                    edge_stmt = edge_stmt.options(
-                        selectinload(SymbolEdge.source_symbol).selectinload(Symbol.document),
-                        selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document),
-                    )
-
-                    edge_result = await session.execute(edge_stmt)
-                    edges = edge_result.scalars().all()
-
-                    new_frontier = set()
-                    for edge in edges:
-                        for sym in [edge.source_symbol, edge.target_symbol]:
-                            if sym.id not in visited and len(collected_symbols) < limit:
-                                visited.add(sym.id)
-                                new_frontier.add(sym.id)
-                                collected_symbols[sym.id] = sym
-
-                    frontier = new_frontier
-
-                # Create evidence for collected symbols
-                output_parts = []
-                for sym in list(collected_symbols.values())[:limit]:
-                    doc = sym.document
-                    is_seed = sym.name in seed_names
-                    marker = "[SEED] " if is_seed else ""
-
-                    lines = (doc.content_markdown or "").split("\n")
-                    start_idx = max(0, sym.start_line - 1)
-                    end_idx = min(len(lines), sym.end_line)
-                    content = "\n".join(lines[start_idx:end_idx])
-
-                    evidence = Evidence(
-                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                        file_path=doc.uri or "unknown",
-                        start_line=sym.start_line,
-                        end_line=sym.end_line,
-                        content=content[:1500],
-                        reason=f"Graph expansion from {seed_names}",
-                        provenance="symbol_graph",
-                        symbol_id=sym.qualified_name,
-                        symbol_kind=sym.kind.value,
-                    )
-                    run.add_evidence(evidence)
-                    output_parts.append(
-                        f"{marker}[{evidence.id}] {sym.kind.value} '{sym.qualified_name}' "
-                        f"at {doc.uri}:{sym.start_line}"
-                    )
-
-                return (
-                    f"Expanded to {len(collected_symbols)} symbols "
-                    f"(depth={depth}, seeds={len(seeds)}):\n" + "\n".join(output_parts[:30])
-                )
-
+            return await _query_graph_expand(
+                seed_names, edge_types, depth, limit, run_holder["run"]
+            )
         except Exception as e:
             logger.warning("graph_expand failed: %s", e)
             return f"Graph expand failed: {e}"
 
     return [graph_expand]
+
+
+_EVIDENCE_KIND_SCORES: dict[str, float] = {
+    "class": 5.0,
+    "struct": 4.5,
+    "interface": 4.0,
+    "function": 3.0,
+    "method": 2.5,
+    "variable": 1.0,
+}
+
+_EVIDENCE_PROVENANCE_SCORES: dict[str, float] = {
+    "lsp": 2.0,
+    "symbol_graph": 1.8,
+    "symbol_index": 1.5,
+    "hybrid": 1.2,
+    "manual": 1.0,
+}
+
+
+def _score_evidence_item(ev: Evidence) -> float:
+    """Score a single evidence item for relevance ranking."""
+    score = 0.0
+    if ev.symbol_kind:
+        score += _EVIDENCE_KIND_SCORES.get(ev.symbol_kind.lower(), 1.0)
+    content_lines = len(ev.content.split("\n")) if ev.content else 0
+    score += min(content_lines / 20.0, 3.0)
+    score += _EVIDENCE_PROVENANCE_SCORES.get(ev.provenance, 1.0)
+    if ev.score:
+        score += ev.score * 2.0
+    return score
 
 
 def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -963,47 +1027,9 @@ def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
         if not run.evidence:
             return "No evidence collected yet to pack."
 
-        # Score each evidence item
-        scored = []
-        for ev in run.evidence:
-            score = 0.0
-
-            # Symbol kind scoring
-            kind_scores = {
-                "class": 5.0,
-                "struct": 4.5,
-                "interface": 4.0,
-                "function": 3.0,
-                "method": 2.5,
-                "variable": 1.0,
-            }
-            if ev.symbol_kind:
-                score += kind_scores.get(ev.symbol_kind.lower(), 1.0)
-
-            # Size scoring (normalized)
-            content_lines = len(ev.content.split("\n")) if ev.content else 0
-            score += min(content_lines / 20.0, 3.0)  # Max 3 points for size
-
-            # Provenance scoring
-            provenance_scores = {
-                "lsp": 2.0,
-                "symbol_graph": 1.8,
-                "symbol_index": 1.5,
-                "hybrid": 1.2,
-                "manual": 1.0,
-            }
-            score += provenance_scores.get(ev.provenance, 1.0)
-
-            # Score bonus for having a score
-            if ev.score:
-                score += ev.score * 2.0
-
-            scored.append((score, ev))
-
-        # Sort by score descending
+        scored = [(_score_evidence_item(ev), ev) for ev in run.evidence]
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Build output
         output_parts = [f"Top {min(target_count, len(scored))} evidence items:\n"]
         for i, (score, ev) in enumerate(scored[:target_count]):
             kind = f" ({ev.symbol_kind})" if ev.symbol_kind else ""
@@ -1016,6 +1042,157 @@ def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
         return "\n".join(output_parts)
 
     return [graph_pack]
+
+
+async def _query_graph_trace(
+    from_symbol: str,
+    to_symbol: str,
+    edge_types: list[str] | None,
+    max_depth: int,
+    run: ResearchRun,
+) -> str:
+    """Find paths between two symbols via BFS."""
+
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import Symbol, SymbolEdgeType
+    from sqlalchemy import or_, select
+    from sqlalchemy.orm import selectinload
+
+    max_depth = max(1, min(10, max_depth))
+
+    edge_type_map = {
+        "calls": SymbolEdgeType.CALLS,
+        "references": SymbolEdgeType.REFERENCES,
+        "imports": SymbolEdgeType.IMPORTS,
+        "inherits": SymbolEdgeType.INHERITS,
+    }
+    filter_types = (
+        [edge_type_map[t] for t in edge_types if t in edge_type_map] if edge_types else None
+    )
+
+    async with get_async_session() as session:
+        sym_stmt = (
+            select(Symbol)
+            .where(or_(Symbol.name == from_symbol, Symbol.name == to_symbol))
+            .options(selectinload(Symbol.document))
+        )
+        sym_result = await session.execute(sym_stmt)
+        symbols = {s.name: s for s in sym_result.scalars().all()}
+
+        if from_symbol not in symbols:
+            return f"Source symbol '{from_symbol}' not found"
+        if to_symbol not in symbols:
+            return f"Target symbol '{to_symbol}' not found"
+
+        source = symbols[from_symbol]
+        target = symbols[to_symbol]
+
+        if source.id == target.id:
+            return "Source and target are the same symbol"
+
+        found_paths = await _bfs_find_paths(session, source.id, target.id, filter_types, max_depth)
+
+        if not found_paths:
+            return f"No path found from '{from_symbol}' to '{to_symbol}' within depth {max_depth}"
+
+        sym_map = await _load_symbols_by_ids(session, {sid for p in found_paths for sid in p})
+
+    return _format_trace_paths(found_paths, sym_map, from_symbol, to_symbol, run)
+
+
+async def _bfs_find_paths(
+    session: Any,
+    source_id: Any,
+    target_id: Any,
+    filter_types: list | None,
+    max_depth: int,
+) -> list[list]:
+    """BFS to find up to 3 paths from source to target."""
+    from collections import deque
+
+    from contextmine_core.models import Symbol, SymbolEdge
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    queue = deque([(source_id, [source_id])])
+    visited = {source_id}
+    found_paths: list[list] = []
+
+    while queue and len(found_paths) < 3:
+        current_id, path = queue.popleft()
+        if len(path) > max_depth:
+            continue
+
+        edge_stmt = select(SymbolEdge).where(SymbolEdge.source_symbol_id == current_id)
+        if filter_types:
+            edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
+        edge_stmt = edge_stmt.options(
+            selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document)
+        )
+
+        edge_result = await session.execute(edge_stmt)
+        edges = edge_result.scalars().all()
+
+        for edge in edges:
+            next_sym = edge.target_symbol
+            if next_sym.id == target_id:
+                found_paths.append(path + [next_sym.id])
+            elif next_sym.id not in visited:
+                visited.add(next_sym.id)
+                queue.append((next_sym.id, path + [next_sym.id]))
+
+    return found_paths
+
+
+async def _load_symbols_by_ids(session: Any, ids: set) -> dict:
+    """Load symbols with documents by their IDs."""
+    from contextmine_core.models import Symbol
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    sym_stmt = select(Symbol).where(Symbol.id.in_(ids)).options(selectinload(Symbol.document))
+    sym_result = await session.execute(sym_stmt)
+    return {s.id: s for s in sym_result.scalars().all()}
+
+
+def _format_trace_paths(
+    found_paths: list[list],
+    sym_map: dict,
+    from_symbol: str,
+    to_symbol: str,
+    run: ResearchRun,
+) -> str:
+    """Format BFS trace paths into evidence and output text."""
+    output_parts = [f"Found {len(found_paths)} path(s):\n"]
+    for i, path in enumerate(found_paths[:3]):
+        path_names = []
+        for sym_id in path:
+            sym = sym_map.get(sym_id)
+            if not sym:
+                continue
+            path_names.append(sym.name)
+            doc = sym.document
+            lines = (doc.content_markdown or "").split("\n")
+            start_idx = max(0, sym.start_line - 1)
+            end_idx = min(len(lines), sym.end_line)
+            content = "\n".join(lines[start_idx:end_idx])
+
+            evidence = Evidence(
+                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                file_path=doc.uri or "unknown",
+                start_line=sym.start_line,
+                end_line=sym.end_line,
+                content=content[:1500],
+                reason=f"Path step {path.index(sym_id) + 1} from '{from_symbol}' to '{to_symbol}'",
+                provenance="symbol_graph",
+                symbol_id=sym.qualified_name,
+                symbol_kind=sym.kind.value,
+            )
+            run.add_evidence(evidence)
+
+        output_parts.append(f"Path {i + 1}: {' -> '.join(path_names)}")
+
+    return "\n".join(output_parts)
 
 
 def _create_graph_trace_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -1039,134 +1216,94 @@ def _create_graph_trace_tool(run_holder: dict[str, ResearchRun]) -> list:
             edge_types: Filter by edge types (calls, references, imports, inherits)
             max_depth: Maximum path length
         """
-        run = run_holder["run"]
         try:
-            from collections import deque
-
-            from contextmine_core.database import get_async_session
-            from contextmine_core.models import Symbol, SymbolEdge, SymbolEdgeType
-            from sqlalchemy import or_, select
-            from sqlalchemy.orm import selectinload
-
-            max_depth = max(1, min(10, max_depth))
-
-            edge_type_map = {
-                "calls": SymbolEdgeType.CALLS,
-                "references": SymbolEdgeType.REFERENCES,
-                "imports": SymbolEdgeType.IMPORTS,
-                "inherits": SymbolEdgeType.INHERITS,
-            }
-
-            filter_types = None
-            if edge_types:
-                filter_types = [edge_type_map[t] for t in edge_types if t in edge_type_map]
-
-            async with get_async_session() as session:
-                # Find source and target symbols
-                sym_stmt = (
-                    select(Symbol)
-                    .where(or_(Symbol.name == from_symbol, Symbol.name == to_symbol))
-                    .options(selectinload(Symbol.document))
-                )
-                sym_result = await session.execute(sym_stmt)
-                symbols = {s.name: s for s in sym_result.scalars().all()}
-
-                if from_symbol not in symbols:
-                    return f"Source symbol '{from_symbol}' not found"
-                if to_symbol not in symbols:
-                    return f"Target symbol '{to_symbol}' not found"
-
-                source = symbols[from_symbol]
-                target = symbols[to_symbol]
-
-                if source.id == target.id:
-                    return "Source and target are the same symbol"
-
-                # BFS to find path
-                queue = deque([(source.id, [source.id])])
-                visited = {source.id}
-                found_paths = []
-
-                while queue and len(found_paths) < 3:
-                    current_id, path = queue.popleft()
-
-                    if len(path) > max_depth:
-                        continue
-
-                    # Get outgoing edges
-                    edge_stmt = select(SymbolEdge).where(SymbolEdge.source_symbol_id == current_id)
-                    if filter_types:
-                        edge_stmt = edge_stmt.where(SymbolEdge.edge_type.in_(filter_types))
-
-                    edge_stmt = edge_stmt.options(
-                        selectinload(SymbolEdge.target_symbol).selectinload(Symbol.document)
-                    )
-
-                    edge_result = await session.execute(edge_stmt)
-                    edges = edge_result.scalars().all()
-
-                    for edge in edges:
-                        next_sym = edge.target_symbol
-                        if next_sym.id == target.id:
-                            found_paths.append(path + [next_sym.id])
-                        elif next_sym.id not in visited:
-                            visited.add(next_sym.id)
-                            queue.append((next_sym.id, path + [next_sym.id]))
-
-                if not found_paths:
-                    return f"No path found from '{from_symbol}' to '{to_symbol}' within depth {max_depth}"
-
-                # Get all symbols in paths
-                all_ids = set()
-                for p in found_paths:
-                    all_ids.update(p)
-
-                sym_stmt = (
-                    select(Symbol)
-                    .where(Symbol.id.in_(all_ids))
-                    .options(selectinload(Symbol.document))
-                )
-                sym_result = await session.execute(sym_stmt)
-                sym_map = {s.id: s for s in sym_result.scalars().all()}
-
-                # Create evidence and output
-                output_parts = [f"Found {len(found_paths)} path(s):\n"]
-                for i, path in enumerate(found_paths[:3]):
-                    path_names = []
-                    for sym_id in path:
-                        sym = sym_map.get(sym_id)
-                        if sym:
-                            path_names.append(sym.name)
-
-                            # Add evidence for each symbol in path
-                            doc = sym.document
-                            lines = (doc.content_markdown or "").split("\n")
-                            start_idx = max(0, sym.start_line - 1)
-                            end_idx = min(len(lines), sym.end_line)
-                            content = "\n".join(lines[start_idx:end_idx])
-
-                            evidence = Evidence(
-                                id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                                file_path=doc.uri or "unknown",
-                                start_line=sym.start_line,
-                                end_line=sym.end_line,
-                                content=content[:1500],
-                                reason=f"Path step {path.index(sym_id) + 1} from '{from_symbol}' to '{to_symbol}'",
-                                provenance="symbol_graph",
-                                symbol_id=sym.qualified_name,
-                                symbol_kind=sym.kind.value,
-                            )
-                            run.add_evidence(evidence)
-
-                    output_parts.append(f"Path {i + 1}: {' -> '.join(path_names)}")
-
-                return "\n".join(output_parts)
-
+            return await _query_graph_trace(
+                from_symbol, to_symbol, edge_types, max_depth, run_holder["run"]
+            )
         except Exception as e:
             logger.warning("graph_trace failed: %s", e)
             return f"Graph trace failed: {e}"
 
     return [graph_trace]
+
+
+async def _query_graphrag_search(query: str, max_entities: int, run: ResearchRun) -> str:
+    """Execute GraphRAG search and format results as evidence."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.graphrag import graph_rag_context
+
+    async with get_async_session() as session:
+        context = await graph_rag_context(
+            session=session,
+            query=query,
+            collection_id=None,
+            user_id=None,
+            max_communities=5,
+            max_entities=max_entities,
+            max_depth=2,
+        )
+
+    output_parts: list[str] = []
+    _format_community_context(context, output_parts)
+    _format_entity_context(context, max_entities, run, output_parts)
+    _format_edge_summary(context, output_parts)
+
+    if not output_parts:
+        return "No relevant results found. Try a different query or use hybrid_search."
+    return "\n".join(output_parts)
+
+
+def _format_community_context(context: Any, output_parts: list[str]) -> None:
+    """Append community summaries to output."""
+    if not context.communities:
+        return
+    output_parts.append(f"## Global Context ({len(context.communities)} communities)\n")
+    for comm in context.communities[:3]:
+        output_parts.append(f"**{comm.title}** (relevance: {comm.relevance_score:.0%})")
+        if comm.summary:
+            summary = comm.summary[:300] + "..." if len(comm.summary) > 300 else comm.summary
+            output_parts.append(summary)
+        output_parts.append("")
+
+
+def _format_entity_context(
+    context: Any, max_entities: int, run: ResearchRun, output_parts: list[str]
+) -> None:
+    """Append entity evidence to output."""
+    if not context.entities:
+        return
+    output_parts.append(f"## Local Context ({len(context.entities)} entities)\n")
+    for entity in context.entities[:max_entities]:
+        citations = entity.evidence[:1]
+        if not citations:
+            output_parts.append(f"- {entity.kind}: {entity.name}")
+            continue
+        cit = citations[0]
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=cit.file_path,
+            start_line=cit.start_line,
+            end_line=cit.end_line,
+            content=cit.snippet or "",
+            reason=f"GraphRAG: {entity.kind} '{entity.name}'",
+            provenance="graphrag",
+        )
+        run.add_evidence(evidence)
+        output_parts.append(
+            f"[{evidence.id}] {entity.kind}: {entity.name} ({cit.file_path}:{cit.start_line})"
+        )
+
+
+def _format_edge_summary(context: Any, output_parts: list[str]) -> None:
+    """Append edge relationship summary to output."""
+    if not context.edges:
+        return
+    edge_counts: dict[str, int] = {}
+    for edge in context.edges:
+        edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
+    output_parts.append(f"\n## Relationships ({len(context.edges)} edges)")
+    for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1])[:5]:
+        output_parts.append(f"- {kind}: {count}")
 
 
 def _create_graphrag_search_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -1188,81 +1325,106 @@ def _create_graphrag_search_tool(run_holder: dict[str, ResearchRun]) -> list:
             query: Natural language query
             max_entities: Maximum entities to return (default 15)
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.graphrag import graph_rag_context
-
-            async with get_async_session() as session:
-                context = await graph_rag_context(
-                    session=session,
-                    query=query,
-                    collection_id=None,
-                    user_id=None,
-                    max_communities=5,
-                    max_entities=max_entities,
-                    max_depth=2,
-                )
-
-            # Convert to evidence
-            output_parts = []
-
-            # Add community context
-            if context.communities:
-                output_parts.append(f"## Global Context ({len(context.communities)} communities)\n")
-                for comm in context.communities[:3]:
-                    output_parts.append(f"**{comm.title}** (relevance: {comm.relevance_score:.0%})")
-                    if comm.summary:
-                        summary = (
-                            comm.summary[:300] + "..." if len(comm.summary) > 300 else comm.summary
-                        )
-                        output_parts.append(summary)
-                    output_parts.append("")
-
-            # Add entity context as evidence
-            if context.entities:
-                output_parts.append(f"## Local Context ({len(context.entities)} entities)\n")
-                for entity in context.entities[:max_entities]:
-                    # Create evidence for each entity
-                    citations = entity.evidence[:1]
-                    if citations:
-                        cit = citations[0]
-                        evidence = Evidence(
-                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                            file_path=cit.file_path,
-                            start_line=cit.start_line,
-                            end_line=cit.end_line,
-                            content=cit.snippet or "",
-                            reason=f"GraphRAG: {entity.kind} '{entity.name}'",
-                            provenance="graphrag",
-                        )
-                        run.add_evidence(evidence)
-                        output_parts.append(
-                            f"[{evidence.id}] {entity.kind}: {entity.name} "
-                            f"({cit.file_path}:{cit.start_line})"
-                        )
-                    else:
-                        output_parts.append(f"- {entity.kind}: {entity.name}")
-
-            # Add relationship summary
-            if context.edges:
-                edge_counts: dict[str, int] = {}
-                for edge in context.edges:
-                    edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
-                output_parts.append(f"\n## Relationships ({len(context.edges)} edges)")
-                for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1])[:5]:
-                    output_parts.append(f"- {kind}: {count}")
-
-            if not output_parts:
-                return "No relevant results found. Try a different query or use hybrid_search."
-
-            return "\n".join(output_parts)
-
+            return await _query_graphrag_search(query, max_entities, run_holder["run"])
         except Exception as e:
             logger.warning("graphrag_search failed: %s", e)
             return f"GraphRAG search failed: {e}. Try hybrid_search as fallback."
 
     return [graphrag_search]
+
+
+async def _find_kg_node(node_name: str, node_kind: str | None) -> Any:
+    """Find a KnowledgeNode by name, optionally filtered by kind."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.models import KnowledgeNode
+    from sqlalchemy import select
+
+    async with get_async_session() as session:
+        stmt = select(KnowledgeNode).where(KnowledgeNode.name == node_name)
+        if node_kind:
+            from contextmine_core.models import KnowledgeNodeKind
+
+            try:
+                kind_enum = KnowledgeNodeKind(node_kind.upper())
+                stmt = stmt.where(KnowledgeNode.kind == kind_enum)
+            except ValueError:
+                pass
+        stmt = stmt.limit(1)
+        result = await session.execute(stmt)
+        node = result.scalar_one_or_none()
+
+        if not node:
+            stmt = (
+                select(KnowledgeNode)
+                .where(KnowledgeNode.natural_key.ilike(f"%{node_name}%"))
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            node = result.scalar_one_or_none()
+
+    return node
+
+
+def _format_neighborhood_entities(context: Any, run: ResearchRun, output_parts: list[str]) -> None:
+    """Group neighborhood entities by kind and create evidence."""
+    by_kind: dict[str, list] = {}
+    for entity in context.entities:
+        by_kind.setdefault(entity.kind, []).append(entity)
+
+    for kind, entities in sorted(by_kind.items()):
+        output_parts.append(f"**{kind}** ({len(entities)}):")
+        for entity in entities[:10]:
+            if entity.evidence:
+                cit = entity.evidence[0]
+                evidence = Evidence(
+                    id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+                    file_path=cit.file_path,
+                    start_line=cit.start_line,
+                    end_line=cit.end_line,
+                    content=cit.snippet or "",
+                    reason=f"KG neighbor: {entity.kind} '{entity.name}'",
+                    provenance="knowledge_graph",
+                )
+                run.add_evidence(evidence)
+                output_parts.append(f"  [{evidence.id}] {entity.name}")
+            else:
+                output_parts.append(f"  - {entity.name}")
+        if len(entities) > 10:
+            output_parts.append(f"  ... and {len(entities) - 10} more")
+        output_parts.append("")
+
+
+async def _query_kg_neighborhood(
+    node_name: str, depth: int, node_kind: str | None, run: ResearchRun
+) -> str:
+    """Explore KG neighborhood of a node."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.graphrag import graph_neighborhood
+
+    depth = max(1, min(3, depth))
+    node = await _find_kg_node(node_name, node_kind)
+    if not node:
+        return f"Node '{node_name}' not found in Knowledge Graph"
+
+    async with get_async_session() as session:
+        context = await graph_neighborhood(
+            session=session,
+            node_id=node.id,
+            collection_id=node.collection_id,
+            depth=depth,
+            max_nodes=30,
+        )
+
+    output_parts = [
+        f"## Neighborhood of {node.kind.value}: {node.name}",
+        f"Found {len(context.entities)} nodes, {len(context.edges)} edges\n",
+    ]
+
+    _format_neighborhood_entities(context, run, output_parts)
+    _format_edge_summary(context, output_parts)
+
+    return "\n".join(output_parts)
 
 
 def _create_kg_neighborhood_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -1283,103 +1445,78 @@ def _create_kg_neighborhood_tool(run_holder: dict[str, ResearchRun]) -> list:
             depth: Expansion depth (1-3, default 1)
             node_kind: Optional kind filter (FILE, SYMBOL, DB_TABLE, API_ENDPOINT, etc.)
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.graphrag import graph_neighborhood
-            from contextmine_core.models import KnowledgeNode
-            from sqlalchemy import select
-
-            depth = max(1, min(3, depth))
-
-            async with get_async_session() as session:
-                # Find node by name
-                stmt = select(KnowledgeNode).where(KnowledgeNode.name == node_name)
-                if node_kind:
-                    from contextmine_core.models import KnowledgeNodeKind
-
-                    try:
-                        kind_enum = KnowledgeNodeKind(node_kind.upper())
-                        stmt = stmt.where(KnowledgeNode.kind == kind_enum)
-                    except ValueError:
-                        pass
-                stmt = stmt.limit(1)
-
-                result = await session.execute(stmt)
-                node = result.scalar_one_or_none()
-
-                if not node:
-                    # Try by natural_key pattern
-                    stmt = (
-                        select(KnowledgeNode)
-                        .where(KnowledgeNode.natural_key.ilike(f"%{node_name}%"))
-                        .limit(1)
-                    )
-                    result = await session.execute(stmt)
-                    node = result.scalar_one_or_none()
-
-                if not node:
-                    return f"Node '{node_name}' not found in Knowledge Graph"
-
-                # Get neighborhood
-                context = await graph_neighborhood(
-                    session=session,
-                    node_id=node.id,
-                    collection_id=node.collection_id,
-                    depth=depth,
-                    max_nodes=30,
-                )
-
-            # Format output
-            output_parts = [
-                f"## Neighborhood of {node.kind.value}: {node.name}",
-                f"Found {len(context.entities)} nodes, {len(context.edges)} edges\n",
-            ]
-
-            # Group by kind
-            by_kind: dict[str, list] = {}
-            for entity in context.entities:
-                by_kind.setdefault(entity.kind, []).append(entity)
-
-            for kind, entities in sorted(by_kind.items()):
-                output_parts.append(f"**{kind}** ({len(entities)}):")
-                for entity in entities[:10]:
-                    # Create evidence
-                    if entity.evidence:
-                        cit = entity.evidence[0]
-                        evidence = Evidence(
-                            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                            file_path=cit.file_path,
-                            start_line=cit.start_line,
-                            end_line=cit.end_line,
-                            content=cit.snippet or "",
-                            reason=f"KG neighbor: {entity.kind} '{entity.name}'",
-                            provenance="knowledge_graph",
-                        )
-                        run.add_evidence(evidence)
-                        output_parts.append(f"  [{evidence.id}] {entity.name}")
-                    else:
-                        output_parts.append(f"  - {entity.name}")
-                if len(entities) > 10:
-                    output_parts.append(f"  ... and {len(entities) - 10} more")
-                output_parts.append("")
-
-            # Show edge types
-            if context.edges:
-                edge_counts: dict[str, int] = {}
-                for edge in context.edges:
-                    edge_counts[edge.kind] = edge_counts.get(edge.kind, 0) + 1
-                output_parts.append("**Relationships:**")
-                for kind, count in sorted(edge_counts.items(), key=lambda x: -x[1]):
-                    output_parts.append(f"  - {kind}: {count}")
-
-            return "\n".join(output_parts)
-
+            return await _query_kg_neighborhood(node_name, depth, node_kind, run_holder["run"])
         except Exception as e:
             logger.warning("kg_neighborhood failed: %s", e)
             return f"Knowledge Graph neighborhood failed: {e}"
 
     return [kg_neighborhood]
+
+
+async def _query_kg_path(from_name: str, to_name: str, max_hops: int, run: ResearchRun) -> str:
+    """Find path between two KG nodes."""
+    from contextmine_core.database import get_async_session
+    from contextmine_core.graphrag import trace_path
+
+    max_hops = max(1, min(10, max_hops))
+
+    from_node = await _find_kg_node(from_name, None)
+    if not from_node:
+        return f"Source node '{from_name}' not found"
+
+    to_node = await _find_kg_node(to_name, None)
+    if not to_node:
+        return f"Target node '{to_name}' not found"
+
+    async with get_async_session() as session:
+        context = await trace_path(
+            session=session,
+            from_node_id=from_node.id,
+            to_node_id=to_node.id,
+            collection_id=from_node.collection_id,
+            max_hops=max_hops,
+        )
+
+    if not context.entities:
+        return f"No path found from '{from_name}' to '{to_name}' within {max_hops} hops"
+
+    output_parts = [f"## Path: {from_name} → {to_name}\n"]
+    if context.paths:
+        output_parts.append(f"**Route:** {context.paths[0].description}\n")
+    output_parts.append("**Steps:**")
+
+    for i, entity in enumerate(context.entities):
+        _format_kg_path_step(i, entity, context, run, output_parts)
+
+    return "\n".join(output_parts)
+
+
+def _format_kg_path_step(
+    i: int, entity: Any, context: Any, run: ResearchRun, output_parts: list[str]
+) -> None:
+    """Format a single step in a KG path."""
+    arrow = "→" if i < len(context.entities) - 1 else ""
+    edge_kind = context.edges[i].kind if i < len(context.edges) else ""
+
+    if entity.evidence:
+        cit = entity.evidence[0]
+        evidence = Evidence(
+            id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
+            file_path=cit.file_path,
+            start_line=cit.start_line,
+            end_line=cit.end_line,
+            content=cit.snippet or "",
+            reason=f"Path step {i + 1}: {entity.kind} '{entity.name}'",
+            provenance="knowledge_graph",
+        )
+        run.add_evidence(evidence)
+        output_parts.append(f"  {i + 1}. [{evidence.id}] {entity.kind}: {entity.name}")
+    else:
+        output_parts.append(f"  {i + 1}. {entity.kind}: {entity.name}")
+
+    if edge_kind:
+        output_parts.append(f"     {arrow} ({edge_kind})")
 
 
 def _create_kg_path_tool(run_holder: dict[str, ResearchRun]) -> list:
@@ -1397,95 +1534,8 @@ def _create_kg_path_tool(run_holder: dict[str, ResearchRun]) -> list:
             to_name: Target node name
             max_hops: Maximum path length (default 6)
         """
-        run = run_holder["run"]
         try:
-            from contextmine_core.database import get_async_session
-            from contextmine_core.graphrag import trace_path
-            from contextmine_core.models import KnowledgeNode
-            from sqlalchemy import select
-
-            max_hops = max(1, min(10, max_hops))
-
-            async with get_async_session() as session:
-                # Find source node
-                stmt = select(KnowledgeNode).where(KnowledgeNode.name == from_name).limit(1)
-                result = await session.execute(stmt)
-                from_node = result.scalar_one_or_none()
-
-                if not from_node:
-                    stmt = (
-                        select(KnowledgeNode)
-                        .where(KnowledgeNode.natural_key.ilike(f"%{from_name}%"))
-                        .limit(1)
-                    )
-                    result = await session.execute(stmt)
-                    from_node = result.scalar_one_or_none()
-
-                if not from_node:
-                    return f"Source node '{from_name}' not found"
-
-                # Find target node
-                stmt = select(KnowledgeNode).where(KnowledgeNode.name == to_name).limit(1)
-                result = await session.execute(stmt)
-                to_node = result.scalar_one_or_none()
-
-                if not to_node:
-                    stmt = (
-                        select(KnowledgeNode)
-                        .where(KnowledgeNode.natural_key.ilike(f"%{to_name}%"))
-                        .limit(1)
-                    )
-                    result = await session.execute(stmt)
-                    to_node = result.scalar_one_or_none()
-
-                if not to_node:
-                    return f"Target node '{to_name}' not found"
-
-                # Find path
-                context = await trace_path(
-                    session=session,
-                    from_node_id=from_node.id,
-                    to_node_id=to_node.id,
-                    collection_id=from_node.collection_id,
-                    max_hops=max_hops,
-                )
-
-            if not context.entities:
-                return f"No path found from '{from_name}' to '{to_name}' within {max_hops} hops"
-
-            # Format output
-            output_parts = [f"## Path: {from_name} → {to_name}\n"]
-
-            if context.paths:
-                output_parts.append(f"**Route:** {context.paths[0].description}\n")
-
-            output_parts.append("**Steps:**")
-            for i, entity in enumerate(context.entities):
-                arrow = "→" if i < len(context.entities) - 1 else ""
-                edge_kind = context.edges[i].kind if i < len(context.edges) else ""
-
-                # Create evidence
-                if entity.evidence:
-                    cit = entity.evidence[0]
-                    evidence = Evidence(
-                        id=f"ev-{run.run_id[:8]}-{len(run.evidence) + 1:03d}",
-                        file_path=cit.file_path,
-                        start_line=cit.start_line,
-                        end_line=cit.end_line,
-                        content=cit.snippet or "",
-                        reason=f"Path step {i + 1}: {entity.kind} '{entity.name}'",
-                        provenance="knowledge_graph",
-                    )
-                    run.add_evidence(evidence)
-                    output_parts.append(f"  {i + 1}. [{evidence.id}] {entity.kind}: {entity.name}")
-                else:
-                    output_parts.append(f"  {i + 1}. {entity.kind}: {entity.name}")
-
-                if edge_kind:
-                    output_parts.append(f"     {arrow} ({edge_kind})")
-
-            return "\n".join(output_parts)
-
+            return await _query_kg_path(from_name, to_name, max_hops, run_holder["run"])
         except Exception as e:
             logger.warning("kg_path failed: %s", e)
             return f"Knowledge Graph path failed: {e}"

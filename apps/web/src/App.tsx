@@ -512,7 +512,8 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [_sources, setSources] = useState<Source[]>([])
+  const [sources, setSources] = useState<Source[]>([])
+  void sources // used via setSources; value read by child components via collectionSources
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1836,9 +1837,10 @@ function App() {
                 </div>
               )}
 
-              {collectionsLoading ? (
+              {collectionsLoading && (
                 <p className="loading-text">Loading collections...</p>
-              ) : collections.length === 0 ? (
+              )}
+              {!collectionsLoading && collections.length === 0 && (
                 <div className="empty-state">
                   <p>No collections yet</p>
                   <p className="note">Collections organize your documentation and code sources.</p>
@@ -1846,7 +1848,8 @@ function App() {
                     Create Your First Collection
                   </button>
                 </div>
-              ) : (
+              )}
+              {!collectionsLoading && collections.length > 0 && (
                 <div className="collections-list">
                   {collections.map((collection) => {
                     const isExpanded = expandedCollections.has(collection.id)
@@ -1859,7 +1862,7 @@ function App() {
                     return (
                       <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
                         {/* Collection Header Row */}
-                        <div className="collection-header-row" role="button" tabIndex={0} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
+                        <div className="collection-header-row" role="button" tabIndex={0} aria-label={`Toggle collection ${collection.name}`} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
                           <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
                             {isExpanded ? '▼' : '▶'}
                           </button>
@@ -1958,7 +1961,7 @@ function App() {
 
                         {/* Share Popover */}
                         {sharePopoverCollection?.id === collection.id && (
-                          <div className="share-popover" role="dialog" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                          <dialog open className="share-popover" aria-label={`Share ${collection.name}`}>
                             <div className="popover-header">
                               <h4>Share "{collection.name}"</h4>
                               <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
@@ -1992,7 +1995,7 @@ function App() {
                               </form>
                               {shareError && <p className="share-error-mini">{shareError}</p>}
                             </div>
-                          </div>
+                          </dialog>
                         )}
 
                         {/* Expanded Sources Section */}
