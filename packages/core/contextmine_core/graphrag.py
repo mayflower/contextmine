@@ -625,12 +625,11 @@ async def _map_search_to_nodes(
     if not uris:
         return node_ids
 
-    natural_keys = [f"file:{uri}" for uri in uris]
-
+    # FILE nodes use doc.uri as natural_key (no prefix)
     stmt = select(KnowledgeNode.id).where(
         KnowledgeNode.collection_id.in_(collection_ids),
         KnowledgeNode.kind == KnowledgeNodeKind.FILE,
-        KnowledgeNode.natural_key.in_(natural_keys),
+        KnowledgeNode.natural_key.in_(uris),
     )
 
     result = await session.execute(stmt)
@@ -639,6 +638,12 @@ async def _map_search_to_nodes(
     # No fallback to arbitrary nodes - if search doesn't map to graph, return empty
     # The caller should handle empty results appropriately
 
+    if len(node_ids) > 20:
+        logger.info(
+            "Mapped %d nodes from search results, capping at 20. "
+            "Consider narrowing the query for more precise results.",
+            len(node_ids),
+        )
     return node_ids[:20]
 
 
@@ -823,6 +828,11 @@ async def _gather_citations(
                 )
             )
 
+    if len(citations) > 50:
+        logger.info(
+            "Gathered %d citations, capping at 50. Some evidence may be omitted.",
+            len(citations),
+        )
     return citations[:50]
 
 
@@ -982,18 +992,35 @@ async def graph_rag_query(
 
     # Filter valid partial answers
     valid_partials: list[str] = []
+    failed_count = 0
     for i, answer in enumerate(partial_answers):
         if isinstance(answer, BaseException):
+            failed_count += 1
             logger.warning("Map failed for community %s: %s", context.communities[i].title, answer)
             continue
         if answer and answer.strip() and answer.strip().upper() != "NOT_RELEVANT":
             valid_partials.append(answer)
+    if failed_count > 0:
+        logger.warning(
+            "GraphRAG map phase: %d/%d community analyses failed",
+            failed_count,
+            len(partial_answers),
+        )
 
     result.partial_answers = valid_partials
 
     # REDUCE phase: Combine partial answers
     if not valid_partials:
-        result.final_answer = "No relevant information found in the indexed codebase communities."
+        if failed_count > 0:
+            result.final_answer = (
+                f"No relevant information found. "
+                f"{failed_count}/{len(partial_answers)} community analyses failed — "
+                f"check LLM provider connectivity and logs."
+            )
+        else:
+            result.final_answer = (
+                "No relevant information found in the indexed codebase communities."
+            )
         return result
 
     if len(valid_partials) == 1:

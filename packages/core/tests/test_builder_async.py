@@ -323,6 +323,9 @@ class TestBuildKnowledgeGraphForSource:
             elif call_count[0] == 2:
                 result.scalars.return_value = MagicMock(all=lambda: [sym1, sym2])
             elif call_count[0] == 3:
+                # _build_symbol_to_file_node_map query (Symbol.id for doc)
+                result.all.return_value = [(sym1.id,), (sym2.id,)]
+            elif call_count[0] == 4:
                 # SymbolEdge query
                 result.scalars.return_value = MagicMock(all=lambda: [sym_edge])
             else:

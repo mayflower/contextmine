@@ -319,10 +319,10 @@ class Settings(BaseSettings):
         description="Permission mode for arc42 agent-sdk generation",
     )
     arch_docs_generate_on_sync: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Generate/update arc42 artifacts during sync runs. Disabled by default so "
-            "arc42 extraction runs only on explicit trigger."
+            "Generate/update arc42 artifacts during sync runs. "
+            "Set to false to defer arc42 generation to explicit MCP trigger."
         ),
     )
     twin_evolution_view_enabled: bool = Field(

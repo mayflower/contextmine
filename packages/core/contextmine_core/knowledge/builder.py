@@ -162,8 +162,31 @@ async def _create_symbol_nodes_and_edges(
 _SYMBOL_EDGE_KIND_MAP = {
     SymbolEdgeType.CALLS: KnowledgeEdgeKind.SYMBOL_CALLS_SYMBOL,
     SymbolEdgeType.REFERENCES: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
-    SymbolEdgeType.IMPORTS: KnowledgeEdgeKind.FILE_IMPORTS_FILE,
+    SymbolEdgeType.INHERITS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
+    SymbolEdgeType.IMPLEMENTS: KnowledgeEdgeKind.SYMBOL_REFERENCES_SYMBOL,
 }
+
+# Edge types that should produce file-level (FILE_IMPORTS_FILE) edges
+# instead of symbol-level edges.
+_FILE_LEVEL_EDGE_TYPES = {SymbolEdgeType.IMPORTS}
+
+
+async def _build_symbol_to_file_node_map(
+    session: AsyncSession,
+    collection_id: UUID,
+    documents: list,
+    doc_to_node: dict[UUID, UUID],
+) -> dict[UUID, UUID]:
+    """Build a symbol_id -> file_node_id lookup in batch (one query per doc)."""
+    symbol_to_file: dict[UUID, UUID] = {}
+    for doc in documents:
+        file_node_id = doc_to_node.get(doc.id)
+        if not file_node_id:
+            continue
+        result = await session.execute(select(Symbol.id).where(Symbol.document_id == doc.id))
+        for (sym_id,) in result.all():
+            symbol_to_file[sym_id] = file_node_id
+    return symbol_to_file
 
 
 async def _create_symbol_edge_graph_edges(
@@ -171,9 +194,16 @@ async def _create_symbol_edge_graph_edges(
     collection_id: UUID,
     documents: list,
     symbol_to_node: dict[UUID, UUID],
+    symbol_to_file_node: dict[UUID, UUID],
     stats: GraphBuildStats,
 ) -> None:
-    """Create knowledge graph edges from the SymbolEdge table."""
+    """Create knowledge graph edges from the SymbolEdge table.
+
+    Symbol-level edges (CALLS, REFERENCES, INHERITS, IMPLEMENTS) map to
+    symbol-to-symbol knowledge edges.  IMPORTS edges are lifted to
+    file-to-file edges (FILE_IMPORTS_FILE) using the pre-built
+    symbol_to_file_node lookup.
+    """
     for doc in documents:
         result = await session.execute(
             select(SymbolEdge)
@@ -181,21 +211,43 @@ async def _create_symbol_edge_graph_edges(
             .where(Symbol.document_id == doc.id)
         )
         for sym_edge in result.scalars().all():
-            source_node_id = symbol_to_node.get(sym_edge.source_symbol_id)
-            target_node_id = symbol_to_node.get(sym_edge.target_symbol_id)
-            if not source_node_id or not target_node_id:
-                continue
-            kg_edge_kind = _SYMBOL_EDGE_KIND_MAP.get(sym_edge.edge_type)
-            if kg_edge_kind:
+            if sym_edge.edge_type in _FILE_LEVEL_EDGE_TYPES:
+                source_file_id = symbol_to_file_node.get(sym_edge.source_symbol_id)
+                target_file_id = symbol_to_file_node.get(sym_edge.target_symbol_id)
+                if not source_file_id or not target_file_id:
+                    logger.debug(
+                        "Skipping import edge: could not resolve symbol %s -> %s to file nodes",
+                        sym_edge.source_symbol_id,
+                        sym_edge.target_symbol_id,
+                    )
+                    continue
+                if source_file_id == target_file_id:
+                    continue  # Skip self-imports
                 await upsert_edge(
                     session,
                     collection_id=collection_id,
-                    source_node_id=source_node_id,
-                    target_node_id=target_node_id,
-                    kind=kg_edge_kind,
+                    source_node_id=source_file_id,
+                    target_node_id=target_file_id,
+                    kind=KnowledgeEdgeKind.FILE_IMPORTS_FILE,
                     meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
                 )
                 stats.edges_created += 1
+            else:
+                source_node_id = symbol_to_node.get(sym_edge.source_symbol_id)
+                target_node_id = symbol_to_node.get(sym_edge.target_symbol_id)
+                if not source_node_id or not target_node_id:
+                    continue
+                kg_edge_kind = _SYMBOL_EDGE_KIND_MAP.get(sym_edge.edge_type)
+                if kg_edge_kind:
+                    await upsert_edge(
+                        session,
+                        collection_id=collection_id,
+                        source_node_id=source_node_id,
+                        target_node_id=target_node_id,
+                        kind=kg_edge_kind,
+                        meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
+                    )
+                    stats.edges_created += 1
 
 
 async def build_knowledge_graph_for_source(
@@ -233,11 +285,18 @@ async def build_knowledge_graph_for_source(
             stats,
         )
 
+    symbol_to_file_node = await _build_symbol_to_file_node_map(
+        session,
+        collection_id,
+        documents,
+        doc_to_node,
+    )
     await _create_symbol_edge_graph_edges(
         session,
         collection_id,
         documents,
         symbol_to_node,
+        symbol_to_file_node,
         stats,
     )
     return stats
@@ -250,8 +309,9 @@ async def cleanup_orphan_nodes(
 ) -> dict[str, int]:
     """Remove knowledge nodes for deleted documents/symbols.
 
-    Compares existing nodes against current documents and removes any
-    that no longer have a corresponding document.
+    Compares existing FILE nodes against current documents and SYMBOL nodes
+    against current symbols, removing any that no longer have a corresponding
+    entity.
 
     Args:
         session: Database session
@@ -274,11 +334,34 @@ async def cleanup_orphan_nodes(
             KnowledgeNode.kind == KnowledgeNodeKind.FILE,
         )
     )
-    file_nodes = result.all()
 
     nodes_to_delete = []
-    for node_id, natural_key in file_nodes:
+    for node_id, natural_key in result.all():
         if natural_key not in current_uris:
+            nodes_to_delete.append(node_id)
+
+    # Get current symbol qualified names for this source
+    result = await session.execute(
+        select(Document.uri, Symbol.qualified_name)
+        .join(Symbol, Symbol.document_id == Document.id)
+        .where(Document.source_id == source_id)
+    )
+    current_symbol_keys = {f"{uri}::{qn}" for uri, qn in result.all()}
+
+    # Only check SYMBOL nodes scoped to this source's document URIs
+    # (natural_key format: "{uri}::{qualified_name}")
+    uri_prefix_set = {f"{uri}::" for uri in current_uris}
+    result = await session.execute(
+        select(KnowledgeNode.id, KnowledgeNode.natural_key).where(
+            KnowledgeNode.collection_id == collection_id,
+            KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
+        )
+    )
+    for node_id, natural_key in result.all():
+        if (
+            any(natural_key.startswith(prefix) for prefix in uri_prefix_set)
+            and natural_key not in current_symbol_keys
+        ):
             nodes_to_delete.append(node_id)
 
     if nodes_to_delete:

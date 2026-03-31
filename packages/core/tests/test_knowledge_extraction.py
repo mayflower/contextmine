@@ -231,7 +231,7 @@ class TestExtractEntitiesFromChunk:
         assert result[0].name == "Auth"
 
     @pytest.mark.anyio
-    async def test_truncates_long_code(self) -> None:
+    async def test_passes_full_content_to_llm(self) -> None:
         mock_llm = AsyncMock()
         mock_llm.generate_structured.return_value = ExtractionResult(entities=[])
 
@@ -240,7 +240,9 @@ class TestExtractEntitiesFromChunk:
 
         call_args = mock_llm.generate_structured.call_args
         prompt = call_args.kwargs["messages"][0]["content"]
-        assert "truncated" in prompt
+        # Content is passed through without truncation (chunks are pre-sized)
+        assert "truncated" not in prompt
+        assert "x" * 100 in prompt
 
     @pytest.mark.anyio
     async def test_llm_exception_returns_empty(self) -> None:
@@ -300,7 +302,7 @@ class TestExtractRelationshipsFromChunk:
         assert result[0].target == "User"
 
     @pytest.mark.anyio
-    async def test_truncates_long_code(self) -> None:
+    async def test_passes_full_content_to_llm(self) -> None:
         mock_llm = AsyncMock()
         mock_llm.generate_structured.return_value = ExtractionResult(relationships=[])
 
@@ -312,7 +314,9 @@ class TestExtractRelationshipsFromChunk:
         await extract_relationships_from_chunk(mock_llm, entities, long_code)
 
         prompt = mock_llm.generate_structured.call_args.kwargs["messages"][0]["content"]
-        assert "truncated" in prompt
+        # Content is passed through without truncation (chunks are pre-sized)
+        assert "truncated" not in prompt
+        assert "x" * 100 in prompt
 
     @pytest.mark.anyio
     async def test_llm_exception_returns_empty(self) -> None:
@@ -796,11 +800,13 @@ class TestExtractFromDocuments:
         mock_embedder = AsyncMock()
         mock_embedder.embed_batch.return_value = MagicMock(embeddings=[[1.0, 0.0, 0.0]])
 
+        chunk_id = uuid4()
         doc_id = uuid4()
         mock_session = AsyncMock()
         mock_result = MagicMock()
+        # (Chunk.id, Chunk.document_id, Chunk.content, Document.uri)
         mock_result.all.return_value = [
-            (doc_id, "src/auth.py", "def login(): pass"),
+            (chunk_id, doc_id, "def login(): pass", "src/auth.py"),
         ]
         mock_session.execute.return_value = mock_result
 

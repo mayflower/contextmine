@@ -155,23 +155,6 @@ def _render_deployment(bundle: ArchitectureFactsBundle) -> str:
     return "\n".join(lines)
 
 
-def _render_quality(bundle: ArchitectureFactsBundle) -> str:
-    quality = _facts_by_type(bundle, "quality_summary")
-    if not quality:
-        return "No quality summary metrics available."
-
-    attrs = quality[0].attributes
-    return "\n".join(
-        [
-            f"Metric nodes: {attrs.get('metric_nodes', 0)}.",
-            f"Average test coverage: {attrs.get('coverage_avg')}.",
-            f"Average complexity: {attrs.get('complexity_avg')}.",
-            f"Average coupling: {attrs.get('coupling_avg')}.",
-            f"Average change frequency: {attrs.get('change_frequency_avg')}.",
-        ]
-    )
-
-
 def _render_risks(bundle: ArchitectureFactsBundle) -> str:
     lines: list[str] = []
     if bundle.warnings:
@@ -212,42 +195,213 @@ def _render_glossary(bundle: ArchitectureFactsBundle) -> str:
     return "\n".join(lines)
 
 
-def _section_content(bundle: ArchitectureFactsBundle) -> dict[str, str]:
+def _render_introduction(bundle: ArchitectureFactsBundle) -> str:
     containers = _facts_by_type(bundle, "container")
     components = _facts_by_type(bundle, "component")
-    rules = _facts_by_type(bundle, "business_rules")
+    tables = _facts_by_type(bundle, "erm_table")
+    inbound = [f for f in bundle.ports_adapters if f.direction == "inbound"]
+    outbound = [f for f in bundle.ports_adapters if f.direction == "outbound"]
 
-    section_map = {
-        "1_introduction_and_goals": (
-            "This document describes architecture facts inferred from the digital twin, "
-            "knowledge graph, surfaces, and metrics."
-        ),
-        "2_constraints": (
-            "Constraints are derived from available repository evidence, extracted surfaces, and "
-            "known data contracts."
-        ),
+    lines = [
+        f"Architecture facts for **{bundle.scenario_name}**, extracted from code analysis.",
+        "",
+        f"- {len(containers)} containers, {len(components)} components discovered",
+        f"- {len(tables)} database tables mapped",
+        f"- {len(inbound)} inbound and {len(outbound)} outbound integration points",
+        f"- {len(bundle.facts)} total architecture facts with "
+        f"{sum(1 for f in bundle.facts if f.source == 'deterministic')} deterministic, "
+        f"{sum(1 for f in bundle.facts if f.source == 'hybrid')} hybrid, "
+        f"{sum(1 for f in bundle.facts if f.source == 'llm')} LLM-inferred",
+    ]
+    return "\n".join(lines)
+
+
+def _render_constraints(bundle: ArchitectureFactsBundle) -> str:
+    lines: list[str] = []
+    tables = _facts_by_type(bundle, "erm_table")
+    surfaces = _facts_by_type(bundle, "api_endpoint") + _facts_by_type(bundle, "graphql_operation")
+    contracts = _facts_with_tag(bundle, "contract")
+
+    if tables:
+        lines.append(f"- {len(tables)} database tables constrain the data model")
+    if surfaces:
+        lines.append(f"- {len(surfaces)} API surfaces define the system boundary")
+    if contracts:
+        lines.append(f"- {len(contracts)} interface contracts detected")
+
+    # Confidence-based constraints
+    low_confidence = [f for f in bundle.facts if f.confidence < 0.6]
+    if low_confidence:
+        lines.append(
+            f"- {len(low_confidence)} facts have low confidence (<0.6) — "
+            "these should be verified before relying on them"
+        )
+
+    if not lines:
+        lines.append("No specific architectural constraints detected from repository evidence.")
+    return "\n".join(lines)
+
+
+def _render_strategy(bundle: ArchitectureFactsBundle) -> str:
+    containers = _facts_by_type(bundle, "container")
+    lines: list[str] = []
+
+    # Detect patterns from facts
+    has_ports_adapters = bool(bundle.ports_adapters)
+    has_microservices = len(containers) > 3
+    has_monolith = len(containers) <= 1 and containers
+
+    if has_monolith:
+        lines.append("Architecture pattern: **monolithic** (single container detected).")
+    elif has_microservices:
+        lines.append(
+            f"Architecture pattern: **distributed** ({len(containers)} containers suggest "
+            "microservices or modular decomposition)."
+        )
+    if has_ports_adapters:
+        inbound = [f for f in bundle.ports_adapters if f.direction == "inbound"]
+        outbound = [f for f in bundle.ports_adapters if f.direction == "outbound"]
+        lines.append(
+            f"Integration strategy: ports/adapters with {len(inbound)} inbound "
+            f"and {len(outbound)} outbound interfaces."
+        )
+
+    # Source breakdown
+    det_count = sum(1 for f in bundle.facts if f.source == "deterministic")
+    total = len(bundle.facts)
+    if total > 0:
+        pct = int(det_count / total * 100)
+        lines.append(
+            f"Evidence strategy: {pct}% of facts from deterministic extraction, "
+            f"remainder from hybrid/LLM analysis."
+        )
+
+    if not lines:
+        lines.append("Insufficient data to infer architecture strategy.")
+    return "\n".join(lines)
+
+
+def _render_crosscutting(bundle: ArchitectureFactsBundle) -> str:
+    rules = _facts_by_type(bundle, "business_rules")
+    containers = _facts_by_type(bundle, "container")
+    components = _facts_by_type(bundle, "component")
+    jobs = _facts_by_type(bundle, "job")
+
+    lines: list[str] = []
+    rule_count = sum(int(f.attributes.get("count", 0)) for f in rules)
+    if rule_count:
+        # Break down by category if available
+        categories: dict[str, int] = {}
+        for f in rules:
+            for cat, count in (f.attributes.get("categories") or {}).items():
+                categories[cat] = categories.get(cat, 0) + int(count)
+        lines.append(f"**Business rules**: {rule_count} extracted.")
+        if categories:
+            cat_parts = ", ".join(f"{cat}: {n}" for cat, n in sorted(categories.items()))
+            lines.append(f"  Categories: {cat_parts}")
+    if jobs:
+        lines.append(f"**Background jobs**: {len(jobs)} scheduled/triggered jobs detected.")
+    if containers:
+        lines.append(f"**Container decomposition**: {len(containers)} containers tracked.")
+    if components:
+        lines.append(f"**Component structure**: {len(components)} components identified.")
+
+    # Security patterns from tags
+    security_facts = _facts_with_tag(bundle, "security") + _facts_with_tag(bundle, "auth")
+    if security_facts:
+        lines.append(f"**Security**: {len(security_facts)} security-related facts detected.")
+
+    if not lines:
+        lines.append("No crosscutting concepts detected from extraction pipeline.")
+    return "\n".join(lines)
+
+
+def _render_decisions(bundle: ArchitectureFactsBundle) -> str:
+    lines: list[str] = []
+
+    # Infer decisions from extracted facts
+    decision_facts = _facts_by_type(bundle, "architecture_decision")
+    if decision_facts:
+        for fact in decision_facts[:10]:
+            lines.append(
+                f"- **{fact.title}**: {fact.description} (confidence: {fact.confidence:.0%})"
+            )
+    else:
+        # Infer from patterns
+        containers = _facts_by_type(bundle, "container")
+        if len(containers) > 1:
+            names = ", ".join(str(f.attributes.get("container") or f.title) for f in containers[:5])
+            lines.append(f"- Multi-container deployment: {names}")
+
+        has_graphql = bool(_facts_by_type(bundle, "graphql_operation"))
+        has_rest = bool(_facts_by_type(bundle, "api_endpoint"))
+        if has_graphql and has_rest:
+            lines.append("- Dual API strategy: both REST and GraphQL interfaces exposed")
+        elif has_graphql:
+            lines.append("- GraphQL-first API strategy")
+        elif has_rest:
+            lines.append("- REST API strategy")
+
+    lines.append("")
+    lines.append("*Governance: advisory mode — drift deltas are reported but do not block CI.*")
+
+    if len(lines) <= 2:
+        lines.insert(0, "No explicit architecture decisions recorded; inferred patterns above.")
+    return "\n".join(lines)
+
+
+def _render_quality_from_facts(bundle: ArchitectureFactsBundle) -> str:
+    """Render quality section from available facts instead of a missing quality_summary."""
+    quality = _facts_by_type(bundle, "quality_summary")
+    if quality:
+        attrs = quality[0].attributes
+        return "\n".join(
+            [
+                f"Metric nodes: {attrs.get('metric_nodes', 0)}.",
+                f"Average test coverage: {attrs.get('coverage_avg', 'N/A')}.",
+                f"Average complexity: {attrs.get('complexity_avg', 'N/A')}.",
+                f"Average coupling: {attrs.get('coupling_avg', 'N/A')}.",
+            ]
+        )
+
+    # Compute quality indicators from available data
+    lines: list[str] = []
+    total = len(bundle.facts)
+    if total:
+        det = sum(1 for f in bundle.facts if f.source == "deterministic")
+        hybrid = sum(1 for f in bundle.facts if f.source == "hybrid")
+        llm = sum(1 for f in bundle.facts if f.source == "llm")
+        avg_conf = sum(f.confidence for f in bundle.facts) / total
+        lines.append(f"Fact confidence: average {avg_conf:.0%} across {total} facts.")
+        lines.append(f"Source breakdown: {det} deterministic, {hybrid} hybrid, {llm} LLM-inferred.")
+
+    high_conf = sum(1 for f in bundle.facts if f.confidence >= 0.9)
+    low_conf = sum(1 for f in bundle.facts if f.confidence < 0.6)
+    if high_conf or low_conf:
+        lines.append(
+            f"High confidence (>=90%): {high_conf} facts. Low confidence (<60%): {low_conf} facts."
+        )
+
+    if not lines:
+        lines.append("No quality metrics available — run the full extraction pipeline to populate.")
+    return "\n".join(lines)
+
+
+def _section_content(bundle: ArchitectureFactsBundle) -> dict[str, str]:
+    return {
+        "1_introduction_and_goals": _render_introduction(bundle),
+        "2_constraints": _render_constraints(bundle),
         "3_system_scope_and_context": _render_system_context(bundle),
-        "4_solution_strategy": (
-            "Primary strategy: explicit container/component decomposition with ports/adapters "
-            "classification and evidence-backed confidence scoring."
-        ),
+        "4_solution_strategy": _render_strategy(bundle),
         "5_building_block_view": _render_building_blocks(bundle),
         "6_runtime_view": _render_runtime_view(bundle),
         "7_deployment_view": _render_deployment(bundle),
-        "8_crosscutting_concepts": (
-            f"Business rules extracted: {sum(int(f.attributes.get('count', 0)) for f in rules)}.\n"
-            f"Containers tracked: {len(containers)}.\n"
-            f"Components tracked: {len(components)}."
-        ),
-        "9_architecture_decisions": (
-            "V1 uses advisory governance for drift and confidence. CI blocking is intentionally "
-            "disabled for architecture deltas."
-        ),
-        "10_quality_requirements": _render_quality(bundle),
+        "8_crosscutting_concepts": _render_crosscutting(bundle),
+        "9_architecture_decisions": _render_decisions(bundle),
+        "10_quality_requirements": _render_quality_from_facts(bundle),
         "11_risks_and_technical_debt": _render_risks(bundle),
         "12_glossary": _render_glossary(bundle),
     }
-    return section_map
 
 
 def generate_arc42_from_facts(

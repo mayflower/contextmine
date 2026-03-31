@@ -220,10 +220,6 @@ async def extract_entities_from_chunk(
     if not code.strip():
         return []
 
-    # Truncate very long code
-    if len(code) > 8000:
-        code = code[:8000] + "\n... (truncated)"
-
     prompt = ENTITY_EXTRACTION_PROMPT.format(code=code, file_path=file_path)
 
     try:
@@ -260,10 +256,6 @@ async def extract_relationships_from_chunk(
 
     # Format entities for prompt
     entities_text = "\n".join(f"- {e.name} ({e.type}): {e.description}" for e in entities)
-
-    # Truncate code
-    if len(code) > 4000:
-        code = code[:4000] + "\n... (truncated)"
 
     prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(
         entities=entities_text,
@@ -322,56 +314,57 @@ async def extract_from_documents(
         )
 
     from contextmine_core import get_session
-    from contextmine_core.models import Document, Source
+    from contextmine_core.models import Chunk, Document, Source
     from sqlalchemy import select
 
     batch = ExtractionBatch()
 
-    # Load documents in a short-lived read session so LLM extraction does not hold
-    # a long-running DB transaction open.
+    # Load pre-split chunks instead of whole documents.  Documents can be
+    # much larger than an LLM context window; the Chunk table already
+    # contains retrieval-sized pieces, so we use those directly.
     async with get_session() as session:
         stmt = (
-            select(Document.id, Document.uri, Document.content_markdown)
+            select(Chunk.id, Chunk.document_id, Chunk.content, Document.uri)
+            .join(Document, Chunk.document_id == Document.id)
             .join(Source, Document.source_id == Source.id)
-            .where(
-                Source.collection_id == collection_id,
-                Document.content_markdown.isnot(None),
-            )
+            .where(Source.collection_id == collection_id)
+            .order_by(Document.uri, Chunk.chunk_index)
             .limit(max_chunks)
         )
         result = await session.execute(stmt)
-        documents = result.all()
+        chunks = result.all()
 
     all_entities: list[ExtractedEntity] = []
 
-    for _doc_id, doc_uri_raw, content_markdown in documents:
-        if not content_markdown:
+    # Accumulate per-document entities for cross-doc relationship inference.
+    # Multiple chunks may belong to the same document.
+    doc_entities: dict[str, list[str]] = {}
+
+    for _chunk_id, _doc_id, chunk_content, doc_uri_raw in chunks:
+        if not chunk_content or not chunk_content.strip():
             continue
 
         doc_uri = doc_uri_raw or str(_doc_id)
 
-        # Extract entities from this document
+        # Extract entities from this chunk
         entities = await extract_entities_from_chunk(
             llm_provider=llm_provider,
-            code=content_markdown,
+            code=chunk_content,
             file_path=doc_uri,
         )
 
         if entities:
-            # Track source file for each entity
             for entity in entities:
                 entity.source_symbols.append(doc_uri)
 
-            # Track which entities appear in this document (for cross-doc relationships)
-            batch.entity_occurrences[doc_uri] = [e.name for e in entities]
-
+            doc_entities.setdefault(doc_uri, []).extend(e.name for e in entities)
             all_entities.extend(entities)
 
-            # Extract relationships within this document
+            # Extract relationships within this chunk
             relationships = await extract_relationships_from_chunk(
                 llm_provider=llm_provider,
                 entities=entities,
-                code=content_markdown,
+                code=chunk_content,
             )
 
             for rel in relationships:
@@ -386,6 +379,8 @@ async def extract_from_documents(
                 )
 
         batch.chunks_processed += 1
+
+    batch.entity_occurrences = doc_entities
 
     # Resolve and merge entities across documents using embedding similarity
     # This handles multi-language, naming conventions, abbreviations, synonyms

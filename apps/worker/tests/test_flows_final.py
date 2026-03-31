@@ -360,10 +360,10 @@ class TestBuildKGSurface:
 
 
 class TestBuildKGSemanticCommunity:
-    async def test_skip_semantic_when_no_changed_docs(
+    async def test_skip_semantic_when_no_changed_docs_and_entities_exist(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Line 935-936: Empty changed_doc_ids skips semantic extraction."""
+        """Empty changed_doc_ids skips semantic extraction when entities already exist."""
         source_id = str(uuid.uuid4())
         collection_id = str(uuid.uuid4())
 
@@ -375,10 +375,13 @@ class TestBuildKGSemanticCommunity:
 
         mock_session = AsyncMock()
 
+        # Return a non-None value for _kg_has_semantic_entities check
+        existing_node_id = uuid.uuid4()
+
         async def mock_exec(stmt):
             r = MagicMock()
             r.all.return_value = []
-            r.scalar_one_or_none.return_value = None
+            r.scalar_one_or_none.return_value = existing_node_id
             return r
 
         mock_session.execute = mock_exec
@@ -417,6 +420,7 @@ class TestBuildKGSemanticCommunity:
             collection_id=collection_id,
             changed_doc_ids=[],
         )
+        # Skips extraction because semantic entities already exist
         extract_mock.assert_not_called()
 
     async def test_semantic_extraction_error_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:

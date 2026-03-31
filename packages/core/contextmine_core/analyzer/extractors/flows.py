@@ -142,12 +142,6 @@ def synthesize_user_flows(
     route_to_symbol_hints, route_to_navigation_hints = _collect_route_hints_from_ui(ui_extractions)
     symbol_to_test_refs = _collect_symbol_test_refs(test_extractions)
 
-    for test_file in test_extractions:
-        for case in test_file.cases:
-            for symbol_hint in case.symbol_hints:
-                symbol_to_test_refs.setdefault(symbol_hint.lower(), [])
-                symbol_to_test_refs[symbol_hint.lower()].append(case.natural_key)
-
     synthesis = FlowSynthesis()
     for route, symbol_hints in sorted(route_to_symbol_hints.items()):
         deduped_hints = list(

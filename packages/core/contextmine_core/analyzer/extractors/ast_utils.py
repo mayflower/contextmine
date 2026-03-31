@@ -77,6 +77,92 @@ def is_pascal_case(value: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Cross-language AST helpers shared between extractors
+# ---------------------------------------------------------------------------
+
+
+def find_enclosing_class_name(
+    content: str,
+    node: Any,
+    class_type: str = "class_declaration",
+    name_fields: tuple[str, ...] = ("identifier",),
+) -> str | None:
+    """Walk up the AST to find the enclosing class name."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type == class_type:
+            for field_name in name_fields:
+                name_node = first_child(parent, field_name)
+                if name_node:
+                    name = node_text(content, name_node).strip()
+                    if name:
+                        return name
+            break
+        parent = parent.parent
+    return None
+
+
+def ruby_first_string_arg(content: str, call_node: Any) -> str | None:
+    """Extract the first string argument from a Ruby call node."""
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        for child in call_node.children:
+            if child.type == "argument_list":
+                args = child
+                break
+    if args is None:
+        return None
+    for child in args.children:
+        if child.type in {"string", "string_literal"}:
+            return unquote(node_text(content, child))
+    return None
+
+
+def java_annotation_names(content: str, node: Any) -> list[str]:
+    """Extract annotation names from a Java method/class node's modifiers."""
+    names: list[str] = []
+    parent = node.parent
+    if parent is None:
+        return names
+    for child in parent.children:
+        if child.type == "modifiers":
+            for mod in child.children:
+                if mod.type in {"marker_annotation", "annotation"}:
+                    name_node = first_child(mod, "identifier")
+                    if name_node:
+                        names.append(node_text(content, name_node).strip().lower())
+    return names
+
+
+def csharp_attribute_names(content: str, node: Any) -> set[str]:
+    """Extract attribute names from a C# node's preceding attribute_list siblings."""
+    attrs: set[str] = set()
+    parent = node.parent
+    if parent is None:
+        return attrs
+    for child in parent.children:
+        if child is node:
+            break
+        if child.type == "attribute_list":
+            for attr in walk(child):
+                if attr.type in {"identifier", "attribute"}:
+                    name = node_text(content, attr).strip().lower()
+                    if name.endswith("attribute"):
+                        name = name[: -len("attribute")]
+                    attrs.add(name)
+    # Also check direct children
+    for child in node.children:
+        if child.type == "attribute_list":
+            for attr in walk(child):
+                if attr.type in {"identifier", "attribute"}:
+                    name = node_text(content, attr).strip().lower()
+                    if name.endswith("attribute"):
+                        name = name[: -len("attribute")]
+                    attrs.add(name)
+    return attrs
+
+
+# ---------------------------------------------------------------------------
 # JS/TS AST helpers shared between the tests and UI extractors
 # ---------------------------------------------------------------------------
 

@@ -945,8 +945,10 @@ async def _kg_extract_business_rules(
     from contextmine_core.treesitter.languages import detect_language
 
     if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-        logger.info("No changed documents - skipping business rule extraction")
-        return 0
+        if await _kg_has_business_rules(collection_uuid):
+            logger.info("No changed documents and business rules exist - skipping extraction")
+            return 0
+        logger.info("No changed documents but no business rules found - running initial extraction")
 
     all_extractions = []
     async with get_session() as session:
@@ -1032,6 +1034,38 @@ async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> 
     return result_stats
 
 
+async def _kg_has_semantic_entities(collection_uuid: object) -> bool:
+    """Check if any SEMANTIC_ENTITY nodes exist for this collection."""
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(KnowledgeNode.id)
+            .where(
+                KnowledgeNode.collection_id == collection_uuid,
+                KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def _kg_has_business_rules(collection_uuid: object) -> bool:
+    """Check if any BUSINESS_RULE nodes exist for this collection."""
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(KnowledgeNode.id)
+            .where(
+                KnowledgeNode.collection_id == collection_uuid,
+                KnowledgeNode.kind == KnowledgeNodeKind.BUSINESS_RULE,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
 async def _kg_step_semantic_entities(
     stats: dict,
     collection_uuid: object,
@@ -1047,8 +1081,15 @@ async def _kg_step_semantic_entities(
         )
 
         if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-            logger.info("No changed documents - skipping semantic entity extraction")
-            return
+            # No docs changed — skip only if entities already exist from a prior run
+            if await _kg_has_semantic_entities(collection_uuid):
+                logger.info(
+                    "No changed documents and semantic entities exist - skipping extraction"
+                )
+                return
+            logger.info(
+                "No changed documents but no semantic entities found - running initial extraction"
+            )
         async with get_session() as session:
             extraction_batch = await extract_from_documents(
                 collection_id=collection_uuid,
@@ -1112,8 +1153,16 @@ async def _kg_step_summaries(
         from contextmine_core.knowledge.summaries import generate_community_summaries
 
         if changed_doc_ids is not None and len(changed_doc_ids) == 0:
-            logger.info("No changed documents - skipping community summary regeneration")
-            return
+            # No docs changed — skip only if semantic entities (and thus summaries)
+            # already exist from a prior run
+            if await _kg_has_semantic_entities(collection_uuid):
+                logger.info(
+                    "No changed documents and semantic entities exist - skipping summary regeneration"
+                )
+                return
+            logger.info(
+                "No changed documents but no semantic entities found - running initial summary generation"
+            )
         async with get_session() as session:
             summary_stats = await generate_community_summaries(
                 session,

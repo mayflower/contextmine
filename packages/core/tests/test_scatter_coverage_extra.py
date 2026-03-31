@@ -491,12 +491,13 @@ describe('outer', () => {
         assert len(extraction.suites) >= 2
         assert len(extraction.cases) >= 2
 
-    def test_unsupported_extension(self) -> None:
+    def test_ruby_rspec_extraction(self) -> None:
         from contextmine_core.analyzer.extractors.tests import extract_tests_from_file
 
         extraction = extract_tests_from_file("tests/test_main.rb", "RSpec.describe 'test' do\nend")
-        # Ruby is not supported by tree-sitter in this codebase
-        assert extraction.framework in {"unknown", "js_test", "cypress", "playwright"}
+        assert extraction.framework == "rspec"
+        assert len(extraction.suites) >= 1
+        assert extraction.suites[0].name == "test"
 
     def test_python_standalone_test_with_assert(self) -> None:
         from contextmine_core.analyzer.extractors.tests import extract_tests_from_file

@@ -1325,7 +1325,15 @@ async def research_validation(
             matched_candidates = _match_candidates_by_query(all_candidates, query_words)
 
             if not matched_rules and not matched_candidates:
-                return f"# No Validation Rules Found\n\nNo business rules or validation logic found for: `{code_path}`"
+                return (
+                    f"# No Validation Rules Found\n\n"
+                    f"No business rules or validation logic found for: `{code_path}`\n\n"
+                    "**Possible causes:**\n"
+                    "- The source hasn't been synced yet — trigger a sync to run extraction\n"
+                    "- No LLM provider is configured (`DEFAULT_LLM_PROVIDER` env var) — "
+                    "business rule extraction requires an LLM\n"
+                    "- The code genuinely has no validation patterns for this path"
+                )
 
             return _format_validation_results(code_path, matched_rules, matched_candidates)
 
@@ -1481,7 +1489,14 @@ async def research_data_model(
             erd_artifact = result.scalar_one_or_none()
 
             if not tables and not columns and not endpoints:
-                return f"# No Data Model Found\n\nNo tables, columns, or APIs found for: `{entity}`"
+                return (
+                    f"# No Data Model Found\n\n"
+                    f"No tables, columns, or APIs found for: `{entity}`\n\n"
+                    "**Possible causes:**\n"
+                    "- The source hasn't been synced yet — trigger a sync to run schema extraction\n"
+                    "- No SQL/DDL, Django, SQLAlchemy, Prisma, or migration files were found\n"
+                    "- Try a broader search term (e.g., a table name or entity name)"
+                )
 
             return _format_data_model_results(
                 entity, entity_lower, tables, columns, endpoints, erd_artifact
@@ -1746,7 +1761,11 @@ async def research_architecture(
             if len(lines) == 1:
                 lines.append(f"No specific architecture information found for topic: `{topic}`\n")
                 lines.append(
-                    "Try topics like: api, deployment, database, security, ui, tests, flows"
+                    "Try topics like: api, deployment, database, security, ui, tests, flows\n"
+                )
+                lines.append(
+                    "**If all topics are empty**, the knowledge graph may not be populated yet. "
+                    "Ensure the source has been synced and extraction completed successfully."
                 )
 
             return "\n".join(lines)
@@ -1988,7 +2007,15 @@ async def _graph_rag_context(
             or md
             == f"# GraphRAG Context: {query}\n\nFound 0 communities, 0 entities, 0 citations.\n"
         ):
-            return f"# No Results\n\nNo relevant content found for: {query}"
+            return (
+                f"# No Results\n\n"
+                f"No relevant content found for: {query}\n\n"
+                "**Possible causes:**\n"
+                "- The knowledge graph has no semantic entities yet — ensure sync completed "
+                "with LLM extraction enabled\n"
+                "- Community summaries haven't been generated or embedded\n"
+                "- Try rephrasing the query with different terms"
+            )
 
         if rebuild_mode:
             md += (
@@ -2571,9 +2598,13 @@ async def mcp_get_arc42(
 
             if not regenerate:
                 return (
-                    "# Error\n\n"
-                    "arc42 artifact not generated yet. Trigger explicit generation with "
-                    "`regenerate=true`."
+                    "# arc42 Not Generated Yet\n\n"
+                    "The arc42 architecture document hasn't been generated for this collection.\n\n"
+                    "**To generate it:**\n"
+                    "1. Ensure the source has been synced (this builds the knowledge graph)\n"
+                    "2. Call `get_arc42(regenerate=true)` to generate the document\n\n"
+                    "If `arch_docs_generate_on_sync` is enabled (default), "
+                    "arc42 is generated automatically during sync."
                 )
 
             return await _arc42_regenerate(
@@ -2660,7 +2691,12 @@ async def _resolve_drift_baseline(
             )
         ).scalar_one_or_none()
         if baseline is None:
-            return None, "# Error\n\nBaseline scenario not found in collection."
+            return None, (
+                "# Error\n\n"
+                "Baseline scenario not found in collection.\n\n"
+                "Drift reports compare two scenarios. Ensure a baseline scenario exists "
+                "by running at least two syncs, or specify a valid `baseline_scenario_id`."
+            )
         return baseline, None
 
     baseline = None
