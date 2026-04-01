@@ -246,7 +246,7 @@ def _traverse_for_units(
         name = _get_node_name(content, node)
         if name:
             # Include preceding decorators/annotations
-            actual_start = _include_decorators(content, node)
+            actual_start = _include_decorators(node)
             actual_start_line = content[:actual_start].count("\n") + 1
             units.append(
                 _CodeUnit(
@@ -265,7 +265,7 @@ def _traverse_for_units(
         _traverse_for_units(content, child, func_types, class_types, units, parent_name)
 
 
-def _include_decorators(content: str, node: Any) -> int:
+def _include_decorators(node: Any) -> int:
     """Return the byte offset including any decorators/annotations before the node."""
     start = node.start_byte
     prev = node.prev_sibling

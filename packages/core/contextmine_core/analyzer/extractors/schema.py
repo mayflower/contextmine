@@ -447,11 +447,7 @@ _SQLALCHEMY_TYPE_MAP = {
 
 def _extract_schema_from_python_orm(file_path: str, content: str) -> SchemaExtraction:
     """Parse Django models and SQLAlchemy models using tree-sitter."""
-    from contextmine_core.analyzer.extractors.ast_utils import (
-        first_child,
-        node_text,
-        walk,
-    )
+    from contextmine_core.analyzer.extractors.ast_utils import walk
     from contextmine_core.treesitter.languages import detect_language
     from contextmine_core.treesitter.manager import get_treesitter_manager
 
@@ -481,68 +477,56 @@ def _extract_schema_from_python_orm(file_path: str, content: str) -> SchemaExtra
     for node in walk(root):
         if node.type != "class_definition":
             continue
-        class_name = node_text(content, first_child(node, "identifier")).strip()
-        if not class_name:
-            continue
-
-        # Check superclass
-        superclass_node = node.child_by_field_name("superclasses")
-        if superclass_node is None:
-            # Try argument_list (Python 3 style)
-            superclass_node = first_child(node, "argument_list")
-        if superclass_node is None:
-            continue
-        superclass_text = node_text(content, superclass_node)
-
-        if is_django and "Model" in superclass_text:
-            table = _parse_django_model(content, node, class_name)
-            if table and table.columns:
-                extraction.tables.append(table)
-                extraction.framework = "django"
-        elif is_sqlalchemy and ("Base" in superclass_text or "DeclarativeBase" in superclass_text):
-            table = _parse_sqlalchemy_model(content, node, class_name)
-            if table and table.columns:
-                extraction.tables.append(table)
-                extraction.framework = "sqlalchemy"
+        _try_extract_orm_class(content, node, is_django, is_sqlalchemy, extraction)
 
     return extraction
 
 
+def _try_extract_orm_class(
+    content: str,
+    node: Any,
+    is_django: bool,
+    is_sqlalchemy: bool,
+    extraction: SchemaExtraction,
+) -> None:
+    """Try to extract a Django or SQLAlchemy model from a class definition node."""
+    from contextmine_core.analyzer.extractors.ast_utils import first_child, node_text
+
+    class_name = node_text(content, first_child(node, "identifier")).strip()
+    if not class_name:
+        return
+
+    superclass_node = node.child_by_field_name("superclasses")
+    if superclass_node is None:
+        superclass_node = first_child(node, "argument_list")
+    if superclass_node is None:
+        return
+    superclass_text = node_text(content, superclass_node)
+
+    if is_django and "Model" in superclass_text:
+        table = _parse_django_model(content, node, class_name)
+        if table and table.columns:
+            extraction.tables.append(table)
+            extraction.framework = "django"
+    elif is_sqlalchemy and ("Base" in superclass_text or "DeclarativeBase" in superclass_text):
+        table = _parse_sqlalchemy_model(content, node, class_name)
+        if table and table.columns:
+            extraction.tables.append(table)
+            extraction.framework = "sqlalchemy"
+
+
 def _parse_django_model(content: str, class_node: Any, class_name: str) -> TableDef | None:
     """Extract a Django model class into a TableDef."""
-    from contextmine_core.analyzer.extractors.ast_utils import node_text, walk
+    from contextmine_core.analyzer.extractors.ast_utils import walk
 
     # Django convention: model name -> lowercase with underscores
     table_name = _django_table_name(class_name)
     table = TableDef(name=table_name)
 
     for node in walk(class_node):
-        if node.type != "assignment" and node.type != "expression_statement":
+        if node.type not in {"assignment", "expression_statement"}:
             continue
-        assign = node if node.type == "assignment" else None
-        if assign is None:
-            # Check for assignment inside expression_statement
-            for child in node.children:
-                if child.type == "assignment":
-                    assign = child
-                    break
-        if assign is None:
-            continue
-
-        left = assign.child_by_field_name("left")
-        right = assign.child_by_field_name("right")
-        if left is None or right is None:
-            continue
-
-        field_name = node_text(content, left).strip()
-        if not field_name or field_name.startswith("_") or field_name == "Meta":
-            continue
-
-        right_text = node_text(content, right).strip()
-        if "models." not in right_text and "Field" not in right_text:
-            continue
-
-        col = _parse_django_field(field_name, right_text)
+        col = _try_parse_django_field_from_node(content, node)
         if col:
             table.columns.append(col)
 
@@ -555,6 +539,35 @@ def _parse_django_model(content: str, class_node: Any, class_name: str) -> Table
         table.primary_keys.append("id")
 
     return table
+
+
+def _try_parse_django_field_from_node(content: str, node: Any) -> ColumnDef | None:
+    """Try to extract a Django field definition from an AST node."""
+    from contextmine_core.analyzer.extractors.ast_utils import node_text
+
+    assign = node if node.type == "assignment" else None
+    if assign is None:
+        for child in node.children:
+            if child.type == "assignment":
+                assign = child
+                break
+    if assign is None:
+        return None
+
+    left = assign.child_by_field_name("left")
+    right = assign.child_by_field_name("right")
+    if left is None or right is None:
+        return None
+
+    field_name = node_text(content, left).strip()
+    if not field_name or field_name.startswith("_") or field_name == "Meta":
+        return None
+
+    right_text = node_text(content, right).strip()
+    if "models." not in right_text and "Field" not in right_text:
+        return None
+
+    return _parse_django_field(field_name, right_text)
 
 
 def _django_table_name(class_name: str) -> str:
@@ -570,9 +583,7 @@ def _parse_django_field(field_name: str, right_text: str) -> ColumnDef | None:
     # Extract field type: models.CharField(...) or CharField(...)
     import re
 
-    match = re.search(
-        r"(?:models\.)?(\w+Field|ForeignKey|OneToOneField|ManyToManyField)\s*\(", right_text
-    )
+    match = re.search(r"(?:models\.)?(\w+Field|ForeignKey)\s*\(", right_text)
     if not match:
         return None
     field_type = match.group(1).lower()
@@ -637,7 +648,7 @@ def _parse_sqlalchemy_column(assign_text: str) -> ColumnDef | None:
 
     # Match: field_name = Column(...) or field_name: Mapped[...] = mapped_column(...)
     match = re.match(
-        r"(\w+)\s*(?::\s*Mapped\[.*?\])?\s*=\s*(?:mapped_column|Column)\s*\(", assign_text
+        r"(\w+)\s*(?::\s*Mapped\[[^\]]*\])?\s*=\s*(?:mapped_column|Column)\s*\(", assign_text
     )
     if not match:
         return None
@@ -691,78 +702,84 @@ def _parse_sqlalchemy_column(assign_text: str) -> ColumnDef | None:
 # ============================================================================
 
 
+_PRISMA_TYPE_MAP = {
+    "string": "String",
+    "int": "Integer",
+    "bigint": "BigInteger",
+    "float": "Float",
+    "decimal": "Numeric",
+    "boolean": "Boolean",
+    "datetime": "DateTime",
+    "json": "JSON",
+    "bytes": "LargeBinary",
+}
+
+
 def _extract_schema_from_prisma(file_path: str, content: str) -> SchemaExtraction:
     """Parse Prisma schema files deterministically using regex."""
     extraction = SchemaExtraction(file_path=file_path, framework="prisma")
-
-    _PRISMA_TYPE_MAP = {
-        "string": "String",
-        "int": "Integer",
-        "bigint": "BigInteger",
-        "float": "Float",
-        "decimal": "Numeric",
-        "boolean": "Boolean",
-        "datetime": "DateTime",
-        "json": "JSON",
-        "bytes": "LargeBinary",
-    }
 
     # Match model blocks: model User { ... }
     model_pattern = re.compile(r"model\s+(\w+)\s*\{([^}]+)\}", re.DOTALL)
     for match in model_pattern.finditer(content):
         model_name = match.group(1)
         body = match.group(2)
-        table = TableDef(name=model_name)
-
-        for line in body.strip().split("\n"):
-            line = line.strip()
-            if not line or line.startswith("//") or line.startswith("@@"):
-                continue
-
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-
-            field_name = parts[0]
-            if field_name.startswith("@@") or field_name.startswith("//"):
-                continue
-
-            field_type_raw = parts[1]
-            # Handle optional (?) and array ([]) markers
-            is_optional = field_type_raw.endswith("?")
-            field_type_clean = field_type_raw.rstrip("?").rstrip("[]")
-
-            type_name = _PRISMA_TYPE_MAP.get(field_type_clean.lower(), field_type_clean)
-
-            is_pk = "@id" in line
-            is_relation = "@relation" in line
-            foreign_key = None
-
-            if is_relation:
-                # Try to extract references
-                ref_match = re.search(r"references:\s*\[(\w+)\]", line)
-                fields_match = re.search(r"fields:\s*\[(\w+)\]", line)
-                if ref_match:
-                    foreign_key = f"{field_type_clean}.{ref_match.group(1)}"
-                # Skip pure relation fields (no scalar column)
-                if not fields_match:
-                    continue
-
-            col = ColumnDef(
-                name=field_name,
-                type_name=type_name,
-                nullable=is_optional,
-                primary_key=is_pk,
-                foreign_key=foreign_key,
-            )
-            table.columns.append(col)
-            if is_pk:
-                table.primary_keys.append(field_name)
-
+        table = _parse_prisma_model_body(model_name, body)
         if table.columns:
             extraction.tables.append(table)
 
     return extraction
+
+
+def _parse_prisma_model_body(model_name: str, body: str) -> TableDef:
+    """Parse the body of a Prisma model block into a TableDef."""
+    table = TableDef(name=model_name)
+    for line in body.strip().split("\n"):
+        col = _parse_prisma_field_line(line.strip())
+        if col is not None:
+            table.columns.append(col)
+            if col.primary_key:
+                table.primary_keys.append(col.name)
+    return table
+
+
+def _parse_prisma_field_line(line: str) -> ColumnDef | None:
+    """Parse a single Prisma field line into a ColumnDef, or None if not a field."""
+    if not line or line.startswith("//") or line.startswith("@@"):
+        return None
+
+    parts = line.split()
+    if len(parts) < 2:
+        return None
+
+    field_name = parts[0]
+    if field_name.startswith("@@") or field_name.startswith("//"):
+        return None
+
+    field_type_raw = parts[1]
+    is_optional = field_type_raw.endswith("?")
+    field_type_clean = field_type_raw.rstrip("?").rstrip("[]")
+    type_name = _PRISMA_TYPE_MAP.get(field_type_clean.lower(), field_type_clean)
+
+    is_pk = "@id" in line
+    is_relation = "@relation" in line
+    foreign_key = None
+
+    if is_relation:
+        ref_match = re.search(r"references:\s*\[(\w+)\]", line)
+        fields_match = re.search(r"fields:\s*\[(\w+)\]", line)
+        if ref_match:
+            foreign_key = f"{field_type_clean}.{ref_match.group(1)}"
+        if not fields_match:
+            return None
+
+    return ColumnDef(
+        name=field_name,
+        type_name=type_name,
+        nullable=is_optional,
+        primary_key=is_pk,
+        foreign_key=foreign_key,
+    )
 
 
 def _is_code_or_schema_file(file_path: str) -> bool:
@@ -943,46 +960,56 @@ async def _extract_schema_from_single_file(
             max_tokens=3000,
         )
 
-        result.framework = llm_result.framework
-
-        # Convert tables
-        for table_output in llm_result.tables:
-            table = TableDef(
-                name=table_output.name,
-                description=table_output.description,
-            )
-
-            for col_output in table_output.columns:
-                col = ColumnDef(
-                    name=col_output.name,
-                    type_name=col_output.type_name,
-                    nullable=col_output.nullable,
-                    primary_key=col_output.primary_key,
-                    foreign_key=col_output.foreign_key,
-                    description=col_output.description,
-                )
-                table.columns.append(col)
-                if col.primary_key:
-                    table.primary_keys.append(col.name)
-
-            result.tables.append(table)
-
-        # Convert foreign keys
-        for fk_output in llm_result.foreign_keys:
-            result.foreign_keys.append(
-                ForeignKeyDef(
-                    name=fk_output.name,
-                    source_table=fk_output.source_table,
-                    source_columns=fk_output.source_columns,
-                    target_table=fk_output.target_table,
-                    target_columns=fk_output.target_columns,
-                )
-            )
+        _populate_extraction_from_llm_result(result, llm_result)
 
     except Exception as e:
         logger.warning("Failed to extract schema from %s: %s", file_path, e)
 
     return result
+
+
+def _populate_extraction_from_llm_result(
+    result: SchemaExtraction,
+    llm_result: SchemaExtractionOutput,
+) -> None:
+    """Populate a SchemaExtraction from LLM structured output."""
+    result.framework = llm_result.framework
+
+    for table_output in llm_result.tables:
+        table = _convert_llm_table(table_output)
+        result.tables.append(table)
+
+    for fk_output in llm_result.foreign_keys:
+        result.foreign_keys.append(
+            ForeignKeyDef(
+                name=fk_output.name,
+                source_table=fk_output.source_table,
+                source_columns=fk_output.source_columns,
+                target_table=fk_output.target_table,
+                target_columns=fk_output.target_columns,
+            )
+        )
+
+
+def _convert_llm_table(table_output: TableOutput) -> TableDef:
+    """Convert an LLM TableOutput to a TableDef."""
+    table = TableDef(
+        name=table_output.name,
+        description=table_output.description,
+    )
+    for col_output in table_output.columns:
+        col = ColumnDef(
+            name=col_output.name,
+            type_name=col_output.type_name,
+            nullable=col_output.nullable,
+            primary_key=col_output.primary_key,
+            foreign_key=col_output.foreign_key,
+            description=col_output.description,
+        )
+        table.columns.append(col)
+        if col.primary_key:
+            table.primary_keys.append(col.name)
+    return table
 
 
 # ============================================================================

@@ -144,44 +144,41 @@ def looks_like_test_file(file_path: str) -> bool:
     return any(marker in lower for marker in TEST_FILE_PATTERNS)
 
 
+_FRAMEWORK_KEYWORD_MAP: tuple[tuple[str, str], ...] = (
+    ("pytest", "pytest"),
+    ("unittest", "unittest"),
+    ("jest", "jest"),
+    ("vitest", "vitest"),
+    ("cypress", "cypress"),
+    ("playwright", "playwright"),
+    ("junit", "junit"),
+    ("nunit", "nunit"),
+    ("xunit", "xunit"),
+    ("minitest", "minitest"),
+    ("test::unit", "minitest"),
+)
+
+
 def detect_test_framework(file_path: str, content: str) -> str:
     """Best-effort framework detection."""
     lower = content.lower()
-    if "pytest" in lower:
-        return "pytest"
-    if "unittest" in lower:
-        return "unittest"
-    if "jest" in lower:
-        return "jest"
-    if "vitest" in lower:
-        return "vitest"
-    if "cypress" in lower:
-        return "cypress"
-    if "playwright" in lower:
-        return "playwright"
-    # Java
+
+    # Simple keyword lookup
+    for keyword, framework in _FRAMEWORK_KEYWORD_MAP:
+        if keyword in lower:
+            return framework
+
+    # File-extension-sensitive checks
     if "@test" in lower and file_path.endswith(".java"):
         return "junit"
-    if "junit" in lower:
-        return "junit"
-    # Go
     if file_path.endswith("_test.go"):
         return "go_testing"
-    # PHP
     if "phpunit" in lower or ("extends testcase" in lower and file_path.endswith(".php")):
         return "phpunit"
-    # Ruby
     if "rspec" in lower or ("describe " in lower and file_path.endswith((".rb", "_spec.rb"))):
         return "rspec"
-    if "minitest" in lower or "test::unit" in lower:
-        return "minitest"
-    # C#
     if "[test]" in lower or "[fact]" in lower or "[testmethod]" in lower:
         return "nunit_or_xunit"
-    if "nunit" in lower:
-        return "nunit"
-    if "xunit" in lower:
-        return "xunit"
     if file_path.endswith((".spec.ts", ".spec.js", ".test.ts", ".test.js")):
         return "js_test"
     return "unknown"
@@ -646,58 +643,68 @@ def _extract_java_tests(
 ) -> None:
     """Extract JUnit 4/5 test classes, methods, and lifecycle hooks."""
     for node in walk(root):
-        # Test classes
         if node.type == "class_declaration":
-            name_node = first_child(node, "identifier")
-            name = node_text(content, name_node).strip() if name_node else ""
-            if name and "test" in name.lower():
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=name,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{name}",
-                    )
-                )
+            _maybe_add_java_suite(file_path, content, node, extraction)
+        if node.type == "method_declaration":
+            _handle_java_method(file_path, content, node, extraction)
 
-        # Test methods and lifecycle hooks
-        if node.type != "method_declaration":
-            continue
-        annotations = java_annotation_names(content, node)
-        fn_name_node = first_child(node, "identifier")
-        fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
-        if not fn_name:
-            continue
 
-        if any(ann in _JAVA_LIFECYCLE_ANNOTATIONS for ann in annotations):
-            extraction.fixtures.append(
-                TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
+def _maybe_add_java_suite(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Add a Java test class as a suite if its name contains 'test'."""
+    name_node = first_child(node, "identifier")
+    name = node_text(content, name_node).strip() if name_node else ""
+    if name and "test" in name.lower():
+        extraction.suites.append(
+            TestSuiteDef(
+                name=name,
+                file_path=file_path,
+                line=line_number(node),
+                natural_key=f"test_suite:{file_path}:{name}",
             )
+        )
 
-        is_test = any(ann in _JAVA_TEST_ANNOTATIONS for ann in annotations)
-        if not is_test and fn_name.startswith("test"):
-            is_test = True  # JUnit 3 convention
-        if not is_test:
-            continue
 
-        suite_name = _java_parent_class(content, node)
-        symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_java_case_signals(
-            content, node
+def _handle_java_method(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle a Java method declaration: lifecycle hook or test case."""
+    annotations = java_annotation_names(content, node)
+    fn_name_node = first_child(node, "identifier")
+    fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
+    if not fn_name:
+        return
+
+    if any(ann in _JAVA_LIFECYCLE_ANNOTATIONS for ann in annotations):
+        extraction.fixtures.append(
+            TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
         )
-        case = TestCaseDef(
-            name=fn_name,
-            file_path=file_path,
-            line=line_number(node),
-            suite_name=suite_name,
-            symbol_hints=symbol_hints[:12],
-            endpoint_hints=endpoint_hints[:12],
-            call_sites=call_sites[:80],
-            raw_assertions=raw_assertions[:8],
-        )
-        case.natural_key = (
-            f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
-        )
-        extraction.cases.append(case)
+
+    is_test = any(ann in _JAVA_TEST_ANNOTATIONS for ann in annotations)
+    if not is_test and fn_name.startswith("test"):
+        is_test = True  # JUnit 3 convention
+    if not is_test:
+        return
+
+    suite_name = _java_parent_class(content, node)
+    symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_java_case_signals(
+        content, node
+    )
+    case = TestCaseDef(
+        name=fn_name,
+        file_path=file_path,
+        line=line_number(node),
+        suite_name=suite_name,
+        symbol_hints=symbol_hints[:12],
+        endpoint_hints=endpoint_hints[:12],
+        call_sites=call_sites[:80],
+        raw_assertions=raw_assertions[:8],
+    )
+    case.natural_key = (
+        f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
+    )
+    extraction.cases.append(case)
 
 
 def _java_parent_class(content: str, node: Any) -> str | None:
@@ -713,29 +720,46 @@ def _collect_java_case_signals(
     assertions: list[str] = []
     for node in walk(method_node):
         if node.type == "method_invocation":
-            name_node = first_child(node, "identifier")
-            callee = node_text(content, name_node).strip() if name_node else ""
-            if callee:
-                call_sites.append(
-                    {
-                        "line": line_number(node),
-                        "column": int(node.start_point[1]),
-                        "callee": callee,
-                    }
-                )
-                if callee.startswith("assert") or callee == "assertEquals":
-                    assertions.append(node_text(content, node).strip())
-                elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
-                    symbols.append(callee)
-            endpoint = endpoint_from_call(content, node, base_name=callee, method_name="")
-            if endpoint:
-                endpoints.append(endpoint)
+            _process_java_invocation(content, node, symbols, endpoints, call_sites, assertions)
     return _dedupe(symbols), _dedupe(endpoints), call_sites, _dedupe(assertions)
+
+
+def _process_java_invocation(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    endpoints: list[str],
+    call_sites: list[dict[str, Any]],
+    assertions: list[str],
+) -> None:
+    """Process a single Java method_invocation node for test signals."""
+    name_node = first_child(node, "identifier")
+    callee = node_text(content, name_node).strip() if name_node else ""
+    if callee:
+        call_sites.append(
+            {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+        )
+        if callee.startswith("assert") or callee == "assertEquals":
+            assertions.append(node_text(content, node).strip())
+        elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
+            symbols.append(callee)
+    endpoint = endpoint_from_call(content, node, base_name=callee, method_name="")
+    if endpoint:
+        endpoints.append(endpoint)
 
 
 # ---------------------------------------------------------------------------
 # Go (testing package) extraction
 # ---------------------------------------------------------------------------
+
+
+def _is_go_test_function(fn_name: str) -> bool:
+    """Return True if the function name matches Go test/benchmark/fuzz conventions."""
+    if fn_name.startswith("Test") and len(fn_name) > 4 and fn_name[4].isupper():
+        return True
+    if fn_name.startswith("Benchmark") and len(fn_name) > 9:
+        return True
+    return fn_name.startswith("Fuzz") and len(fn_name) > 4 and fn_name[4].isupper()
 
 
 def _extract_go_tests(
@@ -759,32 +783,38 @@ def _extract_go_tests(
             )
             continue
 
-        is_test = fn_name.startswith("Test") and len(fn_name) > 4 and fn_name[4].isupper()
-        is_bench = fn_name.startswith("Benchmark") and len(fn_name) > 9
-        is_fuzz = fn_name.startswith("Fuzz") and len(fn_name) > 4 and fn_name[4].isupper()
-        if not (is_test or is_bench or is_fuzz):
+        if not _is_go_test_function(fn_name):
             continue
 
-        # Check for t.Run subtests
         _extract_go_subtests(file_path, content, node, fn_name, extraction)
+        _add_go_test_case(file_path, content, node, fn_name, extraction)
 
-        symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_go_case_signals(
-            content, node
-        )
-        case = TestCaseDef(
-            name=fn_name,
-            file_path=file_path,
-            line=line_number(node),
-            suite_name=None,
-            symbol_hints=symbol_hints[:12],
-            endpoint_hints=endpoint_hints[:12],
-            call_sites=call_sites[:80],
-            raw_assertions=raw_assertions[:8],
-        )
-        case.natural_key = (
-            f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
-        )
-        extraction.cases.append(case)
+
+def _add_go_test_case(
+    file_path: str,
+    content: str,
+    node: Any,
+    fn_name: str,
+    extraction: TestsExtraction,
+) -> None:
+    """Create and add a Go test case from a function declaration."""
+    symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_go_case_signals(
+        content, node
+    )
+    case = TestCaseDef(
+        name=fn_name,
+        file_path=file_path,
+        line=line_number(node),
+        suite_name=None,
+        symbol_hints=symbol_hints[:12],
+        endpoint_hints=endpoint_hints[:12],
+        call_sites=call_sites[:80],
+        raw_assertions=raw_assertions[:8],
+    )
+    case.natural_key = (
+        f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
+    )
+    extraction.cases.append(case)
 
 
 def _extract_go_subtests(
@@ -798,20 +828,7 @@ def _extract_go_subtests(
     for node in walk(func_node):
         if node.type != "call_expression":
             continue
-        func = node.child_by_field_name("function")
-        if func is None or func.type != "selector_expression":
-            continue
-        field = func.child_by_field_name("field")
-        if field is None or node_text(content, field).strip() != "Run":
-            continue
-        args = node.child_by_field_name("arguments")
-        if args is None:
-            continue
-        subtest_name = None
-        for child in args.children:
-            if child.type == "interpreted_string_literal":
-                subtest_name = node_text(content, child).strip().strip('"')
-                break
+        subtest_name = _go_subtest_name(content, node)
         if subtest_name:
             full_name = f"{parent_name}/{subtest_name}"
             case = TestCaseDef(
@@ -826,6 +843,40 @@ def _extract_go_subtests(
             extraction.cases.append(case)
 
 
+def _go_subtest_name(content: str, node: Any) -> str | None:
+    """Extract the subtest name from a t.Run() call, or None if not a t.Run call."""
+    func = node.child_by_field_name("function")
+    if func is None or func.type != "selector_expression":
+        return None
+    field = func.child_by_field_name("field")
+    if field is None or node_text(content, field).strip() != "Run":
+        return None
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for child in args.children:
+        if child.type == "interpreted_string_literal":
+            return node_text(content, child).strip().strip('"')
+    return None
+
+
+_GO_ASSERT_NAMES = {
+    "Equal",
+    "NotEqual",
+    "True",
+    "False",
+    "Nil",
+    "NotNil",
+    "Error",
+    "NoError",
+    "Contains",
+    "Errorf",
+    "Fatalf",
+    "Assert",
+    "Require",
+}
+
+
 def _collect_go_case_signals(
     content: str, func_node: Any
 ) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
@@ -835,36 +886,34 @@ def _collect_go_case_signals(
     assertions: list[str] = []
     for node in walk(func_node):
         if node.type == "call_expression":
-            func = node.child_by_field_name("function")
-            if func is None:
-                continue
-            callee = node_text(content, func).strip()
-            short = callee.rsplit(".", 1)[-1] if "." in callee else callee
-            call_sites.append(
-                {"line": line_number(node), "column": int(node.start_point[1]), "callee": short}
-            )
-            if short in {
-                "Equal",
-                "NotEqual",
-                "True",
-                "False",
-                "Nil",
-                "NotNil",
-                "Error",
-                "NoError",
-                "Contains",
-                "Errorf",
-                "Fatalf",
-                "Assert",
-                "Require",
-            }:
-                assertions.append(node_text(content, node).strip())
-            elif len(short) >= 3 and short not in SYMBOL_STOP_WORDS:
-                symbols.append(short)
-            endpoint = endpoint_from_call(content, node, base_name=short, method_name="")
-            if endpoint:
-                endpoints.append(endpoint)
+            _process_go_call(content, node, symbols, endpoints, call_sites, assertions)
     return _dedupe(symbols), _dedupe(endpoints), call_sites, _dedupe(assertions)
+
+
+def _process_go_call(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    endpoints: list[str],
+    call_sites: list[dict[str, Any]],
+    assertions: list[str],
+) -> None:
+    """Process a single Go call_expression for test signals."""
+    func = node.child_by_field_name("function")
+    if func is None:
+        return
+    callee = node_text(content, func).strip()
+    short = callee.rsplit(".", 1)[-1] if "." in callee else callee
+    call_sites.append(
+        {"line": line_number(node), "column": int(node.start_point[1]), "callee": short}
+    )
+    if short in _GO_ASSERT_NAMES:
+        assertions.append(node_text(content, node).strip())
+    elif len(short) >= 3 and short not in SYMBOL_STOP_WORDS:
+        symbols.append(short)
+    endpoint = endpoint_from_call(content, node, base_name=short, method_name="")
+    if endpoint:
+        endpoints.append(endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -882,67 +931,75 @@ def _extract_php_tests(
 ) -> None:
     """Extract PHPUnit test classes, methods, setUp/tearDown."""
     for node in walk(root):
-        # Test classes (extends TestCase)
         if node.type == "class_declaration":
-            name_node = first_child(node, "name")
-            if name_node is None:
-                name_node = first_child(node, "identifier")
-            name = node_text(content, name_node).strip() if name_node else ""
-            if name and ("test" in name.lower() or _php_extends_testcase(content, node)):
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=name,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{name}",
-                    )
-                )
+            _maybe_add_php_suite(file_path, content, node, extraction)
+        if node.type == "method_declaration":
+            _handle_php_method(file_path, content, node, extraction)
 
-        if node.type != "method_declaration":
-            continue
-        fn_name_node = first_child(node, "name")
-        if fn_name_node is None:
-            fn_name_node = first_child(node, "identifier")
-        fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
-        if not fn_name:
-            continue
 
-        # Lifecycle hooks
-        if fn_name in {"setUp", "tearDown", "setUpBeforeClass", "tearDownAfterClass"}:
-            extraction.fixtures.append(
-                TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
+def _maybe_add_php_suite(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Add a PHP class as a test suite if it looks like a test class."""
+    name_node = first_child(node, "name") or first_child(node, "identifier")
+    name = node_text(content, name_node).strip() if name_node else ""
+    if name and ("test" in name.lower() or _php_extends_testcase(content, node)):
+        extraction.suites.append(
+            TestSuiteDef(
+                name=name,
+                file_path=file_path,
+                line=line_number(node),
+                natural_key=f"test_suite:{file_path}:{name}",
             )
-            continue
+        )
 
-        # Test methods: prefixed with test or annotated with @test
-        is_test = fn_name.startswith("test")
-        if not is_test:
-            # Check doc comment for @test annotation
-            prev = node.prev_sibling
-            if prev and prev.type == "comment":
-                comment_text = node_text(content, prev).strip()
-                is_test = "@test" in comment_text
-        if not is_test:
-            continue
 
-        suite_name = _php_parent_class(content, node)
-        symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_php_case_signals(
-            content, node
+def _is_php_test_method(content: str, fn_name: str, node: Any) -> bool:
+    """Check if a PHP method is a test (by name prefix or @test annotation)."""
+    if fn_name.startswith("test"):
+        return True
+    prev = node.prev_sibling
+    if prev and prev.type == "comment":
+        return "@test" in node_text(content, prev).strip()
+    return False
+
+
+def _handle_php_method(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle a PHP method: lifecycle hook or test case."""
+    fn_name_node = first_child(node, "name") or first_child(node, "identifier")
+    fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
+    if not fn_name:
+        return
+
+    if fn_name in {"setUp", "tearDown", "setUpBeforeClass", "tearDownAfterClass"}:
+        extraction.fixtures.append(
+            TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
         )
-        case = TestCaseDef(
-            name=fn_name,
-            file_path=file_path,
-            line=line_number(node),
-            suite_name=suite_name,
-            symbol_hints=symbol_hints[:12],
-            endpoint_hints=endpoint_hints[:12],
-            call_sites=call_sites[:80],
-            raw_assertions=raw_assertions[:8],
-        )
-        case.natural_key = (
-            f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
-        )
-        extraction.cases.append(case)
+        return
+
+    if not _is_php_test_method(content, fn_name, node):
+        return
+
+    suite_name = _php_parent_class(content, node)
+    symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_php_case_signals(
+        content, node
+    )
+    case = TestCaseDef(
+        name=fn_name,
+        file_path=file_path,
+        line=line_number(node),
+        suite_name=suite_name,
+        symbol_hints=symbol_hints[:12],
+        endpoint_hints=endpoint_hints[:12],
+        call_sites=call_sites[:80],
+        raw_assertions=raw_assertions[:8],
+    )
+    case.natural_key = (
+        f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
+    )
+    extraction.cases.append(case)
 
 
 def _php_extends_testcase(content: str, class_node: Any) -> bool:
@@ -970,56 +1027,55 @@ def _collect_php_case_signals(
     call_sites: list[dict[str, Any]] = []
     assertions: list[str] = []
     for node in walk(method_node):
-        # PHP method calls: $this->method(), $obj->method()
-        if node.type == "member_call_expression":
-            name_node = node.child_by_field_name("name")
-            callee = node_text(content, name_node).strip() if name_node else ""
-            if callee:
-                call_sites.append(
-                    {
-                        "line": line_number(node),
-                        "column": int(node.start_point[1]),
-                        "callee": callee,
-                    }
-                )
-                if callee.lower().startswith(_PHP_ASSERT_PREFIXES):
-                    assertions.append(node_text(content, node).strip())
-                elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
-                    symbols.append(callee)
-        # PHP static calls: ClassName::method()
-        elif node.type == "scoped_call_expression":
-            name_node = node.child_by_field_name("name")
-            callee = node_text(content, name_node).strip() if name_node else ""
-            if callee:
-                call_sites.append(
-                    {
-                        "line": line_number(node),
-                        "column": int(node.start_point[1]),
-                        "callee": callee,
-                    }
-                )
-                if len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
-                    symbols.append(callee)
-        # PHP function calls: function_name()
+        if node.type in {"member_call_expression", "scoped_call_expression"}:
+            _process_php_method_call(content, node, symbols, call_sites, assertions)
         elif node.type == "function_call_expression":
-            fn_node = node.child_by_field_name("function")
-            if fn_node is None:
-                for child in node.children:
-                    if child.type in {"name", "identifier"}:
-                        fn_node = child
-                        break
-            callee = node_text(content, fn_node).strip() if fn_node else ""
-            if callee:
-                call_sites.append(
-                    {
-                        "line": line_number(node),
-                        "column": int(node.start_point[1]),
-                        "callee": callee,
-                    }
-                )
-                if len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
-                    symbols.append(callee)
+            _process_php_function_call(content, node, symbols, call_sites)
     return _dedupe(symbols), _dedupe(endpoints), call_sites, _dedupe(assertions)
+
+
+def _process_php_method_call(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    call_sites: list[dict[str, Any]],
+    assertions: list[str],
+) -> None:
+    """Process a PHP member_call_expression or scoped_call_expression."""
+    name_node = node.child_by_field_name("name")
+    callee = node_text(content, name_node).strip() if name_node else ""
+    if not callee:
+        return
+    call_sites.append(
+        {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+    )
+    if node.type == "member_call_expression" and callee.lower().startswith(_PHP_ASSERT_PREFIXES):
+        assertions.append(node_text(content, node).strip())
+    elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
+        symbols.append(callee)
+
+
+def _process_php_function_call(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    call_sites: list[dict[str, Any]],
+) -> None:
+    """Process a PHP function_call_expression."""
+    fn_node = node.child_by_field_name("function")
+    if fn_node is None:
+        for child in node.children:
+            if child.type in {"name", "identifier"}:
+                fn_node = child
+                break
+    callee = node_text(content, fn_node).strip() if fn_node else ""
+    if not callee:
+        return
+    call_sites.append(
+        {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+    )
+    if len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
+        symbols.append(callee)
 
 
 # ---------------------------------------------------------------------------
@@ -1035,85 +1091,104 @@ def _extract_ruby_tests(
 ) -> None:
     """Extract RSpec (describe/it) and Minitest (test_*) patterns in a single traversal."""
     for node in walk(root):
-        # RSpec call patterns
         if node.type == "call":
-            method_node = first_child(node, "identifier")
-            if method_node is None:
-                method_node = node.child_by_field_name("method")
-            method_name = node_text(content, method_node).strip() if method_node else ""
-
-            if method_name in {"describe", "context"}:
-                desc = _ruby_first_string_arg(content, node) or f"suite@{line_number(node)}"
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=desc,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{desc}",
-                    )
-                )
-            elif method_name in {"it", "specify", "example"}:
-                desc = _ruby_first_string_arg(content, node) or f"test@{line_number(node)}"
-                symbol_hints, endpoint_hints, call_sites, raw_assertions = (
-                    _collect_ruby_case_signals(content, node)
-                )
-                case = TestCaseDef(
-                    name=desc,
-                    file_path=file_path,
-                    line=line_number(node),
-                    symbol_hints=symbol_hints[:12],
-                    endpoint_hints=endpoint_hints[:12],
-                    call_sites=call_sites[:80],
-                    raw_assertions=raw_assertions[:8],
-                )
-                case.natural_key = (
-                    f"test_case:{file_path}:{desc}:{_hash(f'{file_path}:{desc}:{case.line}')}"
-                )
-                extraction.cases.append(case)
-            elif method_name in {"before", "after", "let", "let!", "subject"}:
-                extraction.fixtures.append(
-                    TestFixtureDef(name=method_name, file_path=file_path, line=line_number(node))
-                )
-
-        # Minitest class patterns
+            _handle_ruby_rspec_call(file_path, content, node, extraction)
         elif node.type == "class" and _ruby_extends_minitest(content, node):
-            name_node = node.child_by_field_name("name") or first_child(node, "constant")
-            name = node_text(content, name_node).strip() if name_node else ""
-            if name:
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=name,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{name}",
-                    )
-                )
-
-        # Minitest method patterns
+            _handle_ruby_minitest_class(file_path, content, node, extraction)
         elif node.type in {"method", "singleton_method"}:
-            fn_name_node = node.child_by_field_name("name") or first_child(node, "identifier")
-            fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
-            if fn_name.startswith("test_"):
-                symbol_hints, endpoint_hints, call_sites, raw_assertions = (
-                    _collect_ruby_case_signals(content, node)
-                )
-                case = TestCaseDef(
-                    name=fn_name,
-                    file_path=file_path,
-                    line=line_number(node),
-                    symbol_hints=symbol_hints[:12],
-                    endpoint_hints=endpoint_hints[:12],
-                    call_sites=call_sites[:80],
-                    raw_assertions=raw_assertions[:8],
-                )
-                case.natural_key = (
-                    f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
-                )
-                extraction.cases.append(case)
-            elif fn_name in {"setup", "teardown"}:
-                extraction.fixtures.append(
-                    TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
-                )
+            _handle_ruby_minitest_method(file_path, content, node, extraction)
+
+
+def _handle_ruby_rspec_call(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle an RSpec call node (describe/it/before/etc)."""
+    method_node = first_child(node, "identifier") or node.child_by_field_name("method")
+    method_name = node_text(content, method_node).strip() if method_node else ""
+
+    if method_name in {"describe", "context"}:
+        desc = _ruby_first_string_arg(content, node) or f"suite@{line_number(node)}"
+        extraction.suites.append(
+            TestSuiteDef(
+                name=desc,
+                file_path=file_path,
+                line=line_number(node),
+                natural_key=f"test_suite:{file_path}:{desc}",
+            )
+        )
+    elif method_name in {"it", "specify", "example"}:
+        _add_ruby_test_case(file_path, content, node, extraction)
+    elif method_name in {"before", "after", "let", "let!", "subject"}:
+        extraction.fixtures.append(
+            TestFixtureDef(name=method_name, file_path=file_path, line=line_number(node))
+        )
+
+
+def _add_ruby_test_case(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Add a Ruby test case (RSpec it/specify or Minitest test_ method)."""
+    desc = _ruby_first_string_arg(content, node) or f"test@{line_number(node)}"
+    symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_ruby_case_signals(
+        content, node
+    )
+    case = TestCaseDef(
+        name=desc,
+        file_path=file_path,
+        line=line_number(node),
+        symbol_hints=symbol_hints[:12],
+        endpoint_hints=endpoint_hints[:12],
+        call_sites=call_sites[:80],
+        raw_assertions=raw_assertions[:8],
+    )
+    case.natural_key = f"test_case:{file_path}:{desc}:{_hash(f'{file_path}:{desc}:{case.line}')}"
+    extraction.cases.append(case)
+
+
+def _handle_ruby_minitest_class(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle a Minitest class definition."""
+    name_node = node.child_by_field_name("name") or first_child(node, "constant")
+    name = node_text(content, name_node).strip() if name_node else ""
+    if name:
+        extraction.suites.append(
+            TestSuiteDef(
+                name=name,
+                file_path=file_path,
+                line=line_number(node),
+                natural_key=f"test_suite:{file_path}:{name}",
+            )
+        )
+
+
+def _handle_ruby_minitest_method(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle a Minitest test method or lifecycle hook."""
+    fn_name_node = node.child_by_field_name("name") or first_child(node, "identifier")
+    fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
+    if fn_name.startswith("test_"):
+        symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_ruby_case_signals(
+            content, node
+        )
+        case = TestCaseDef(
+            name=fn_name,
+            file_path=file_path,
+            line=line_number(node),
+            symbol_hints=symbol_hints[:12],
+            endpoint_hints=endpoint_hints[:12],
+            call_sites=call_sites[:80],
+            raw_assertions=raw_assertions[:8],
+        )
+        case.natural_key = (
+            f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
+        )
+        extraction.cases.append(case)
+    elif fn_name in {"setup", "teardown"}:
+        extraction.fixtures.append(
+            TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
+        )
 
 
 def _ruby_extends_minitest(content: str, class_node: Any) -> bool:
@@ -1183,55 +1258,66 @@ def _extract_csharp_tests(
 ) -> None:
     """Extract NUnit/xUnit/MSTest test classes, methods, and lifecycle hooks."""
     for node in walk(root):
-        # Test classes
         if node.type == "class_declaration":
-            name_node = first_child(node, "identifier")
-            name = node_text(content, name_node).strip() if name_node else ""
-            attrs = _csharp_attributes(content, node)
-            if name and ("test" in name.lower() or "testfixture" in attrs or "testclass" in attrs):
-                extraction.suites.append(
-                    TestSuiteDef(
-                        name=name,
-                        file_path=file_path,
-                        line=line_number(node),
-                        natural_key=f"test_suite:{file_path}:{name}",
-                    )
-                )
+            _maybe_add_csharp_suite(file_path, content, node, extraction)
+        if node.type == "method_declaration":
+            _handle_csharp_method(file_path, content, node, extraction)
 
-        if node.type != "method_declaration":
-            continue
-        fn_name_node = first_child(node, "identifier")
-        fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
-        if not fn_name:
-            continue
 
-        attrs = _csharp_attributes(content, node)
-
-        if attrs & _CSHARP_LIFECYCLE_ATTRS:
-            extraction.fixtures.append(
-                TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
-            )
-            continue
-
-        if attrs & _CSHARP_TEST_ATTRS:
-            suite_name = _csharp_parent_class(content, node)
-            symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_csharp_case_signals(
-                content, node
-            )
-            case = TestCaseDef(
-                name=fn_name,
+def _maybe_add_csharp_suite(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Add a C# class as a test suite if it matches test attributes or naming."""
+    name_node = first_child(node, "identifier")
+    name = node_text(content, name_node).strip() if name_node else ""
+    attrs = _csharp_attributes(content, node)
+    if name and ("test" in name.lower() or "testfixture" in attrs or "testclass" in attrs):
+        extraction.suites.append(
+            TestSuiteDef(
+                name=name,
                 file_path=file_path,
                 line=line_number(node),
-                suite_name=suite_name,
-                symbol_hints=symbol_hints[:12],
-                endpoint_hints=endpoint_hints[:12],
-                call_sites=call_sites[:80],
-                raw_assertions=raw_assertions[:8],
+                natural_key=f"test_suite:{file_path}:{name}",
             )
-            case.natural_key = (
-                f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
-            )
-            extraction.cases.append(case)
+        )
+
+
+def _handle_csharp_method(
+    file_path: str, content: str, node: Any, extraction: TestsExtraction
+) -> None:
+    """Handle a C# method: lifecycle hook or test case."""
+    fn_name_node = first_child(node, "identifier")
+    fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
+    if not fn_name:
+        return
+
+    attrs = _csharp_attributes(content, node)
+
+    if attrs & _CSHARP_LIFECYCLE_ATTRS:
+        extraction.fixtures.append(
+            TestFixtureDef(name=fn_name, file_path=file_path, line=line_number(node))
+        )
+        return
+
+    if attrs & _CSHARP_TEST_ATTRS:
+        suite_name = _csharp_parent_class(content, node)
+        symbol_hints, endpoint_hints, call_sites, raw_assertions = _collect_csharp_case_signals(
+            content, node
+        )
+        case = TestCaseDef(
+            name=fn_name,
+            file_path=file_path,
+            line=line_number(node),
+            suite_name=suite_name,
+            symbol_hints=symbol_hints[:12],
+            endpoint_hints=endpoint_hints[:12],
+            call_sites=call_sites[:80],
+            raw_assertions=raw_assertions[:8],
+        )
+        case.natural_key = (
+            f"test_case:{file_path}:{fn_name}:{_hash(f'{file_path}:{fn_name}:{case.line}')}"
+        )
+        extraction.cases.append(case)
 
 
 def _csharp_attributes(content: str, node: Any) -> set[str]:
@@ -1247,38 +1333,49 @@ def _collect_csharp_case_signals(
     call_sites: list[dict[str, Any]] = []
     assertions: list[str] = []
     for node in walk(method_node):
-        if node.type != "invocation_expression":
-            continue
-        func = node.child_by_field_name("function")
-        if func is None:
-            continue
-        # member_access_expression: obj.Method() or Assert.Equal()
-        if func.type == "member_access_expression":
-            name_node = func.child_by_field_name("name")
-            callee = node_text(content, name_node).strip() if name_node else ""
-            obj_node = func.child_by_field_name("expression")
-            obj_name = node_text(content, obj_node).strip() if obj_node else ""
-        elif func.type == "identifier":
-            callee = node_text(content, func).strip()
-            obj_name = ""
-        else:
-            callee = node_text(content, func).strip().rsplit(".", 1)[-1]
-            obj_name = ""
-        if not callee:
-            continue
-        call_sites.append(
-            {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
-        )
-        # Assert.Equal, Assert.True, Assert.Throws, ClassicAssert.*, etc.
-        if (
-            obj_name in {"Assert", "ClassicAssert", "CollectionAssert", "StringAssert"}
-            or callee.startswith("Assert")
-            or callee.startswith("Verify")
-        ):
-            assertions.append(node_text(content, node).strip())
-        elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
-            symbols.append(callee)
+        if node.type == "invocation_expression":
+            _process_csharp_invocation(content, node, symbols, call_sites, assertions)
     return _dedupe(symbols), _dedupe(endpoints), call_sites, _dedupe(assertions)
+
+
+def _resolve_csharp_callee(content: str, func: Any) -> tuple[str, str]:
+    """Return (callee, obj_name) from a C# invocation's function node."""
+    if func.type == "member_access_expression":
+        name_node = func.child_by_field_name("name")
+        callee = node_text(content, name_node).strip() if name_node else ""
+        obj_node = func.child_by_field_name("expression")
+        obj_name = node_text(content, obj_node).strip() if obj_node else ""
+        return callee, obj_name
+    if func.type == "identifier":
+        return node_text(content, func).strip(), ""
+    return node_text(content, func).strip().rsplit(".", 1)[-1], ""
+
+
+def _process_csharp_invocation(
+    content: str,
+    node: Any,
+    symbols: list[str],
+    call_sites: list[dict[str, Any]],
+    assertions: list[str],
+) -> None:
+    """Process a single C# invocation_expression for test signals."""
+    func = node.child_by_field_name("function")
+    if func is None:
+        return
+    callee, obj_name = _resolve_csharp_callee(content, func)
+    if not callee:
+        return
+    call_sites.append(
+        {"line": line_number(node), "column": int(node.start_point[1]), "callee": callee}
+    )
+    if (
+        obj_name in {"Assert", "ClassicAssert", "CollectionAssert", "StringAssert"}
+        or callee.startswith("Assert")
+        or callee.startswith("Verify")
+    ):
+        assertions.append(node_text(content, node).strip())
+    elif len(callee) >= 3 and callee not in SYMBOL_STOP_WORDS:
+        symbols.append(callee)
 
 
 def _csharp_parent_class(content: str, node: Any) -> str | None:

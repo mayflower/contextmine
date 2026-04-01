@@ -120,17 +120,24 @@ def ruby_first_string_arg(content: str, call_node: Any) -> str | None:
 
 def java_annotation_names(content: str, node: Any) -> list[str]:
     """Extract annotation names from a Java method/class node's modifiers."""
-    names: list[str] = []
     parent = node.parent
     if parent is None:
-        return names
+        return []
+    names: list[str] = []
     for child in parent.children:
         if child.type == "modifiers":
-            for mod in child.children:
-                if mod.type in {"marker_annotation", "annotation"}:
-                    name_node = first_child(mod, "identifier")
-                    if name_node:
-                        names.append(node_text(content, name_node).strip().lower())
+            names.extend(_extract_annotation_names_from_modifiers(content, child))
+    return names
+
+
+def _extract_annotation_names_from_modifiers(content: str, modifiers_node: Any) -> list[str]:
+    """Extract annotation names from a Java modifiers node."""
+    names: list[str] = []
+    for mod in modifiers_node.children:
+        if mod.type in {"marker_annotation", "annotation"}:
+            name_node = first_child(mod, "identifier")
+            if name_node:
+                names.append(node_text(content, name_node).strip().lower())
     return names
 
 
@@ -144,22 +151,23 @@ def csharp_attribute_names(content: str, node: Any) -> set[str]:
         if child is node:
             break
         if child.type == "attribute_list":
-            for attr in walk(child):
-                if attr.type in {"identifier", "attribute"}:
-                    name = node_text(content, attr).strip().lower()
-                    if name.endswith("attribute"):
-                        name = name[: -len("attribute")]
-                    attrs.add(name)
+            _collect_csharp_attrs(content, child, attrs)
     # Also check direct children
     for child in node.children:
         if child.type == "attribute_list":
-            for attr in walk(child):
-                if attr.type in {"identifier", "attribute"}:
-                    name = node_text(content, attr).strip().lower()
-                    if name.endswith("attribute"):
-                        name = name[: -len("attribute")]
-                    attrs.add(name)
+            _collect_csharp_attrs(content, child, attrs)
     return attrs
+
+
+def _collect_csharp_attrs(content: str, attr_list_node: Any, attrs: set[str]) -> None:
+    """Walk an attribute_list node and add normalized attribute names to the set."""
+    for attr in walk(attr_list_node):
+        if attr.type not in {"identifier", "attribute"}:
+            continue
+        name = node_text(content, attr).strip().lower()
+        if name.endswith("attribute"):
+            name = name[: -len("attribute")]
+        attrs.add(name)
 
 
 # ---------------------------------------------------------------------------

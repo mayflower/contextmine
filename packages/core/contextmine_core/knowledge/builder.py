@@ -173,7 +173,6 @@ _FILE_LEVEL_EDGE_TYPES = {SymbolEdgeType.IMPORTS}
 
 async def _build_symbol_to_file_node_map(
     session: AsyncSession,
-    collection_id: UUID,
     documents: list,
     doc_to_node: dict[UUID, UUID],
 ) -> dict[UUID, UUID]:
@@ -187,6 +186,61 @@ async def _build_symbol_to_file_node_map(
         for (sym_id,) in result.all():
             symbol_to_file[sym_id] = file_node_id
     return symbol_to_file
+
+
+async def _handle_file_level_edge(
+    session: AsyncSession,
+    collection_id: UUID,
+    sym_edge: SymbolEdge,
+    symbol_to_file_node: dict[UUID, UUID],
+    stats: GraphBuildStats,
+) -> None:
+    """Create a file-to-file edge for an IMPORTS symbol edge."""
+    source_file_id = symbol_to_file_node.get(sym_edge.source_symbol_id)
+    target_file_id = symbol_to_file_node.get(sym_edge.target_symbol_id)
+    if not source_file_id or not target_file_id:
+        logger.debug(
+            "Skipping import edge: could not resolve symbol %s -> %s to file nodes",
+            sym_edge.source_symbol_id,
+            sym_edge.target_symbol_id,
+        )
+        return
+    if source_file_id == target_file_id:
+        return  # Skip self-imports
+    await upsert_edge(
+        session,
+        collection_id=collection_id,
+        source_node_id=source_file_id,
+        target_node_id=target_file_id,
+        kind=KnowledgeEdgeKind.FILE_IMPORTS_FILE,
+        meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
+    )
+    stats.edges_created += 1
+
+
+async def _handle_symbol_level_edge(
+    session: AsyncSession,
+    collection_id: UUID,
+    sym_edge: SymbolEdge,
+    symbol_to_node: dict[UUID, UUID],
+    stats: GraphBuildStats,
+) -> None:
+    """Create a symbol-to-symbol knowledge edge."""
+    source_node_id = symbol_to_node.get(sym_edge.source_symbol_id)
+    target_node_id = symbol_to_node.get(sym_edge.target_symbol_id)
+    if not source_node_id or not target_node_id:
+        return
+    kg_edge_kind = _SYMBOL_EDGE_KIND_MAP.get(sym_edge.edge_type)
+    if kg_edge_kind:
+        await upsert_edge(
+            session,
+            collection_id=collection_id,
+            source_node_id=source_node_id,
+            target_node_id=target_node_id,
+            kind=kg_edge_kind,
+            meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
+        )
+        stats.edges_created += 1
 
 
 async def _create_symbol_edge_graph_edges(
@@ -212,42 +266,13 @@ async def _create_symbol_edge_graph_edges(
         )
         for sym_edge in result.scalars().all():
             if sym_edge.edge_type in _FILE_LEVEL_EDGE_TYPES:
-                source_file_id = symbol_to_file_node.get(sym_edge.source_symbol_id)
-                target_file_id = symbol_to_file_node.get(sym_edge.target_symbol_id)
-                if not source_file_id or not target_file_id:
-                    logger.debug(
-                        "Skipping import edge: could not resolve symbol %s -> %s to file nodes",
-                        sym_edge.source_symbol_id,
-                        sym_edge.target_symbol_id,
-                    )
-                    continue
-                if source_file_id == target_file_id:
-                    continue  # Skip self-imports
-                await upsert_edge(
-                    session,
-                    collection_id=collection_id,
-                    source_node_id=source_file_id,
-                    target_node_id=target_file_id,
-                    kind=KnowledgeEdgeKind.FILE_IMPORTS_FILE,
-                    meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
+                await _handle_file_level_edge(
+                    session, collection_id, sym_edge, symbol_to_file_node, stats
                 )
-                stats.edges_created += 1
             else:
-                source_node_id = symbol_to_node.get(sym_edge.source_symbol_id)
-                target_node_id = symbol_to_node.get(sym_edge.target_symbol_id)
-                if not source_node_id or not target_node_id:
-                    continue
-                kg_edge_kind = _SYMBOL_EDGE_KIND_MAP.get(sym_edge.edge_type)
-                if kg_edge_kind:
-                    await upsert_edge(
-                        session,
-                        collection_id=collection_id,
-                        source_node_id=source_node_id,
-                        target_node_id=target_node_id,
-                        kind=kg_edge_kind,
-                        meta={"source_line": sym_edge.source_line} if sym_edge.source_line else {},
-                    )
-                    stats.edges_created += 1
+                await _handle_symbol_level_edge(
+                    session, collection_id, sym_edge, symbol_to_node, stats
+                )
 
 
 async def build_knowledge_graph_for_source(
@@ -287,7 +312,6 @@ async def build_knowledge_graph_for_source(
 
     symbol_to_file_node = await _build_symbol_to_file_node_map(
         session,
-        collection_id,
         documents,
         doc_to_node,
     )

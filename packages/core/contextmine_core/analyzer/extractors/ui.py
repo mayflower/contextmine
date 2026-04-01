@@ -554,26 +554,37 @@ _BACKEND_ROUTE_LANGUAGES = {
 
 def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
     """Extract routes, views, and UI composition hints from one file."""
-    extraction = UIExtraction(file_path=file_path)
     if looks_like_ui_test_file(file_path):
-        return extraction
+        return UIExtraction(file_path=file_path)
 
     language = detect_language(file_path)
 
-    # Backend languages: try AST-based route extraction, then augment with heuristic views
     if language in _BACKEND_ROUTE_LANGUAGES:
-        ast_routes = _extract_backend_routes_ast(file_path, content, language)
-        heuristic = _extract_ui_heuristic(file_path, content)
-        if ast_routes:
-            # Merge: prefer AST routes, but add any heuristic views
-            extraction.routes = ast_routes
-            extraction.views = heuristic.views
-            return extraction
-        return heuristic
+        return _extract_ui_from_backend(file_path, content, language)
 
     if language not in JS_UI_LANGUAGES:
         return _extract_ui_heuristic(file_path, content)
 
+    return _extract_ui_from_js(file_path, content)
+
+
+def _extract_ui_from_backend(
+    file_path: str, content: str, language: TreeSitterLanguage
+) -> UIExtraction:
+    """Extract UI from a backend language file."""
+    ast_routes = _extract_backend_routes_ast(file_path, content, language)
+    heuristic = _extract_ui_heuristic(file_path, content)
+    if ast_routes:
+        extraction = UIExtraction(file_path=file_path)
+        extraction.routes = ast_routes
+        extraction.views = heuristic.views
+        return extraction
+    return heuristic
+
+
+def _extract_ui_from_js(file_path: str, content: str) -> UIExtraction:
+    """Extract UI from a JS/TS/TSX file using AST."""
+    extraction = UIExtraction(file_path=file_path)
     manager = get_treesitter_manager()
     try:
         tree = manager.parse(file_path, content)
@@ -590,11 +601,9 @@ def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
             extraction.views = [inferred]
 
     if not extraction.routes and extraction.views:
-        for view in extraction.views:
-            inferred_route = _infer_route_for_view(file_path, view)
-            if inferred_route is not None:
-                extraction.routes.append(inferred_route)
-                break
+        inferred_route = _infer_first_route_for_views(file_path, extraction.views)
+        if inferred_route is not None:
+            extraction.routes.append(inferred_route)
 
     if not extraction.routes and not extraction.views:
         return _extract_ui_heuristic(file_path, content)
@@ -602,9 +611,37 @@ def extract_ui_from_file(file_path: str, content: str) -> UIExtraction:
     return extraction
 
 
+def _infer_first_route_for_views(file_path: str, views: list[UIViewDef]) -> UIRouteDef | None:
+    """Try to infer a route from the first view that yields one."""
+    for view in views:
+        inferred_route = _infer_route_for_view(file_path, view)
+        if inferred_route is not None:
+            return inferred_route
+    return None
+
+
 # ---------------------------------------------------------------------------
 # AST-based route extraction for backend languages
 # ---------------------------------------------------------------------------
+
+
+_BACKEND_ROUTE_EXTRACTORS: dict[TreeSitterLanguage, Any] = {}
+
+
+def _init_backend_route_extractors() -> dict[TreeSitterLanguage, Any]:
+    """Lazily initialize the backend route extractor dispatch map."""
+    if not _BACKEND_ROUTE_EXTRACTORS:
+        _BACKEND_ROUTE_EXTRACTORS.update(
+            {
+                TreeSitterLanguage.JAVA: _extract_java_routes,
+                TreeSitterLanguage.PYTHON: _extract_python_routes,
+                TreeSitterLanguage.GO: _extract_go_routes,
+                TreeSitterLanguage.PHP: _extract_php_routes,
+                TreeSitterLanguage.RUBY: _extract_ruby_routes,
+                TreeSitterLanguage.CSHARP: _extract_csharp_routes,
+            }
+        )
+    return _BACKEND_ROUTE_EXTRACTORS
 
 
 def _extract_backend_routes_ast(
@@ -619,20 +656,11 @@ def _extract_backend_routes_ast(
     except Exception:
         return []
 
-    root = tree.root_node
-    if language == TreeSitterLanguage.JAVA:
-        return _extract_java_routes(file_path, content, root)
-    if language == TreeSitterLanguage.PYTHON:
-        return _extract_python_routes(file_path, content, root)
-    if language == TreeSitterLanguage.GO:
-        return _extract_go_routes(file_path, content, root)
-    if language == TreeSitterLanguage.PHP:
-        return _extract_php_routes(file_path, content, root)
-    if language == TreeSitterLanguage.RUBY:
-        return _extract_ruby_routes(file_path, content, root)
-    if language == TreeSitterLanguage.CSHARP:
-        return _extract_csharp_routes(file_path, content, root)
-    return []
+    extractors = _init_backend_route_extractors()
+    extractor = extractors.get(language)
+    if extractor is None:
+        return []
+    return extractor(file_path, content, tree.root_node)
 
 
 def _extract_java_routes(
@@ -662,55 +690,63 @@ def _extract_java_routes(
             class_prefix = _java_class_route_prefix(content, node) or ""
         if node.type not in {"marker_annotation", "annotation"}:
             continue
-        ann_name_node = node.child_by_field_name("name")
-        if ann_name_node is None:
-            for child in node.children:
-                if child.type == "identifier":
-                    ann_name_node = child
-                    break
-        if ann_name_node is None:
-            continue
-        ann_name = node_text(content, ann_name_node).strip().lower()
-        if ann_name not in spring_mappings:
-            continue
-        # Extract path from annotation arguments
-        path = _java_annotation_string_value(content, node)
-        if path is None:
-            path = ""
-        full_path = f"{class_prefix.rstrip('/')}/{path.lstrip('/')}".rstrip("/") or "/"
-        normalized = _normalize_ui_route_path(full_path)
-        if normalized:
-            routes.append(
-                UIRouteDef(
-                    path=normalized,
-                    file_path=file_path,
-                    line=line_number(node),
-                )
-            )
+        route = _try_java_annotation_route(content, node, file_path, class_prefix, spring_mappings)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def _try_java_annotation_route(
+    content: str,
+    node: Any,
+    file_path: str,
+    class_prefix: str,
+    spring_mappings: set[str],
+) -> UIRouteDef | None:
+    """Try to extract a route from a Java annotation node."""
+    ann_name_node = node.child_by_field_name("name")
+    if ann_name_node is None:
+        for child in node.children:
+            if child.type == "identifier":
+                ann_name_node = child
+                break
+    if ann_name_node is None:
+        return None
+    ann_name = node_text(content, ann_name_node).strip().lower()
+    if ann_name not in spring_mappings:
+        return None
+    path = _java_annotation_string_value(content, node) or ""
+    full_path = f"{class_prefix.rstrip('/')}/{path.lstrip('/')}".rstrip("/") or "/"
+    normalized = _normalize_ui_route_path(full_path)
+    if not normalized:
+        return None
+    return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
 
 
 def _java_class_route_prefix(content: str, class_node: Any) -> str | None:
     """Extract @RequestMapping value from a class declaration's modifiers."""
-    parent = class_node.parent
-    if parent is None:
-        return None
     for child in class_node.children:
-        if child.type == "modifiers":
-            for mod in child.children:
-                if mod.type in {"marker_annotation", "annotation"}:
-                    name_node = mod.child_by_field_name("name")
-                    if name_node is None:
-                        for c in mod.children:
-                            if c.type == "identifier":
-                                name_node = c
-                                break
-                    if (
-                        name_node
-                        and node_text(content, name_node).strip().lower() == "requestmapping"
-                    ):
-                        return _java_annotation_string_value(content, mod) or ""
+        if child.type != "modifiers":
+            continue
+        for mod in child.children:
+            if mod.type not in {"marker_annotation", "annotation"}:
+                continue
+            if _is_request_mapping_annotation(content, mod):
+                return _java_annotation_string_value(content, mod) or ""
     return None
+
+
+def _is_request_mapping_annotation(content: str, annotation_node: Any) -> bool:
+    """Check if a Java annotation is @RequestMapping."""
+    name_node = annotation_node.child_by_field_name("name")
+    if name_node is None:
+        for c in annotation_node.children:
+            if c.type == "identifier":
+                name_node = c
+                break
+    return (
+        name_node is not None and node_text(content, name_node).strip().lower() == "requestmapping"
+    )
 
 
 def _java_annotation_string_value(content: str, annotation_node: Any) -> str | None:
@@ -731,6 +767,9 @@ def _java_annotation_string_value(content: str, annotation_node: Any) -> str | N
     return None
 
 
+_FLASK_FASTAPI_METHODS = {"route", "get", "post", "put", "delete", "patch", "head", "options"}
+
+
 def _extract_python_routes(
     file_path: str,
     content: str,
@@ -741,32 +780,38 @@ def _extract_python_routes(
     Handles: @app.route(), @app.get(), @router.post(), url patterns
     """
     routes: list[UIRouteDef] = []
-    flask_fastapi_methods = {"route", "get", "post", "put", "delete", "patch", "head", "options"}
     for node in walk(root):
         if node.type != "decorator":
             continue
-        # Look for @app.route("/path") or @router.get("/path") patterns
-        for child in node.children:
-            if child.type == "call":
-                func = child.child_by_field_name("function")
-                if func is None:
-                    continue
-                if func.type == "attribute":
-                    attr = func.child_by_field_name("attribute")
-                    attr_name = node_text(content, attr).strip().lower() if attr else ""
-                    if attr_name in flask_fastapi_methods:
-                        path = _python_first_string_arg(content, child)
-                        if path:
-                            normalized = _normalize_ui_route_path(path)
-                            if normalized:
-                                routes.append(
-                                    UIRouteDef(
-                                        path=normalized,
-                                        file_path=file_path,
-                                        line=line_number(node),
-                                    )
-                                )
+        route = _try_python_decorator_route(content, node, file_path)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def _try_python_decorator_route(
+    content: str, decorator_node: Any, file_path: str
+) -> UIRouteDef | None:
+    """Try to extract a route from a Python decorator node."""
+    for child in decorator_node.children:
+        if child.type != "call":
+            continue
+        func = child.child_by_field_name("function")
+        if func is None or func.type != "attribute":
+            continue
+        attr = func.child_by_field_name("attribute")
+        attr_name = node_text(content, attr).strip().lower() if attr else ""
+        if attr_name not in _FLASK_FASTAPI_METHODS:
+            continue
+        path = _python_first_string_arg(content, child)
+        if not path:
+            continue
+        normalized = _normalize_ui_route_path(path)
+        if normalized:
+            return UIRouteDef(
+                path=normalized, file_path=file_path, line=line_number(decorator_node)
+            )
+    return None
 
 
 def _python_first_string_arg(content: str, call_node: Any) -> str | None:
@@ -781,6 +826,21 @@ def _python_first_string_arg(content: str, call_node: Any) -> str | None:
     return None
 
 
+_GO_HTTP_METHODS = {
+    "get",
+    "post",
+    "put",
+    "delete",
+    "patch",
+    "head",
+    "options",
+    "handle",
+    "handlefunc",
+    "any",
+    "match",
+}
+
+
 def _extract_go_routes(
     file_path: str,
     content: str,
@@ -791,52 +851,49 @@ def _extract_go_routes(
     Handles: http.HandleFunc(), e.GET(), r.Get(), router.Handle(), mux patterns
     """
     routes: list[UIRouteDef] = []
-    http_methods_lower = {
-        "get",
-        "post",
-        "put",
-        "delete",
-        "patch",
-        "head",
-        "options",
-        "handle",
-        "handlefunc",
-        "any",
-        "match",
-    }
     for node in walk(root):
         if node.type != "call_expression":
             continue
-        func = node.child_by_field_name("function")
-        if func is None:
-            continue
-        method_name = ""
-        if func.type == "selector_expression":
-            field = func.child_by_field_name("field")
-            method_name = node_text(content, field).strip() if field else ""
-        elif func.type == "identifier":
-            method_name = node_text(content, func).strip()
-        if method_name.lower() not in http_methods_lower:
-            continue
-        # First string argument is the route path
-        args = node.child_by_field_name("arguments")
-        if args is None:
-            continue
-        for child in args.children:
-            if child.type == "interpreted_string_literal":
-                path = node_text(content, child).strip().strip('"')
-                if path.startswith("/"):
-                    normalized = _normalize_ui_route_path(path)
-                    if normalized:
-                        routes.append(
-                            UIRouteDef(
-                                path=normalized,
-                                file_path=file_path,
-                                line=line_number(node),
-                            )
-                        )
-                break
+        route = _try_go_call_route(content, node, file_path)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def _try_go_call_route(content: str, node: Any, file_path: str) -> UIRouteDef | None:
+    """Try to extract a route from a Go call_expression."""
+    func = node.child_by_field_name("function")
+    if func is None:
+        return None
+    method_name = ""
+    if func.type == "selector_expression":
+        field = func.child_by_field_name("field")
+        method_name = node_text(content, field).strip() if field else ""
+    elif func.type == "identifier":
+        method_name = node_text(content, func).strip()
+    if method_name.lower() not in _GO_HTTP_METHODS:
+        return None
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    return _go_first_string_route(content, args, file_path, node)
+
+
+def _go_first_string_route(content: str, args: Any, file_path: str, node: Any) -> UIRouteDef | None:
+    """Extract the first string literal argument as a route path."""
+    for child in args.children:
+        if child.type == "interpreted_string_literal":
+            path = node_text(content, child).strip().strip('"')
+            if path.startswith("/"):
+                normalized = _normalize_ui_route_path(path)
+                if normalized:
+                    return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
+            break
+    return None
+
+
+_PHP_ROUTE_ATTRS = {"route", "get", "post", "put", "delete", "patch"}
+_PHP_ROUTE_STATIC_METHODS = {"get", "post", "put", "delete", "patch", "match", "any"}
 
 
 def _extract_php_routes(
@@ -850,57 +907,56 @@ def _extract_php_routes(
     """
     routes: list[UIRouteDef] = []
     for node in walk(root):
-        # PHP 8 attributes: #[Route('/path')]
         if node.type == "attribute":
-            attr_name = ""
-            for child in node.children:
-                if child.type == "name" or child.type == "identifier":
-                    attr_name = node_text(content, child).strip()
-                    break
-            if attr_name.lower() in {"route", "get", "post", "put", "delete", "patch"}:
-                path = _php_attribute_string_value(content, node)
-                if path:
-                    normalized = _normalize_ui_route_path(path)
-                    if normalized:
-                        routes.append(
-                            UIRouteDef(
-                                path=normalized,
-                                file_path=file_path,
-                                line=line_number(node),
-                            )
-                        )
-        # Static method calls: Route::get('/path', ...)
+            route = _try_php_attribute_route(content, node, file_path)
+            if route is not None:
+                routes.append(route)
         if node.type == "scoped_call_expression":
-            scope = node.child_by_field_name("scope")
-            name = node.child_by_field_name("name")
-            scope_text = node_text(content, scope).strip() if scope else ""
-            name_text = node_text(content, name).strip().lower() if name else ""
-            if scope_text == "Route" and name_text in {
-                "get",
-                "post",
-                "put",
-                "delete",
-                "patch",
-                "match",
-                "any",
-            }:
-                args = node.child_by_field_name("arguments")
-                if args:
-                    path = _php_first_string_arg(content, args)
-                    if path:
-                        normalized = _normalize_ui_route_path(path)
-                        if normalized:
-                            # Try to find view() call in the route handler
-                            view_hint = _php_find_view_hint(content, node)
-                            routes.append(
-                                UIRouteDef(
-                                    path=normalized,
-                                    file_path=file_path,
-                                    line=line_number(node),
-                                    view_name_hint=view_hint,
-                                )
-                            )
+            route = _try_php_scoped_route(content, node, file_path)
+            if route is not None:
+                routes.append(route)
     return routes
+
+
+def _try_php_attribute_route(content: str, node: Any, file_path: str) -> UIRouteDef | None:
+    """Try to extract a route from a PHP 8 attribute."""
+    attr_name = ""
+    for child in node.children:
+        if child.type in {"name", "identifier"}:
+            attr_name = node_text(content, child).strip()
+            break
+    if attr_name.lower() not in _PHP_ROUTE_ATTRS:
+        return None
+    path = _php_attribute_string_value(content, node)
+    if not path:
+        return None
+    normalized = _normalize_ui_route_path(path)
+    if not normalized:
+        return None
+    return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
+
+
+def _try_php_scoped_route(content: str, node: Any, file_path: str) -> UIRouteDef | None:
+    """Try to extract a route from a Route::method() static call."""
+    scope = node.child_by_field_name("scope")
+    name = node.child_by_field_name("name")
+    scope_text = node_text(content, scope).strip() if scope else ""
+    name_text = node_text(content, name).strip().lower() if name else ""
+    if scope_text != "Route" or name_text not in _PHP_ROUTE_STATIC_METHODS:
+        return None
+    args = node.child_by_field_name("arguments")
+    if not args:
+        return None
+    path = _php_first_string_arg(content, args)
+    if not path:
+        return None
+    normalized = _normalize_ui_route_path(path)
+    if not normalized:
+        return None
+    view_hint = _php_find_view_hint(content, node)
+    return UIRouteDef(
+        path=normalized, file_path=file_path, line=line_number(node), view_name_hint=view_hint
+    )
 
 
 def _php_find_view_hint(content: str, route_node: Any) -> str | None:
@@ -946,6 +1002,9 @@ def _php_first_string_arg(content: str, args_node: Any) -> str | None:
     return None
 
 
+_RAILS_METHODS = {"get", "post", "put", "patch", "delete", "match", "root"}
+
+
 def _extract_ruby_routes(
     file_path: str,
     content: str,
@@ -956,46 +1015,46 @@ def _extract_ruby_routes(
     Handles: get '/path', post '/path', resources :name, match '/path'
     """
     routes: list[UIRouteDef] = []
-    rails_methods = {"get", "post", "put", "patch", "delete", "match", "root"}
     for node in walk(root):
         if node.type != "call":
             continue
-        method_node = node.child_by_field_name("method")
-        if method_node is None:
-            # Try first identifier child
-            for child in node.children:
-                if child.type == "identifier":
-                    method_node = child
-                    break
-        method_name = node_text(content, method_node).strip() if method_node else ""
-
-        if method_name in rails_methods:
-            path = _ruby_first_string_arg(content, node)
-            if method_name == "root" and not path:
-                path = "/"
-            if path:
-                normalized = _normalize_ui_route_path(path)
-                if normalized:
-                    routes.append(
-                        UIRouteDef(
-                            path=normalized,
-                            file_path=file_path,
-                            line=line_number(node),
-                        )
-                    )
-        elif method_name in {"resources", "resource"}:
-            symbol = _ruby_first_symbol_arg(content, node)
-            if symbol:
-                normalized = _normalize_ui_route_path(f"/{symbol}")
-                if normalized:
-                    routes.append(
-                        UIRouteDef(
-                            path=normalized,
-                            file_path=file_path,
-                            line=line_number(node),
-                        )
-                    )
+        route = _try_ruby_call_route(content, node, file_path)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def _ruby_call_method_name(content: str, node: Any) -> str:
+    """Extract the method name from a Ruby call node."""
+    method_node = node.child_by_field_name("method")
+    if method_node is None:
+        for child in node.children:
+            if child.type == "identifier":
+                method_node = child
+                break
+    return node_text(content, method_node).strip() if method_node else ""
+
+
+def _try_ruby_call_route(content: str, node: Any, file_path: str) -> UIRouteDef | None:
+    """Try to extract a route from a Ruby call node."""
+    method_name = _ruby_call_method_name(content, node)
+
+    if method_name in _RAILS_METHODS:
+        path = _ruby_first_string_arg(content, node)
+        if method_name == "root" and not path:
+            path = "/"
+        if not path:
+            return None
+        normalized = _normalize_ui_route_path(path)
+        if normalized:
+            return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
+    elif method_name in {"resources", "resource"}:
+        symbol = _ruby_first_symbol_arg(content, node)
+        if symbol:
+            normalized = _normalize_ui_route_path(f"/{symbol}")
+            if normalized:
+                return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
+    return None
 
 
 def _ruby_first_string_arg(content: str, call_node: Any) -> str | None:
@@ -1019,6 +1078,17 @@ def _ruby_first_symbol_arg(content: str, call_node: Any) -> str | None:
     return None
 
 
+_CSHARP_ROUTE_ATTRS = {
+    "route",
+    "httpget",
+    "httppost",
+    "httpput",
+    "httpdelete",
+    "httppatch",
+    "httphead",
+}
+
+
 def _extract_csharp_routes(
     file_path: str,
     content: str,
@@ -1029,63 +1099,66 @@ def _extract_csharp_routes(
     Handles: [Route], [HttpGet], [HttpPost], [ApiController] with route templates
     """
     routes: list[UIRouteDef] = []
-    route_attrs = {"route", "httpget", "httppost", "httpput", "httpdelete", "httppatch", "httphead"}
     controller_prefix = ""
     for node in walk(root):
-        # Class-level [Route("api/[controller]")]
         if node.type == "class_declaration":
             controller_prefix = _csharp_class_route_prefix(content, node) or ""
         if node.type != "attribute":
             continue
-        attr_name_node = None
-        for child in node.children:
-            if child.type in {"identifier", "name"}:
-                attr_name_node = child
-                break
-        if attr_name_node is None:
-            continue
-        attr_name = node_text(content, attr_name_node).strip().lower()
-        if attr_name.endswith("attribute"):
-            attr_name = attr_name[: -len("attribute")]
-        if attr_name not in route_attrs:
-            continue
-        path = _csharp_attribute_string_value(content, node) or ""
-        if controller_prefix and not path.startswith("/"):
-            full_path = f"{controller_prefix.rstrip('/')}/{path.lstrip('/')}"
-        else:
-            full_path = path
-        full_path = full_path.rstrip("/") or "/"
-        # Replace ASP.NET template tokens
-        full_path = full_path.replace("[controller]", ":controller").replace("[action]", ":action")
-        normalized = _normalize_ui_route_path(full_path)
-        if normalized:
-            routes.append(
-                UIRouteDef(
-                    path=normalized,
-                    file_path=file_path,
-                    line=line_number(node),
-                )
-            )
+        route = _try_csharp_attribute_route(content, node, file_path, controller_prefix)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def _try_csharp_attribute_route(
+    content: str, node: Any, file_path: str, controller_prefix: str
+) -> UIRouteDef | None:
+    """Try to extract a route from a C# attribute node."""
+    attr_name_node = None
+    for child in node.children:
+        if child.type in {"identifier", "name"}:
+            attr_name_node = child
+            break
+    if attr_name_node is None:
+        return None
+    attr_name = node_text(content, attr_name_node).strip().lower()
+    if attr_name.endswith("attribute"):
+        attr_name = attr_name[: -len("attribute")]
+    if attr_name not in _CSHARP_ROUTE_ATTRS:
+        return None
+    path = _csharp_attribute_string_value(content, node) or ""
+    if controller_prefix and not path.startswith("/"):
+        full_path = f"{controller_prefix.rstrip('/')}/{path.lstrip('/')}"
+    else:
+        full_path = path
+    full_path = full_path.rstrip("/") or "/"
+    full_path = full_path.replace("[controller]", ":controller").replace("[action]", ":action")
+    normalized = _normalize_ui_route_path(full_path)
+    if not normalized:
+        return None
+    return UIRouteDef(path=normalized, file_path=file_path, line=line_number(node))
 
 
 def _csharp_class_route_prefix(content: str, class_node: Any) -> str | None:
     """Extract [Route] prefix from a C# class."""
     for child in class_node.children:
-        if child.type == "attribute_list":
-            for attr in walk(child):
-                if attr.type == "attribute":
-                    name_node = None
-                    for c in attr.children:
-                        if c.type in {"identifier", "name"}:
-                            name_node = c
-                            break
-                    if name_node and node_text(content, name_node).strip().lower() in {
-                        "route",
-                        "routeprefix",
-                    }:
-                        return _csharp_attribute_string_value(content, attr)
+        if child.type != "attribute_list":
+            continue
+        for attr in walk(child):
+            if attr.type != "attribute":
+                continue
+            if _is_csharp_route_attribute(content, attr):
+                return _csharp_attribute_string_value(content, attr)
     return None
+
+
+def _is_csharp_route_attribute(content: str, attr_node: Any) -> bool:
+    """Check if a C# attribute is a Route or RoutePrefix attribute."""
+    for c in attr_node.children:
+        if c.type in {"identifier", "name"}:
+            return node_text(content, c).strip().lower() in {"route", "routeprefix"}
+    return False
 
 
 def _csharp_attribute_string_value(content: str, attr_node: Any) -> str | None:

@@ -928,6 +928,52 @@ async def _extract_schema_fallback(
     return aggregate_schema_extractions(extractions)
 
 
+async def _kg_load_rule_candidate_docs(
+    session: object,
+    source_uuid: object,
+    changed_doc_ids: list[str] | None,
+) -> list:
+    """Load documents eligible for business rule extraction."""
+    import uuid as uuid_module
+
+    from contextmine_core.models import Document
+
+    if changed_doc_ids:
+        result = await session.execute(
+            select(Document.id, Document.uri, Document.content_markdown).where(
+                Document.id.in_([uuid_module.UUID(d) for d in changed_doc_ids])
+            )
+        )
+    else:
+        result = await session.execute(
+            select(Document.id, Document.uri, Document.content_markdown).where(
+                Document.source_id == source_uuid
+            )
+        )
+    return result.all()
+
+
+async def _kg_extract_rules_from_docs(docs: list, research_llm: object) -> list:
+    """Run rule extraction on a list of documents, filtering by language."""
+    from contextmine_core.analyzer.extractors.rules import extract_rules_from_file
+    from contextmine_core.treesitter.languages import detect_language
+
+    all_extractions = []
+    for _doc_id, uri, content in docs:
+        if not content:
+            continue
+        file_path = _uri_to_file_path(uri)
+        if _is_ignored_repo_path(file_path) or detect_language(file_path) is None:
+            continue
+        try:
+            rule_result = await extract_rules_from_file(file_path, content, research_llm)
+            if rule_result.rules:
+                all_extractions.append(rule_result)
+        except Exception as e:
+            logger.debug("Rule extraction failed for %s: %s", file_path, e)
+    return all_extractions
+
+
 async def _kg_extract_business_rules(
     source_uuid: object,
     collection_uuid: object,
@@ -935,14 +981,7 @@ async def _kg_extract_business_rules(
     research_llm: object,
 ) -> int:
     """Extract business rules from code files using LLM. Returns rules created count."""
-    import uuid as uuid_module
-
-    from contextmine_core.analyzer.extractors.rules import (
-        build_rules_graph,
-        extract_rules_from_file,
-    )
-    from contextmine_core.models import Document
-    from contextmine_core.treesitter.languages import detect_language
+    from contextmine_core.analyzer.extractors.rules import build_rules_graph
 
     if changed_doc_ids is not None and len(changed_doc_ids) == 0:
         if await _kg_has_business_rules(collection_uuid):
@@ -950,35 +989,11 @@ async def _kg_extract_business_rules(
             return 0
         logger.info("No changed documents but no business rules found - running initial extraction")
 
-    all_extractions = []
     async with get_session() as session:
-        if changed_doc_ids:
-            result = await session.execute(
-                select(Document.id, Document.uri, Document.content_markdown).where(
-                    Document.id.in_([uuid_module.UUID(d) for d in changed_doc_ids])
-                )
-            )
-        else:
-            result = await session.execute(
-                select(Document.id, Document.uri, Document.content_markdown).where(
-                    Document.source_id == source_uuid
-                )
-            )
-        docs = result.all()
+        docs = await _kg_load_rule_candidate_docs(session, source_uuid, changed_doc_ids)
         logger.info("Extracting business rules from %d documents", len(docs))
 
-        for _doc_id, uri, content in docs:
-            if not content:
-                continue
-            file_path = _uri_to_file_path(uri)
-            if _is_ignored_repo_path(file_path) or detect_language(file_path) is None:
-                continue
-            try:
-                rule_result = await extract_rules_from_file(file_path, content, research_llm)
-                if rule_result.rules:
-                    all_extractions.append(rule_result)
-            except Exception as e:
-                logger.debug("Rule extraction failed for %s: %s", file_path, e)
+        all_extractions = await _kg_extract_rules_from_docs(docs, research_llm)
 
         if all_extractions:
             rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
