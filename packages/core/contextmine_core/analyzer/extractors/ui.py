@@ -959,23 +959,40 @@ def _try_php_scoped_route(content: str, node: Any, file_path: str) -> UIRouteDef
     )
 
 
+def _php_resolve_fn_name_node(call_node: Any) -> Any | None:
+    """Resolve the function name node from a PHP function call expression."""
+    fn_name_node = call_node.child_by_field_name("function")
+    if fn_name_node is not None:
+        return fn_name_node
+    for c in call_node.children:
+        if c.type in {"name", "identifier"}:
+            return c
+    return None
+
+
+def _php_view_template_from_call(content: str, call_node: Any) -> str | None:
+    """Return the normalized view hint if the call is a view/render invocation."""
+    fn_name_node = _php_resolve_fn_name_node(call_node)
+    fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
+    if fn_name not in {"view", "render"}:
+        return None
+    args = call_node.child_by_field_name("arguments")
+    if not args:
+        return None
+    template_name = _php_first_string_arg(content, args)
+    if not template_name:
+        return None
+    return _normalize_view_hint(template_name)
+
+
 def _php_find_view_hint(content: str, route_node: Any) -> str | None:
     """Search for view('template.name') calls within a PHP route handler."""
     for child in walk(route_node):
-        if child.type == "function_call_expression":
-            fn_name_node = child.child_by_field_name("function")
-            if fn_name_node is None:
-                for c in child.children:
-                    if c.type in {"name", "identifier"}:
-                        fn_name_node = c
-                        break
-            fn_name = node_text(content, fn_name_node).strip() if fn_name_node else ""
-            if fn_name in {"view", "render"}:
-                args = child.child_by_field_name("arguments")
-                if args:
-                    template_name = _php_first_string_arg(content, args)
-                    if template_name:
-                        return _normalize_view_hint(template_name)
+        if child.type != "function_call_expression":
+            continue
+        hint = _php_view_template_from_call(content, child)
+        if hint is not None:
+            return hint
     return None
 
 

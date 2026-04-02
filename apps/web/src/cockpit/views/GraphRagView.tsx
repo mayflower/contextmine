@@ -116,13 +116,13 @@ function ProcessArticle({
   showFocus,
   onViewFlow,
   onToggleFocus,
-}: {
+}: Readonly<{
   process: GraphRagProcessSummary
   focusedProcessId: string
   showFocus: boolean
   onViewFlow: (processId: string) => void
   onToggleFocus: (processId: string) => void
-}) {
+}>) {
   return (
     <article key={process.id}>
       <strong>{process.label}</strong>
@@ -138,6 +138,147 @@ function ProcessArticle({
         ) : null}
       </div>
     </article>
+  )
+}
+
+function EvidenceSection({
+  selectedNodeId,
+  evidenceNodeName,
+  evidenceTotal,
+  evidenceState,
+  evidenceError,
+  evidenceItems,
+  onRetry,
+}: Readonly<{
+  selectedNodeId: string
+  evidenceNodeName: string
+  evidenceTotal: number
+  evidenceState: CockpitLoadState
+  evidenceError: string
+  evidenceItems: GraphRagEvidenceItem[]
+  onRetry: () => void
+}>) {
+  return (
+    <section className="cockpit2-graphrag-evidence">
+      <div className="cockpit2-panel-header-row">
+        <h4>Indexed text</h4>
+        <p className="muted">
+          {evidenceNodeName ? `${evidenceNodeName} • ` : ''}
+          {evidenceTotal} items
+        </p>
+      </div>
+
+      {selectedNodeId ? null : (
+        <div className="cockpit2-empty">
+          <p>Select a graph node to inspect indexed evidence text.</p>
+        </div>
+      )}
+
+      {selectedNodeId && evidenceState === 'loading' ? (
+        <div className="cockpit2-skeleton-grid">
+          <div className="cockpit2-skeleton-card" />
+          <div className="cockpit2-skeleton-card" />
+        </div>
+      ) : null}
+
+      {selectedNodeId && evidenceState === 'error' ? (
+        <div className="cockpit2-alert error inline">
+          <p>{evidenceError}</p>
+          <button type="button" onClick={onRetry}>Retry</button>
+        </div>
+      ) : null}
+
+      {selectedNodeId && evidenceState !== 'loading' && evidenceState !== 'error' && evidenceItems.length === 0 ? (
+        <div className="cockpit2-empty">
+          <p>No indexed evidence was found for this node.</p>
+        </div>
+      ) : null}
+
+      {selectedNodeId && evidenceItems.length > 0 ? (
+        <div className="cockpit2-graphrag-evidence-list">
+          {evidenceItems.map((item) => (
+            <article key={item.evidence_id} className="cockpit2-graphrag-evidence-item">
+              <header>
+                <strong>{item.file_path}</strong>
+                <span>
+                  L{item.start_line}-L{item.end_line} • {item.text_source}
+                </span>
+              </header>
+              {item.text ? <pre>{item.text}</pre> : <p className="muted">No text available.</p>}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function ProcessesSection({
+  processes,
+  processGroups,
+  processesState,
+  processesError,
+  processDetailState,
+  processDetailError,
+  focusedProcessId,
+  onViewFlow,
+  onToggleFocus,
+}: Readonly<{
+  processes: GraphRagProcessSummary[]
+  processGroups: { cross: GraphRagProcessSummary[]; intra: GraphRagProcessSummary[] }
+  processesState: CockpitLoadState
+  processesError: string
+  processDetailState: CockpitLoadState
+  processDetailError: string
+  focusedProcessId: string
+  onViewFlow: (processId: string) => void
+  onToggleFocus: (processId: string) => void
+}>) {
+  return (
+    <section className="cockpit2-graphrag-processes">
+      <div className="cockpit2-panel-header-row">
+        <h4>Processes</h4>
+        <p className="muted">{processes.length} detected</p>
+      </div>
+      {processesState === 'loading' ? <p className="muted">Loading processes…</p> : null}
+      {processesError ? <p className="muted">{processesError}</p> : null}
+      {processes.length > 0 ? (
+        <>
+          <details open>
+            <summary>Cross-community ({processGroups.cross.length})</summary>
+            <div className="cockpit2-process-list">
+              {processGroups.cross.map((process) => (
+                <ProcessArticle
+                  key={process.id}
+                  process={process}
+                  focusedProcessId={focusedProcessId}
+                  showFocus
+                  onViewFlow={onViewFlow}
+                  onToggleFocus={onToggleFocus}
+                />
+              ))}
+            </div>
+          </details>
+          <details>
+            <summary>Intra-community ({processGroups.intra.length})</summary>
+            <div className="cockpit2-process-list">
+              {processGroups.intra.map((process) => (
+                <ProcessArticle
+                  key={process.id}
+                  process={process}
+                  focusedProcessId={focusedProcessId}
+                  showFocus={false}
+                  onViewFlow={onViewFlow}
+                  onToggleFocus={() => {}}
+                />
+              ))}
+            </div>
+          </details>
+        </>
+      ) : null}
+      {processDetailError ? <p className="muted">{processDetailError}</p> : null}
+      {processDetailState === 'loading' ? <p className="muted">Loading process detail…</p> : null}
+    </section>
   )
 }
 
@@ -600,118 +741,40 @@ export default function GraphRagView({
         ) : null}
       </section>
 
-      <section className="cockpit2-graphrag-processes">
-        <div className="cockpit2-panel-header-row">
-          <h4>Processes</h4>
-          <p className="muted">{processes.length} detected</p>
-        </div>
-        {processesState === 'loading' ? <p className="muted">Loading processes…</p> : null}
-        {processesError ? <p className="muted">{processesError}</p> : null}
-        {processes.length > 0 ? (
-          <>
-            <details open>
-              <summary>Cross-community ({processGroups.cross.length})</summary>
-              <div className="cockpit2-process-list">
-                {processGroups.cross.map((process) => (
-                  <ProcessArticle
-                    key={process.id}
-                    process={process}
-                    focusedProcessId={focusedProcessId}
-                    showFocus
-                    onViewFlow={async (id) => {
-                      const detail = await onLoadProcessDetail(id)
-                      if (detail) setModalOpen(true)
-                    }}
-                    onToggleFocus={async (id) => {
-                      if (focusedProcessId === id) {
-                        setFocusedProcessId('')
-                        setFocusedProcessNodeIds(new Set())
-                        return
-                      }
-                      const detail = await onLoadProcessDetail(id)
-                      if (!detail) return
-                      setFocusedProcessId(id)
-                      setFocusedProcessNodeIds(new Set(detail.steps.map((step) => step.node_id)))
-                    }}
-                  />
-                ))}
-              </div>
-            </details>
-            <details>
-              <summary>Intra-community ({processGroups.intra.length})</summary>
-              <div className="cockpit2-process-list">
-                {processGroups.intra.map((process) => (
-                  <ProcessArticle
-                    key={process.id}
-                    process={process}
-                    focusedProcessId={focusedProcessId}
-                    showFocus={false}
-                    onViewFlow={async (id) => {
-                      const detail = await onLoadProcessDetail(id)
-                      if (detail) setModalOpen(true)
-                    }}
-                    onToggleFocus={() => {}}
-                  />
-                ))}
-              </div>
-            </details>
-          </>
-        ) : null}
-        {processDetailError ? <p className="muted">{processDetailError}</p> : null}
-        {processDetailState === 'loading' ? <p className="muted">Loading process detail…</p> : null}
-      </section>
+      <ProcessesSection
+        processes={processes}
+        processGroups={processGroups}
+        processesState={processesState}
+        processesError={processesError}
+        processDetailState={processDetailState}
+        processDetailError={processDetailError}
+        focusedProcessId={focusedProcessId}
+        onViewFlow={async (id) => {
+          const detail = await onLoadProcessDetail(id)
+          if (detail) setModalOpen(true)
+        }}
+        onToggleFocus={async (id) => {
+          if (focusedProcessId === id) {
+            setFocusedProcessId('')
+            setFocusedProcessNodeIds(new Set())
+            return
+          }
+          const detail = await onLoadProcessDetail(id)
+          if (!detail) return
+          setFocusedProcessId(id)
+          setFocusedProcessNodeIds(new Set(detail.steps.map((step) => step.node_id)))
+        }}
+      />
 
-      <section className="cockpit2-graphrag-evidence">
-        <div className="cockpit2-panel-header-row">
-          <h4>Indexed text</h4>
-          <p className="muted">
-            {evidenceNodeName ? `${evidenceNodeName} • ` : ''}
-            {evidenceTotal} items
-          </p>
-        </div>
-
-        {selectedNodeId ? null : (
-          <div className="cockpit2-empty">
-            <p>Select a graph node to inspect indexed evidence text.</p>
-          </div>
-        )}
-
-        {selectedNodeId && evidenceState === 'loading' ? (
-          <div className="cockpit2-skeleton-grid">
-            <div className="cockpit2-skeleton-card" />
-            <div className="cockpit2-skeleton-card" />
-          </div>
-        ) : null}
-
-        {selectedNodeId && evidenceState === 'error' ? (
-          <div className="cockpit2-alert error inline">
-            <p>{evidenceError}</p>
-            <button type="button" onClick={onRetry}>Retry</button>
-          </div>
-        ) : null}
-
-        {selectedNodeId && evidenceState !== 'loading' && evidenceState !== 'error' && evidenceItems.length === 0 ? (
-          <div className="cockpit2-empty">
-            <p>No indexed evidence was found for this node.</p>
-          </div>
-        ) : null}
-
-        {selectedNodeId && evidenceItems.length > 0 ? (
-          <div className="cockpit2-graphrag-evidence-list">
-            {evidenceItems.map((item) => (
-              <article key={item.evidence_id} className="cockpit2-graphrag-evidence-item">
-                <header>
-                  <strong>{item.file_path}</strong>
-                  <span>
-                    L{item.start_line}-L{item.end_line} • {item.text_source}
-                  </span>
-                </header>
-                {item.text ? <pre>{item.text}</pre> : <p className="muted">No text available.</p>}
-              </article>
-            ))}
-          </div>
-        ) : null}
-      </section>
+      <EvidenceSection
+        selectedNodeId={selectedNodeId}
+        evidenceNodeName={evidenceNodeName}
+        evidenceTotal={evidenceTotal}
+        evidenceState={evidenceState}
+        evidenceError={evidenceError}
+        evidenceItems={evidenceItems}
+        onRetry={onRetry}
+      />
 
       {modalOpen && processDetail ? (
         <GraphRagProcessModal

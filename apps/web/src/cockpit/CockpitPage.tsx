@@ -111,7 +111,7 @@ function WorkspaceWithInspector({
   children,
   showInspector,
   inspectorProps,
-}: {
+}: Readonly<{
   children: React.ReactNode
   showInspector: boolean
   inspectorProps: {
@@ -123,7 +123,7 @@ function WorkspaceWithInspector({
     overlay: OverlayState
     onClearSelection: () => void
   }
-}) {
+}>) {
   return (
     <section className="cockpit2-workspace">
       <div className="cockpit2-main">{children}</div>
@@ -704,6 +704,327 @@ export default function CockpitPage({
     })
   }
 
+  function renderActiveView(): React.ReactNode {
+    switch (selection.view) {
+      case 'overview':
+        return (
+          <OverviewView
+            city={city}
+            state={activeState}
+            error={activeError}
+            filter={hotspotFilter}
+            onRetry={refreshActiveView}
+            onOpenTopology={handleOpenTopologyFromOverview}
+            onOpenCity={handleOpenCityFromOverview}
+            onSelectHotspot={handleSelectHotspot}
+          />
+        )
+      case 'topology':
+        return (
+          <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
+            <TopologyView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={topologyDensity}
+              layoutEngine={topologyLayoutEngine}
+              elkEnabled={cockpitFlags.elkLayout}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onDensityChange={setTopologyDensity}
+              onLayoutEngineChange={setTopologyLayoutEngine}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onSelectNodeId={handleSelectNodeId}
+              onLayoutCompleted={(engine, durationMs, nodeCount) => {
+                getFaro()?.api.pushEvent('cockpit_layout_completed', {
+                  engine,
+                  duration_ms: String(Math.round(durationMs)),
+                  node_count: String(nodeCount),
+                })
+              }}
+              onRetry={refreshActiveView}
+            />
+          </WorkspaceWithInspector>
+        )
+      case 'deep_dive':
+        return (
+          <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
+            <DeepDiveView
+              graph={filteredGraph}
+              state={activeState}
+              error={activeError}
+              layer={selection.layer}
+              density={deepDiveDensity}
+              mode={deepDiveMode}
+              overlay={overlayData}
+              selectedNodeId={resolvedNodeId}
+              onModeChange={setDeepDiveMode}
+              onDensityChange={setDeepDiveDensity}
+              onSelectNodeId={handleSelectNodeId}
+              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+              onRetry={refreshActiveView}
+            />
+          </WorkspaceWithInspector>
+        )
+      case 'c4_diff':
+        return (
+          <C4DiffView
+            mermaid={mermaid}
+            state={activeState}
+            error={activeError}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'architecture':
+        return (
+          <ArchitectureView
+            state={activeState}
+            error={activeError}
+            arc42={arc42}
+            portsAdapters={portsAdapters}
+            drift={arc42Drift}
+            erm={erm}
+            panelErrors={architecturePanelErrors}
+            actions={architectureActions}
+            onReindex={triggerCollectionReindex}
+            onRegenerateArc42={regenerateArc42}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'city':
+        return (
+          <CityView
+            state={activeState}
+            error={activeError}
+            embedUrl={cityEmbedUrl}
+            projection={cityProjection}
+            entityLevel={cityEntityLevel}
+            onProjectionChange={setCityProjection}
+            onEntityLevelChange={setCityEntityLevel}
+            onReload={refreshActiveView}
+            onOpenOverview={handleOpenOverviewFromCity}
+          />
+        )
+      case 'evolution':
+        return (
+          <EvolutionView
+            state={activeState}
+            error={activeError}
+            investmentUtilization={investmentUtilization}
+            knowledgeIslands={knowledgeIslands}
+            temporalCoupling={temporalCoupling}
+            fitnessFunctions={fitnessFunctions}
+            panelErrors={evolutionPanelErrors}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'graphrag':
+        return (
+          <GraphRagView
+            graph={filteredGraph}
+            state={activeState}
+            error={activeError}
+            status={graphRagStatus}
+            reason={graphRagReason}
+            selectedNodeId={resolvedNodeId}
+            communityMode={graphRagCommunityMode}
+            communityId={graphRagCommunityId}
+            communities={graphRagCommunities}
+            communitiesState={graphRagCommunitiesState}
+            communitiesError={graphRagCommunitiesError}
+            path={graphRagPath}
+            pathState={graphRagPathState}
+            pathError={graphRagPathError}
+            processes={graphRagProcesses}
+            processesState={graphRagProcessesState}
+            processesError={graphRagProcessesError}
+            processDetail={graphRagProcessDetail}
+            processDetailState={graphRagProcessDetailState}
+            processDetailError={graphRagProcessDetailError}
+            evidenceItems={graphRagEvidenceItems}
+            evidenceTotal={graphRagEvidenceTotal}
+            evidenceNodeName={graphRagEvidenceNodeName}
+            evidenceState={graphRagEvidenceState}
+            evidenceError={graphRagEvidenceError}
+            onSelectNodeId={handleSelectNodeId}
+            onTracePath={traceGraphRagPath}
+            onLoadProcessDetail={loadGraphRagProcessDetail}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'semantic_map':
+        return (
+          <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
+            <SemanticMapView
+              state={activeState}
+              error={activeError}
+              payload={semanticMap}
+              comparisonPayload={semanticMapComparison}
+              mode={semanticMapMode}
+              selectedNodeId={resolvedNodeId}
+              showDiffOverlay={semanticMapShowDiffOverlay}
+              diffMinDrift={semanticMapDiffMinDrift}
+              onModeChange={setSemanticMapMode}
+              onSelectNodeId={handleSelectNodeId}
+              onRetry={refreshActiveView}
+            />
+          </WorkspaceWithInspector>
+        )
+      case 'ui_map':
+        return (
+          <section className="cockpit2-workspace">
+            <div className="cockpit2-main">
+              <div className="cockpit2-tabs" role="tablist" aria-label="UI and flow modes">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={behaviorGraphMode === 'ui_map'}
+                  className={`cockpit2-tab ${behaviorGraphMode === 'ui_map' ? 'active' : ''}`}
+                  onClick={() => setBehaviorGraphMode('ui_map')}
+                >
+                  UI Map
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={behaviorGraphMode === 'user_flows'}
+                  className={`cockpit2-tab ${behaviorGraphMode === 'user_flows' ? 'active' : ''}`}
+                  onClick={() => setBehaviorGraphMode('user_flows')}
+                >
+                  User Flows
+                </button>
+              </div>
+
+              {behaviorGraphMode === 'ui_map' && uiMapSummary ? (
+                <div className="cockpit2-arch-kpis">
+                  <div>
+                    <strong>{uiMapSummary.routes}</strong>
+                    <span>Routes</span>
+                  </div>
+                  <div>
+                    <strong>{uiMapSummary.views}</strong>
+                    <span>Views</span>
+                  </div>
+                  <div>
+                    <strong>{uiMapSummary.components}</strong>
+                    <span>Components</span>
+                  </div>
+                  <div>
+                    <strong>{uiMapSummary.contracts}</strong>
+                    <span>Contracts</span>
+                  </div>
+                </div>
+              ) : null}
+
+              {behaviorGraphMode === 'user_flows' && userFlows ? (
+                <div className="cockpit2-arch-kpis">
+                  <div>
+                    <strong>{userFlows.summary.user_flows}</strong>
+                    <span>User flows</span>
+                  </div>
+                  <div>
+                    <strong>{userFlows.summary.flow_steps}</strong>
+                    <span>Flow steps</span>
+                  </div>
+                  <div>
+                    <strong>{userFlows.summary.flow_edges}</strong>
+                    <span>Flow edges</span>
+                  </div>
+                  <div>
+                    <strong>{userFlows.flows.length}</strong>
+                    <span>Flow rows</span>
+                  </div>
+                </div>
+              ) : null}
+              <TopologyView
+                graph={filteredGraph}
+                state={activeState}
+                error={activeError}
+                layer={selection.layer}
+                density={topologyDensity}
+                layoutEngine={topologyLayoutEngine}
+                elkEnabled={cockpitFlags.elkLayout}
+                overlay={overlayData}
+                selectedNodeId={resolvedNodeId}
+                onDensityChange={setTopologyDensity}
+                onLayoutEngineChange={setTopologyLayoutEngine}
+                onSwitchToCodeLayer={() => setLayer('code_controlflow')}
+                onSelectNodeId={handleSelectNodeId}
+                onLayoutCompleted={(engine, durationMs, nodeCount) => {
+                  getFaro()?.api.pushEvent('cockpit_layout_completed', {
+                    engine,
+                    duration_ms: String(Math.round(durationMs)),
+                    node_count: String(nodeCount),
+                  })
+                }}
+                onRetry={refreshActiveView}
+              />
+              {behaviorGraphMode === 'user_flows' && userFlows && userFlows.flows.length > 0 ? (
+                <div className="cockpit2-table-wrap">
+                  <table className="cockpit2-table">
+                    <thead>
+                      <tr>
+                        <th>Flow</th>
+                        <th>Route</th>
+                        <th>Steps</th>
+                        <th>Verified by tests</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userFlows.flows.slice(0, 12).map((flow) => (
+                        <tr key={flow.flow_id}>
+                          <td>{flow.flow_name}</td>
+                          <td>{flow.route_path || '—'}</td>
+                          <td>{flow.steps.length}</td>
+                          <td>{flow.verified_by_tests.slice(0, 3).join(', ') || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        )
+      case 'test_matrix':
+        return (
+          <TestMatrixView
+            state={activeState}
+            error={activeError}
+            payload={testMatrix}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'rebuild_readiness':
+        return (
+          <RebuildReadinessView
+            state={activeState}
+            error={activeError}
+            payload={rebuildReadiness}
+            onRetry={refreshActiveView}
+          />
+        )
+      case 'exports':
+        return (
+          <ExportsView
+            exportFormat={exportFormat}
+            exportProjection={exportProjection}
+            exportState={activeState}
+            exportError={errors.exports}
+            exportContent={exportContent}
+            onFormatChange={setExportFormat}
+            onProjectionChange={setExportProjection}
+            onGenerate={handleGenerateExport}
+            onCopy={handleCopyExport}
+            onDownload={handleDownloadExport}
+          />
+        )
+      default:
+        return null
+    }
+  }
+
   if (collections.length === 0) {
     return (
       <section className="card cockpit2-shell">
@@ -772,319 +1093,7 @@ export default function CockpitPage({
 
       <CockpitTabs activeView={selection.view} onViewChange={setView} />
 
-      {selection.view === 'overview' ? (
-        <OverviewView
-          city={city}
-          state={activeState}
-          error={activeError}
-          filter={hotspotFilter}
-          onRetry={refreshActiveView}
-          onOpenTopology={handleOpenTopologyFromOverview}
-          onOpenCity={handleOpenCityFromOverview}
-          onSelectHotspot={handleSelectHotspot}
-        />
-      ) : null}
-
-      {selection.view === 'topology' ? (
-        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
-            <TopologyView
-              graph={filteredGraph}
-              state={activeState}
-              error={activeError}
-              layer={selection.layer}
-              density={topologyDensity}
-              layoutEngine={topologyLayoutEngine}
-              elkEnabled={cockpitFlags.elkLayout}
-              overlay={overlayData}
-              selectedNodeId={resolvedNodeId}
-              onDensityChange={setTopologyDensity}
-              onLayoutEngineChange={setTopologyLayoutEngine}
-              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-              onSelectNodeId={handleSelectNodeId}
-              onLayoutCompleted={(engine, durationMs, nodeCount) => {
-                getFaro()?.api.pushEvent('cockpit_layout_completed', {
-                  engine,
-                  duration_ms: String(Math.round(durationMs)),
-                  node_count: String(nodeCount),
-                })
-              }}
-              onRetry={refreshActiveView}
-            />
-        </WorkspaceWithInspector>
-      ) : null}
-
-      {selection.view === 'deep_dive' ? (
-        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
-            <DeepDiveView
-              graph={filteredGraph}
-              state={activeState}
-              error={activeError}
-              layer={selection.layer}
-              density={deepDiveDensity}
-              mode={deepDiveMode}
-              overlay={overlayData}
-              selectedNodeId={resolvedNodeId}
-              onModeChange={setDeepDiveMode}
-              onDensityChange={setDeepDiveDensity}
-              onSelectNodeId={handleSelectNodeId}
-              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-              onRetry={refreshActiveView}
-            />
-        </WorkspaceWithInspector>
-      ) : null}
-
-      {selection.view === 'c4_diff' ? (
-        <C4DiffView
-          mermaid={mermaid}
-          state={activeState}
-          error={activeError}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'architecture' ? (
-        <ArchitectureView
-          state={activeState}
-          error={activeError}
-          arc42={arc42}
-          portsAdapters={portsAdapters}
-          drift={arc42Drift}
-          erm={erm}
-          panelErrors={architecturePanelErrors}
-          actions={architectureActions}
-          onReindex={triggerCollectionReindex}
-          onRegenerateArc42={regenerateArc42}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'city' ? (
-        <CityView
-          state={activeState}
-          error={activeError}
-          embedUrl={cityEmbedUrl}
-          projection={cityProjection}
-          entityLevel={cityEntityLevel}
-          onProjectionChange={setCityProjection}
-          onEntityLevelChange={setCityEntityLevel}
-          onReload={refreshActiveView}
-          onOpenOverview={handleOpenOverviewFromCity}
-        />
-      ) : null}
-
-      {selection.view === 'evolution' ? (
-        <EvolutionView
-          state={activeState}
-          error={activeError}
-          investmentUtilization={investmentUtilization}
-          knowledgeIslands={knowledgeIslands}
-          temporalCoupling={temporalCoupling}
-          fitnessFunctions={fitnessFunctions}
-          panelErrors={evolutionPanelErrors}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'graphrag' ? (
-        <GraphRagView
-          graph={filteredGraph}
-          state={activeState}
-          error={activeError}
-          status={graphRagStatus}
-          reason={graphRagReason}
-          selectedNodeId={resolvedNodeId}
-          communityMode={graphRagCommunityMode}
-          communityId={graphRagCommunityId}
-          communities={graphRagCommunities}
-          communitiesState={graphRagCommunitiesState}
-          communitiesError={graphRagCommunitiesError}
-          path={graphRagPath}
-          pathState={graphRagPathState}
-          pathError={graphRagPathError}
-          processes={graphRagProcesses}
-          processesState={graphRagProcessesState}
-          processesError={graphRagProcessesError}
-          processDetail={graphRagProcessDetail}
-          processDetailState={graphRagProcessDetailState}
-          processDetailError={graphRagProcessDetailError}
-          evidenceItems={graphRagEvidenceItems}
-          evidenceTotal={graphRagEvidenceTotal}
-          evidenceNodeName={graphRagEvidenceNodeName}
-          evidenceState={graphRagEvidenceState}
-          evidenceError={graphRagEvidenceError}
-          onSelectNodeId={handleSelectNodeId}
-          onTracePath={traceGraphRagPath}
-          onLoadProcessDetail={loadGraphRagProcessDetail}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'semantic_map' ? (
-        <WorkspaceWithInspector showInspector={cockpitFlags.inspector} inspectorProps={inspectorProps}>
-            <SemanticMapView
-              state={activeState}
-              error={activeError}
-              payload={semanticMap}
-              comparisonPayload={semanticMapComparison}
-              mode={semanticMapMode}
-              selectedNodeId={resolvedNodeId}
-              showDiffOverlay={semanticMapShowDiffOverlay}
-              diffMinDrift={semanticMapDiffMinDrift}
-              onModeChange={setSemanticMapMode}
-              onSelectNodeId={handleSelectNodeId}
-              onRetry={refreshActiveView}
-            />
-        </WorkspaceWithInspector>
-      ) : null}
-
-      {selection.view === 'ui_map' ? (
-        <section className="cockpit2-workspace">
-          <div className="cockpit2-main">
-            <div className="cockpit2-tabs" role="tablist" aria-label="UI and flow modes">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={behaviorGraphMode === 'ui_map'}
-                className={`cockpit2-tab ${behaviorGraphMode === 'ui_map' ? 'active' : ''}`}
-                onClick={() => setBehaviorGraphMode('ui_map')}
-              >
-                UI Map
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={behaviorGraphMode === 'user_flows'}
-                className={`cockpit2-tab ${behaviorGraphMode === 'user_flows' ? 'active' : ''}`}
-                onClick={() => setBehaviorGraphMode('user_flows')}
-              >
-                User Flows
-              </button>
-            </div>
-
-            {behaviorGraphMode === 'ui_map' && uiMapSummary ? (
-              <div className="cockpit2-arch-kpis">
-                <div>
-                  <strong>{uiMapSummary.routes}</strong>
-                  <span>Routes</span>
-                </div>
-                <div>
-                  <strong>{uiMapSummary.views}</strong>
-                  <span>Views</span>
-                </div>
-                <div>
-                  <strong>{uiMapSummary.components}</strong>
-                  <span>Components</span>
-                </div>
-                <div>
-                  <strong>{uiMapSummary.contracts}</strong>
-                  <span>Contracts</span>
-                </div>
-              </div>
-            ) : null}
-
-            {behaviorGraphMode === 'user_flows' && userFlows ? (
-              <div className="cockpit2-arch-kpis">
-                <div>
-                  <strong>{userFlows.summary.user_flows}</strong>
-                  <span>User flows</span>
-                </div>
-                <div>
-                  <strong>{userFlows.summary.flow_steps}</strong>
-                  <span>Flow steps</span>
-                </div>
-                <div>
-                  <strong>{userFlows.summary.flow_edges}</strong>
-                  <span>Flow edges</span>
-                </div>
-                <div>
-                  <strong>{userFlows.flows.length}</strong>
-                  <span>Flow rows</span>
-                </div>
-              </div>
-            ) : null}
-            <TopologyView
-              graph={filteredGraph}
-              state={activeState}
-              error={activeError}
-              layer={selection.layer}
-              density={topologyDensity}
-              layoutEngine={topologyLayoutEngine}
-              elkEnabled={cockpitFlags.elkLayout}
-              overlay={overlayData}
-              selectedNodeId={resolvedNodeId}
-              onDensityChange={setTopologyDensity}
-              onLayoutEngineChange={setTopologyLayoutEngine}
-              onSwitchToCodeLayer={() => setLayer('code_controlflow')}
-              onSelectNodeId={handleSelectNodeId}
-              onLayoutCompleted={(engine, durationMs, nodeCount) => {
-                getFaro()?.api.pushEvent('cockpit_layout_completed', {
-                  engine,
-                  duration_ms: String(Math.round(durationMs)),
-                  node_count: String(nodeCount),
-                })
-              }}
-              onRetry={refreshActiveView}
-            />
-            {behaviorGraphMode === 'user_flows' && userFlows && userFlows.flows.length > 0 ? (
-              <div className="cockpit2-table-wrap">
-                <table className="cockpit2-table">
-                  <thead>
-                    <tr>
-                      <th>Flow</th>
-                      <th>Route</th>
-                      <th>Steps</th>
-                      <th>Verified by tests</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {userFlows.flows.slice(0, 12).map((flow) => (
-                      <tr key={flow.flow_id}>
-                        <td>{flow.flow_name}</td>
-                        <td>{flow.route_path || '—'}</td>
-                        <td>{flow.steps.length}</td>
-                        <td>{flow.verified_by_tests.slice(0, 3).join(', ') || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-      {selection.view === 'test_matrix' ? (
-        <TestMatrixView
-          state={activeState}
-          error={activeError}
-          payload={testMatrix}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'rebuild_readiness' ? (
-        <RebuildReadinessView
-          state={activeState}
-          error={activeError}
-          payload={rebuildReadiness}
-          onRetry={refreshActiveView}
-        />
-      ) : null}
-
-      {selection.view === 'exports' ? (
-        <ExportsView
-          exportFormat={exportFormat}
-          exportProjection={exportProjection}
-          exportState={activeState}
-          exportError={errors.exports}
-          exportContent={exportContent}
-          onFormatChange={setExportFormat}
-          onProjectionChange={setExportProjection}
-          onGenerate={handleGenerateExport}
-          onCopy={handleCopyExport}
-          onDownload={handleDownloadExport}
-        />
-      ) : null}
+      {renderActiveView()}
 
       {toast ? (
         <output className={`cockpit2-toast ${toast.kind}`} aria-live="polite">

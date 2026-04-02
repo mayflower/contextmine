@@ -124,11 +124,11 @@ function EmptyGraphState({
   graph,
   layer,
   onSwitchToCodeLayer,
-}: {
+}: Readonly<{
   graph: TwinGraphResponse
   layer: CockpitLayer
   onSwitchToCodeLayer: () => void
-}) {
+}>) {
   if (graph.total_nodes > 0) {
     return (
       <section className="cockpit2-empty">
@@ -136,11 +136,11 @@ function EmptyGraphState({
         <p>
           The selected layer (<strong>{layerLabel(layer)}</strong>) is currently empty for this scenario.
         </p>
-        {layer !== 'code_controlflow' ? (
+        {layer === 'code_controlflow' ? null : (
           <button type="button" onClick={onSwitchToCodeLayer}>
             Switch to Code / Controlflow
           </button>
-        ) : null}
+        )}
       </section>
     )
   }

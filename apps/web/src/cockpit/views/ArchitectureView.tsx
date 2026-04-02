@@ -95,7 +95,7 @@ function groupPortsByContainer(items: PortAdapterItem[], direction: 'inbound' | 
     .map(([container, rows]) => ({ container, rows }))
 }
 
-function PortCard({ item, variant }: { item: PortAdapterItem; variant: 'inbound' | 'outbound' }) {
+function PortCard({ item, variant }: Readonly<{ item: PortAdapterItem; variant: 'inbound' | 'outbound' }>) {
   return (
     <article key={item.fact_id} className={`cockpit2-port-card ${variant}`}>
       <div className="cockpit2-port-row">
@@ -119,11 +119,11 @@ function PortLane({
   direction,
   groups,
   count,
-}: {
+}: Readonly<{
   direction: 'inbound' | 'outbound'
   groups: { container: string; rows: PortAdapterItem[] }[]
   count: number
-}) {
+}>) {
   return (
     <section className={`cockpit2-ports-lane ${direction}`}>
       <header>
@@ -144,11 +144,11 @@ function PortLane({
   )
 }
 
-function DriftList({ drift, onRetry, panelError }: {
+function DriftList({ drift, onRetry, panelError }: Readonly<{
   drift: Arc42DriftPayload | null
   onRetry: () => void
   panelError: string
-}) {
+}>) {
   return (
     <article className="cockpit2-architecture-card">
       <div className="cockpit2-panel-header-row">
@@ -182,6 +182,183 @@ function DriftList({ drift, onRetry, panelError }: {
         <div className="cockpit2-empty">
           <h3>No architecture drift detected</h3>
           <p>Compared scenario snapshots are stable for the extracted architecture facts.</p>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function Arc42TabContent({
+  arc42,
+  panelError,
+  sectionEntries,
+  activeSection,
+  activeSectionContent,
+  onSelectSection,
+  onRetry,
+}: Readonly<{
+  arc42: Arc42ViewPayload | null
+  panelError: string
+  sectionEntries: [string, string][]
+  activeSection: string
+  activeSectionContent: string
+  onSelectSection: (key: string) => void
+  onRetry: () => void
+}>) {
+  return (
+    <article className="cockpit2-architecture-card">
+      <div className="cockpit2-panel-header-row">
+        <h4>arc42 sections</h4>
+        <p className="muted">Generated: {arc42?.arc42.generated_at ? new Date(arc42.arc42.generated_at).toLocaleString() : 'n/a'}</p>
+      </div>
+
+      {panelError ? (
+        <div className="cockpit2-alert error inline">
+          <p>{panelError}</p>
+          <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+        </div>
+      ) : null}
+
+      {sectionEntries.length === 0 ? (
+        <div className="cockpit2-empty">
+          <h3>No arc42 sections available</h3>
+          <p>Regenerate the architecture view after twin and knowledge graph extraction.</p>
+        </div>
+      ) : (
+        <div className="cockpit2-arc42-layout">
+          <nav className="cockpit2-arc42-nav" aria-label="arc42 sections">
+            {sectionEntries.map(([key, value]) => (
+              <button
+                key={key}
+                type="button"
+                className={`cockpit2-arc42-nav-item ${key === activeSection ? 'active' : ''}`}
+                onClick={() => onSelectSection(key)}
+              >
+                <span>{sectionLabel(key)}</span>
+                <small>{value.trim().length > 0 ? 'covered' : 'empty'}</small>
+              </button>
+            ))}
+          </nav>
+
+          <div className="cockpit2-arc42-content-wrap">
+            <h4>{sectionLabel(activeSection || sectionEntries[0][0])}</h4>
+            <div className="cockpit2-arc42-content">{activeSectionContent || 'No content available.'}</div>
+          </div>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function PortsTabContent({
+  portsAdapters,
+  panelError,
+  inboundGroups,
+  outboundGroups,
+  onRetry,
+}: Readonly<{
+  portsAdapters: PortsAdaptersPayload | null
+  panelError: string
+  inboundGroups: { container: string; rows: PortAdapterItem[] }[]
+  outboundGroups: { container: string; rows: PortAdapterItem[] }[]
+  onRetry: () => void
+}>) {
+  return (
+    <article className="cockpit2-architecture-card">
+      <div className="cockpit2-panel-header-row">
+        <h4>Ports & adapters map</h4>
+        <p className="muted">Confidence-backed ownership map</p>
+      </div>
+
+      {panelError ? (
+        <div className="cockpit2-alert error inline">
+          <p>{panelError}</p>
+          <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+        </div>
+      ) : null}
+
+      {portsAdapters && portsAdapters.items.length > 0 ? (
+        <div className="cockpit2-ports-lanes">
+          <PortLane direction="inbound" groups={inboundGroups} count={portsAdapters.summary.inbound} />
+          <PortLane direction="outbound" groups={outboundGroups} count={portsAdapters.summary.outbound} />
+        </div>
+      ) : (
+        <div className="cockpit2-empty">
+          <h3>No ports/adapters found</h3>
+          <p>Surface extraction may still be incomplete for this scenario.</p>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function ErdTabContent({
+  erm,
+  panelError,
+  erdRenderError,
+  erdContainerRef,
+  onRetry,
+}: Readonly<{
+  erm: ErmViewPayload | null
+  panelError: string
+  erdRenderError: string
+  erdContainerRef: React.RefObject<HTMLDivElement | null>
+  onRetry: () => void
+}>) {
+  return (
+    <article className="cockpit2-architecture-card">
+      <div className="cockpit2-panel-header-row">
+        <h4>ERM data model</h4>
+        <p className="muted">
+          {erm?.summary.tables ?? 0} tables, {erm?.summary.foreign_keys ?? 0} foreign keys
+        </p>
+      </div>
+
+      {panelError ? (
+        <div className="cockpit2-alert error inline">
+          <p>{panelError}</p>
+          <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+        </div>
+      ) : null}
+
+      {erdRenderError ? (
+        <div className="cockpit2-alert error inline">
+          <p>{erdRenderError}</p>
+        </div>
+      ) : null}
+
+      {erm?.mermaid?.content ? (
+        <div className="cockpit2-mermaid-pane cockpit2-erd-pane" ref={erdContainerRef} />
+      ) : (
+        <div className="cockpit2-empty">
+          <h3>No ERD diagram available</h3>
+          <p>No `MERMAID_ERD` artifact found. Showing table/fk structure below.</p>
+        </div>
+      )}
+
+      {erm && erm.tables.length > 0 ? (
+        <div className="cockpit2-erm-grid">
+          {erm.tables.slice(0, 12).map((table) => (
+            <article key={table.id} className="cockpit2-erm-table-card">
+              <header>
+                <h5>{table.name}</h5>
+                <span>{table.columns.length} cols</span>
+              </header>
+              <ul>
+                {table.columns.slice(0, 8).map((column) => (
+                  <li key={column.id}>
+                    <code>{column.name}</code>
+                    <small>{column.type || 'unknown'}</small>
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="cockpit2-empty">
+          <h3>No ERM tables found</h3>
+          <p>Schema extraction may still be running for this collection.</p>
         </div>
       )}
     </article>
@@ -385,134 +562,35 @@ export default function ArchitectureView({
 
       <div className="cockpit2-architecture-grid">
         {activeTab === 'arc42' ? (
-          <article className="cockpit2-architecture-card">
-          <div className="cockpit2-panel-header-row">
-            <h4>arc42 sections</h4>
-            <p className="muted">Generated: {arc42?.arc42.generated_at ? new Date(arc42.arc42.generated_at).toLocaleString() : 'n/a'}</p>
-          </div>
-
-          {panelErrors.arc42 ? (
-            <div className="cockpit2-alert error inline">
-              <p>{panelErrors.arc42}</p>
-              <button type="button" className="secondary" onClick={onRetry}>Retry</button>
-            </div>
-          ) : null}
-
-          {sectionEntries.length === 0 ? (
-            <div className="cockpit2-empty">
-              <h3>No arc42 sections available</h3>
-              <p>Regenerate the architecture view after twin and knowledge graph extraction.</p>
-            </div>
-          ) : (
-            <div className="cockpit2-arc42-layout">
-              <nav className="cockpit2-arc42-nav" aria-label="arc42 sections">
-                {sectionEntries.map(([key, value]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`cockpit2-arc42-nav-item ${key === activeSection ? 'active' : ''}`}
-                    onClick={() => setSelectedSection(key)}
-                  >
-                    <span>{sectionLabel(key)}</span>
-                    <small>{value.trim().length > 0 ? 'covered' : 'empty'}</small>
-                  </button>
-                ))}
-              </nav>
-
-              <div className="cockpit2-arc42-content-wrap">
-                <h4>{sectionLabel(activeSection || sectionEntries[0][0])}</h4>
-                <div className="cockpit2-arc42-content">{activeSectionContent || 'No content available.'}</div>
-              </div>
-            </div>
-          )}
-          </article>
+          <Arc42TabContent
+            arc42={arc42}
+            panelError={panelErrors.arc42}
+            sectionEntries={sectionEntries}
+            activeSection={activeSection}
+            activeSectionContent={activeSectionContent}
+            onSelectSection={setSelectedSection}
+            onRetry={onRetry}
+          />
         ) : null}
 
         {activeTab === 'ports' ? (
-          <article className="cockpit2-architecture-card">
-          <div className="cockpit2-panel-header-row">
-            <h4>Ports & adapters map</h4>
-            <p className="muted">Confidence-backed ownership map</p>
-          </div>
-
-          {panelErrors.ports ? (
-            <div className="cockpit2-alert error inline">
-              <p>{panelErrors.ports}</p>
-              <button type="button" className="secondary" onClick={onRetry}>Retry</button>
-            </div>
-          ) : null}
-
-          {portsAdapters && portsAdapters.items.length > 0 ? (
-            <div className="cockpit2-ports-lanes">
-              <PortLane direction="inbound" groups={inboundGroups} count={portsAdapters.summary.inbound} />
-              <PortLane direction="outbound" groups={outboundGroups} count={portsAdapters.summary.outbound} />
-            </div>
-          ) : (
-            <div className="cockpit2-empty">
-              <h3>No ports/adapters found</h3>
-              <p>Surface extraction may still be incomplete for this scenario.</p>
-            </div>
-          )}
-          </article>
+          <PortsTabContent
+            portsAdapters={portsAdapters}
+            panelError={panelErrors.ports}
+            inboundGroups={inboundGroups}
+            outboundGroups={outboundGroups}
+            onRetry={onRetry}
+          />
         ) : null}
 
         {activeTab === 'erd' ? (
-          <article className="cockpit2-architecture-card">
-          <div className="cockpit2-panel-header-row">
-            <h4>ERM data model</h4>
-            <p className="muted">
-              {erm?.summary.tables ?? 0} tables, {erm?.summary.foreign_keys ?? 0} foreign keys
-            </p>
-          </div>
-
-          {panelErrors.erm ? (
-            <div className="cockpit2-alert error inline">
-              <p>{panelErrors.erm}</p>
-              <button type="button" className="secondary" onClick={onRetry}>Retry</button>
-            </div>
-          ) : null}
-
-          {erdRenderError ? (
-            <div className="cockpit2-alert error inline">
-              <p>{erdRenderError}</p>
-            </div>
-          ) : null}
-
-          {erm?.mermaid?.content ? (
-            <div className="cockpit2-mermaid-pane cockpit2-erd-pane" ref={erdContainerRef} />
-          ) : (
-            <div className="cockpit2-empty">
-              <h3>No ERD diagram available</h3>
-              <p>No `MERMAID_ERD` artifact found. Showing table/fk structure below.</p>
-            </div>
-          )}
-
-          {erm && erm.tables.length > 0 ? (
-            <div className="cockpit2-erm-grid">
-              {erm.tables.slice(0, 12).map((table) => (
-                <article key={table.id} className="cockpit2-erm-table-card">
-                  <header>
-                    <h5>{table.name}</h5>
-                    <span>{table.columns.length} cols</span>
-                  </header>
-                  <ul>
-                    {table.columns.slice(0, 8).map((column) => (
-                      <li key={column.id}>
-                        <code>{column.name}</code>
-                        <small>{column.type || 'unknown'}</small>
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="cockpit2-empty">
-              <h3>No ERM tables found</h3>
-              <p>Schema extraction may still be running for this collection.</p>
-            </div>
-          )}
-          </article>
+          <ErdTabContent
+            erm={erm}
+            panelError={panelErrors.erm}
+            erdRenderError={erdRenderError}
+            erdContainerRef={erdContainerRef}
+            onRetry={onRetry}
+          />
         ) : null}
       </div>
 

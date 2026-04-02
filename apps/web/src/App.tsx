@@ -525,7 +525,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [, setSources] = useState<Source[]>([])
+  const [allSources, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
@@ -1402,6 +1402,231 @@ function App() {
     })
   }
 
+  function renderCollectionRow(collection: Collection) {
+    const isExpanded = expandedCollections.has(collection.id)
+    const isLoading = collectionSourcesLoading.has(collection.id)
+    const sources = collectionSources[collection.id] || []
+    const { sourceCount, docCount } = getCollectionStats(collection.id)
+    const syncStatus = getCollectionSyncStatus(collection.id)
+    const isEditing = editingCollection?.id === collection.id
+
+    return (
+      <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
+        {/* Collection Header Row */}
+        <div className="collection-header-row" role="button" tabIndex={0} aria-label={`Toggle collection ${collection.name}`} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
+          <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
+            {isExpanded ? '▼' : '▶'}
+          </button>
+
+          <div className="collection-info">
+            {isEditing ? (
+              <form onSubmit={handleSaveCollection} className="edit-collection-form">
+                <input
+                  type="text"
+                  value={editCollectionName}
+                  onChange={(e) => setEditCollectionName(e.target.value)}
+                  className="edit-name-input"
+                  autoFocus
+                />
+                <select
+                  value={editCollectionVisibility}
+                  onChange={(e) => setEditCollectionVisibility(e.target.value as 'global' | 'private')}
+                  className="edit-visibility-select"
+                >
+                  <option value="private">Private</option>
+                  <option value="global">Global</option>
+                </select>
+                <button type="submit" disabled={editCollectionLoading} className="save-btn">
+                  {editCollectionLoading ? '...' : 'Save'}
+                </button>
+                <button type="button" onClick={handleCancelEditCollection} className="cancel-btn">Cancel</button>
+              </form>
+            ) : (
+              <>
+                <span className="collection-name">{collection.name}</span>
+                <span className={`visibility-badge ${collection.visibility}`}>
+                  {collection.visibility === 'private' ? '🔒' : '🌐'} {collection.visibility}
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="collection-stats">
+            <span className="stat"><SourceCountLabel sourceCount={sourceCount} /></span>
+            <span className="stat">{docCount > 0 ? `${docCount} docs` : ''}</span>
+            {sourceCount > 0 && (
+              <span className={`sync-status status-${syncStatus}`}>
+                <SyncStatusIndicator syncStatus={syncStatus} />
+              </span>
+            )}
+          </div>
+
+          <div className="collection-actions-inline" role="toolbar" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+            <button
+              className="action-btn cockpit-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                openCockpitForCollection(collection)
+              }}
+              title="Open in Architecture Cockpit"
+            >
+              Open in Cockpit
+            </button>
+            {collection.is_owner && (
+              <>
+                <button
+                  className="action-btn edit-btn"
+                  onClick={(e) => { e.stopPropagation(); handleStartEditCollection(collection); }}
+                  title="Edit collection"
+                >
+                  ⚙️
+                </button>
+                <button
+                  className="action-btn share-btn"
+                  onClick={(e) => handleOpenSharePopover(collection, e)}
+                  title="Share collection"
+                >
+                  🔗
+                </button>
+                <button
+                  className="action-btn delete-btn"
+                  onClick={(e) => { e.stopPropagation(); handleDeleteCollection(collection); }}
+                  title="Delete collection"
+                >
+                  🗑️
+                </button>
+              </>
+            )}
+            {!collection.is_owner && (
+              <span className="owner-label">by @{collection.owner_github_login}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Share Popover */}
+        {sharePopoverCollection?.id === collection.id && (
+          <dialog open className="share-popover" aria-label={`Share ${collection.name}`}>
+            <div className="popover-header">
+              <h4>Share "{collection.name}"</h4>
+              <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
+            </div>
+            <div className="popover-content">
+              {collectionMembers.length > 0 && (
+                <div className="members-mini">
+                  <span className="label">Members:</span>
+                  {collectionMembers.map(m => (
+                    <MemberChip key={m.user_id} member={m} onRemove={handleUnshare} />
+                  ))}
+                </div>
+              )}
+              {collectionInvites.length > 0 && (
+                <div className="invites-mini">
+                  <span className="label">Pending:</span>
+                  {collectionInvites.map(i => (
+                    <InviteChip key={i.github_login} invite={i} onRemove={handleUnshare} />
+                  ))}
+                </div>
+              )}
+              <form onSubmit={handleShareFromPopover} className="share-form-mini">
+                <input
+                  type="text"
+                  placeholder="GitHub username"
+                  value={shareGithubLogin}
+                  onChange={(e) => setShareGithubLogin(e.target.value)}
+                  className="share-input-mini"
+                />
+                <button type="submit" className="add-btn">+ Add</button>
+              </form>
+              {shareError && <p className="share-error-mini">{shareError}</p>}
+            </div>
+          </dialog>
+        )}
+
+        {/* Expanded Sources Section */}
+        {isExpanded && (
+          <div className="collection-sources-section">
+            {isLoading ? (
+              <p className="loading-text">Loading sources...</p>
+            ) : (
+              <>
+                {collection.is_owner && (
+                  <div className="add-source-inline">
+                    <form onSubmit={(e) => { e.preventDefault(); setSelectedCollection(collection); handleCreateSource(e); }} className="source-form-inline">
+                      <select
+                        value={newSourceType}
+                        onChange={(e) => setNewSourceType(e.target.value as 'github' | 'web')}
+                        className="source-type-select"
+                      >
+                        <option value="github">GitHub</option>
+                        <option value="web">Web</option>
+                      </select>
+                      <input
+                        type="text"
+                        placeholder={newSourceType === 'github' ? 'https://github.com/owner/repo' : 'https://docs.example.com/'}
+                        value={selectedCollection?.id === collection.id ? newSourceUrl : ''}
+                        onChange={(e) => { setSelectedCollection(collection); setNewSourceUrl(e.target.value); }}
+                        onFocus={() => setSelectedCollection(collection)}
+                        className="source-url-input"
+                      />
+                      <button type="submit" className="add-source-btn" disabled={!newSourceUrl.trim() || selectedCollection?.id !== collection.id}>
+                        Add Source
+                      </button>
+                    </form>
+                    {sourceError && selectedCollection?.id === collection.id && (
+                      <p className="source-error-inline">{sourceError}</p>
+                    )}
+                  </div>
+                )}
+
+                {sources.length === 0 ? (
+                  <p className="no-sources-text">No sources yet. Add a GitHub repo or documentation URL above.</p>
+                ) : (
+                  <div className="sources-list">
+                    {sources.map(source => (
+                      <SourceRow
+                        key={source.id}
+                        source={source}
+                        collection={collection}
+                        isEditingThis={editingSource?.id === source.id}
+                        isManagingKey={selectedSource?.id === source.id}
+                        editSourceEnabled={editSourceEnabled}
+                        editSourceInterval={editSourceInterval}
+                        editSourceMaxPages={editSourceMaxPages}
+                        editSourceLoading={editSourceLoading}
+                        editSourceError={editSourceError}
+                        deployKeyInput={deployKeyInput}
+                        deployKeyLoading={deployKeyLoading}
+                        deployKeyError={deployKeyError}
+                        syncingSources={syncingSources}
+                        onSetEditSourceEnabled={setEditSourceEnabled}
+                        onSetEditSourceInterval={setEditSourceInterval}
+                        onSetEditSourceMaxPages={setEditSourceMaxPages}
+                        onSaveSource={handleSaveSource}
+                        onCancelEditSource={handleCancelEditSource}
+                        onFetchCollectionSources={fetchCollectionSources}
+                        onSetSelectedSource={setSelectedSource}
+                        onSetDeployKeyInput={setDeployKeyInput}
+                        onSetDeployKeyError={setDeployKeyError}
+                        onDeleteDeployKey={handleDeleteDeployKey}
+                        onSetDeployKey={handleSetDeployKey}
+                        onSyncNow={handleSyncNow}
+                        onSetSelectedCollection={setSelectedCollection}
+                        onSetSources={setSources}
+                        onEditSource={handleEditSource}
+                        onDeleteSource={handleDeleteSource}
+                        allSources={sources}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   // Show login page if not authenticated
   if (!authLoading && !user) {
     return (
@@ -1863,230 +2088,7 @@ function App() {
               )}
               {!collectionsLoading && collections.length > 0 && (
                 <div className="collections-list">
-                  {collections.map((collection) => {
-                    const isExpanded = expandedCollections.has(collection.id)
-                    const isLoading = collectionSourcesLoading.has(collection.id)
-                    const sources = collectionSources[collection.id] || []
-                    const { sourceCount, docCount } = getCollectionStats(collection.id)
-                    const syncStatus = getCollectionSyncStatus(collection.id)
-                    const isEditing = editingCollection?.id === collection.id
-
-                    return (
-                      <div key={collection.id} className={`collection-row ${isExpanded ? 'expanded' : ''}`}>
-                        {/* Collection Header Row */}
-                        <div className="collection-header-row" tabIndex={0} aria-label={`Toggle collection ${collection.name}`} onClick={(e) => { if (!(e.target as HTMLElement).closest('form, [role="toolbar"]')) { handleToggleExpand(collection) } }} onKeyDown={e => { if (e.key === 'Enter') { handleToggleExpand(collection) } }}>
-                          <button className="expand-toggle" aria-label={isExpanded ? 'Collapse' : 'Expand'}>
-                            {isExpanded ? '▼' : '▶'}
-                          </button>
-
-                          <div className="collection-info">
-                            {isEditing ? (
-                              <form onSubmit={handleSaveCollection} className="edit-collection-form">
-                                <input
-                                  type="text"
-                                  value={editCollectionName}
-                                  onChange={(e) => setEditCollectionName(e.target.value)}
-                                  className="edit-name-input"
-                                  autoFocus
-                                />
-                                <select
-                                  value={editCollectionVisibility}
-                                  onChange={(e) => setEditCollectionVisibility(e.target.value as 'global' | 'private')}
-                                  className="edit-visibility-select"
-                                >
-                                  <option value="private">Private</option>
-                                  <option value="global">Global</option>
-                                </select>
-                                <button type="submit" disabled={editCollectionLoading} className="save-btn">
-                                  {editCollectionLoading ? '...' : 'Save'}
-                                </button>
-                                <button type="button" onClick={handleCancelEditCollection} className="cancel-btn">Cancel</button>
-                              </form>
-                            ) : (
-                              <>
-                                <span className="collection-name">{collection.name}</span>
-                                <span className={`visibility-badge ${collection.visibility}`}>
-                                  {collection.visibility === 'private' ? '🔒' : '🌐'} {collection.visibility}
-                                </span>
-                              </>
-                            )}
-                          </div>
-
-                          <div className="collection-stats">
-                            <span className="stat"><SourceCountLabel sourceCount={sourceCount} /></span>
-                            <span className="stat">{docCount > 0 ? `${docCount} docs` : ''}</span>
-                            {sourceCount > 0 && (
-                              <span className={`sync-status status-${syncStatus}`}>
-                                <SyncStatusIndicator syncStatus={syncStatus} />
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="collection-actions-inline" role="toolbar" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
-                            <button
-                              className="action-btn cockpit-btn"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                openCockpitForCollection(collection)
-                              }}
-                              title="Open in Architecture Cockpit"
-                            >
-                              Open in Cockpit
-                            </button>
-                            {collection.is_owner && (
-                              <>
-                                <button
-                                  className="action-btn edit-btn"
-                                  onClick={(e) => { e.stopPropagation(); handleStartEditCollection(collection); }}
-                                  title="Edit collection"
-                                >
-                                  ⚙️
-                                </button>
-                                <button
-                                  className="action-btn share-btn"
-                                  onClick={(e) => handleOpenSharePopover(collection, e)}
-                                  title="Share collection"
-                                >
-                                  🔗
-                                </button>
-                                <button
-                                  className="action-btn delete-btn"
-                                  onClick={(e) => { e.stopPropagation(); handleDeleteCollection(collection); }}
-                                  title="Delete collection"
-                                >
-                                  🗑️
-                                </button>
-                              </>
-                            )}
-                            {!collection.is_owner && (
-                              <span className="owner-label">by @{collection.owner_github_login}</span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Share Popover */}
-                        {sharePopoverCollection?.id === collection.id && (
-                          <dialog open className="share-popover" aria-label={`Share ${collection.name}`}>
-                            <div className="popover-header">
-                              <h4>Share "{collection.name}"</h4>
-                              <button className="close-btn" onClick={handleCloseSharePopover}>×</button>
-                            </div>
-                            <div className="popover-content">
-                              {collectionMembers.length > 0 && (
-                                <div className="members-mini">
-                                  <span className="label">Members:</span>
-                                  {collectionMembers.map(m => (
-                                    <MemberChip key={m.user_id} member={m} onRemove={handleUnshare} />
-                                  ))}
-                                </div>
-                              )}
-                              {collectionInvites.length > 0 && (
-                                <div className="invites-mini">
-                                  <span className="label">Pending:</span>
-                                  {collectionInvites.map(i => (
-                                    <InviteChip key={i.github_login} invite={i} onRemove={handleUnshare} />
-                                  ))}
-                                </div>
-                              )}
-                              <form onSubmit={handleShareFromPopover} className="share-form-mini">
-                                <input
-                                  type="text"
-                                  placeholder="GitHub username"
-                                  value={shareGithubLogin}
-                                  onChange={(e) => setShareGithubLogin(e.target.value)}
-                                  className="share-input-mini"
-                                />
-                                <button type="submit" className="add-btn">+ Add</button>
-                              </form>
-                              {shareError && <p className="share-error-mini">{shareError}</p>}
-                            </div>
-                          </dialog>
-                        )}
-
-                        {/* Expanded Sources Section */}
-                        {isExpanded && (
-                          <div className="collection-sources-section">
-                            {isLoading ? (
-                              <p className="loading-text">Loading sources...</p>
-                            ) : (
-                              <>
-                                {collection.is_owner && (
-                                  <div className="add-source-inline">
-                                    <form onSubmit={(e) => { e.preventDefault(); setSelectedCollection(collection); handleCreateSource(e); }} className="source-form-inline">
-                                      <select
-                                        value={newSourceType}
-                                        onChange={(e) => setNewSourceType(e.target.value as 'github' | 'web')}
-                                        className="source-type-select"
-                                      >
-                                        <option value="github">GitHub</option>
-                                        <option value="web">Web</option>
-                                      </select>
-                                      <input
-                                        type="text"
-                                        placeholder={newSourceType === 'github' ? 'https://github.com/owner/repo' : 'https://docs.example.com/'}
-                                        value={selectedCollection?.id === collection.id ? newSourceUrl : ''}
-                                        onChange={(e) => { setSelectedCollection(collection); setNewSourceUrl(e.target.value); }}
-                                        onFocus={() => setSelectedCollection(collection)}
-                                        className="source-url-input"
-                                      />
-                                      <button type="submit" className="add-source-btn" disabled={!newSourceUrl.trim() || selectedCollection?.id !== collection.id}>
-                                        Add Source
-                                      </button>
-                                    </form>
-                                    {sourceError && selectedCollection?.id === collection.id && (
-                                      <p className="source-error-inline">{sourceError}</p>
-                                    )}
-                                  </div>
-                                )}
-
-                                {sources.length === 0 ? (
-                                  <p className="no-sources-text">No sources yet. Add a GitHub repo or documentation URL above.</p>
-                                ) : (
-                                  <div className="sources-list">
-                                    {sources.map(source => (
-                                      <SourceRow
-                                        key={source.id}
-                                        source={source}
-                                        collection={collection}
-                                        isEditingThis={editingSource?.id === source.id}
-                                        isManagingKey={selectedSource?.id === source.id}
-                                        editSourceEnabled={editSourceEnabled}
-                                        editSourceInterval={editSourceInterval}
-                                        editSourceMaxPages={editSourceMaxPages}
-                                        editSourceLoading={editSourceLoading}
-                                        editSourceError={editSourceError}
-                                        deployKeyInput={deployKeyInput}
-                                        deployKeyLoading={deployKeyLoading}
-                                        deployKeyError={deployKeyError}
-                                        syncingSources={syncingSources}
-                                        onSetEditSourceEnabled={setEditSourceEnabled}
-                                        onSetEditSourceInterval={setEditSourceInterval}
-                                        onSetEditSourceMaxPages={setEditSourceMaxPages}
-                                        onSaveSource={handleSaveSource}
-                                        onCancelEditSource={handleCancelEditSource}
-                                        onFetchCollectionSources={fetchCollectionSources}
-                                        onSetSelectedSource={setSelectedSource}
-                                        onSetDeployKeyInput={setDeployKeyInput}
-                                        onSetDeployKeyError={setDeployKeyError}
-                                        onDeleteDeployKey={handleDeleteDeployKey}
-                                        onSetDeployKey={handleSetDeployKey}
-                                        onSyncNow={handleSyncNow}
-                                        onSetSelectedCollection={setSelectedCollection}
-                                        onSetSources={setSources}
-                                        onEditSource={handleEditSource}
-                                        onDeleteSource={handleDeleteSource}
-                                        allSources={sources}
-                                      />
-                                    ))}
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+                  {collections.map(renderCollectionRow)}
                 </div>
               )}
             </section>

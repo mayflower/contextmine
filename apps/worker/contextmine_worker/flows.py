@@ -2238,190 +2238,52 @@ def _enrich_file_metrics_with_git(
     }
 
 
-@traced_task()
-@task(
-    retries=GITHUB_API_RETRIES,
-    retry_delay_seconds=exponential_backoff(backoff_factor=2),
-    retry_jitter_factor=0.5,
-    tags=[TAG_GITHUB_API],
-    task_run_name="sync-github-{source.url}",
-)
-async def sync_github_source(
-    source: Source,
-    sync_run: SyncRun,
-    run_started_at: datetime,
-) -> SyncStats:
-    """Sync a GitHub source, creating/updating/deleting documents.
+@dataclass
+class _SyncGitHubCtx:
+    """Mutable state carried across sync_github_source phases."""
 
-    Tagged with github-api for concurrency limiting.
-    Retries on transient GitHub API failures.
-    """
-    stats = SyncStats()
+    source: Source
+    sync_run: SyncRun
+    run_started_at: datetime
+    stats: SyncStats = field(default_factory=SyncStats)
+    progress_id: object = None
 
-    # Get config
-    config = source.config or {}
-    owner = config.get("owner", "")
-    repo = config.get("repo", "")
-    branch = config.get("branch", "main")
+    # Auth / repo
+    owner: str = ""
+    repo: str = ""
+    branch: str = "main"
+    repo_path: Path = field(default_factory=Path)
+    git_repo: Any = None  # git.Repo
+    new_sha: str = ""
+    old_sha: str | None = None
+    source_version_id: object = None
 
-    if not owner or not repo:
-        raise ValueError("GitHub source missing owner/repo in config")
+    # Joern
+    joern_ok: bool = False
+    joern_error: str = ""
+    cpg_path: Path = field(default_factory=Path)
 
-    # Create progress artifact
-    progress_id = await create_progress_artifact(  # type: ignore[misc]
-        progress=0.0,
-        description=f"Starting sync for {owner}/{repo}...",
-    )
+    # SCIP / metrics
+    scip_stats: dict[str, Any] = field(default_factory=dict)
+    project_dicts: list[dict] = field(default_factory=list)
+    snapshot_dicts: list[dict] = field(default_factory=list)
+    file_metric_dicts: list[dict] = field(default_factory=list)
+    evolution_payload: dict[str, object] | None = None
 
-    # Get deploy key (preferred) or OAuth token (fallback)
-    deploy_key = await get_deploy_key_for_source(str(source.id))
-    token = None
-    if not deploy_key:
-        token = await get_github_token_for_source(str(source.id), str(source.collection_id))
+    # Document processing
+    docs_to_chunk: list[tuple[str, str, str | None]] = field(default_factory=list)
+    doc_acc: _DocProcessingAccumulator | None = None
+    unchunked_docs_count: int = 0
 
-    # Prepare repo path
-    ensure_repos_dir()
-    repo_path = get_repo_path(str(source.id))
+    # Downstream build results
+    kg_stats: dict[str, Any] = field(default_factory=dict)
+    surface_stats: dict[str, int] = field(default_factory=dict)
+    twin_stats: dict[str, Any] = field(default_factory=dict)
 
-    await update_progress_artifact(progress_id, progress=5, description="Fetching repository...")  # type: ignore[misc]
 
-    # Clone or pull (deploy key takes priority over token)
-    clone_url = f"https://github.com/{owner}/{repo}.git"
-    git_repo = await _run_blocking_with_timeout(
-        "git_clone_or_pull",
-        _sync_blocking_step_timeout_seconds(),
-        clone_or_pull_repo,
-        repo_path,
-        clone_url,
-        branch,
-        token=token,
-        ssh_private_key=deploy_key,
-    )
-
-    # Get current commit SHA
-    new_sha = git_repo.head.commit.hexsha
-    old_sha = source.cursor
-    source_version_id = None
-
-    from contextmine_core.twin import (
-        get_or_create_source_version,
-        record_twin_event,
-        set_source_version_status,
-    )
-
-    async with get_session() as session:
-        source_version = await get_or_create_source_version(
-            session,
-            collection_id=source.collection_id,
-            source_id=source.id,
-            revision_key=new_sha,
-            extractor_version="scip-kg-v1",
-            status="materializing",
-        )
-        await set_source_version_status(
-            session,
-            source_version_id=source_version.id,
-            status="materializing",
-            stats={
-                "sync_run_id": str(sync_run.id),
-                "sync_started_at": datetime.now(UTC).isoformat(),
-            },
-            started=True,
-        )
-        await record_twin_event(
-            session,
-            collection_id=source.collection_id,
-            scenario_id=None,
-            source_id=source.id,
-            source_version_id=source_version.id,
-            event_type="sync_started",
-            status="materializing",
-            payload={"sync_run_id": str(sync_run.id), "revision_key": new_sha},
-            idempotency_key=f"sync_started:{source.id}:{new_sha}",
-        )
-        await session.commit()
-        source_version_id = source_version.id
-
-    # Joern CPG generation is mandatory for GitHub twin materialization.
-    settings = get_settings()
-    cpg_path = Path(settings.joern_cpg_root) / str(source.id) / f"{new_sha}.cpg.bin"
-    cpg_path.parent.mkdir(parents=True, exist_ok=True)
-    import subprocess
-
-    parse_command = [
-        settings.joern_parse_binary,
-        str(repo_path),
-        "--output",
-        str(cpg_path),
-    ]
-    joern_ok = False
-    joern_error = ""
-    joern_parse_timeout = _joern_parse_timeout_seconds()
-    try:
-        parse_result = await _run_blocking_with_timeout(
-            "joern_parse",
-            joern_parse_timeout,
-            subprocess.run,
-            parse_command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=joern_parse_timeout,
-        )
-        if parse_result.returncode != 0:
-            raise RuntimeError(
-                "JOERN_PARSE_FAILED: "
-                f"binary={settings.joern_parse_binary} "
-                f"code={parse_result.returncode} "
-                f"stderr={parse_result.stderr.strip()}"
-            )
-        if not cpg_path.exists():
-            raise RuntimeError(f"JOERN_PARSE_FAILED: expected CPG artifact missing at {cpg_path}")
-        joern_ok = True
-    except Exception as exc:  # noqa: BLE001
-        joern_error = str(exc)
-        if settings.joern_required_for_sync:
-            raise RuntimeError(f"JOERN_PARSE_FAILED: {joern_error}") from exc
-        logger.warning(
-            "Joern CPG generation failed for %s/%s in advisory mode: %s",
-            owner,
-            repo,
-            joern_error,
-        )
-
-    async with get_session() as session:
-        from contextmine_core.models import TwinSourceVersion
-
-        twin_source_version = (
-            await session.execute(
-                select(TwinSourceVersion).where(TwinSourceVersion.id == source_version_id)
-            )
-        ).scalar_one_or_none()
-        if twin_source_version:
-            twin_source_version.joern_status = "ready" if joern_ok else "failed"
-            twin_source_version.joern_project = f"{owner}/{repo}"
-            twin_source_version.joern_cpg_path = str(cpg_path) if joern_ok else None
-            twin_source_version.joern_server_url = settings.joern_server_url
-        await record_twin_event(
-            session,
-            collection_id=source.collection_id,
-            scenario_id=None,
-            source_id=source.id,
-            source_version_id=source_version_id,
-            event_type="joern_cpg_generated" if joern_ok else "joern_cpg_failed",
-            status="ready" if joern_ok else "failed",
-            payload={"cpg_path": str(cpg_path)} if joern_ok else {"error": joern_error},
-            idempotency_key=(
-                f"joern_cpg:{source.id}:{new_sha}"
-                if joern_ok
-                else f"joern_cpg_failed:{source.id}:{new_sha}"
-            ),
-            error=None if joern_ok else joern_error,
-        )
-        await session.commit()
-
-    # SCIP Polyglot Indexing
-    scip_stats: dict[str, Any] = {
+def _default_scip_stats() -> dict[str, Any]:
+    """Return a fresh scip_stats dict with all expected keys."""
+    return {
         "scip_projects_detected": 0,
         "scip_projects_indexed": 0,
         "scip_snapshots_parsed": 0,
@@ -2450,21 +2312,571 @@ async def sync_github_source(
         "scip_census_tool": "",
         "scip_census_tool_version": "",
     }
-    kg_stats: dict[str, Any] = {}
 
-    def _scip_failed_projects() -> list[dict[str, str]]:
-        failed = scip_stats.get("scip_failed_projects")
-        if not isinstance(failed, list):
-            failed = []
-            scip_stats["scip_failed_projects"] = failed
-        return cast(list[dict[str, str]], failed)
 
-    project_dicts: list[dict] = []
-    snapshot_dicts: list[dict] = []
-    file_metric_dicts: list[dict] = []
-    evolution_payload: dict[str, object] | None = None
+# ---------------------------------------------------------------------------
+#  Phase helpers for sync_github_source
+# ---------------------------------------------------------------------------
+
+
+async def _gh_phase_auth_and_clone(ctx: _SyncGitHubCtx) -> None:
+    """Authenticate, clone/pull repository, resolve SHAs."""
+    config = ctx.source.config or {}
+    ctx.owner = config.get("owner", "")
+    ctx.repo = config.get("repo", "")
+    ctx.branch = config.get("branch", "main")
+
+    if not ctx.owner or not ctx.repo:
+        raise ValueError("GitHub source missing owner/repo in config")
+
+    ctx.progress_id = await create_progress_artifact(  # type: ignore[misc]
+        progress=0.0,
+        description=f"Starting sync for {ctx.owner}/{ctx.repo}...",
+    )
+
+    deploy_key = await get_deploy_key_for_source(str(ctx.source.id))
+    token = None
+    if not deploy_key:
+        token = await get_github_token_for_source(str(ctx.source.id), str(ctx.source.collection_id))
+
+    ensure_repos_dir()
+    ctx.repo_path = get_repo_path(str(ctx.source.id))
+
     await update_progress_artifact(
-        progress_id, progress=10, description="Running SCIP polyglot indexing..."
+        ctx.progress_id, progress=5, description="Fetching repository..."
+    )  # type: ignore[misc]
+
+    clone_url = f"https://github.com/{ctx.owner}/{ctx.repo}.git"
+    ctx.git_repo = await _run_blocking_with_timeout(
+        "git_clone_or_pull",
+        _sync_blocking_step_timeout_seconds(),
+        clone_or_pull_repo,
+        ctx.repo_path,
+        clone_url,
+        ctx.branch,
+        token=token,
+        ssh_private_key=deploy_key,
+    )
+
+    ctx.new_sha = ctx.git_repo.head.commit.hexsha
+    ctx.old_sha = ctx.source.cursor
+
+
+async def _gh_phase_create_source_version(ctx: _SyncGitHubCtx) -> None:
+    """Create or update a TwinSourceVersion and record sync_started event."""
+    from contextmine_core.twin import (
+        get_or_create_source_version,
+        record_twin_event,
+        set_source_version_status,
+    )
+
+    async with get_session() as session:
+        source_version = await get_or_create_source_version(
+            session,
+            collection_id=ctx.source.collection_id,
+            source_id=ctx.source.id,
+            revision_key=ctx.new_sha,
+            extractor_version="scip-kg-v1",
+            status="materializing",
+        )
+        await set_source_version_status(
+            session,
+            source_version_id=source_version.id,
+            status="materializing",
+            stats={
+                "sync_run_id": str(ctx.sync_run.id),
+                "sync_started_at": datetime.now(UTC).isoformat(),
+            },
+            started=True,
+        )
+        await record_twin_event(
+            session,
+            collection_id=ctx.source.collection_id,
+            scenario_id=None,
+            source_id=ctx.source.id,
+            source_version_id=source_version.id,
+            event_type="sync_started",
+            status="materializing",
+            payload={"sync_run_id": str(ctx.sync_run.id), "revision_key": ctx.new_sha},
+            idempotency_key=f"sync_started:{ctx.source.id}:{ctx.new_sha}",
+        )
+        await session.commit()
+        ctx.source_version_id = source_version.id
+
+
+async def _gh_phase_joern_cpg(ctx: _SyncGitHubCtx) -> None:
+    """Generate Joern CPG and record result in TwinSourceVersion."""
+    import subprocess
+
+    from contextmine_core.twin import record_twin_event
+
+    settings = get_settings()
+    ctx.cpg_path = Path(settings.joern_cpg_root) / str(ctx.source.id) / f"{ctx.new_sha}.cpg.bin"
+    ctx.cpg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    parse_command = [
+        settings.joern_parse_binary,
+        str(ctx.repo_path),
+        "--output",
+        str(ctx.cpg_path),
+    ]
+    joern_parse_timeout = _joern_parse_timeout_seconds()
+    try:
+        parse_result = await _run_blocking_with_timeout(
+            "joern_parse",
+            joern_parse_timeout,
+            subprocess.run,
+            parse_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=joern_parse_timeout,
+        )
+        if parse_result.returncode != 0:
+            raise RuntimeError(
+                "JOERN_PARSE_FAILED: "
+                f"binary={settings.joern_parse_binary} "
+                f"code={parse_result.returncode} "
+                f"stderr={parse_result.stderr.strip()}"
+            )
+        if not ctx.cpg_path.exists():
+            raise RuntimeError(
+                f"JOERN_PARSE_FAILED: expected CPG artifact missing at {ctx.cpg_path}"
+            )
+        ctx.joern_ok = True
+    except Exception as exc:  # noqa: BLE001
+        ctx.joern_error = str(exc)
+        if settings.joern_required_for_sync:
+            raise RuntimeError(f"JOERN_PARSE_FAILED: {ctx.joern_error}") from exc
+        logger.warning(
+            "Joern CPG generation failed for %s/%s in advisory mode: %s",
+            ctx.owner,
+            ctx.repo,
+            ctx.joern_error,
+        )
+
+    async with get_session() as session:
+        from contextmine_core.models import TwinSourceVersion
+
+        twin_source_version = (
+            await session.execute(
+                select(TwinSourceVersion).where(TwinSourceVersion.id == ctx.source_version_id)
+            )
+        ).scalar_one_or_none()
+        if twin_source_version:
+            twin_source_version.joern_status = "ready" if ctx.joern_ok else "failed"
+            twin_source_version.joern_project = f"{ctx.owner}/{ctx.repo}"
+            twin_source_version.joern_cpg_path = str(ctx.cpg_path) if ctx.joern_ok else None
+            twin_source_version.joern_server_url = settings.joern_server_url
+        await record_twin_event(
+            session,
+            collection_id=ctx.source.collection_id,
+            scenario_id=None,
+            source_id=ctx.source.id,
+            source_version_id=ctx.source_version_id,
+            event_type="joern_cpg_generated" if ctx.joern_ok else "joern_cpg_failed",
+            status="ready" if ctx.joern_ok else "failed",
+            payload=(
+                {"cpg_path": str(ctx.cpg_path)} if ctx.joern_ok else {"error": ctx.joern_error}
+            ),
+            idempotency_key=(
+                f"joern_cpg:{ctx.source.id}:{ctx.new_sha}"
+                if ctx.joern_ok
+                else f"joern_cpg_failed:{ctx.source.id}:{ctx.new_sha}"
+            ),
+            error=None if ctx.joern_ok else ctx.joern_error,
+        )
+        await session.commit()
+
+
+# -- SCIP helpers (promoted from closures) ----------------------------------
+
+_SEMANTIC_RELATION_KINDS = frozenset({"calls", "references", "imports", "extends", "implements"})
+
+
+def _scip_project_key_for(proj_dict: dict, repo_path: Path) -> tuple[str, str, str]:
+    """Compute a dedup key for a SCIP project target."""
+    language = _scip_normalize_language(proj_dict.get("language"))
+    root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
+    metadata = dict(proj_dict.get("metadata") or {})
+    mode = "default"
+    if metadata.get("relation_recovery"):
+        mode = "relation_recovery"
+    elif metadata.get("recovery_pass"):
+        mode = "recovery"
+    return language, root, mode
+
+
+def _scip_collect_indexed_paths_by_language(
+    snapshots: list[dict],
+    repo_path: Path,
+    supported_languages: set[str],
+) -> dict[str, set[str]]:
+    """Collect repo-relative paths indexed per language from snapshots."""
+    indexed: dict[str, set[str]] = {}
+    for snapshot_dict in snapshots:
+        snapshot_meta = dict(snapshot_dict.get("meta") or {})
+        snapshot_language = _scip_normalize_language(snapshot_meta.get("language"))
+        files = snapshot_dict.get("files") or []
+        if not isinstance(files, list):
+            continue
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            repo_relative_path = _scip_snapshot_repo_file_path(item, snapshot_meta, repo_path)
+            if not repo_relative_path:
+                continue
+            language = _scip_snapshot_file_language(
+                repo_relative_path=repo_relative_path,
+                file_info=item,
+                snapshot_language=snapshot_language,
+                supported_languages=supported_languages,
+            )
+            if not language:
+                continue
+            indexed.setdefault(language, set()).add(repo_relative_path)
+    return indexed
+
+
+def _scip_collect_indexed_files_by_language(
+    snapshots: list[dict],
+    repo_path: Path,
+    supported_languages: set[str],
+) -> dict[str, int]:
+    """Count indexed files per language from snapshots."""
+    indexed_paths = _scip_collect_indexed_paths_by_language(
+        snapshots, repo_path, supported_languages
+    )
+    return {language: len(paths) for language, paths in indexed_paths.items()}
+
+
+def _scip_append_file_coverage_completion_snapshot(
+    snapshots: list[dict],
+    *,
+    census_report: object,
+    repo_path: Path,
+    supported_languages: set[str],
+) -> dict[str, int]:
+    """Append synthetic snapshot entries for files missed by SCIP indexers."""
+    if not snapshots:
+        return {}
+
+    indexed_paths = _scip_collect_indexed_paths_by_language(
+        snapshots, repo_path, supported_languages
+    )
+    missing_by_language: dict[str, set[str]] = {}
+
+    file_stats = list(getattr(census_report, "file_stats", []) or [])
+    for item in file_stats:
+        language_obj = getattr(item, "language", None)
+        language = _scip_normalize_language(getattr(language_obj, "value", language_obj))
+        if language not in supported_languages:
+            continue
+        code_lines = int(getattr(item, "code", 0) or 0)
+        if code_lines <= 0:
+            continue
+        raw_path = getattr(item, "path", None)
+        if not isinstance(raw_path, Path):
+            try:
+                raw_path = Path(str(raw_path))
+            except Exception:  # noqa: BLE001  # nosec B112
+                continue
+        try:
+            repo_relative = raw_path.resolve().relative_to(repo_path.resolve()).as_posix()
+        except Exception:  # noqa: BLE001  # nosec B112
+            continue
+        if not repo_relative:
+            continue
+        if repo_relative in indexed_paths.get(language, set()):
+            continue
+        missing_by_language.setdefault(language, set()).add(repo_relative)
+
+    if not missing_by_language:
+        return {}
+
+    for language, missing_paths in sorted(missing_by_language.items()):
+        snapshot_meta = {
+            "language": language,
+            "repo_relative_root": "",
+            "completion_pass": "file_coverage",
+        }
+        snapshots.append(
+            {
+                "files": [{"path": path, "language": language} for path in sorted(missing_paths)],
+                "symbols": [],
+                "occurrences": [],
+                "relations": [],
+                "meta": snapshot_meta,
+            }
+        )
+
+    return {language: len(paths) for language, paths in missing_by_language.items()}
+
+
+def _scip_collect_relation_coverage_by_language(
+    snapshots: list[dict],
+    supported_languages: set[str],
+) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    """Collect relation totals and per-kind counts by language from snapshots."""
+    totals: dict[str, int] = defaultdict(int)
+    kind_totals: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for snapshot_dict in snapshots:
+        snapshot_meta = dict(snapshot_dict.get("meta") or {})
+        language = _scip_normalize_language(snapshot_meta.get("language"))
+        if language not in supported_languages:
+            continue
+        relations = snapshot_dict.get("relations") or []
+        if not isinstance(relations, list):
+            continue
+        for relation in relations:
+            if not isinstance(relation, dict):
+                continue
+            kind = _scip_normalize_language(relation.get("kind"))
+            totals[language] += 1
+            if kind:
+                kind_totals[language][kind] += 1
+    return dict(totals), {language: dict(counts) for language, counts in kind_totals.items()}
+
+
+def _scip_missing_relation_languages(
+    indexed_files_by_language: dict[str, int],
+    relation_kinds_by_language: dict[str, dict[str, int]],
+) -> list[str]:
+    """Return languages that have indexed files but no semantic relation edges."""
+    missing: list[str] = []
+    for language, indexed_count in indexed_files_by_language.items():
+        if int(indexed_count or 0) <= 0:
+            continue
+        relation_kinds = relation_kinds_by_language.get(language) or {}
+        semantic_edges = sum(
+            int(relation_kinds.get(kind, 0) or 0) for kind in _SEMANTIC_RELATION_KINDS
+        )
+        if semantic_edges <= 0:
+            missing.append(language)
+    return sorted(set(missing))
+
+
+def _scip_get_failed_projects(scip_stats: dict[str, Any]) -> list[dict[str, str]]:
+    """Return the failed-projects list, creating it if needed."""
+    failed = scip_stats.get("scip_failed_projects")
+    if not isinstance(failed, list):
+        failed = []
+        scip_stats["scip_failed_projects"] = failed
+    return cast(list[dict[str, str]], failed)
+
+
+async def _scip_index_single_project(
+    proj_dict: dict,
+    scip_output_dir: Path,
+    repo_path: Path,
+    scip_stats: dict[str, Any],
+    snapshot_dicts: list[dict],
+) -> bool:
+    """Index a single SCIP project target and append its snapshot on success."""
+    language = _scip_normalize_language(proj_dict.get("language"))
+    project_root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
+    artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
+    if artifact_dict and artifact_dict.get("success"):
+        scip_stats["scip_projects_indexed"] += 1
+        scip_path = artifact_dict.get("scip_path")
+        if scip_path:
+            snapshot_dict = await task_parse_scip_snapshot(str(scip_path))
+            if snapshot_dict:
+                project_root_path = Path(project_root)
+                try:
+                    repo_relative_root = (
+                        project_root_path.resolve().relative_to(repo_path.resolve()).as_posix()
+                    )
+                except ValueError:
+                    repo_relative_root = ""
+
+                snapshot_meta = dict(snapshot_dict.get("meta") or {})
+                snapshot_meta.update(
+                    {
+                        "project_root": str(project_root_path.resolve()),
+                        "repo_relative_root": repo_relative_root,
+                        "language": language,
+                    }
+                )
+                snapshot_dict["meta"] = snapshot_meta
+                snapshot_dicts.append(snapshot_dict)
+                scip_stats["scip_snapshots_parsed"] += 1
+                scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
+                scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
+                return True
+
+        scip_stats["scip_projects_failed"] += 1
+        _scip_get_failed_projects(scip_stats).append(
+            {
+                "language": language,
+                "project_root": project_root,
+                "error": "snapshot_parse_failed",
+            }
+        )
+        return False
+
+    scip_stats["scip_projects_failed"] += 1
+    _scip_get_failed_projects(scip_stats).append(
+        {
+            "language": language,
+            "project_root": project_root,
+            "error": (
+                str(artifact_dict.get("error_message", "")).strip()
+                if artifact_dict
+                else "indexer_returned_no_artifact"
+            ),
+        }
+    )
+    return False
+
+
+async def _scip_run_recovery_passes(
+    ctx: _SyncGitHubCtx,
+    supported_languages: set[str],
+    detected_files_by_language: dict[str, int],
+    scip_output_dir: Path,
+    attempted_targets: set[tuple[str, str, str]],
+) -> None:
+    """Run SCIP language + relation recovery passes and finalize coverage."""
+    indexed_files_by_language = _scip_collect_indexed_files_by_language(
+        ctx.snapshot_dicts, ctx.repo_path, supported_languages
+    )
+    missing_languages = sorted(
+        language
+        for language, file_count in detected_files_by_language.items()
+        if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
+    )
+
+    if missing_languages:
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats.get("scip_detection_warnings") or []
+        ) + [
+            f"missing_language_index_coverage_initial:{language}" for language in missing_languages
+        ]
+
+    def _project_key_for(proj_dict: dict) -> tuple[str, str, str]:
+        return _scip_project_key_for(proj_dict, ctx.repo_path)
+
+    async def _index_target(proj_dict: dict) -> bool:
+        return await _scip_index_single_project(
+            proj_dict, scip_output_dir, ctx.repo_path, ctx.scip_stats, ctx.snapshot_dicts
+        )
+
+    for language in missing_languages:
+        recovery_result = await _scip_run_language_recovery(
+            language,
+            ctx.project_dicts,
+            ctx.repo_path,
+            attempted_targets,
+            _project_key_for,
+            _index_target,
+            relation=False,
+        )
+        ctx.scip_stats["scip_recovery_attempts"] += recovery_result["attempts"]
+        ctx.scip_stats["scip_recovery_successes"] += recovery_result["successes"]
+
+    indexed_files_by_language = _scip_collect_indexed_files_by_language(
+        ctx.snapshot_dicts, ctx.repo_path, supported_languages
+    )
+    relation_counts_by_language, relation_kinds_by_language = (
+        _scip_collect_relation_coverage_by_language(ctx.snapshot_dicts, supported_languages)
+    )
+    missing_relation_languages = _scip_missing_relation_languages(
+        indexed_files_by_language, relation_kinds_by_language
+    )
+
+    for language in missing_relation_languages:
+        recovery_result = await _scip_run_language_recovery(
+            language,
+            ctx.project_dicts,
+            ctx.repo_path,
+            attempted_targets,
+            _project_key_for,
+            _index_target,
+            relation=True,
+        )
+        ctx.scip_stats["scip_relation_recovery_attempts"] += recovery_result["attempts"]
+        ctx.scip_stats["scip_relation_recovery_successes"] += recovery_result["successes"]
+
+    indexed_files_by_language = _scip_collect_indexed_files_by_language(
+        ctx.snapshot_dicts, ctx.repo_path, supported_languages
+    )
+    relation_counts_by_language, relation_kinds_by_language = (
+        _scip_collect_relation_coverage_by_language(ctx.snapshot_dicts, supported_languages)
+    )
+    missing_relation_languages = _scip_missing_relation_languages(
+        indexed_files_by_language, relation_kinds_by_language
+    )
+
+    return _scip_finalize_after_recovery(
+        ctx,
+        supported_languages,
+        detected_files_by_language,
+        indexed_files_by_language,
+        relation_counts_by_language,
+        relation_kinds_by_language,
+        missing_relation_languages,
+    )
+
+
+def _scip_finalize_after_recovery(
+    ctx: _SyncGitHubCtx,
+    supported_languages: set[str],
+    detected_files_by_language: dict[str, int],
+    indexed_files_by_language: dict[str, int],
+    relation_counts_by_language: dict[str, int],
+    relation_kinds_by_language: dict[str, dict[str, int]],
+    missing_relation_languages: list[str],
+) -> None:
+    """Finalize SCIP coverage stats after all recovery passes."""
+    from contextmine_core.semantic_snapshot.indexers.language_census import (
+        build_language_census,
+    )
+
+    census = build_language_census(ctx.repo_path)
+    completion_added_by_language = _scip_append_file_coverage_completion_snapshot(
+        ctx.snapshot_dicts,
+        census_report=census,
+        repo_path=ctx.repo_path,
+        supported_languages=supported_languages,
+    )
+    if completion_added_by_language:
+        ctx.scip_stats["scip_completion_added_files_by_language"] = completion_added_by_language
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats.get("scip_detection_warnings") or []
+        ) + [
+            f"scip_completion_files_added:{language}:{count}"
+            for language, count in sorted(completion_added_by_language.items())
+        ]
+        indexed_files_by_language = _scip_collect_indexed_files_by_language(
+            ctx.snapshot_dicts, ctx.repo_path, supported_languages
+        )
+
+    _scip_finalize_coverage_stats(
+        ctx.scip_stats,
+        detected_files_by_language,
+        indexed_files_by_language,
+        relation_counts_by_language,
+        relation_kinds_by_language,
+        missing_relation_languages,
+    )
+
+    logger.info(
+        "SCIP indexing complete: %d/%d projects (%d failed), %d snapshots, %d symbols, %d relations",
+        ctx.scip_stats["scip_projects_indexed"],
+        ctx.scip_stats["scip_projects_detected"],
+        ctx.scip_stats["scip_projects_failed"],
+        ctx.scip_stats["scip_snapshots_parsed"],
+        ctx.scip_stats["scip_symbols"],
+        ctx.scip_stats["scip_relations"],
+    )
+
+
+async def _gh_phase_scip_indexing(ctx: _SyncGitHubCtx) -> None:
+    """Detect SCIP projects, index them, run recovery, and finalize coverage."""
+    ctx.scip_stats = _default_scip_stats()
+    await update_progress_artifact(
+        ctx.progress_id, progress=10, description="Running SCIP polyglot indexing..."
     )  # type: ignore[misc]
 
     try:
@@ -2478,239 +2890,23 @@ async def sync_github_source(
         supported_languages = {language.value for language in Language}
         attempted_targets: set[tuple[str, str, str]] = set()
 
-        def _project_key_for(proj_dict: dict) -> tuple[str, str, str]:
-            language = _scip_normalize_language(proj_dict.get("language"))
-            root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
-            metadata = dict(proj_dict.get("metadata") or {})
-            mode = "default"
-            if metadata.get("relation_recovery"):
-                mode = "relation_recovery"
-            elif metadata.get("recovery_pass"):
-                mode = "recovery"
-            return language, root, mode
-
-        def _snapshot_repo_file_path(file_info: dict[str, object], snapshot_meta: dict) -> str:
-            return _scip_snapshot_repo_file_path(file_info, snapshot_meta, repo_path)
-
-        def _snapshot_file_language(
-            *,
-            repo_relative_path: str,
-            file_info: dict[str, object],
-            snapshot_language: str,
-        ) -> str | None:
-            return _scip_snapshot_file_language(
-                repo_relative_path=repo_relative_path,
-                file_info=file_info,
-                snapshot_language=snapshot_language,
-                supported_languages=supported_languages,
-            )
-
-        def _collect_indexed_paths_by_language(
-            snapshots: list[dict],
-        ) -> dict[str, set[str]]:
-            indexed: dict[str, set[str]] = {}
-            for snapshot_dict in snapshots:
-                snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                snapshot_language = _scip_normalize_language(snapshot_meta.get("language"))
-                files = snapshot_dict.get("files") or []
-                if not isinstance(files, list):
-                    continue
-                for item in files:
-                    if not isinstance(item, dict):
-                        continue
-                    repo_relative_path = _snapshot_repo_file_path(item, snapshot_meta)
-                    if not repo_relative_path:
-                        continue
-                    language = _snapshot_file_language(
-                        repo_relative_path=repo_relative_path,
-                        file_info=item,
-                        snapshot_language=snapshot_language,
-                    )
-                    if not language:
-                        continue
-                    indexed.setdefault(language, set()).add(repo_relative_path)
-            return indexed
-
-        def _collect_indexed_files_by_language(
-            snapshots: list[dict],
-        ) -> dict[str, int]:
-            indexed_paths = _collect_indexed_paths_by_language(snapshots)
-            return {language: len(paths) for language, paths in indexed_paths.items()}
-
-        def _append_file_coverage_completion_snapshot(
-            snapshots: list[dict],
-            *,
-            census_report: object,
-        ) -> dict[str, int]:
-            if not snapshots:
-                return {}
-
-            indexed_paths = _collect_indexed_paths_by_language(snapshots)
-            missing_by_language: dict[str, set[str]] = {}
-
-            file_stats = list(getattr(census_report, "file_stats", []) or [])
-            for item in file_stats:
-                language_obj = getattr(item, "language", None)
-                language = _scip_normalize_language(getattr(language_obj, "value", language_obj))
-                if language not in supported_languages:
-                    continue
-                code_lines = int(getattr(item, "code", 0) or 0)
-                if code_lines <= 0:
-                    continue
-                raw_path = getattr(item, "path", None)
-                if not isinstance(raw_path, Path):
-                    try:
-                        raw_path = Path(str(raw_path))
-                    except Exception:  # noqa: BLE001  # nosec B112
-                        continue
-                try:
-                    repo_relative = raw_path.resolve().relative_to(repo_path.resolve()).as_posix()
-                except Exception:  # noqa: BLE001  # nosec B112
-                    continue
-                if not repo_relative:
-                    continue
-                if repo_relative in indexed_paths.get(language, set()):
-                    continue
-                missing_by_language.setdefault(language, set()).add(repo_relative)
-
-            if not missing_by_language:
-                return {}
-
-            for language, missing_paths in sorted(missing_by_language.items()):
-                snapshot_meta = {
-                    "language": language,
-                    "repo_relative_root": "",
-                    "completion_pass": "file_coverage",
-                }
-                snapshots.append(
-                    {
-                        "files": [
-                            {"path": path, "language": language} for path in sorted(missing_paths)
-                        ],
-                        "symbols": [],
-                        "occurrences": [],
-                        "relations": [],
-                        "meta": snapshot_meta,
-                    }
-                )
-
-            return {language: len(paths) for language, paths in missing_by_language.items()}
-
-        def _collect_relation_coverage_by_language(
-            snapshots: list[dict],
-        ) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
-            totals: dict[str, int] = defaultdict(int)
-            kind_totals: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-            for snapshot_dict in snapshots:
-                snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                language = _scip_normalize_language(snapshot_meta.get("language"))
-                if language not in supported_languages:
-                    continue
-                relations = snapshot_dict.get("relations") or []
-                if not isinstance(relations, list):
-                    continue
-                for relation in relations:
-                    if not isinstance(relation, dict):
-                        continue
-                    kind = _scip_normalize_language(relation.get("kind"))
-                    totals[language] += 1
-                    if kind:
-                        kind_totals[language][kind] += 1
-            return dict(totals), {
-                language: dict(counts) for language, counts in kind_totals.items()
-            }
-
-        semantic_relation_kinds = {"calls", "references", "imports", "extends", "implements"}
-
-        def _missing_relation_languages(
-            indexed_files_by_language: dict[str, int],
-            relation_kinds_by_language: dict[str, dict[str, int]],
-        ) -> list[str]:
-            missing: list[str] = []
-            for language, indexed_count in indexed_files_by_language.items():
-                if int(indexed_count or 0) <= 0:
-                    continue
-                relation_kinds = relation_kinds_by_language.get(language) or {}
-                semantic_edges = sum(
-                    int(relation_kinds.get(kind, 0) or 0) for kind in semantic_relation_kinds
-                )
-                if semantic_edges <= 0:
-                    missing.append(language)
-            return sorted(set(missing))
-
-        async def _index_project_target(proj_dict: dict) -> bool:
-            language = _scip_normalize_language(proj_dict.get("language"))
-            project_root = str(Path(str(proj_dict.get("root_path", repo_path))).resolve())
-            artifact_dict = await task_index_scip_project(proj_dict, scip_output_dir)
-            if artifact_dict and artifact_dict.get("success"):
-                scip_stats["scip_projects_indexed"] += 1
-                scip_path = artifact_dict.get("scip_path")
-                if scip_path:
-                    snapshot_dict = await task_parse_scip_snapshot(str(scip_path))
-                    if snapshot_dict:
-                        project_root_path = Path(project_root)
-                        try:
-                            repo_relative_root = (
-                                project_root_path.resolve()
-                                .relative_to(repo_path.resolve())
-                                .as_posix()
-                            )
-                        except ValueError:
-                            repo_relative_root = ""
-
-                        snapshot_meta = dict(snapshot_dict.get("meta") or {})
-                        snapshot_meta.update(
-                            {
-                                "project_root": str(project_root_path.resolve()),
-                                "repo_relative_root": repo_relative_root,
-                                "language": language,
-                            }
-                        )
-                        snapshot_dict["meta"] = snapshot_meta
-                        snapshot_dicts.append(snapshot_dict)
-                        scip_stats["scip_snapshots_parsed"] += 1
-                        scip_stats["scip_symbols"] += len(snapshot_dict.get("symbols", []))
-                        scip_stats["scip_relations"] += len(snapshot_dict.get("relations", []))
-                        return True
-
-                scip_stats["scip_projects_failed"] += 1
-                _scip_failed_projects().append(
-                    {
-                        "language": language,
-                        "project_root": project_root,
-                        "error": "snapshot_parse_failed",
-                    }
-                )
-                return False
-
-            scip_stats["scip_projects_failed"] += 1
-            _scip_failed_projects().append(
-                {
-                    "language": language,
-                    "project_root": project_root,
-                    "error": (
-                        str(artifact_dict.get("error_message", "")).strip()
-                        if artifact_dict
-                        else "indexer_returned_no_artifact"
-                    ),
-                }
-            )
-            return False
-
-        # Detect projects + language census diagnostics
-        detect_result = await task_detect_scip_projects(repo_path)
-        project_dicts = list(detect_result.get("projects") or [])
+        detect_result = await task_detect_scip_projects(ctx.repo_path)
+        ctx.project_dicts = list(detect_result.get("projects") or [])
         diagnostics = detect_result.get("diagnostics") or {}
-        scip_stats["scip_languages_detected"] = list(diagnostics.get("languages_detected") or [])
-        scip_stats["scip_projects_by_language"] = dict(
+        ctx.scip_stats["scip_languages_detected"] = list(
+            diagnostics.get("languages_detected") or []
+        )
+        ctx.scip_stats["scip_projects_by_language"] = dict(
             diagnostics.get("projects_by_language") or {}
         )
-        scip_stats["scip_detection_warnings"] = list(diagnostics.get("warnings") or [])
-        scip_stats["scip_census_tool"] = str(diagnostics.get("census_tool") or "")
-        scip_stats["scip_census_tool_version"] = str(diagnostics.get("census_tool_version") or "")
-        scip_stats["scip_projects_detected"] = len(project_dicts)
+        ctx.scip_stats["scip_detection_warnings"] = list(diagnostics.get("warnings") or [])
+        ctx.scip_stats["scip_census_tool"] = str(diagnostics.get("census_tool") or "")
+        ctx.scip_stats["scip_census_tool_version"] = str(
+            diagnostics.get("census_tool_version") or ""
+        )
+        ctx.scip_stats["scip_projects_detected"] = len(ctx.project_dicts)
 
-        census = build_language_census(repo_path)
+        census = build_language_census(ctx.repo_path)
         detected_files_by_language = {
             language.value: int(entry.files)
             for language, entry in census.entries.items()
@@ -2721,112 +2917,28 @@ async def sync_github_source(
             for language, entry in census.entries.items()
             if int(entry.code) > 0
         }
-        scip_stats["scip_detected_files_by_language"] = detected_files_by_language
-        scip_stats["scip_detected_code_by_language"] = detected_code_by_language
+        ctx.scip_stats["scip_detected_files_by_language"] = detected_files_by_language
+        ctx.scip_stats["scip_detected_code_by_language"] = detected_code_by_language
 
-        if project_dicts:
-            # Create temp output directory for SCIP files
+        if ctx.project_dicts:
             scip_output_dir = Path(tempfile.mkdtemp(prefix="scip_"))
 
-            # Index each project
-            for proj_dict in project_dicts:
-                attempted_targets.add(_project_key_for(proj_dict))
-                await _index_project_target(proj_dict)
-
-            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
-            missing_languages = sorted(
-                language
-                for language, file_count in detected_files_by_language.items()
-                if file_count > 0 and indexed_files_by_language.get(language, 0) == 0
-            )
-
-            if missing_languages:
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [
-                    f"missing_language_index_coverage_initial:{language}"
-                    for language in missing_languages
-                ]
-
-            for language in missing_languages:
-                recovery_result = await _scip_run_language_recovery(
-                    language,
-                    project_dicts,
-                    repo_path,
-                    attempted_targets,
-                    _project_key_for,
-                    _index_project_target,
-                    relation=False,
+            for proj_dict in ctx.project_dicts:
+                attempted_targets.add(_scip_project_key_for(proj_dict, ctx.repo_path))
+                await _scip_index_single_project(
+                    proj_dict, scip_output_dir, ctx.repo_path, ctx.scip_stats, ctx.snapshot_dicts
                 )
-                scip_stats["scip_recovery_attempts"] += recovery_result["attempts"]
-                scip_stats["scip_recovery_successes"] += recovery_result["successes"]
 
-            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
-            relation_counts_by_language, relation_kinds_by_language = (
-                _collect_relation_coverage_by_language(snapshot_dicts)
-            )
-            missing_relation_languages = _missing_relation_languages(
-                indexed_files_by_language,
-                relation_kinds_by_language,
-            )
-
-            for language in missing_relation_languages:
-                recovery_result = await _scip_run_language_recovery(
-                    language,
-                    project_dicts,
-                    repo_path,
-                    attempted_targets,
-                    _project_key_for,
-                    _index_project_target,
-                    relation=True,
-                )
-                scip_stats["scip_relation_recovery_attempts"] += recovery_result["attempts"]
-                scip_stats["scip_relation_recovery_successes"] += recovery_result["successes"]
-
-            indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
-            relation_counts_by_language, relation_kinds_by_language = (
-                _collect_relation_coverage_by_language(snapshot_dicts)
-            )
-            missing_relation_languages = _missing_relation_languages(
-                indexed_files_by_language,
-                relation_kinds_by_language,
-            )
-
-            completion_added_by_language = _append_file_coverage_completion_snapshot(
-                snapshot_dicts,
-                census_report=census,
-            )
-            if completion_added_by_language:
-                scip_stats["scip_completion_added_files_by_language"] = completion_added_by_language
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [
-                    f"scip_completion_files_added:{language}:{count}"
-                    for language, count in sorted(completion_added_by_language.items())
-                ]
-                indexed_files_by_language = _collect_indexed_files_by_language(snapshot_dicts)
-
-            _scip_finalize_coverage_stats(
-                scip_stats,
+            await _scip_run_recovery_passes(
+                ctx,
+                supported_languages,
                 detected_files_by_language,
-                indexed_files_by_language,
-                relation_counts_by_language,
-                relation_kinds_by_language,
-                missing_relation_languages,
-            )
-
-            logger.info(
-                "SCIP indexing complete: %d/%d projects (%d failed), %d snapshots, %d symbols, %d relations",
-                scip_stats["scip_projects_indexed"],
-                scip_stats["scip_projects_detected"],
-                scip_stats["scip_projects_failed"],
-                scip_stats["scip_snapshots_parsed"],
-                scip_stats["scip_symbols"],
-                scip_stats["scip_relations"],
+                scip_output_dir,
+                attempted_targets,
             )
         else:
             _scip_finalize_coverage_stats(
-                scip_stats,
+                ctx.scip_stats,
                 detected_files_by_language,
                 indexed_files_by_language={},
                 relation_counts_by_language={},
@@ -2835,311 +2947,320 @@ async def sync_github_source(
             )
     except Exception as e:
         logger.warning("SCIP indexing failed: %s", e)
-        scip_stats["scip_degraded"] = True
-        scip_stats["scip_detection_warnings"] = list(scip_stats["scip_detection_warnings"]) + [
-            f"scip_indexing_exception:{e}"
-        ]
+        ctx.scip_stats["scip_degraded"] = True
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats["scip_detection_warnings"]
+        ) + [f"scip_indexing_exception:{e}"]
 
+
+def _gh_phase_scip_coverage_gates(ctx: _SyncGitHubCtx) -> None:
+    """Evaluate SCIP coverage gate settings and log warnings."""
     settings = get_settings()
-    missing_language_coverage = list(scip_stats.get("scip_missing_languages") or [])
+    missing_language_coverage = list(ctx.scip_stats.get("scip_missing_languages") or [])
     if settings.scip_require_language_coverage and missing_language_coverage:
         logger.warning(
             "SCIP language coverage incomplete; continuing with completion-pass data (missing=%s)",
             ",".join(missing_language_coverage),
         )
-        scip_stats["scip_language_coverage_gate"] = "warn"
-    missing_relation_coverage = list(scip_stats.get("scip_missing_relation_languages") or [])
+        ctx.scip_stats["scip_language_coverage_gate"] = "warn"
+    missing_relation_coverage = list(ctx.scip_stats.get("scip_missing_relation_languages") or [])
     if settings.scip_require_relation_coverage and missing_relation_coverage:
         logger.warning(
             "SCIP relation coverage incomplete; continuing with available semantic edges "
             "(missing_relations=%s)",
             ",".join(missing_relation_coverage),
         )
-        scip_stats["scip_relation_coverage_gate"] = "warn"
+        ctx.scip_stats["scip_relation_coverage_gate"] = "warn"
     if settings.scip_require_php_relation_coverage and "php" in missing_relation_coverage:
         logger.warning(
             "SCIP PHP relation coverage incomplete; continuing and supplementing from "
             "document symbol graph (missing_relations=%s)",
             ",".join(missing_relation_coverage),
         )
-        scip_stats["scip_php_relation_coverage_gate"] = "warn"
+        ctx.scip_stats["scip_php_relation_coverage_gate"] = "warn"
 
+
+async def _gh_phase_structural_metrics(ctx: _SyncGitHubCtx) -> None:
+    """Run polyglot metrics pipeline, enrich with git metrics, compute evolution."""
     await update_progress_artifact(
-        progress_id, progress=14, description="Extracting structural code metrics..."
+        ctx.progress_id, progress=14, description="Extracting structural code metrics..."
     )  # type: ignore[misc]
-    if snapshot_dicts and project_dicts:
-        from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
+    if not (ctx.snapshot_dicts and ctx.project_dicts):
+        return
 
-        evolution_window_days = int(settings.twin_evolution_window_days)
-        step_timeout_seconds = _sync_blocking_step_timeout_seconds()
-        scip_stats["evolution_window_days"] = evolution_window_days
-        try:
-            bundles = await _run_blocking_with_timeout(
-                "metrics_pipeline",
-                step_timeout_seconds,
-                run_polyglot_metrics_pipeline,
-                repo_root=repo_path,
-                project_dicts=project_dicts,
-                snapshot_dicts=snapshot_dicts,
-                strict_mode=settings.metrics_strict_mode,
-                metrics_languages=settings.metrics_languages,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Structural metrics pipeline failed for source %s: %s", source.id, exc)
-            scip_stats["scip_degraded"] = True
-            scip_stats["scip_detection_warnings"] = list(
-                scip_stats.get("scip_detection_warnings") or []
-            ) + [f"metrics_pipeline_exception:{exc}"]
-            bundles = []
+    from contextmine_core.metrics import flatten_metric_bundles, run_polyglot_metrics_pipeline
 
-        file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles or [])]
-        scip_stats["structural_metric_files"] = len(file_metric_dicts)
-        if file_metric_dicts:
-            target_files = {
-                str(metric.get("file_path", "")).strip()
-                for metric in file_metric_dicts
-                if str(metric.get("file_path", "")).strip()
-            }
-            try:
-                git_metrics_by_file = await _run_blocking_with_timeout(
-                    "git_change_metrics",
-                    step_timeout_seconds,
-                    compute_git_change_metrics,
-                    git_repo,
-                    target_files,
-                    since_days=evolution_window_days,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Git change metrics failed for source %s: %s", source.id, exc)
-                scip_stats["scip_degraded"] = True
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [f"git_change_metrics_exception:{exc}"]
-                git_metrics_by_file = {
-                    path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
-                    for path in target_files
-                }
-            git_enrich_stats = _enrich_file_metrics_with_git(
-                file_metric_dicts,
-                git_metrics_by_file,
-                evolution_window_days,
-            )
-            scip_stats["git_metric_files_targeted"] = len(target_files)
-            scip_stats["git_metric_files_with_history"] = git_enrich_stats["files_with_history"]
-            scip_stats["git_metric_total_change_frequency"] = git_enrich_stats[
-                "total_change_frequency"
-            ]
-            scip_stats["git_metric_total_churn"] = git_enrich_stats["total_churn"]
-            try:
-                temporal_pair_cap = _sync_temporal_coupling_max_files_per_commit()
-                evolution_payload = await _run_blocking_with_timeout(
-                    "git_evolution_snapshots",
-                    step_timeout_seconds,
-                    compute_git_evolution_snapshots,
-                    git_repo,
-                    target_files,
-                    window_days=evolution_window_days,
-                    max_files_per_commit=temporal_pair_cap,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Git evolution snapshots failed for source %s: %s", source.id, exc)
-                scip_stats["scip_degraded"] = True
-                scip_stats["scip_detection_warnings"] = list(
-                    scip_stats.get("scip_detection_warnings") or []
-                ) + [f"git_evolution_snapshots_exception:{exc}"]
-                evolution_payload = {
-                    "ownership_rows": [],
-                    "coupling_rows": [],
-                    "stats": {
-                        "window_days": evolution_window_days,
-                        "max_files_per_commit": _sync_temporal_coupling_max_files_per_commit(),
-                        "pairing_truncated_commits": 0,
-                        "commits_scanned": 0,
-                        "commits_considered": 0,
-                        "files_seen": 0,
-                        "ownership_rows": 0,
-                        "coupling_rows": 0,
-                    },
-                    "warnings": [f"git_evolution_snapshots_exception:{exc}"],
-                }
-            evolution_stats = dict(evolution_payload.get("stats") or {})
-            scip_stats["evolution_commits_scanned"] = int(evolution_stats.get("commits_scanned", 0))
-            scip_stats["evolution_commits_considered"] = int(
-                evolution_stats.get("commits_considered", 0)
-            )
-            scip_stats["evolution_files_seen"] = int(evolution_stats.get("files_seen", 0))
-            scip_stats["evolution_ownership_rows"] = int(evolution_stats.get("ownership_rows", 0))
-            scip_stats["evolution_coupling_rows"] = int(evolution_stats.get("coupling_rows", 0))
-            scip_stats["evolution_warnings"] = list(evolution_payload.get("warnings") or [])
+    settings = get_settings()
+    evolution_window_days = int(settings.twin_evolution_window_days)
+    step_timeout_seconds = _sync_blocking_step_timeout_seconds()
+    ctx.scip_stats["evolution_window_days"] = evolution_window_days
+    try:
+        bundles = await _run_blocking_with_timeout(
+            "metrics_pipeline",
+            step_timeout_seconds,
+            run_polyglot_metrics_pipeline,
+            repo_root=ctx.repo_path,
+            project_dicts=ctx.project_dicts,
+            snapshot_dicts=ctx.snapshot_dicts,
+            strict_mode=settings.metrics_strict_mode,
+            metrics_languages=settings.metrics_languages,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Structural metrics pipeline failed for source %s: %s", ctx.source.id, exc)
+        ctx.scip_stats["scip_degraded"] = True
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats.get("scip_detection_warnings") or []
+        ) + [f"metrics_pipeline_exception:{exc}"]
+        bundles = []
 
+    ctx.file_metric_dicts = [record.to_dict() for record in flatten_metric_bundles(bundles or [])]
+    ctx.scip_stats["structural_metric_files"] = len(ctx.file_metric_dicts)
+    if ctx.file_metric_dicts:
+        await _gh_enrich_file_metrics_and_evolution(
+            ctx, evolution_window_days, step_timeout_seconds
+        )
+
+
+async def _gh_enrich_file_metrics_and_evolution(
+    ctx: _SyncGitHubCtx,
+    evolution_window_days: int,
+    step_timeout_seconds: int,
+) -> None:
+    """Enrich file metrics with git change data and compute evolution snapshots."""
+    target_files = {
+        str(metric.get("file_path", "")).strip()
+        for metric in ctx.file_metric_dicts
+        if str(metric.get("file_path", "")).strip()
+    }
+    try:
+        git_metrics_by_file = await _run_blocking_with_timeout(
+            "git_change_metrics",
+            step_timeout_seconds,
+            compute_git_change_metrics,
+            ctx.git_repo,
+            target_files,
+            since_days=evolution_window_days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Git change metrics failed for source %s: %s", ctx.source.id, exc)
+        ctx.scip_stats["scip_degraded"] = True
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats.get("scip_detection_warnings") or []
+        ) + [f"git_change_metrics_exception:{exc}"]
+        git_metrics_by_file = {
+            path: {"change_frequency": 0, "insertions": 0, "deletions": 0, "churn": 0}
+            for path in target_files
+        }
+    git_enrich_stats = _enrich_file_metrics_with_git(
+        ctx.file_metric_dicts,
+        git_metrics_by_file,
+        evolution_window_days,
+    )
+    ctx.scip_stats["git_metric_files_targeted"] = len(target_files)
+    ctx.scip_stats["git_metric_files_with_history"] = git_enrich_stats["files_with_history"]
+    ctx.scip_stats["git_metric_total_change_frequency"] = git_enrich_stats["total_change_frequency"]
+    ctx.scip_stats["git_metric_total_churn"] = git_enrich_stats["total_churn"]
+
+    await _gh_compute_evolution_snapshots(
+        ctx, target_files, evolution_window_days, step_timeout_seconds
+    )
+
+
+async def _gh_compute_evolution_snapshots(
+    ctx: _SyncGitHubCtx,
+    target_files: set[str],
+    evolution_window_days: int,
+    step_timeout_seconds: int,
+) -> None:
+    """Compute git evolution snapshots (ownership + coupling)."""
+    try:
+        temporal_pair_cap = _sync_temporal_coupling_max_files_per_commit()
+        ctx.evolution_payload = await _run_blocking_with_timeout(
+            "git_evolution_snapshots",
+            step_timeout_seconds,
+            compute_git_evolution_snapshots,
+            ctx.git_repo,
+            target_files,
+            window_days=evolution_window_days,
+            max_files_per_commit=temporal_pair_cap,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Git evolution snapshots failed for source %s: %s", ctx.source.id, exc)
+        ctx.scip_stats["scip_degraded"] = True
+        ctx.scip_stats["scip_detection_warnings"] = list(
+            ctx.scip_stats.get("scip_detection_warnings") or []
+        ) + [f"git_evolution_snapshots_exception:{exc}"]
+        ctx.evolution_payload = {
+            "ownership_rows": [],
+            "coupling_rows": [],
+            "stats": {
+                "window_days": evolution_window_days,
+                "max_files_per_commit": _sync_temporal_coupling_max_files_per_commit(),
+                "pairing_truncated_commits": 0,
+                "commits_scanned": 0,
+                "commits_considered": 0,
+                "files_seen": 0,
+                "ownership_rows": 0,
+                "coupling_rows": 0,
+            },
+            "warnings": [f"git_evolution_snapshots_exception:{exc}"],
+        }
+    evolution_stats = dict(ctx.evolution_payload.get("stats") or {})
+    ctx.scip_stats["evolution_commits_scanned"] = int(evolution_stats.get("commits_scanned", 0))
+    ctx.scip_stats["evolution_commits_considered"] = int(
+        evolution_stats.get("commits_considered", 0)
+    )
+    ctx.scip_stats["evolution_files_seen"] = int(evolution_stats.get("files_seen", 0))
+    ctx.scip_stats["evolution_ownership_rows"] = int(evolution_stats.get("ownership_rows", 0))
+    ctx.scip_stats["evolution_coupling_rows"] = int(evolution_stats.get("coupling_rows", 0))
+    ctx.scip_stats["evolution_warnings"] = list(ctx.evolution_payload.get("warnings") or [])
+
+
+async def _gh_phase_diff_and_index_documents(ctx: _SyncGitHubCtx) -> None:
+    """Detect changed/deleted files, upsert documents, update source cursor."""
     await update_progress_artifact(
-        progress_id, progress=15, description="Detecting changed files..."
+        ctx.progress_id, progress=15, description="Detecting changed files..."
     )  # type: ignore[misc]
 
-    # Get changed and deleted files
-    changed_files, deleted_files = get_changed_files(git_repo, old_sha, new_sha)
-
-    # Track documents to chunk (doc_id, content, file_path)
-    docs_to_chunk: list[tuple[str, str, str | None]] = []
-
-    # Chunk, symbol, and embedding stats
-    total_chunks_created = 0
-    total_chunks_deleted = 0
-    total_chunks_embedded = 0
-    total_chunks_deduplicated = 0
-    total_tokens_used = 0
-    total_symbols_created = 0
-    total_symbols_deleted = 0
+    changed_files, deleted_files = get_changed_files(ctx.git_repo, ctx.old_sha, ctx.new_sha)
 
     total_files = len(changed_files) + len(deleted_files)
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=20, description=f"Processing {total_files} files..."
+        ctx.progress_id, progress=20, description=f"Processing {total_files} files..."
     )
 
     async with get_session() as session:
-        # Process deleted files
-        if deleted_files:
-            for file_path in deleted_files:
-                uri = build_uri(owner, repo, file_path, branch)
-                result = await session.execute(
-                    delete(Document).where(
-                        Document.source_id == source.id,
-                        Document.uri == uri,
-                    )
-                )
-                if result.rowcount > 0:  # type: ignore[union-attr]
-                    stats.docs_deleted += 1
-                    stats.files_deleted += 1
-
-        # Process changed files
-        for file_path in changed_files:
-            stats.files_scanned += 1
-
-            # Check eligibility
-            if not is_eligible_file(Path(file_path), repo_path):
-                stats.files_skipped += 1
-                continue
-
-            # Read content
-            content = read_file_content(repo_path, file_path)
-            if content is None:
-                stats.files_skipped += 1
-                continue
-
-            stats.files_indexed += 1
-
-            # Compute hash and URI
-            content_hash = compute_content_hash(content)
-            uri = build_uri(owner, repo, file_path, branch)
-            title = get_file_title(Path(file_path))
-
-            # Check if document exists
-            result = await session.execute(select(Document).where(Document.uri == uri))
-            existing_doc = result.scalar_one_or_none()
-
-            if existing_doc:
-                # Update if content changed
-                if existing_doc.content_hash != content_hash:
-                    existing_doc.content_markdown = content
-                    existing_doc.content_hash = content_hash
-                    existing_doc.title = title
-                    existing_doc.updated_at = datetime.now(UTC)
-                    stats.docs_updated += 1
-                    # Mark for re-chunking
-                    docs_to_chunk.append((str(existing_doc.id), content, file_path))
-                existing_doc.last_seen_at = run_started_at
-            else:
-                # Create new document
-                new_doc = Document(
-                    source_id=source.id,
-                    uri=uri,
-                    title=title,
-                    content_markdown=content,
-                    content_hash=content_hash,
-                    meta={
-                        "file_path": file_path,
-                        "owner": owner,
-                        "repo": repo,
-                        "branch": branch,
-                    },
-                    last_seen_at=run_started_at,
-                )
-                session.add(new_doc)
-                await session.flush()  # Get the ID
-                stats.docs_created += 1
-                # Mark for chunking
-                docs_to_chunk.append((str(new_doc.id), content, file_path))
-
-        # Hard delete documents not seen in this run (for full index)
-        if old_sha is None:
+        for file_path in deleted_files:
+            uri = build_uri(ctx.owner, ctx.repo, file_path, ctx.branch)
             result = await session.execute(
                 delete(Document).where(
-                    Document.source_id == source.id,
-                    Document.last_seen_at < run_started_at,
+                    Document.source_id == ctx.source.id,
+                    Document.uri == uri,
                 )
             )
-            stats.docs_deleted += result.rowcount  # type: ignore[union-attr]
+            if result.rowcount > 0:  # type: ignore[union-attr]
+                ctx.stats.docs_deleted += 1
+                ctx.stats.files_deleted += 1
 
-        # Update source cursor
-        result = await session.execute(select(Source).where(Source.id == source.id))
+        for file_path in changed_files:
+            ctx.stats.files_scanned += 1
+            if not is_eligible_file(Path(file_path), ctx.repo_path):
+                ctx.stats.files_skipped += 1
+                continue
+            content = read_file_content(ctx.repo_path, file_path)
+            if content is None:
+                ctx.stats.files_skipped += 1
+                continue
+            ctx.stats.files_indexed += 1
+            await _gh_upsert_document(ctx, session, file_path, content)
+
+        if ctx.old_sha is None:
+            result = await session.execute(
+                delete(Document).where(
+                    Document.source_id == ctx.source.id,
+                    Document.last_seen_at < ctx.run_started_at,
+                )
+            )
+            ctx.stats.docs_deleted += result.rowcount  # type: ignore[union-attr]
+
+        result = await session.execute(select(Source).where(Source.id == ctx.source.id))
         db_source = result.scalar_one()
-        db_source.cursor = new_sha
+        db_source.cursor = ctx.new_sha
         db_source.last_run_at = datetime.now(UTC)
         db_source.next_run_at = datetime.now(UTC) + timedelta(
             minutes=db_source.schedule_interval_minutes
         )
-
         await session.commit()
 
-    # Find documents missing chunks (fault tolerance for interrupted syncs)
-    async with get_session() as session:
-        # Subquery for documents that have at least one chunk
-        docs_with_chunks = select(Chunk.document_id).distinct().subquery()
+    await _gh_recover_unchunked_documents(ctx)
 
-        # Find documents for this source that have no chunks
+
+async def _gh_upsert_document(
+    ctx: _SyncGitHubCtx,
+    session: Any,
+    file_path: str,
+    content: str,
+) -> None:
+    """Create or update a single document and queue it for chunking if needed."""
+    content_hash = compute_content_hash(content)
+    uri = build_uri(ctx.owner, ctx.repo, file_path, ctx.branch)
+    title = get_file_title(Path(file_path))
+
+    result = await session.execute(select(Document).where(Document.uri == uri))
+    existing_doc = result.scalar_one_or_none()
+
+    if existing_doc:
+        if existing_doc.content_hash != content_hash:
+            existing_doc.content_markdown = content
+            existing_doc.content_hash = content_hash
+            existing_doc.title = title
+            existing_doc.updated_at = datetime.now(UTC)
+            ctx.stats.docs_updated += 1
+            ctx.docs_to_chunk.append((str(existing_doc.id), content, file_path))
+        existing_doc.last_seen_at = ctx.run_started_at
+    else:
+        new_doc = Document(
+            source_id=ctx.source.id,
+            uri=uri,
+            title=title,
+            content_markdown=content,
+            content_hash=content_hash,
+            meta={
+                "file_path": file_path,
+                "owner": ctx.owner,
+                "repo": ctx.repo,
+                "branch": ctx.branch,
+            },
+            last_seen_at=ctx.run_started_at,
+        )
+        session.add(new_doc)
+        await session.flush()
+        ctx.stats.docs_created += 1
+        ctx.docs_to_chunk.append((str(new_doc.id), content, file_path))
+
+
+async def _gh_recover_unchunked_documents(ctx: _SyncGitHubCtx) -> None:
+    """Find documents missing chunks and add them to the chunking queue."""
+    async with get_session() as session:
+        docs_with_chunks = select(Chunk.document_id).distinct().subquery()
         result = await session.execute(
             select(Document.id, Document.content_markdown, Document.uri)
             .outerjoin(docs_with_chunks, Document.id == docs_with_chunks.c.document_id)
             .where(
-                Document.source_id == source.id,
+                Document.source_id == ctx.source.id,
                 docs_with_chunks.c.document_id.is_(None),
             )
         )
         unchunked_docs = result.all()
 
-        # Add unchunked docs to the processing queue
         for doc_id, content, uri in unchunked_docs:
             if content:
-                # Extract file path from URI (format: git://github.com/owner/repo/path?ref=branch)
                 file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else None
-                docs_to_chunk.append((str(doc_id), content, file_path))
+                ctx.docs_to_chunk.append((str(doc_id), content, file_path))
 
-    # Run chunk maintenance and embedding for changed/new/unchunked documents
-    collection_id_str = str(source.collection_id)
-    doc_acc = await _process_document_batch(docs_to_chunk, collection_id_str, progress_id)
-    total_chunks_created = doc_acc.chunks_created
-    total_chunks_deleted = doc_acc.chunks_deleted
-    total_chunks_embedded = doc_acc.chunks_embedded
-    total_chunks_deduplicated = doc_acc.chunks_deduplicated
-    total_tokens_used = doc_acc.tokens_used
-    total_symbols_created = doc_acc.symbols_created
-    total_symbols_deleted = doc_acc.symbols_deleted
-    docs_processing_failures = doc_acc.processing_failures
-    docs_processing_timeouts = doc_acc.processing_timeouts
-    docs_processing_error_samples = doc_acc.error_samples
-    total_docs_candidate = doc_acc._total_candidate  # type: ignore[attr-defined]
-    docs_deferred = doc_acc._docs_deferred  # type: ignore[attr-defined]
+        ctx.unchunked_docs_count = len(unchunked_docs)
 
-    # Build Knowledge Graph (FILE/SYMBOL + semantic entities + communities).
-    await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=94, description="Building knowledge graph..."
+
+async def _gh_phase_chunk_and_embed(ctx: _SyncGitHubCtx) -> None:
+    """Run chunk maintenance and embedding for all queued documents."""
+    collection_id_str = str(ctx.source.collection_id)
+    ctx.doc_acc = await _process_document_batch(
+        ctx.docs_to_chunk, collection_id_str, ctx.progress_id
     )
-    changed_doc_ids = doc_acc._changed_doc_ids  # type: ignore[attr-defined]
+
+
+async def _gh_phase_build_knowledge_graph(ctx: _SyncGitHubCtx) -> None:
+    """Build the Knowledge Graph (FILE/SYMBOL + semantic entities + communities)."""
+    await update_progress_artifact(  # type: ignore[misc]
+        ctx.progress_id, progress=94, description="Building knowledge graph..."
+    )
+    collection_id_str = str(ctx.source.collection_id)
+    changed_doc_ids = ctx.doc_acc._changed_doc_ids  # type: ignore[union-attr, attr-defined]
     try:
         kg_timeout_seconds = _knowledge_graph_build_timeout_seconds()
-        kg_stats = await asyncio.wait_for(
+        ctx.kg_stats = await asyncio.wait_for(
             build_knowledge_graph(
-                source_id=str(source.id),
+                source_id=str(ctx.source.id),
                 collection_id=collection_id_str,
                 changed_doc_ids=changed_doc_ids,
             ),
@@ -3149,69 +3270,258 @@ async def sync_github_source(
         kg_timeout_seconds = _knowledge_graph_build_timeout_seconds()
         logger.warning(
             "Knowledge graph build timed out for source %s after %ss",
-            source.id,
+            ctx.source.id,
             kg_timeout_seconds,
         )
-        kg_stats = {"kg_errors": [f"pipeline: timeout_after_{kg_timeout_seconds}s"]}
+        ctx.kg_stats = {"kg_errors": [f"pipeline: timeout_after_{kg_timeout_seconds}s"]}
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Knowledge graph build failed for source %s: %s", source.id, exc)
-        kg_errors = list((kg_stats or {}).get("kg_errors") or [])
+        logger.warning("Knowledge graph build failed for source %s: %s", ctx.source.id, exc)
+        kg_errors = list((ctx.kg_stats or {}).get("kg_errors") or [])
         kg_errors.append(f"pipeline: {exc}")
-        kg_stats = {"kg_errors": kg_errors}
+        ctx.kg_stats = {"kg_errors": kg_errors}
 
-    # Materialize deterministic interface/spec surfaces (OpenAPI/GraphQL/Protobuf/jobs)
-    surface_stats: dict[str, int] = {}
+
+async def _gh_phase_materialize_surfaces(ctx: _SyncGitHubCtx) -> None:
+    """Materialize deterministic interface/spec surfaces."""
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=95, description="Materializing interface/spec surfaces..."
+        ctx.progress_id, progress=95, description="Materializing interface/spec surfaces..."
     )
+    collection_id_str = str(ctx.source.collection_id)
     try:
-        surface_stats = await asyncio.wait_for(
+        ctx.surface_stats = await asyncio.wait_for(
             materialize_surface_catalog_for_source(
-                source_id=str(source.id),
+                source_id=str(ctx.source.id),
                 collection_id=collection_id_str,
             ),
             timeout=_sync_blocking_step_timeout_seconds(),
         )
     except Exception as exc:
-        logger.warning("Surface materialization failed for source %s: %s", source.id, exc)
-        surface_stats = {}
+        logger.warning("Surface materialization failed for source %s: %s", ctx.source.id, exc)
+        ctx.surface_stats = {}
 
-    # Build digital twin from indexed documents and semantic snapshots
+
+async def _gh_phase_build_twin(ctx: _SyncGitHubCtx) -> None:
+    """Build digital twin graph from indexed documents and semantic snapshots."""
     await update_progress_artifact(  # type: ignore[misc]
-        progress_id, progress=96, description="Building digital twin..."
+        ctx.progress_id, progress=96, description="Building digital twin..."
     )
+    collection_id_str = str(ctx.source.collection_id)
+    changed_doc_ids = ctx.doc_acc._changed_doc_ids  # type: ignore[union-attr, attr-defined]
     twin_timeout_seconds = _twin_graph_build_timeout_seconds()
     try:
-        twin_stats = await asyncio.wait_for(
+        ctx.twin_stats = await asyncio.wait_for(
             build_twin_graph(
-                str(source.id),
+                str(ctx.source.id),
                 collection_id_str,
-                snapshot_dicts=snapshot_dicts,
+                snapshot_dicts=ctx.snapshot_dicts,
                 changed_doc_ids=changed_doc_ids,
-                file_metrics=file_metric_dicts,
-                evolution_payload=evolution_payload,
+                file_metrics=ctx.file_metric_dicts,
+                evolution_payload=ctx.evolution_payload,
             ),
             timeout=twin_timeout_seconds,
         )
     except TimeoutError as exc:
         raise RuntimeError(
-            f"TWIN_BUILD_TIMEOUT: source={source.id} timeout={twin_timeout_seconds}s"
+            f"TWIN_BUILD_TIMEOUT: source={ctx.source.id} timeout={twin_timeout_seconds}s"
         ) from exc
 
-    await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
+
+def _build_scip_stats_subset(scip_stats: dict[str, Any]) -> dict[str, Any]:
+    """Extract the SCIP-related keys for inclusion in version/run stats."""
+    return {
+        "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
+        "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
+        "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
+        "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
+        "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
+        "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
+        "scip_detected_files_by_language": scip_stats.get("scip_detected_files_by_language", {}),
+        "scip_detected_code_by_language": scip_stats.get("scip_detected_code_by_language", {}),
+        "scip_indexed_files_by_language": scip_stats.get("scip_indexed_files_by_language", {}),
+        "scip_missing_languages": scip_stats.get("scip_missing_languages", []),
+        "scip_coverage_complete": bool(scip_stats.get("scip_coverage_complete", True)),
+        "scip_relation_counts_by_language": scip_stats.get("scip_relation_counts_by_language", {}),
+        "scip_relation_kinds_by_language": scip_stats.get("scip_relation_kinds_by_language", {}),
+        "scip_missing_relation_languages": scip_stats.get("scip_missing_relation_languages", []),
+        "scip_relation_coverage_complete": bool(
+            scip_stats.get("scip_relation_coverage_complete", True)
+        ),
+        "scip_recovery_attempts": scip_stats.get("scip_recovery_attempts", 0),
+        "scip_recovery_successes": scip_stats.get("scip_recovery_successes", 0),
+        "scip_relation_recovery_attempts": scip_stats.get("scip_relation_recovery_attempts", 0),
+        "scip_relation_recovery_successes": scip_stats.get("scip_relation_recovery_successes", 0),
+        "scip_completion_added_files_by_language": scip_stats.get(
+            "scip_completion_added_files_by_language", {}
+        ),
+        "scip_language_coverage_gate": scip_stats.get("scip_language_coverage_gate", "n/a"),
+        "scip_relation_coverage_gate": scip_stats.get("scip_relation_coverage_gate", "n/a"),
+        "scip_php_relation_coverage_gate": scip_stats.get("scip_php_relation_coverage_gate", "n/a"),
+        "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
+    }
+
+
+def _compute_metrics_gate(twin_stats: dict[str, Any]) -> str:
+    """Compute the metrics gate pass/fail string."""
+    mapped = int(twin_stats.get("metrics_mapped_files", 0))
+    requested = int(twin_stats.get("metrics_requested_files", 0))
+    return "pass" if mapped >= requested else "fail"
+
+
+def _build_source_version_stats(
+    ctx: _SyncGitHubCtx, scenario_id_raw: object, scenario_version: int | None
+) -> dict[str, Any]:
+    """Build the stats dict for set_source_version_status."""
+    doc_acc = ctx.doc_acc
+    scip_sub = _build_scip_stats_subset(ctx.scip_stats)
+    return {
+        "commit_sha": ctx.new_sha,
+        "sync_run_id": str(ctx.sync_run.id),
+        "surface_extract": ctx.surface_stats,
+        "knowledge_extract": ctx.kg_stats,
+        "docs_chunk_queue_total": int(doc_acc._total_candidate),  # type: ignore[union-attr, attr-defined]
+        "docs_chunk_deferred": int(doc_acc._docs_deferred),  # type: ignore[union-attr, attr-defined]
+        "docs_processing_failures": int(doc_acc.processing_failures),  # type: ignore[union-attr]
+        "docs_processing_timeouts": int(doc_acc.processing_timeouts),  # type: ignore[union-attr]
+        "docs_processing_error_samples": list(doc_acc.error_samples)[:25],  # type: ignore[union-attr]
+        "joern_status": "ready" if ctx.joern_ok else "failed",
+        "joern_error": ctx.joern_error if not ctx.joern_ok else "",
+        **scip_sub,
+        "evolution_window_days": int(ctx.scip_stats.get("evolution_window_days", 0)),
+        "evolution_commits_scanned": int(ctx.scip_stats.get("evolution_commits_scanned", 0)),
+        "evolution_commits_considered": int(ctx.scip_stats.get("evolution_commits_considered", 0)),
+        "evolution_files_seen": int(ctx.scip_stats.get("evolution_files_seen", 0)),
+        "evolution_warnings": list(ctx.scip_stats.get("evolution_warnings", []) or []),
+        "twin_nodes_upserted": int(ctx.twin_stats.get("twin_nodes_upserted", 0)),
+        "twin_edges_upserted": int(ctx.twin_stats.get("twin_edges_upserted", 0)),
+        "evolution_ownership_rows": int(ctx.twin_stats.get("evolution_ownership_rows", 0)),
+        "evolution_coupling_rows": int(ctx.twin_stats.get("evolution_coupling_rows", 0)),
+        "fitness_findings_written": int(ctx.twin_stats.get("fitness_findings_written", 0)),
+        "fitness_findings_by_type": dict(ctx.twin_stats.get("fitness_findings_by_type", {}) or {}),
+        "metrics_requested_files": int(ctx.twin_stats.get("metrics_requested_files", 0)),
+        "metrics_mapped_files": int(ctx.twin_stats.get("metrics_mapped_files", 0)),
+        "metrics_unmapped_sample": list(ctx.twin_stats.get("metrics_unmapped_sample", []) or [])[
+            :25
+        ],
+        "metrics_gate": _compute_metrics_gate(ctx.twin_stats),
+        "scenario_id": scenario_id_raw,
+        "scenario_version": scenario_version,
+    }
+
+
+def _build_sync_run_stats(ctx: _SyncGitHubCtx) -> dict[str, Any]:
+    """Build the stats dict for the SyncRun record."""
+    doc_acc = ctx.doc_acc
+    settings = get_settings()
+    scip_sub = _build_scip_stats_subset(ctx.scip_stats)
+    return {
+        "files_scanned": ctx.stats.files_scanned,
+        "files_indexed": ctx.stats.files_indexed,
+        "files_skipped": ctx.stats.files_skipped,
+        "files_deleted": ctx.stats.files_deleted,
+        "docs_created": ctx.stats.docs_created,
+        "docs_updated": ctx.stats.docs_updated,
+        "docs_deleted": ctx.stats.docs_deleted,
+        "docs_unchunked_recovered": ctx.unchunked_docs_count,
+        "docs_chunk_queue_total": doc_acc._total_candidate,  # type: ignore[union-attr, attr-defined]
+        "docs_chunk_deferred": doc_acc._docs_deferred,  # type: ignore[union-attr, attr-defined]
+        "docs_processing_failures": doc_acc.processing_failures,  # type: ignore[union-attr]
+        "docs_processing_timeouts": doc_acc.processing_timeouts,  # type: ignore[union-attr]
+        "docs_processing_error_samples": list(doc_acc.error_samples)[:25],  # type: ignore[union-attr]
+        "chunks_created": doc_acc.chunks_created,  # type: ignore[union-attr]
+        "chunks_deleted": doc_acc.chunks_deleted,  # type: ignore[union-attr]
+        "chunks_embedded": doc_acc.chunks_embedded,  # type: ignore[union-attr]
+        "chunks_deduplicated": doc_acc.chunks_deduplicated,  # type: ignore[union-attr]
+        "embedding_tokens_used": doc_acc.tokens_used,  # type: ignore[union-attr]
+        "symbols_created": doc_acc.symbols_created,  # type: ignore[union-attr]
+        "symbols_deleted": doc_acc.symbols_deleted,  # type: ignore[union-attr]
+        "commit_sha": ctx.new_sha,
+        "previous_sha": ctx.old_sha,
+        # SCIP Polyglot Indexing stats
+        **scip_sub,
+        "scip_symbols": ctx.scip_stats.get("scip_symbols", 0),
+        "scip_relations": ctx.scip_stats.get("scip_relations", 0),
+        "scip_languages_detected": ctx.scip_stats.get("scip_languages_detected", []),
+        "scip_detection_warnings": ctx.scip_stats.get("scip_detection_warnings", []),
+        "scip_census_tool": ctx.scip_stats.get("scip_census_tool", ""),
+        "scip_census_tool_version": ctx.scip_stats.get("scip_census_tool_version", ""),
+        # Twin stats
+        "twin_nodes_upserted": ctx.twin_stats.get("twin_nodes_upserted", 0),
+        "twin_edges_upserted": ctx.twin_stats.get("twin_edges_upserted", 0),
+        "twin_metric_nodes_enriched": ctx.twin_stats.get("twin_metric_nodes_enriched", 0),
+        "metrics_requested_files": ctx.twin_stats.get("metrics_requested_files", 0),
+        "metrics_mapped_files": ctx.twin_stats.get("metrics_mapped_files", 0),
+        "metrics_unmapped_sample": ctx.twin_stats.get("metrics_unmapped_sample", []),
+        "metrics_gate": _compute_metrics_gate(ctx.twin_stats),
+        "twin_metrics_snapshots": ctx.twin_stats.get("twin_metrics_snapshots", 0),
+        "twin_validation_snapshots": ctx.twin_stats.get("twin_validation_snapshots", 0),
+        "twin_asis_scenario_id": ctx.twin_stats.get("twin_asis_scenario_id"),
+        "structural_metric_files": ctx.scip_stats.get("structural_metric_files", 0),
+        "git_metric_files_targeted": ctx.scip_stats.get("git_metric_files_targeted", 0),
+        "git_metric_files_with_history": ctx.scip_stats.get("git_metric_files_with_history", 0),
+        "git_metric_total_change_frequency": ctx.scip_stats.get(
+            "git_metric_total_change_frequency", 0.0
+        ),
+        "git_metric_total_churn": ctx.scip_stats.get("git_metric_total_churn", 0.0),
+        "evolution_window_days": ctx.scip_stats.get("evolution_window_days", 0),
+        "evolution_commits_scanned": ctx.scip_stats.get("evolution_commits_scanned", 0),
+        "evolution_commits_considered": ctx.scip_stats.get("evolution_commits_considered", 0),
+        "evolution_files_seen": ctx.scip_stats.get("evolution_files_seen", 0),
+        "evolution_warnings": ctx.scip_stats.get("evolution_warnings", []),
+        "evolution_ownership_rows": ctx.twin_stats.get("evolution_ownership_rows", 0),
+        "evolution_coupling_rows": ctx.twin_stats.get("evolution_coupling_rows", 0),
+        "fitness_findings_written": ctx.twin_stats.get("fitness_findings_written", 0),
+        "fitness_findings_by_type": ctx.twin_stats.get("fitness_findings_by_type", {}),
+        "fitness_findings_warnings": ctx.twin_stats.get("fitness_findings_warnings", []),
+        "source_version_id": (str(ctx.source_version_id) if ctx.source_version_id else None),
+        "joern_status": "ready" if ctx.joern_ok else "failed",
+        "joern_error": ctx.joern_error if not ctx.joern_ok else "",
+        "joern_cpg_path": str(ctx.cpg_path) if ctx.joern_ok else None,
+        "joern_server_url": settings.joern_server_url,
+        # Knowledge Graph extraction stats
+        "kg_file_nodes": ctx.kg_stats.get("kg_file_nodes", 0),
+        "kg_symbol_nodes": ctx.kg_stats.get("kg_symbol_nodes", 0),
+        "kg_business_rules": ctx.kg_stats.get("kg_business_rules", 0),
+        "kg_tables": ctx.kg_stats.get("kg_tables", 0),
+        "kg_endpoints": ctx.kg_stats.get("kg_endpoints", 0),
+        "kg_jobs": ctx.kg_stats.get("kg_jobs", 0),
+        "kg_semantic_entities": ctx.kg_stats.get("kg_semantic_entities", 0),
+        "kg_semantic_relationships": ctx.kg_stats.get("kg_semantic_relationships", 0),
+        "kg_communities_l0": ctx.kg_stats.get("kg_communities_l0", 0),
+        "kg_communities_l1": ctx.kg_stats.get("kg_communities_l1", 0),
+        "kg_communities_l2": ctx.kg_stats.get("kg_communities_l2", 0),
+        "kg_summaries_created": ctx.kg_stats.get("kg_summaries_created", 0),
+        "kg_embeddings_created": ctx.kg_stats.get("kg_embeddings_created", 0),
+        "kg_errors": list(ctx.kg_stats.get("kg_errors", []) or []),
+        # Surface extraction stats
+        "surface_files_scanned": ctx.surface_stats.get("surface_files_scanned", 0),
+        "surface_files_recognized": ctx.surface_stats.get("surface_files_recognized", 0),
+        "surface_parse_errors": ctx.surface_stats.get("surface_parse_errors", 0),
+        "surface_endpoint_nodes": ctx.surface_stats.get("endpoint_nodes", 0),
+        "surface_endpoint_handler_links": ctx.surface_stats.get("endpoint_handler_links", 0),
+        "surface_graphql_nodes": ctx.surface_stats.get("graphql_nodes", 0),
+        "surface_proto_nodes": ctx.surface_stats.get("proto_nodes", 0),
+        "surface_job_nodes": ctx.surface_stats.get("job_nodes", 0),
+        "surface_edges_created": ctx.surface_stats.get("edges_created", 0),
+    }
+
+
+async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
+    """Save sync run stats, mark source version ready, schedule behavioral layers."""
+    await update_progress_artifact(ctx.progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
+
+    from contextmine_core.twin import record_twin_event, set_source_version_status
 
     async with get_session() as session:
         import uuid as uuid_module
 
         from contextmine_core.models import TwinScenario, TwinSourceVersion
 
-        # Update sync run
-        result = await session.execute(select(SyncRun).where(SyncRun.id == sync_run.id))
+        result = await session.execute(select(SyncRun).where(SyncRun.id == ctx.sync_run.id))
         db_run = result.scalar_one()
         db_run.status = SyncRunStatus.SUCCESS
         db_run.finished_at = datetime.now(UTC)
         scenario_version = None
-        scenario_id_raw = twin_stats.get("twin_asis_scenario_id")
+        scenario_id_raw = ctx.twin_stats.get("twin_asis_scenario_id")
         if scenario_id_raw:
             scenario = (
                 await session.execute(
@@ -3222,112 +3532,20 @@ async def sync_github_source(
             ).scalar_one_or_none()
             scenario_version = int(scenario.version) if scenario else None
 
-        if source_version_id:
+        if ctx.source_version_id:
             await set_source_version_status(
                 session,
-                source_version_id=source_version_id,
+                source_version_id=ctx.source_version_id,
                 status="ready",
-                stats={
-                    "commit_sha": new_sha,
-                    "sync_run_id": str(sync_run.id),
-                    "surface_extract": surface_stats,
-                    "knowledge_extract": kg_stats,
-                    "docs_chunk_queue_total": int(total_docs_candidate),
-                    "docs_chunk_deferred": int(docs_deferred),
-                    "docs_processing_failures": int(docs_processing_failures),
-                    "docs_processing_timeouts": int(docs_processing_timeouts),
-                    "docs_processing_error_samples": list(docs_processing_error_samples)[:25],
-                    "joern_status": "ready" if joern_ok else "failed",
-                    "joern_error": joern_error if not joern_ok else "",
-                    "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
-                    "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
-                    "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
-                    "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
-                    "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
-                    "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
-                    "scip_detected_files_by_language": scip_stats.get(
-                        "scip_detected_files_by_language", {}
-                    ),
-                    "scip_detected_code_by_language": scip_stats.get(
-                        "scip_detected_code_by_language", {}
-                    ),
-                    "scip_indexed_files_by_language": scip_stats.get(
-                        "scip_indexed_files_by_language", {}
-                    ),
-                    "scip_missing_languages": scip_stats.get("scip_missing_languages", []),
-                    "scip_coverage_complete": bool(scip_stats.get("scip_coverage_complete", True)),
-                    "scip_relation_counts_by_language": scip_stats.get(
-                        "scip_relation_counts_by_language", {}
-                    ),
-                    "scip_relation_kinds_by_language": scip_stats.get(
-                        "scip_relation_kinds_by_language", {}
-                    ),
-                    "scip_missing_relation_languages": scip_stats.get(
-                        "scip_missing_relation_languages", []
-                    ),
-                    "scip_relation_coverage_complete": bool(
-                        scip_stats.get("scip_relation_coverage_complete", True)
-                    ),
-                    "scip_recovery_attempts": scip_stats.get("scip_recovery_attempts", 0),
-                    "scip_recovery_successes": scip_stats.get("scip_recovery_successes", 0),
-                    "scip_relation_recovery_attempts": scip_stats.get(
-                        "scip_relation_recovery_attempts", 0
-                    ),
-                    "scip_relation_recovery_successes": scip_stats.get(
-                        "scip_relation_recovery_successes", 0
-                    ),
-                    "scip_completion_added_files_by_language": scip_stats.get(
-                        "scip_completion_added_files_by_language", {}
-                    ),
-                    "scip_language_coverage_gate": scip_stats.get(
-                        "scip_language_coverage_gate", "n/a"
-                    ),
-                    "scip_relation_coverage_gate": scip_stats.get(
-                        "scip_relation_coverage_gate", "n/a"
-                    ),
-                    "scip_php_relation_coverage_gate": scip_stats.get(
-                        "scip_php_relation_coverage_gate", "n/a"
-                    ),
-                    "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
-                    "evolution_window_days": int(scip_stats.get("evolution_window_days", 0)),
-                    "evolution_commits_scanned": int(
-                        scip_stats.get("evolution_commits_scanned", 0)
-                    ),
-                    "evolution_commits_considered": int(
-                        scip_stats.get("evolution_commits_considered", 0)
-                    ),
-                    "evolution_files_seen": int(scip_stats.get("evolution_files_seen", 0)),
-                    "evolution_warnings": list(scip_stats.get("evolution_warnings", []) or []),
-                    "twin_nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
-                    "twin_edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
-                    "evolution_ownership_rows": int(twin_stats.get("evolution_ownership_rows", 0)),
-                    "evolution_coupling_rows": int(twin_stats.get("evolution_coupling_rows", 0)),
-                    "fitness_findings_written": int(twin_stats.get("fitness_findings_written", 0)),
-                    "fitness_findings_by_type": dict(
-                        twin_stats.get("fitness_findings_by_type", {}) or {}
-                    ),
-                    "metrics_requested_files": int(twin_stats.get("metrics_requested_files", 0)),
-                    "metrics_mapped_files": int(twin_stats.get("metrics_mapped_files", 0)),
-                    "metrics_unmapped_sample": list(
-                        twin_stats.get("metrics_unmapped_sample", []) or []
-                    )[:25],
-                    "metrics_gate": (
-                        "pass"
-                        if int(twin_stats.get("metrics_mapped_files", 0))
-                        >= int(twin_stats.get("metrics_requested_files", 0))
-                        else "fail"
-                    ),
-                    "scenario_id": scenario_id_raw,
-                    "scenario_version": scenario_version,
-                },
+                stats=_build_source_version_stats(ctx, scenario_id_raw, scenario_version),
                 finished=True,
             )
             stale_rows = (
                 (
                     await session.execute(
                         select(TwinSourceVersion).where(
-                            TwinSourceVersion.source_id == source.id,
-                            TwinSourceVersion.id != source_version_id,
+                            TwinSourceVersion.source_id == ctx.source.id,
+                            TwinSourceVersion.id != ctx.source_version_id,
                             TwinSourceVersion.status == "ready",
                         )
                     )
@@ -3341,175 +3559,81 @@ async def sync_github_source(
 
             await record_twin_event(
                 session,
-                collection_id=source.collection_id,
-                scenario_id=uuid_module.UUID(str(scenario_id_raw)) if scenario_id_raw else None,
-                source_id=source.id,
-                source_version_id=source_version_id,
+                collection_id=ctx.source.collection_id,
+                scenario_id=(uuid_module.UUID(str(scenario_id_raw)) if scenario_id_raw else None),
+                source_id=ctx.source.id,
+                source_version_id=ctx.source_version_id,
                 event_type="materialization_complete",
                 status="ready",
                 payload={
                     "scenario_version": scenario_version,
-                    "nodes_upserted": int(twin_stats.get("twin_nodes_upserted", 0)),
-                    "edges_upserted": int(twin_stats.get("twin_edges_upserted", 0)),
-                    "nodes_deactivated": int(twin_stats.get("twin_nodes_deactivated", 0)),
-                    "edges_deactivated": int(twin_stats.get("twin_edges_deactivated", 0)),
-                    "sample_node_keys": list(twin_stats.get("sample_node_keys", []))[:20],
+                    "nodes_upserted": int(ctx.twin_stats.get("twin_nodes_upserted", 0)),
+                    "edges_upserted": int(ctx.twin_stats.get("twin_edges_upserted", 0)),
+                    "nodes_deactivated": int(ctx.twin_stats.get("twin_nodes_deactivated", 0)),
+                    "edges_deactivated": int(ctx.twin_stats.get("twin_edges_deactivated", 0)),
+                    "sample_node_keys": list(ctx.twin_stats.get("sample_node_keys", []))[:20],
                 },
-                idempotency_key=f"materialization_complete:{source.id}:{new_sha}",
+                idempotency_key=f"materialization_complete:{ctx.source.id}:{ctx.new_sha}",
             )
 
-        db_run.stats = {
-            "files_scanned": stats.files_scanned,
-            "files_indexed": stats.files_indexed,
-            "files_skipped": stats.files_skipped,
-            "files_deleted": stats.files_deleted,
-            "docs_created": stats.docs_created,
-            "docs_updated": stats.docs_updated,
-            "docs_deleted": stats.docs_deleted,
-            "docs_unchunked_recovered": len(unchunked_docs),
-            "docs_chunk_queue_total": total_docs_candidate,
-            "docs_chunk_deferred": docs_deferred,
-            "docs_processing_failures": docs_processing_failures,
-            "docs_processing_timeouts": docs_processing_timeouts,
-            "docs_processing_error_samples": list(docs_processing_error_samples)[:25],
-            "chunks_created": total_chunks_created,
-            "chunks_deleted": total_chunks_deleted,
-            "chunks_embedded": total_chunks_embedded,
-            "chunks_deduplicated": total_chunks_deduplicated,
-            "embedding_tokens_used": total_tokens_used,
-            "symbols_created": total_symbols_created,
-            "symbols_deleted": total_symbols_deleted,
-            "commit_sha": new_sha,
-            "previous_sha": old_sha,
-            # SCIP Polyglot Indexing stats
-            "scip_projects_detected": scip_stats.get("scip_projects_detected", 0),
-            "scip_projects_indexed": scip_stats.get("scip_projects_indexed", 0),
-            "scip_snapshots_parsed": scip_stats.get("scip_snapshots_parsed", 0),
-            "scip_projects_failed": scip_stats.get("scip_projects_failed", 0),
-            "scip_symbols": scip_stats.get("scip_symbols", 0),
-            "scip_relations": scip_stats.get("scip_relations", 0),
-            "scip_degraded": bool(scip_stats.get("scip_degraded", False)),
-            "scip_failed_projects": scip_stats.get("scip_failed_projects", []),
-            "scip_languages_detected": scip_stats.get("scip_languages_detected", []),
-            "scip_projects_by_language": scip_stats.get("scip_projects_by_language", {}),
-            "scip_detected_files_by_language": scip_stats.get(
-                "scip_detected_files_by_language", {}
-            ),
-            "scip_detected_code_by_language": scip_stats.get("scip_detected_code_by_language", {}),
-            "scip_indexed_files_by_language": scip_stats.get("scip_indexed_files_by_language", {}),
-            "scip_missing_languages": scip_stats.get("scip_missing_languages", []),
-            "scip_coverage_complete": bool(scip_stats.get("scip_coverage_complete", True)),
-            "scip_relation_counts_by_language": scip_stats.get(
-                "scip_relation_counts_by_language", {}
-            ),
-            "scip_relation_kinds_by_language": scip_stats.get(
-                "scip_relation_kinds_by_language", {}
-            ),
-            "scip_missing_relation_languages": scip_stats.get(
-                "scip_missing_relation_languages", []
-            ),
-            "scip_relation_coverage_complete": bool(
-                scip_stats.get("scip_relation_coverage_complete", True)
-            ),
-            "scip_recovery_attempts": scip_stats.get("scip_recovery_attempts", 0),
-            "scip_recovery_successes": scip_stats.get("scip_recovery_successes", 0),
-            "scip_relation_recovery_attempts": scip_stats.get("scip_relation_recovery_attempts", 0),
-            "scip_relation_recovery_successes": scip_stats.get(
-                "scip_relation_recovery_successes", 0
-            ),
-            "scip_completion_added_files_by_language": scip_stats.get(
-                "scip_completion_added_files_by_language", {}
-            ),
-            "scip_language_coverage_gate": scip_stats.get("scip_language_coverage_gate", "n/a"),
-            "scip_relation_coverage_gate": scip_stats.get("scip_relation_coverage_gate", "n/a"),
-            "scip_php_relation_coverage_gate": scip_stats.get(
-                "scip_php_relation_coverage_gate", "n/a"
-            ),
-            "scip_detection_warnings": scip_stats.get("scip_detection_warnings", []),
-            "scip_census_tool": scip_stats.get("scip_census_tool", ""),
-            "scip_census_tool_version": scip_stats.get("scip_census_tool_version", ""),
-            # Twin stats
-            "twin_nodes_upserted": twin_stats.get("twin_nodes_upserted", 0),
-            "twin_edges_upserted": twin_stats.get("twin_edges_upserted", 0),
-            "twin_metric_nodes_enriched": twin_stats.get("twin_metric_nodes_enriched", 0),
-            "metrics_requested_files": twin_stats.get("metrics_requested_files", 0),
-            "metrics_mapped_files": twin_stats.get("metrics_mapped_files", 0),
-            "metrics_unmapped_sample": twin_stats.get("metrics_unmapped_sample", []),
-            "metrics_gate": (
-                "pass"
-                if int(twin_stats.get("metrics_mapped_files", 0))
-                >= int(twin_stats.get("metrics_requested_files", 0))
-                else "fail"
-            ),
-            "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
-            "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
-            "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
-            "structural_metric_files": scip_stats.get("structural_metric_files", 0),
-            "git_metric_files_targeted": scip_stats.get("git_metric_files_targeted", 0),
-            "git_metric_files_with_history": scip_stats.get("git_metric_files_with_history", 0),
-            "git_metric_total_change_frequency": scip_stats.get(
-                "git_metric_total_change_frequency", 0.0
-            ),
-            "git_metric_total_churn": scip_stats.get("git_metric_total_churn", 0.0),
-            "evolution_window_days": scip_stats.get("evolution_window_days", 0),
-            "evolution_commits_scanned": scip_stats.get("evolution_commits_scanned", 0),
-            "evolution_commits_considered": scip_stats.get("evolution_commits_considered", 0),
-            "evolution_files_seen": scip_stats.get("evolution_files_seen", 0),
-            "evolution_warnings": scip_stats.get("evolution_warnings", []),
-            "evolution_ownership_rows": twin_stats.get("evolution_ownership_rows", 0),
-            "evolution_coupling_rows": twin_stats.get("evolution_coupling_rows", 0),
-            "fitness_findings_written": twin_stats.get("fitness_findings_written", 0),
-            "fitness_findings_by_type": twin_stats.get("fitness_findings_by_type", {}),
-            "fitness_findings_warnings": twin_stats.get("fitness_findings_warnings", []),
-            "source_version_id": str(source_version_id) if source_version_id else None,
-            "joern_status": "ready" if joern_ok else "failed",
-            "joern_error": joern_error if not joern_ok else "",
-            "joern_cpg_path": str(cpg_path) if joern_ok else None,
-            "joern_server_url": settings.joern_server_url,
-            # Knowledge Graph extraction stats
-            "kg_file_nodes": kg_stats.get("kg_file_nodes", 0),
-            "kg_symbol_nodes": kg_stats.get("kg_symbol_nodes", 0),
-            "kg_business_rules": kg_stats.get("kg_business_rules", 0),
-            "kg_tables": kg_stats.get("kg_tables", 0),
-            "kg_endpoints": kg_stats.get("kg_endpoints", 0),
-            "kg_jobs": kg_stats.get("kg_jobs", 0),
-            "kg_semantic_entities": kg_stats.get("kg_semantic_entities", 0),
-            "kg_semantic_relationships": kg_stats.get("kg_semantic_relationships", 0),
-            "kg_communities_l0": kg_stats.get("kg_communities_l0", 0),
-            "kg_communities_l1": kg_stats.get("kg_communities_l1", 0),
-            "kg_communities_l2": kg_stats.get("kg_communities_l2", 0),
-            "kg_summaries_created": kg_stats.get("kg_summaries_created", 0),
-            "kg_embeddings_created": kg_stats.get("kg_embeddings_created", 0),
-            "kg_errors": list(kg_stats.get("kg_errors", []) or []),
-            # Surface extraction stats
-            "surface_files_scanned": surface_stats.get("surface_files_scanned", 0),
-            "surface_files_recognized": surface_stats.get("surface_files_recognized", 0),
-            "surface_parse_errors": surface_stats.get("surface_parse_errors", 0),
-            "surface_endpoint_nodes": surface_stats.get("endpoint_nodes", 0),
-            "surface_endpoint_handler_links": surface_stats.get("endpoint_handler_links", 0),
-            "surface_graphql_nodes": surface_stats.get("graphql_nodes", 0),
-            "surface_proto_nodes": surface_stats.get("proto_nodes", 0),
-            "surface_job_nodes": surface_stats.get("job_nodes", 0),
-            "surface_edges_created": surface_stats.get("edges_created", 0),
-        }
-
+        db_run.stats = _build_sync_run_stats(ctx)
         await session.commit()
 
-    scenario_for_behavioral = str(twin_stats.get("twin_asis_scenario_id") or "")
+    collection_id_str = str(ctx.source.collection_id)
+    scenario_for_behavioral = str(ctx.twin_stats.get("twin_asis_scenario_id") or "")
     if scenario_for_behavioral:
         background = asyncio.create_task(
             _materialize_behavioral_layers_impl(
-                source_id=str(source.id),
+                source_id=str(ctx.source.id),
                 collection_id=collection_id_str,
                 scenario_id=scenario_for_behavioral,
-                source_version_id=str(source_version_id) if source_version_id else None,
+                source_version_id=(str(ctx.source_version_id) if ctx.source_version_id else None),
             )
         )
         background.add_done_callback(_log_background_task_failure)
 
-    await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
+    await update_progress_artifact(ctx.progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 
-    return stats
+
+# ---------------------------------------------------------------------------
+#  Main orchestrator
+# ---------------------------------------------------------------------------
+
+
+@traced_task()
+@task(
+    retries=GITHUB_API_RETRIES,
+    retry_delay_seconds=exponential_backoff(backoff_factor=2),
+    retry_jitter_factor=0.5,
+    tags=[TAG_GITHUB_API],
+    task_run_name="sync-github-{source.url}",
+)
+async def sync_github_source(
+    source: Source,
+    sync_run: SyncRun,
+    run_started_at: datetime,
+) -> SyncStats:
+    """Sync a GitHub source, creating/updating/deleting documents.
+
+    Tagged with github-api for concurrency limiting.
+    Retries on transient GitHub API failures.
+    """
+    ctx = _SyncGitHubCtx(source=source, sync_run=sync_run, run_started_at=run_started_at)
+
+    await _gh_phase_auth_and_clone(ctx)
+    await _gh_phase_create_source_version(ctx)
+    await _gh_phase_joern_cpg(ctx)
+    await _gh_phase_scip_indexing(ctx)
+    _gh_phase_scip_coverage_gates(ctx)
+    await _gh_phase_structural_metrics(ctx)
+    await _gh_phase_diff_and_index_documents(ctx)
+    await _gh_phase_chunk_and_embed(ctx)
+    await _gh_phase_build_knowledge_graph(ctx)
+    await _gh_phase_materialize_surfaces(ctx)
+    await _gh_phase_build_twin(ctx)
+    await _gh_phase_finalize(ctx)
+
+    return ctx.stats
 
 
 def _build_page_meta(page: Any, base_meta: dict | None = None) -> dict:
