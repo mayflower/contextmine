@@ -525,7 +525,7 @@ function App() {
   const [editCollectionLoading, setEditCollectionLoading] = useState(false)
 
   // Sources state
-  const [allSources, setSources] = useState<Source[]>([])
+  const [, setSources] = useState<Source[]>([])
   const [newSourceType, setNewSourceType] = useState<'github' | 'web'>('github')
   const [newSourceUrl, setNewSourceUrl] = useState('')
   const [newSourceEnabled, setNewSourceEnabled] = useState(true)
