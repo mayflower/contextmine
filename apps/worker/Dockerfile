@@ -1,5 +1,6 @@
 # Build stage for Rust spider_md binary
-FROM rust:1.86-slim AS rust-builder
+# spider_md dependencies currently require rustc >= 1.88.
+FROM rust:1.88-slim AS rust-builder
 
 WORKDIR /build
 
