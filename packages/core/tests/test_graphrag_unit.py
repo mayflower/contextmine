@@ -190,6 +190,9 @@ class TestEdgeContext:
         assert edge.kind == "FILE_DEFINES_SYMBOL"
         assert edge.source_name == "main.py"
         assert edge.target_name == "hello"
+        assert edge.relationship_type is None
+        assert edge.description is None
+        assert edge.strength is None
 
     def test_names_optional(self) -> None:
         """Test that source_name and target_name default to None."""
@@ -200,6 +203,9 @@ class TestEdgeContext:
         )
         assert edge.source_name is None
         assert edge.target_name is None
+        assert edge.relationship_type is None
+        assert edge.description is None
+        assert edge.strength is None
 
 
 # ===========================================================================
@@ -535,6 +541,32 @@ class TestContextPackToDict:
             "source_id": "s1",
             "target_id": "t1",
             "kind": "CALLS",
+        }
+
+    def test_edges_serialize_relationship_metadata_when_present(self) -> None:
+        pack = ContextPack(
+            query="test",
+            edges=[
+                EdgeContext(
+                    source_id="s1",
+                    target_id="t1",
+                    kind="SEMANTIC_RELATIONSHIP",
+                    relationship_type="USES",
+                    description="Auth uses session storage",
+                    strength=0.82,
+                )
+            ],
+        )
+
+        d = pack.to_dict()
+
+        assert d["edges"][0] == {
+            "source_id": "s1",
+            "target_id": "t1",
+            "kind": "SEMANTIC_RELATIONSHIP",
+            "relationship_type": "USES",
+            "description": "Auth uses session storage",
+            "strength": 0.82,
         }
 
     def test_paths_serialized(self) -> None:

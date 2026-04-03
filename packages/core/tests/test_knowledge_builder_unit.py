@@ -440,6 +440,21 @@ class TestBuildSummaryPrompt:
         assert "Handles user login flows" in prompt
         assert "**Session Manager** (component)" in prompt
 
+    def test_member_count_uses_full_community_size(self) -> None:
+        """Test prompt shows stored community size, not just sampled members."""
+        context = CommunityContext(
+            community_id=uuid4(),
+            level=0,
+            member_count=24,
+            member_nodes=[
+                {"name": "Authentication", "type": "concept", "description": ""},
+                {"name": "Session", "type": "component", "description": ""},
+            ],
+        )
+        prompt = _build_summary_prompt(context)
+
+        assert "Member count: 24" in prompt
+
     def test_with_entity_types(self) -> None:
         """Test prompt includes entity type breakdown."""
         context = CommunityContext(
@@ -465,6 +480,19 @@ class TestBuildSummaryPrompt:
         assert "## Associated Code Symbols" in prompt
         assert "- auth.login()" in prompt
         assert "- session.create()" in prompt
+
+    def test_with_source_files(self) -> None:
+        """Test prompt includes source files for key path generation."""
+        context = CommunityContext(
+            community_id=uuid4(),
+            level=0,
+            source_files=["src/auth.py", "src/session/store.py"],
+        )
+        prompt = _build_summary_prompt(context)
+
+        assert "## Source Files" in prompt
+        assert "- src/auth.py" in prompt
+        assert "- src/session/store.py" in prompt
 
     def test_with_entity_descriptions(self) -> None:
         """Test prompt includes entity descriptions section."""
@@ -583,10 +611,12 @@ class TestCommunityContextDataclass:
         )
         assert ctx.member_nodes == []
         assert ctx.evidence_snippets == []
+        assert ctx.member_count == 0
         assert ctx.entity_names == []
         assert ctx.entity_types == {}
         assert ctx.entity_descriptions == []
         assert ctx.source_symbols == []
+        assert ctx.source_files == []
 
     def test_not_shared_between_instances(self) -> None:
         """Test that mutable defaults are not shared."""

@@ -206,6 +206,13 @@ class Settings(BaseSettings):
         default=3600,
         description="Timeout in seconds for knowledge graph build in source sync",
     )
+    semantic_extraction_max_chunks: int = Field(
+        default=0,
+        description=(
+            "Optional maximum semantic chunks to extract per run after prioritization "
+            "(0 = unlimited)."
+        ),
+    )
     twin_graph_build_timeout_seconds: int = Field(
         default=3600,
         description="Timeout in seconds for digital twin graph build step",

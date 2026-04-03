@@ -795,6 +795,14 @@ class TestBuildKnowledgeGraphHappyPath:
             "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
             AsyncMock(return_value=mock_kg_stats),
         )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
 
         # Step 2: Business rules - mock docs query returning empty
         docs_result = MagicMock()
@@ -877,6 +885,14 @@ class TestBuildKnowledgeGraphHappyPath:
             AsyncMock(side_effect=RuntimeError("step1_fail")),
         )
         monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
+        monkeypatch.setattr(
             "contextmine_core.knowledge.extraction.extract_from_documents",
             AsyncMock(side_effect=RuntimeError("step5_fail")),
         )
@@ -932,6 +948,14 @@ class TestBuildKnowledgeGraphHappyPath:
         monkeypatch.setattr(
             "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
             AsyncMock(return_value=mock_kg_stats),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
         )
 
         # These should NOT be called because changed_doc_ids=[]
@@ -1158,6 +1182,10 @@ class TestMaterializeBehavioralLayersImplFull:
         mock_session.commit = AsyncMock()
 
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
 
         monkeypatch.setattr(
             "contextmine_core.analyzer.extractors.tests.extract_tests_from_files",

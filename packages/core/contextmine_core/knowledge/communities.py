@@ -303,6 +303,7 @@ async def persist_communities(
                 title=title,
                 meta={
                     "size": comm.size,
+                    "member_count": comm.size,
                     "modularity": result.modularity.get(level, 0.0),
                     "top_members": comm.node_keys[:10],
                 },

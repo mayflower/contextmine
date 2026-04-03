@@ -81,6 +81,7 @@ function makeProps(overrides: Partial<Parameters<typeof GraphRagView>[0]> = {}) 
     evidenceState: 'idle' as const,
     evidenceError: '',
     onSelectNodeId: vi.fn(),
+    onCommunitySelectionChange: vi.fn(),
     onTracePath: vi.fn().mockResolvedValue(null),
     onLoadProcessDetail: vi.fn().mockResolvedValue(null),
     onRetry: vi.fn(),
@@ -292,10 +293,46 @@ describe('GraphRagView rendering', () => {
     expect(screen.getByText('Auth domain')).toBeInTheDocument()
   })
 
+  it('focuses a community when a chip is clicked', async () => {
+    const onSelectNodeId = vi.fn()
+    const onCommunitySelectionChange = vi.fn()
+    const communities = [
+      { id: 'c1', label: 'Auth domain', size: 5, cohesion: 0.8, top_kinds: [], sample_nodes: [{ id: 'n1', name: 'auth', kind: 'FILE', natural_key: 'f:auth' }] },
+    ]
+    render(
+      <GraphRagView
+        {...makeProps({ communities, onSelectNodeId, onCommunitySelectionChange })}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Auth domain' }))
+    expect(onCommunitySelectionChange).toHaveBeenCalledWith('focus', 'c1')
+    expect(onSelectNodeId).toHaveBeenCalledWith('n1')
+  })
+
   it('renders guided empty state when status is unavailable', () => {
     render(<GraphRagView {...makeProps({ status: 'unavailable', reason: 'no_knowledge_graph', graph: emptyGraph })} />)
     expect(screen.getByText('No knowledge graph available yet')).toBeInTheDocument()
     expect(screen.getByText(/Knowledge graph data has not been generated/)).toBeInTheDocument()
+  })
+
+  it('renders scenario-scoped GraphRAG empty state', () => {
+    render(
+      <GraphRagView
+        {...makeProps({
+          status: 'unavailable',
+          reason: 'no_graphrag_semantic_graph',
+          graph: emptyGraph,
+        })}
+      />,
+    )
+    expect(screen.getByText('No scenario-scoped GraphRAG graph found')).toBeInTheDocument()
+    expect(screen.getByText(/selected scenario does not currently expose a usable GraphRAG graph/i)).toBeInTheDocument()
+  })
+
+  it('renders degraded no-edges guidance without hiding the graph', () => {
+    render(<GraphRagView {...makeProps({ reason: 'degraded_no_edges' })} />)
+    expect(screen.getByText('Graph page has no connected edges')).toBeInTheDocument()
+    expect(screen.getByLabelText('GraphRAG graph')).toBeInTheDocument()
   })
 
   it('renders loading skeleton when loading with no data', () => {

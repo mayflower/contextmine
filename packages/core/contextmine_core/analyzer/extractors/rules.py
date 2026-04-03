@@ -532,6 +532,7 @@ async def build_rules_graph(
                     "category": rule.category,
                     "severity": rule.severity,
                     "natural_language": rule.natural_language,
+                    "file_path": rule.file_path,
                     "container_name": rule.container_name,
                     "language": rule.language,
                     "evidence_snippet": rule.evidence_snippet,

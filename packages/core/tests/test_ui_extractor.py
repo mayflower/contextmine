@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
 from contextmine_core.analyzer.extractors.ui import (
     JS_UI_FILE_SUFFIXES,
     NAV_METHOD_NAMES,
@@ -32,6 +37,7 @@ from contextmine_core.analyzer.extractors.ui import (
     _route_path_from_file,
     _to_pascal_case,
     _view_name_from_file_path,
+    build_ui_graph,
     extract_ui_from_file,
     extract_ui_from_files,
     looks_like_ui_file,
@@ -104,6 +110,76 @@ class TestLooksLikeUIFile:
 
     def test_svelte_in_src(self) -> None:
         assert looks_like_ui_file("project/src/routes/page.svelte") is True
+
+
+class TestBuildUiGraph:
+    @pytest.mark.anyio
+    async def test_interface_contract_key_and_meta_include_view_file_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view_id = uuid4()
+        contract_id = uuid4()
+        upsert_node_mock = AsyncMock(side_effect=[view_id, view_id, view_id, contract_id])
+
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui.build_endpoint_symbol_index",
+            AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui._build_endpoint_path_indexes",
+            AsyncMock(return_value=({}, {})),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui.resolve_symbol_refs_for_calls",
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        symbol_node_id=uuid4(),
+                        symbol_name="OrderService",
+                        engine="scip.symbol",
+                        confidence=0.91,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui._create_node_evidence",
+            AsyncMock(return_value="ev-1"),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui._upsert_node",
+            upsert_node_mock,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui._upsert_edge",
+            AsyncMock(),
+        )
+
+        extraction = UIExtraction(
+            file_path="apps/web/src/pages/index.tsx",
+            views=[
+                UIViewDef(
+                    name="Index",
+                    file_path="apps/web/src/pages/index.tsx",
+                    line=12,
+                    symbol_hints=["OrderService"],
+                )
+            ],
+        )
+
+        stats = await build_ui_graph(
+            AsyncMock(),
+            uuid4(),
+            [extraction],
+            source_id=uuid4(),
+        )
+
+        contract_call = upsert_node_mock.await_args_list[-1].kwargs
+        assert stats["interface_contracts"] == 1
+        assert contract_call["natural_key"].startswith(
+            "interface_contract:apps/web/src/pages/index.tsx:Index:"
+        )
+        assert contract_call["meta"]["file_path"] == "apps/web/src/pages/index.tsx"
 
 
 # ── _to_pascal_case ─────────────────────────────────────────────────────

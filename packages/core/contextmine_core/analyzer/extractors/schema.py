@@ -1197,6 +1197,7 @@ async def _upsert_column_node(
     collection_id: UUID,
     table_name: str,
     col: ColumnDef,
+    source_files: list[str],
     table_node_id: UUID,
     pg_insert: Any,
     knowledge_node_cls: Any,
@@ -1220,6 +1221,7 @@ async def _upsert_column_node(
             "primary_key": col.primary_key,
             "foreign_key": col.foreign_key,
             "description": col.description,
+            "source_files": source_files,
         },
     )
     col_stmt = col_stmt.on_conflict_do_update(
@@ -1331,6 +1333,9 @@ async def build_schema_graph(
 
     table_node_ids: dict[str, UUID] = {}
     column_node_ids: dict[str, UUID] = {}  # "table.column" -> node_id
+    source_files = sorted(
+        {source for source in schema.sources if isinstance(source, str) and source}
+    )
 
     # Create table nodes
     for table_name, table in schema.tables.items():
@@ -1345,6 +1350,7 @@ async def build_schema_graph(
                 "column_count": len(table.columns),
                 "primary_keys": table.primary_keys,
                 "description": table.description,
+                "source_files": source_files,
             },
         )
         stmt = stmt.on_conflict_do_update(
@@ -1366,6 +1372,7 @@ async def build_schema_graph(
                 collection_id,
                 table_name,
                 col,
+                source_files,
                 node_id,
                 pg_insert,
                 KnowledgeNode,

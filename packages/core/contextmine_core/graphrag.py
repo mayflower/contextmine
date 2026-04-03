@@ -28,6 +28,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _file_search_lookup_keys(uri: str) -> set[str]:
+    """Return file-node natural-key variants for a search result URI."""
+    cleaned = str(uri or "").strip()
+    if not cleaned:
+        return set()
+
+    keys = {cleaned}
+    if cleaned.startswith("file:"):
+        stripped = cleaned.split(":", 1)[1].strip()
+        if stripped:
+            keys.add(stripped)
+    else:
+        keys.add(f"file:{cleaned}")
+    return keys
+
+
 @dataclass
 class Citation:
     """Evidence citation for a claim."""
@@ -75,6 +91,9 @@ class EdgeContext:
     kind: str
     source_name: str | None = None
     target_name: str | None = None
+    relationship_type: str | None = None
+    description: str | None = None
+    strength: float | None = None
 
 
 @dataclass
@@ -215,11 +234,20 @@ class ContextPack:
                 for e in self.entities
             ],
             "edges": [
-                {
-                    "source_id": e.source_id,
-                    "target_id": e.target_id,
-                    "kind": e.kind,
-                }
+                (
+                    {
+                        "source_id": e.source_id,
+                        "target_id": e.target_id,
+                        "kind": e.kind,
+                    }
+                    | (
+                        {"relationship_type": e.relationship_type}
+                        if e.relationship_type is not None
+                        else {}
+                    )
+                    | ({"description": e.description} if e.description is not None else {})
+                    | ({"strength": e.strength} if e.strength is not None else {})
+                )
                 for e in self.edges
             ],
             "paths": [
@@ -397,6 +425,7 @@ async def _bfs_shortest_path(
     to_node_id: UUID,
     collection_ids: list[UUID],
     max_hops: int,
+    allowed_node_ids: set[UUID] | None = None,
 ) -> tuple[list[UUID], list[tuple[UUID, UUID, str]]]:
     """Run BFS to find shortest path between two nodes."""
     from contextmine_core.models import KnowledgeEdge
@@ -424,6 +453,8 @@ async def _bfs_shortest_path(
             next_node = (
                 edge.target_node_id if edge.source_node_id == current else edge.source_node_id
             )
+            if allowed_node_ids is not None and next_node not in allowed_node_ids:
+                continue
             if next_node not in visited:
                 visited.add(next_node)
                 queue.append(
@@ -484,6 +515,7 @@ async def trace_path(
     to_node_id: UUID,
     collection_id: UUID | None = None,
     max_hops: int = 6,
+    allowed_node_ids: set[UUID] | None = None,
 ) -> ContextPack:
     """Find shortest path between two nodes using BFS.
 
@@ -514,6 +546,10 @@ async def trace_path(
 
     if not collection_ids:
         return pack
+    if allowed_node_ids is not None and (
+        from_node_id not in allowed_node_ids or to_node_id not in allowed_node_ids
+    ):
+        return pack
 
     path_nodes, path_edges = await _bfs_shortest_path(
         session,
@@ -521,6 +557,7 @@ async def trace_path(
         to_node_id,
         collection_ids,
         max_hops,
+        allowed_node_ids=allowed_node_ids,
     )
     if not path_nodes:
         return pack
@@ -588,7 +625,7 @@ async def _find_relevant_communities(
                 title=row[2] or "Untitled",
                 summary=row[3] or "",
                 relevance_score=float(row[5]) if row[5] else 0.0,
-                member_count=meta.get("member_count", 0),
+                member_count=meta.get("member_count", meta.get("size", 0)),
             )
         )
 
@@ -625,11 +662,12 @@ async def _map_search_to_nodes(
     if not uris:
         return node_ids
 
-    # FILE nodes use doc.uri as natural_key (no prefix)
+    lookup_keys = sorted({key for uri in uris for key in _file_search_lookup_keys(uri)})
+
     stmt = select(KnowledgeNode.id).where(
         KnowledgeNode.collection_id.in_(collection_ids),
         KnowledgeNode.kind == KnowledgeNodeKind.FILE,
-        KnowledgeNode.natural_key.in_(uris),
+        KnowledgeNode.natural_key.in_(lookup_keys),
     )
 
     result = await session.execute(stmt)
@@ -656,18 +694,42 @@ async def _get_community_member_nodes(
     from contextmine_core.models import CommunityMember
     from sqlalchemy import select
 
-    if not community_ids:
+    if not community_ids or limit <= 0:
         return []
 
     stmt = (
-        select(CommunityMember.node_id)
+        select(
+            CommunityMember.community_id,
+            CommunityMember.node_id,
+            CommunityMember.score,
+        )
         .where(CommunityMember.community_id.in_(community_ids))
         .order_by(CommunityMember.score.desc())
-        .limit(limit)
     )
 
     result = await session.execute(stmt)
-    return [row[0] for row in result.fetchall()]
+    rows = result.fetchall()
+    if len(community_ids) == 1:
+        return [row[1] for row in rows[:limit]]
+
+    per_community = max(1, limit // len(community_ids))
+    selected: list[UUID] = []
+    selected_counts = {community_id: 0 for community_id in community_ids}
+    overflow: list[UUID] = []
+
+    for community_id, node_id, _score in rows:
+        if selected_counts.get(community_id, 0) < per_community:
+            selected.append(node_id)
+            selected_counts[community_id] = selected_counts.get(community_id, 0) + 1
+        else:
+            overflow.append(node_id)
+
+    for node_id in overflow:
+        if len(selected) >= limit:
+            break
+        selected.append(node_id)
+
+    return selected[:limit]
 
 
 async def _expand_from_seeds(
@@ -682,6 +744,8 @@ async def _expand_from_seeds(
     entities: list[EntityContext] = []
     edges: list[EdgeContext] = []
     visited: set[UUID] = set()
+    known_nodes: dict[UUID, Any] = {}
+    seen_edges: set[tuple[UUID, UUID, str, str | None]] = set()
     current_ids = set(seed_node_ids)
 
     for depth in range(max_depth + 1):
@@ -701,13 +765,16 @@ async def _expand_from_seeds(
             depth,
             max_entities,
         )
+        known_nodes.update(node_map)
 
         if depth < max_depth:
             current_ids = await _expand_edges(
                 session,
                 collection_ids,
+                set(node_map),
                 visited,
-                node_map,
+                known_nodes,
+                seen_edges,
                 edges,
             )
         else:
@@ -755,24 +822,39 @@ async def _fetch_and_collect_nodes(
 async def _expand_edges(
     session: AsyncSession,
     collection_ids: list[UUID],
+    frontier_ids: set[UUID],
     visited: set[UUID],
     node_map: dict[UUID, Any],
+    seen_edges: set[tuple[UUID, UUID, str, str | None]],
     edges: list[EdgeContext],
 ) -> set[UUID]:
-    """Expand edges from visited nodes and return next frontier."""
+    """Expand edges from the current frontier and return the next frontier."""
     from contextmine_core.models import KnowledgeEdge
     from sqlalchemy import or_, select
+
+    if not frontier_ids:
+        return set()
 
     stmt = select(KnowledgeEdge).where(
         KnowledgeEdge.collection_id.in_(collection_ids),
         or_(
-            KnowledgeEdge.source_node_id.in_(list(visited)),
-            KnowledgeEdge.target_node_id.in_(list(visited)),
+            KnowledgeEdge.source_node_id.in_(list(frontier_ids)),
+            KnowledgeEdge.target_node_id.in_(list(frontier_ids)),
         ),
     )
     result = await session.execute(stmt)
     next_ids: set[UUID] = set()
     for edge in result.scalars():
+        edge_key = (
+            edge.source_node_id,
+            edge.target_node_id,
+            edge.kind.value,
+            (edge.meta or {}).get("relationship_type"),
+        )
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
         src_node = node_map.get(edge.source_node_id)
         tgt_node = node_map.get(edge.target_node_id)
         edges.append(
@@ -782,6 +864,9 @@ async def _expand_edges(
                 kind=edge.kind.value,
                 source_name=src_node.name if src_node else None,
                 target_name=tgt_node.name if tgt_node else None,
+                relationship_type=(edge.meta or {}).get("relationship_type"),
+                description=(edge.meta or {}).get("description"),
+                strength=(edge.meta or {}).get("strength"),
             )
         )
         if edge.source_node_id not in visited:

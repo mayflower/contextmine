@@ -588,6 +588,14 @@ class TestBuildKnowledgeGraphBusinessRules:
             "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
             AsyncMock(return_value=mock_kg_stats),
         )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
 
         # Step 2: rules extraction
         monkeypatch.setattr(
@@ -705,6 +713,14 @@ class TestBuildKnowledgeGraphSurfaces:
         monkeypatch.setattr(
             "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
             AsyncMock(return_value=mock_kg_stats),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0}),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
         )
 
         # Step 3: no tables
@@ -1535,6 +1551,10 @@ class TestMaterializeBehavioralLayersWithExtractions:
         mock_session.commit = AsyncMock()
 
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
 
         test_ext = MagicMock()
         ui_ext = MagicMock()
@@ -1604,6 +1624,10 @@ class TestMaterializeBehavioralLayersWithExtractions:
         mock_session.commit = AsyncMock()
 
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+        )
 
         monkeypatch.setattr(
             "contextmine_core.twin.record_twin_event",

@@ -155,6 +155,7 @@ class CommunityContext:
 
     community_id: UUID
     level: int
+    member_count: int = 0
     member_nodes: list[dict[str, Any]] = field(default_factory=list)
     evidence_snippets: list[str] = field(default_factory=list)
     # Semantic entity fields (GraphRAG)
@@ -162,6 +163,7 @@ class CommunityContext:
     entity_types: dict[str, int] = field(default_factory=dict)
     entity_descriptions: list[str] = field(default_factory=list)
     source_symbols: list[str] = field(default_factory=list)
+    source_files: list[str] = field(default_factory=list)
 
 
 def _add_member_to_context(member: Any, node: Any, context: CommunityContext) -> None:
@@ -183,6 +185,9 @@ def _add_member_to_context(member: Any, node: Any, context: CommunityContext) ->
     context.entity_types[entity_type] = context.entity_types.get(entity_type, 0) + 1
     if meta.get("description"):
         context.entity_descriptions.append(meta["description"])
+    for file_path in meta.get("source_files", []):
+        if file_path and file_path not in context.source_files:
+            context.source_files.append(file_path)
 
 
 async def _gather_community_context(
@@ -214,6 +219,9 @@ async def _gather_community_context(
     context = CommunityContext(
         community_id=community_id,
         level=community.level,
+        member_count=int(
+            (community.meta or {}).get("member_count", (community.meta or {}).get("size", 0)) or 0
+        ),
     )
 
     # Get top members by score
@@ -302,7 +310,7 @@ def _build_summary_prompt(context: CommunityContext) -> str:
         "Summarize this software component based on the following facts:",
         "",
         f"Level: {context.level}",
-        f"Member count: {len(context.member_nodes)}",
+        f"Member count: {context.member_count or len(context.member_nodes)}",
         "",
     ]
 
@@ -323,6 +331,11 @@ def _build_summary_prompt(context: CommunityContext) -> str:
         lines.extend(["", "## Associated Code Symbols"])
         for sym in context.source_symbols[:10]:
             lines.append(f"- {sym}")
+
+    if context.source_files:
+        lines.extend(["", "## Source Files"])
+        for file_path in context.source_files[:10]:
+            lines.append(f"- {file_path}")
 
     if context.entity_descriptions:
         lines.extend(["", "## Entity Descriptions"])

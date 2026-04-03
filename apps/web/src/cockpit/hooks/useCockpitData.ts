@@ -32,6 +32,7 @@ import type {
   GraphRagPathPayload,
   GraphRagProcessDetailPayload,
   GraphRagProcessSummary,
+  GraphRagStatusReason,
   SemanticMapMode,
   SemanticMapPayload,
   SemanticMapThresholds,
@@ -228,7 +229,7 @@ export function useCockpitData({
   const [neighborhoodState, setNeighborhoodState] = useState<CockpitLoadState>('idle')
   const [neighborhoodError, setNeighborhoodError] = useState('')
   const [graphRagStatus, setGraphRagStatus] = useState<'ready' | 'unavailable'>('ready')
-  const [graphRagReason, setGraphRagReason] = useState<'ok' | 'no_knowledge_graph'>('ok')
+  const [graphRagReason, setGraphRagReason] = useState<GraphRagStatusReason>('ok')
   const [graphRagEvidenceItems, setGraphRagEvidenceItems] = useState<GraphRagEvidenceItem[]>([])
   const [graphRagEvidenceTotal, setGraphRagEvidenceTotal] = useState(0)
   const [graphRagEvidenceNodeName, setGraphRagEvidenceNodeName] = useState('')

@@ -17,8 +17,11 @@ from contextmine_core.analyzer.extractors.graph_helpers import (
 )
 from contextmine_core.models import (
     Document,
+    KnowledgeEdgeEvidence,
     KnowledgeEdgeKind,
+    KnowledgeEvidence,
     KnowledgeNode,
+    KnowledgeNodeEvidence,
     KnowledgeNodeKind,
     Source,
     Symbol,
@@ -31,6 +34,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+_NODE_META_FILE_KEYS = ("file_path", "spec_file_path", "source_files")
 
 
 @dataclass
@@ -345,7 +350,7 @@ async def cleanup_orphan_nodes(
     Returns:
         Stats dict with nodes_deleted
     """
-    stats: dict[str, int] = {"nodes_deleted": 0}
+    stats: dict[str, int] = {"nodes_deleted": 0, "evidence_deleted": 0}
 
     # Get all document URIs for this source
     result = await session.execute(select(Document.uri).where(Document.source_id == source_id))
@@ -392,5 +397,85 @@ async def cleanup_orphan_nodes(
         # Delete nodes (cascades to edges and evidence links)
         await session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(nodes_to_delete)))
         stats["nodes_deleted"] = len(nodes_to_delete)
+        stats["evidence_deleted"] = await cleanup_orphan_evidence(session)
 
+    return stats
+
+
+def _collect_node_file_paths(meta: object, evidence_file_path: str | None) -> set[str]:
+    paths: set[str] = set()
+
+    if isinstance(evidence_file_path, str) and evidence_file_path.strip():
+        paths.add(evidence_file_path.strip())
+
+    if not isinstance(meta, dict):
+        return paths
+
+    for key in _NODE_META_FILE_KEYS:
+        value = meta.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                paths.add(normalized)
+            continue
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    paths.add(item.strip())
+
+    return paths
+
+
+async def cleanup_orphan_evidence(session: AsyncSession) -> int:
+    """Delete evidence rows no longer linked to any knowledge node or edge."""
+    result = await session.execute(
+        delete(KnowledgeEvidence).where(
+            ~KnowledgeEvidence.id.in_(select(KnowledgeNodeEvidence.evidence_id)),
+            ~KnowledgeEvidence.id.in_(select(KnowledgeEdgeEvidence.evidence_id)),
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+async def cleanup_scoped_knowledge_nodes(
+    session: AsyncSession,
+    collection_id: UUID,
+    *,
+    kinds: set[KnowledgeNodeKind],
+    target_file_paths: set[str],
+) -> dict[str, int]:
+    """Delete extracted nodes of selected kinds that are tied to target files."""
+    stats = {"nodes_deleted": 0, "evidence_deleted": 0}
+    normalized_paths = {
+        path.strip() for path in target_file_paths if isinstance(path, str) and path.strip()
+    }
+    if not kinds or not normalized_paths:
+        return stats
+
+    result = await session.execute(
+        select(KnowledgeNode.id, KnowledgeNode.meta, KnowledgeEvidence.file_path)
+        .select_from(KnowledgeNode)
+        .outerjoin(KnowledgeNodeEvidence, KnowledgeNodeEvidence.node_id == KnowledgeNode.id)
+        .outerjoin(KnowledgeEvidence, KnowledgeEvidence.id == KnowledgeNodeEvidence.evidence_id)
+        .where(
+            KnowledgeNode.collection_id == collection_id,
+            KnowledgeNode.kind.in_(list(kinds)),
+        )
+    )
+
+    node_paths: dict[UUID, set[str]] = {}
+    for node_id, meta, evidence_file_path in result.all():
+        node_paths.setdefault(node_id, set()).update(
+            _collect_node_file_paths(meta, evidence_file_path)
+        )
+
+    nodes_to_delete = [
+        node_id for node_id, file_paths in node_paths.items() if file_paths & normalized_paths
+    ]
+    if not nodes_to_delete:
+        return stats
+
+    await session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(nodes_to_delete)))
+    stats["nodes_deleted"] = len(nodes_to_delete)
+    stats["evidence_deleted"] = await cleanup_orphan_evidence(session)
     return stats

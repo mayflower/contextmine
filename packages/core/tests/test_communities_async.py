@@ -253,6 +253,9 @@ class TestPersistCommunities:
         assert stats["members_created"] == 2
         # session.add for community + 2 members
         assert session.add.call_count == 3
+        added_community = session.add.call_args_list[0].args[0]
+        assert added_community.meta["size"] == 2
+        assert added_community.meta["member_count"] == 2
 
     @pytest.mark.anyio
     async def test_multi_level_communities(self) -> None:

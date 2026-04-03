@@ -240,6 +240,29 @@ class TestMapSearchToNodes:
         assert nid in result
 
     @pytest.mark.anyio
+    async def test_maps_search_uris_to_legacy_prefixed_file_nodes(self) -> None:
+        session = _mock_session()
+        coll_id = uuid4()
+        nid = uuid4()
+
+        search_result = MagicMock()
+        search_result.uri = "src/main.py"
+        mock_response = MagicMock()
+        mock_response.results = [search_result]
+
+        mock_db_result = MagicMock()
+        mock_db_result.fetchall.return_value = [(nid,)]
+        session.execute.return_value = mock_db_result
+
+        result = await _map_search_to_nodes(session, mock_response, [coll_id])
+        assert result == [nid]
+
+        stmt = session.execute.call_args.args[0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "'src/main.py'" in compiled
+        assert "'file:src/main.py'" in compiled
+
+    @pytest.mark.anyio
     async def test_limits_to_20_results(self) -> None:
         session = _mock_session()
         coll_id = uuid4()
@@ -292,15 +315,36 @@ class TestGetCommunityMemberNodes:
     @pytest.mark.anyio
     async def test_returns_member_node_ids(self) -> None:
         session = _mock_session()
+        comm_id = uuid4()
         nid1 = uuid4()
         nid2 = uuid4()
 
         mock_result = MagicMock()
-        mock_result.fetchall.return_value = [(nid1,), (nid2,)]
+        mock_result.fetchall.return_value = [(comm_id, nid1, 0.9), (comm_id, nid2, 0.8)]
         session.execute.return_value = mock_result
 
-        result = await _get_community_member_nodes(session, [uuid4()])
+        result = await _get_community_member_nodes(session, [comm_id])
         assert result == [nid1, nid2]
+
+    @pytest.mark.anyio
+    async def test_spreads_member_selection_across_communities(self) -> None:
+        session = _mock_session()
+        comm_a = uuid4()
+        comm_b = uuid4()
+        a1 = uuid4()
+        a2 = uuid4()
+        b1 = uuid4()
+
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [
+            (comm_a, a1, 0.95),
+            (comm_a, a2, 0.9),
+            (comm_b, b1, 0.85),
+        ]
+        session.execute.return_value = mock_result
+
+        result = await _get_community_member_nodes(session, [comm_a, comm_b], limit=2)
+        assert result == [a1, b1]
 
 
 # ===========================================================================
@@ -357,6 +401,22 @@ class TestFindRelevantCommunities:
         assert communities[0].summary == ""
         assert communities[0].member_count == 0
         assert communities[0].relevance_score == 0.0
+
+    @pytest.mark.anyio
+    async def test_falls_back_to_size_meta_for_member_count(self) -> None:
+        session = _mock_session()
+        comm_id = uuid4()
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (comm_id, 0, "Auth Module", "Handles auth", {"size": 7}, 0.9),
+        ]
+        session.execute.return_value = mock_result
+
+        communities = await _find_relevant_communities(session, [0.1, 0.2], [uuid4()], 5)
+
+        assert len(communities) == 1
+        assert communities[0].member_count == 7
 
 
 # ===========================================================================
@@ -460,6 +520,40 @@ class TestExpandFromSeeds:
             assert depth0_entities[0].relevance_score == 1.0
         if depth1_entities:
             assert depth1_entities[0].relevance_score == 0.8
+
+    @pytest.mark.anyio
+    async def test_deduplicates_edges_across_bfs_depths(self) -> None:
+        session = _mock_session()
+        coll_id = uuid4()
+        nid1 = uuid4()
+        nid2 = uuid4()
+        node1 = _make_mock_node(node_id=nid1, collection_id=coll_id, name="n1")
+        node2 = _make_mock_node(node_id=nid2, collection_id=coll_id, name="n2")
+        edge = _make_mock_edge(source_node_id=nid1, target_node_id=nid2, collection_id=coll_id)
+
+        call_count = [0]
+
+        async def mock_execute(stmt):
+            result = MagicMock()
+            if call_count[0] == 0:
+                result.scalars.return_value = [node1]
+            elif call_count[0] == 1:
+                result.scalars.return_value = [edge]
+            elif call_count[0] == 2:
+                result.scalars.return_value = [node2]
+            elif call_count[0] == 3:
+                result.scalars.return_value = [edge]
+            else:
+                result.scalars.return_value = []
+            call_count[0] += 1
+            return result
+
+        session.execute.side_effect = mock_execute
+
+        entities, edges = await _expand_from_seeds(session, [nid1], [coll_id], 2, 20)
+
+        assert len(entities) == 2
+        assert len(edges) == 1
 
 
 # ===========================================================================

@@ -14,8 +14,9 @@ import pytest
 from contextmine_core.knowledge.builder import (
     build_knowledge_graph_for_source,
     cleanup_orphan_nodes,
+    cleanup_scoped_knowledge_nodes,
 )
-from contextmine_core.models import SymbolEdgeType
+from contextmine_core.models import KnowledgeNodeKind, SymbolEdgeType
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -480,3 +481,54 @@ class TestCleanupOrphanNodes:
 
         stats = await cleanup_orphan_nodes(session, coll_id, source_id)
         assert stats["nodes_deleted"] == 0
+
+
+class TestCleanupScopedKnowledgeNodes:
+    """Tests for cleanup_scoped_knowledge_nodes with mocked session."""
+
+    @pytest.mark.anyio
+    async def test_deletes_matching_nodes_and_orphan_evidence(self) -> None:
+        session = _mock_session()
+        node_id = uuid4()
+
+        select_result = MagicMock()
+        select_result.all.return_value = [
+            (node_id, {"source_files": ["src/schema.sql"]}, None),
+            (uuid4(), {"file_path": "src/other.sql"}, None),
+        ]
+        delete_result = MagicMock()
+        session.execute.side_effect = [select_result, delete_result]
+
+        with patch(
+            "contextmine_core.knowledge.builder.cleanup_orphan_evidence",
+            new_callable=AsyncMock,
+            return_value=2,
+        ) as cleanup_evidence_mock:
+            stats = await cleanup_scoped_knowledge_nodes(
+                session,
+                uuid4(),
+                kinds={KnowledgeNodeKind.DB_TABLE},
+                target_file_paths={"src/schema.sql"},
+            )
+
+        assert stats == {"nodes_deleted": 1, "evidence_deleted": 2}
+        cleanup_evidence_mock.assert_awaited_once_with(session)
+
+    @pytest.mark.anyio
+    async def test_skips_when_no_target_paths_match(self) -> None:
+        session = _mock_session()
+
+        select_result = MagicMock()
+        select_result.all.return_value = [
+            (uuid4(), {"file_path": "src/other.sql"}, None),
+        ]
+        session.execute.return_value = select_result
+
+        stats = await cleanup_scoped_knowledge_nodes(
+            session,
+            uuid4(),
+            kinds={KnowledgeNodeKind.DB_TABLE},
+            target_file_paths={"src/schema.sql"},
+        )
+
+        assert stats == {"nodes_deleted": 0, "evidence_deleted": 0}

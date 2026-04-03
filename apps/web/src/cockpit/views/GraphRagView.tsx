@@ -11,6 +11,7 @@ import type {
   GraphRagPathPayload,
   GraphRagProcessDetailPayload,
   GraphRagProcessSummary,
+  GraphRagStatusReason,
   TwinGraphResponse,
 } from '../types'
 
@@ -19,7 +20,7 @@ interface GraphRagViewProps {
   state: CockpitLoadState
   error: string
   status: 'ready' | 'unavailable'
-  reason: 'ok' | 'no_knowledge_graph'
+  reason: GraphRagStatusReason
   selectedNodeId: string
   communityMode: GraphRagCommunityMode
   communityId: string
@@ -41,6 +42,7 @@ interface GraphRagViewProps {
   evidenceState: CockpitLoadState
   evidenceError: string
   onSelectNodeId: (nodeId: string) => void
+  onCommunitySelectionChange: (mode: GraphRagCommunityMode, communityId: string) => void
   onTracePath: (fromNodeId: string, toNodeId: string, maxHops: number) => Promise<GraphRagPathPayload | null>
   onLoadProcessDetail: (processId: string) => Promise<GraphRagProcessDetailPayload | null>
   onRetry: () => void
@@ -108,6 +110,45 @@ function resolveEdgeDimmed(
   if (flags.hasCommunityFocus) return !membership.edgeInCommunity
   if (flags.hasNodeFocus) return !membership.edgeTouchesSelected
   return false
+}
+
+function describeGraphRagState(
+  status: 'ready' | 'unavailable',
+  reason: GraphRagStatusReason,
+  totalNodes: number,
+): { title: string; message: string; blocking: boolean } | null {
+  if (reason === 'degraded_no_edges') {
+    return {
+      title: 'Graph page has no connected edges',
+      message:
+        'The selected scenario/page has nodes but no connected GraphRAG edges. Try another page, widen edge kinds, or clear the community filter.',
+      blocking: false,
+    }
+  }
+  if (status !== 'unavailable' && totalNodes > 0) {
+    return null
+  }
+  if (reason === 'no_knowledge_graph') {
+    return {
+      title: 'No knowledge graph available yet',
+      message:
+        'Knowledge graph data has not been generated for this collection. Run the sync/build pipeline to populate GraphRAG nodes and evidence.',
+      blocking: true,
+    }
+  }
+  if (reason === 'no_graphrag_semantic_graph') {
+    return {
+      title: 'No scenario-scoped GraphRAG graph found',
+      message:
+        'The selected scenario does not currently expose a usable GraphRAG graph. Rebuild scenario knowledge links or switch to a scenario with provenance-backed nodes.',
+      blocking: true,
+    }
+  }
+  return {
+    title: 'No graph nodes are currently available',
+    message: 'No graph nodes are currently available for this selection.',
+    blocking: true,
+  }
 }
 
 function ProcessArticle({
@@ -309,6 +350,7 @@ export default function GraphRagView({
   evidenceState,
   evidenceError,
   onSelectNodeId,
+  onCommunitySelectionChange,
   onTracePath,
   onLoadProcessDetail,
   onRetry,
@@ -599,7 +641,8 @@ export default function GraphRagView({
 
   const activeModalProcessId = processDetail?.process.id || ''
 
-  const showGuidedEmpty = status === 'unavailable' || graph.total_nodes === 0
+  const graphState = describeGraphRagState(status, reason, graph.total_nodes)
+  const showGuidedEmpty = Boolean(graphState?.blocking)
 
   return (
     <ViewShell
@@ -637,7 +680,16 @@ export default function GraphRagView({
                     key={community.id}
                     type="button"
                     className={`secondary cockpit2-community-chip ${isActive ? 'active' : ''}`}
-                    onClick={() => onSelectNodeId(community.sample_nodes[0]?.id || '')}
+                    onClick={() => {
+                      if (communityMode === 'focus' && isActive) {
+                        onCommunitySelectionChange('color', '')
+                      } else {
+                        onCommunitySelectionChange('focus', community.id)
+                      }
+                      if (community.sample_nodes[0]?.id) {
+                        onSelectNodeId(community.sample_nodes[0].id)
+                      }
+                    }}
                     title={`${community.label} • Cohesion ${community.cohesion.toFixed(2)}`}
                   >
                     <span
@@ -655,15 +707,17 @@ export default function GraphRagView({
 
       {showGuidedEmpty ? (
         <section className="cockpit2-empty">
-          <h3>No knowledge graph available yet</h3>
-          <p>
-            {reason === 'no_knowledge_graph'
-              ? 'Knowledge graph data has not been generated for this collection. Run sync/build pipeline to populate GraphRAG nodes and evidence.'
-              : 'No graph nodes are currently available for this selection.'}
-          </p>
+          <h3>{graphState?.title || 'No knowledge graph available yet'}</h3>
+          <p>{graphState?.message || 'No graph nodes are currently available for this selection.'}</p>
         </section>
       ) : (
         <>
+          {graphState ? (
+            <section className="cockpit2-empty">
+              <h3>{graphState.title}</h3>
+              <p>{graphState.message}</p>
+            </section>
+          ) : null}
           <div className="cockpit2-graph-toolbar">
             <button type="button" className="secondary" onClick={() => graphRef.current?.fit()}>
               Fit view

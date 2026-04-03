@@ -256,9 +256,15 @@ export interface RebuildReadinessPayload {
   }
 }
 
+export type GraphRagStatusReason =
+  | 'ok'
+  | 'no_knowledge_graph'
+  | 'no_graphrag_semantic_graph'
+  | 'degraded_no_edges'
+
 export interface GraphRagStatus {
   status: 'ready' | 'unavailable'
-  reason: 'ok' | 'no_knowledge_graph'
+  reason: GraphRagStatusReason
 }
 
 export interface GraphRagPayload {

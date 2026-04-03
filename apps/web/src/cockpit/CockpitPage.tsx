@@ -848,6 +848,10 @@ export default function CockpitPage({
             evidenceState={graphRagEvidenceState}
             evidenceError={graphRagEvidenceError}
             onSelectNodeId={handleSelectNodeId}
+            onCommunitySelectionChange={(mode, community) => {
+              setGraphRagCommunityMode(mode)
+              setGraphRagCommunityId(community)
+            }}
             onTracePath={traceGraphRagPath}
             onLoadProcessDetail={loadGraphRagProcessDetail}
             onRetry={refreshActiveView}

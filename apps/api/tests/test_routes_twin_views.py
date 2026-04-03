@@ -1410,6 +1410,11 @@ class TestGraphragView:
                 return_value=fake_scenario,
             ),
             patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={uuid.uuid4()},
+            ),
+            patch(
                 "app.routes.twin._load_community_graph",
                 new_callable=AsyncMock,
                 return_value=([], [], "knowledge"),
@@ -1440,6 +1445,100 @@ class TestGraphragView:
         assert "graph" in body
         assert body["projection"] == "graphrag"
         assert body["status"]["status"] == "unavailable"
+        assert body["status"]["reason"] == "no_graphrag_semantic_graph"
+
+    async def test_uses_scenario_scoped_knowledge_nodes(self) -> None:
+        fake_scenario = _fake_scenario()
+        db = _make_db(collection=_fake_collection())
+        scoped_node_id = uuid.uuid4()
+
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={scoped_node_id},
+            ) as mock_scope,
+            patch(
+                "app.routes.twin._load_community_graph",
+                new_callable=AsyncMock,
+                return_value=([], [], "knowledge"),
+            ) as mock_load_community_graph,
+            patch(
+                "app.routes.twin._compute_symbol_communities",
+                return_value=({}, {}),
+            ),
+        ):
+            db.execute = AsyncMock(
+                side_effect=[
+                    _FakeScalarResult(0),
+                    _FakeScalarResult([]),
+                ]
+            )
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/graphrag",
+                db,
+            )
+        assert resp.status_code == 200
+        mock_scope.assert_awaited_once_with(db, fake_scenario.id)
+        mock_load_community_graph.assert_awaited_once_with(db, _COLLECTION_ID, {scoped_node_id})
+
+    async def test_returns_degraded_reason_when_page_has_nodes_but_no_edges(self) -> None:
+        fake_scenario = _fake_scenario()
+        db = _make_db(collection=_fake_collection())
+        scoped_node_id = uuid.uuid4()
+        node = MagicMock()
+        node.id = scoped_node_id
+        node.kind.value = "symbol"
+        node.name = "TestSymbol"
+        node.natural_key = "symbol:test"
+        node.meta = {}
+
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={scoped_node_id},
+            ),
+            patch(
+                "app.routes.twin._load_community_graph",
+                new_callable=AsyncMock,
+                return_value=([], [], "knowledge"),
+            ),
+            patch(
+                "app.routes.twin._compute_symbol_communities",
+                return_value=({}, {}),
+            ),
+        ):
+            db.execute = AsyncMock(
+                side_effect=[
+                    _FakeScalarResult(1),
+                    _FakeScalarResult([node]),
+                    _FakeScalarResult([]),
+                    _FakeScalarResult([]),
+                ]
+            )
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/graphrag",
+                db,
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"]["status"] == "ready"
+        assert body["status"]["reason"] == "degraded_no_edges"
+        assert any("no connected edges" in warning for warning in body["warnings"])
 
 
 # ---------------------------------------------------------------------------
@@ -1537,6 +1636,44 @@ class TestGraphragProcessesView:
         assert body["total"] == 1
         assert body["items"][0]["label"] == "Checkout Flow"
 
+    async def test_uses_scenario_scoped_community_graph(self) -> None:
+        fake_scenario = _fake_scenario()
+        db = _make_db(collection=_fake_collection())
+        scoped_node_id = uuid.uuid4()
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={scoped_node_id},
+            ) as mock_scope,
+            patch(
+                "app.routes.twin._load_community_graph",
+                new_callable=AsyncMock,
+                return_value=([], [], "knowledge"),
+            ) as mock_load_community_graph,
+            patch(
+                "app.routes.twin._compute_symbol_communities",
+                return_value=({}, {}),
+            ),
+            patch(
+                "app.routes.twin._detect_processes",
+                return_value=[],
+            ),
+        ):
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/graphrag/processes",
+                db,
+            )
+        assert resp.status_code == 200
+        mock_scope.assert_awaited_once_with(db, fake_scenario.id)
+        mock_load_community_graph.assert_awaited_once_with(db, _COLLECTION_ID, {scoped_node_id})
+
 
 # ---------------------------------------------------------------------------
 # /api/twin/collections/{id}/views/graphrag/path
@@ -1599,6 +1736,53 @@ class TestGraphragPathView:
         body = resp.json()
         assert body["status"] == "found"
         assert body["path"]["hops"] == 1
+
+    async def test_passes_scenario_scope_to_node_resolution_and_tracing(self) -> None:
+        fake_scenario = _fake_scenario()
+        from_node_id = uuid.uuid4()
+        to_node_id = uuid.uuid4()
+        scoped_ids = {from_node_id, to_node_id}
+        from_node = MagicMock()
+        from_node.id = from_node_id
+        to_node = MagicMock()
+        to_node.id = to_node_id
+        fake_context = MagicMock()
+        fake_context.entities = []
+        fake_context.edges = []
+        db = _make_db(collection=_fake_collection())
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value=scoped_ids,
+            ),
+            patch(
+                "app.routes.twin._resolve_knowledge_node",
+                new_callable=AsyncMock,
+                side_effect=[from_node, to_node],
+            ) as mock_resolve_node,
+            patch(
+                "app.routes.twin.graphrag_trace_path",
+                new_callable=AsyncMock,
+                return_value=fake_context,
+            ) as mock_trace_path,
+        ):
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/graphrag/path",
+                db,
+                from_node_id=str(from_node_id),
+                to_node_id=str(to_node_id),
+            )
+        assert resp.status_code == 200
+        assert mock_resolve_node.await_args_list[0].kwargs["allowed_node_ids"] == scoped_ids
+        assert mock_resolve_node.await_args_list[1].kwargs["allowed_node_ids"] == scoped_ids
+        assert mock_trace_path.await_args.kwargs["allowed_node_ids"] == scoped_ids
 
     async def test_from_node_not_found(self) -> None:
         fake_scenario = _fake_scenario()
@@ -1674,6 +1858,46 @@ class TestSemanticMapView:
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
         assert "points" in body
+
+    async def test_passes_scenario_scope_to_structural_builder(self) -> None:
+        fake_scenario = _fake_scenario()
+        db = _make_db(collection=_fake_collection())
+        scoped_node_id = uuid.uuid4()
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={scoped_node_id},
+            ) as mock_scope,
+            patch(
+                "app.routes.twin._build_structural_community_points",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ) as mock_build_points,
+            patch(
+                "app.routes.twin._build_semantic_map_signals",
+                return_value={
+                    "isolated_points": [],
+                    "mixed_clusters": [],
+                    "duplicate_candidates": [],
+                    "semantic_duplication": [],
+                    "misplaced_code": [],
+                },
+            ),
+        ):
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/semantic-map",
+                db,
+            )
+        assert resp.status_code == 200
+        mock_scope.assert_awaited_once_with(db, fake_scenario.id)
+        assert mock_build_points.await_args.kwargs["scenario_node_ids"] == {scoped_node_id}
 
 
 # ---------------------------------------------------------------------------
@@ -2114,6 +2338,11 @@ class TestGraphragEvidenceView:
                 new_callable=AsyncMock,
                 return_value=fake_scenario,
             ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value={node_id},
+            ),
         ):
             # Inner DB queries: node lookup by UUID, evidence count, evidence list
             db.execute = AsyncMock(
@@ -2135,6 +2364,47 @@ class TestGraphragEvidenceView:
         assert body["total"] == 1
         assert len(body["items"]) == 1
         assert body["items"][0]["file_path"] == "src/main.py"
+
+    async def test_resolves_evidence_node_with_scenario_scope(self) -> None:
+        fake_scenario = _fake_scenario()
+        node = MagicMock()
+        node.id = uuid.uuid4()
+        node.name = "scoped_node"
+        node.kind = MagicMock()
+        node.kind.value = "symbol"
+        scoped_ids = {node.id}
+        db = _make_db(collection=_fake_collection())
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value=scoped_ids,
+            ),
+            patch(
+                "app.routes.twin._resolve_knowledge_node",
+                new_callable=AsyncMock,
+                return_value=node,
+            ) as mock_resolve_node,
+        ):
+            db.execute = AsyncMock(
+                side_effect=[
+                    _FakeScalarResult(0),
+                    _FakeScalarResult([]),
+                ]
+            )
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/graphrag/evidence",
+                db,
+                node_id=str(node.id),
+            )
+        assert resp.status_code == 200
+        assert mock_resolve_node.await_args.kwargs["allowed_node_ids"] == scoped_ids
 
 
 # ---------------------------------------------------------------------------
@@ -2654,6 +2924,55 @@ class TestErmView:
         assert body["summary"]["foreign_keys"] == 0
         assert body["mermaid"] is None
         assert any("No DB_TABLE" in w for w in body["warnings"])
+
+    async def test_uses_scenario_scoped_db_nodes(self) -> None:
+        fake_scenario = _fake_scenario()
+        db = _make_db(collection=_fake_collection())
+        scoped_ids = {uuid.uuid4()}
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch("app.routes.twin.get_settings") as mock_settings,
+            patch(
+                "app.routes.twin._get_scenario_knowledge_node_ids",
+                new_callable=AsyncMock,
+                return_value=scoped_ids,
+            ) as mock_scope,
+            patch(
+                "app.routes.twin._load_scenario_knowledge_nodes",
+                new_callable=AsyncMock,
+                side_effect=[[], []],
+            ) as mock_load_nodes,
+            patch(
+                "app.routes.twin._assemble_erm_payload",
+                new_callable=AsyncMock,
+                return_value={
+                    "summary": {
+                        "tables": 0,
+                        "columns": 0,
+                        "foreign_keys": 0,
+                        "has_mermaid": False,
+                    },
+                    "tables": [],
+                    "foreign_keys": [],
+                    "mermaid": None,
+                    "warnings": [],
+                },
+            ),
+        ):
+            mock_settings.return_value.arch_docs_enabled = True
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/erm",
+                db,
+            )
+        assert resp.status_code == 200
+        mock_scope.assert_awaited_once_with(db, fake_scenario.id)
+        assert mock_load_nodes.await_args_list[0].kwargs["scenario_node_ids"] == scoped_ids
+        assert mock_load_nodes.await_args_list[1].kwargs["scenario_node_ids"] == scoped_ids
 
 
 # ---------------------------------------------------------------------------

@@ -442,6 +442,9 @@ async def _persist_protobuf_nodes(
             node_id = result.scalar_one()
             stats["proto_nodes"] += 1
 
+            await _create_evidence(session, node_id, proto.file_path)
+            stats["evidence_created"] += 1
+
             # Create edges to request/response message types
             await _link_rpc_messages(
                 session,
@@ -511,6 +514,7 @@ async def _persist_job_nodes(
                 meta={
                     "framework": job.framework,
                     "schedule": job.schedule,
+                    "file_path": job.file_path,
                     "triggers": [{"type": t.trigger_type, "cron": t.cron} for t in job.triggers],
                     "container_image": job.container_image,
                     **_provenance(

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import contextmine_worker.flows as flows
 import pytest
+from contextmine_core.models import KnowledgeNodeKind
 
 pytestmark = pytest.mark.anyio
 
@@ -90,6 +91,10 @@ def _setup_kg_base_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(flows, "parse_embedding_model_spec", lambda spec: ("openai", "model"))
     monkeypatch.setattr(flows, "get_embedder", lambda *a, **kw: MagicMock(dimension=768))
+    monkeypatch.setattr(
+        "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+        AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
+    )
 
 
 def _setup_kg_step1_mock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,6 +105,10 @@ def _setup_kg_step1_mock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
         AsyncMock(return_value=mock_stats),
+    )
+    monkeypatch.setattr(
+        "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+        AsyncMock(return_value={"nodes_deleted": 0}),
     )
 
 
@@ -223,6 +232,87 @@ class TestBuildKGERM:
         )
         assert result["kg_tables"] == 1
 
+
+class TestBuildBehavioralGraphs:
+    async def test_cleanup_prunes_behavioral_nodes_for_current_and_deleted_files(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = AsyncMock()
+        cleanup_mock = AsyncMock(return_value={"nodes_deleted": 4, "evidence_deleted": 7})
+        build_tests_mock = AsyncMock(return_value={"test_nodes": 2})
+        build_ui_mock = AsyncMock(return_value={"ui_nodes": 3})
+        build_flows_mock = AsyncMock(return_value={"flow_nodes": 1})
+
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            cleanup_mock,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.tests.extract_tests_from_files",
+            lambda files: [MagicMock()],
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui.extract_ui_from_files",
+            lambda files: [MagicMock()],
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.tests.build_tests_graph",
+            build_tests_mock,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.ui.build_ui_graph",
+            build_ui_mock,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.flows.synthesize_user_flows",
+            lambda ui, tests: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.analyzer.extractors.flows.build_flows_graph",
+            build_flows_mock,
+        )
+
+        stats, warnings = await flows._build_behavioral_graphs(
+            session,
+            _make_settings(
+                digital_twin_behavioral_enabled=True,
+                digital_twin_ui_enabled=True,
+                digital_twin_flows_enabled=True,
+            ),
+            uuid.uuid4(),
+            uuid.uuid4(),
+            files=[
+                ("apps/web/src/routes.tsx", "export default function Routes() {}"),
+                ("tests/test_checkout.py", "def test_checkout(): assert True"),
+            ],
+            deleted_file_paths=["apps/web/src/removed.tsx"],
+        )
+
+        assert warnings == []
+        cleanup_mock.assert_awaited_once()
+        cleanup_call = cleanup_mock.await_args.kwargs
+        assert cleanup_call["target_file_paths"] == {
+            "apps/web/src/routes.tsx",
+            "tests/test_checkout.py",
+            "apps/web/src/removed.tsx",
+        }
+        assert cleanup_call["kinds"] == {
+            KnowledgeNodeKind.TEST_SUITE,
+            KnowledgeNodeKind.TEST_CASE,
+            KnowledgeNodeKind.TEST_FIXTURE,
+            KnowledgeNodeKind.UI_ROUTE,
+            KnowledgeNodeKind.UI_VIEW,
+            KnowledgeNodeKind.UI_COMPONENT,
+            KnowledgeNodeKind.INTERFACE_CONTRACT,
+            KnowledgeNodeKind.USER_FLOW,
+            KnowledgeNodeKind.FLOW_STEP,
+        }
+        assert stats["behavioral_nodes_deleted"] == 4
+        assert stats["behavioral_evidence_deleted"] == 7
+        assert stats["test_nodes"] == 2
+        assert stats["ui_nodes"] == 3
+        assert stats["flow_nodes"] == 1
+
     async def test_alembic_parse_error_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 816-820: Alembic parse error is caught and logged."""
         source_id = str(uuid.uuid4())
@@ -318,6 +408,89 @@ class TestBuildKGSurface:
             collection_id=collection_id,
         )
         assert result["kg_endpoints"] == 3
+
+    async def test_step1_reports_stale_node_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stale FILE/SYMBOL nodes deleted during rebuild are surfaced in stats."""
+        source_id = str(uuid.uuid4())
+        collection_id = str(uuid.uuid4())
+
+        _setup_kg_base_mocks(monkeypatch)
+        _setup_kg_step2_mocks(monkeypatch)
+        _setup_kg_step3_mocks(monkeypatch)
+        _setup_kg_step4_mocks(monkeypatch)
+        _setup_kg_steps567_mocks(monkeypatch)
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=MagicMock())
+        mock_session.commit = AsyncMock()
+        monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+
+        mock_kg_stats = MagicMock()
+        mock_kg_stats.file_nodes_created = 4
+        mock_kg_stats.symbol_nodes_created = 9
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
+            AsyncMock(return_value=mock_kg_stats),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            AsyncMock(return_value={"nodes_deleted": 3}),
+        )
+
+        result = await flows.build_knowledge_graph.fn(
+            source_id=source_id,
+            collection_id=collection_id,
+            changed_doc_ids=[],
+        )
+
+        assert result["kg_file_nodes"] == 4
+        assert result["kg_symbol_nodes"] == 9
+        assert result["kg_nodes_deleted"] == 3
+
+    async def test_deleted_file_cleanup_contributes_to_stats(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleted-file scoped cleanup is aggregated across extracted fact types."""
+        source_id = str(uuid.uuid4())
+        collection_id = str(uuid.uuid4())
+
+        _setup_kg_base_mocks(monkeypatch)
+        _setup_kg_step1_mock(monkeypatch)
+        _setup_kg_step2_mocks(monkeypatch)
+        _setup_kg_step3_mocks(monkeypatch)
+        _setup_kg_step4_mocks(monkeypatch)
+        _setup_kg_steps567_mocks(monkeypatch)
+
+        mock_session = AsyncMock()
+
+        async def mock_exec(stmt):
+            result = MagicMock()
+            result.all.return_value = []
+            result.scalar_one_or_none.return_value = None
+            return result
+
+        mock_session.execute = mock_exec
+        mock_session.commit = AsyncMock()
+        monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+            AsyncMock(
+                side_effect=[
+                    {"nodes_deleted": 2, "evidence_deleted": 0},
+                    {"nodes_deleted": 3, "evidence_deleted": 0},
+                    {"nodes_deleted": 4, "evidence_deleted": 0},
+                ]
+            ),
+        )
+
+        result = await flows.build_knowledge_graph.fn(
+            source_id=source_id,
+            collection_id=collection_id,
+            changed_doc_ids=[],
+            deleted_file_paths=["src/deleted.py"],
+        )
+
+        assert result["kg_nodes_deleted"] == 9
 
     async def test_surface_exception_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 924-926: Surface extraction failure caught."""
@@ -422,6 +595,141 @@ class TestBuildKGSemanticCommunity:
         )
         # Skips extraction because semantic entities already exist
         extract_mock.assert_not_called()
+
+    async def test_deleted_files_force_semantic_and_summary_regeneration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deletion-only syncs must rebuild semantic entities and summaries."""
+        source_id = str(uuid.uuid4())
+        collection_id = str(uuid.uuid4())
+
+        _setup_kg_base_mocks(monkeypatch)
+        _setup_kg_step1_mock(monkeypatch)
+        _setup_kg_step2_mocks(monkeypatch)
+        _setup_kg_step3_mocks(monkeypatch)
+        _setup_kg_step4_mocks(monkeypatch)
+
+        mock_session = AsyncMock()
+        existing_node_id = uuid.uuid4()
+
+        async def mock_exec(stmt):
+            result = MagicMock()
+            result.all.return_value = []
+            result.scalar_one_or_none.return_value = existing_node_id
+            return result
+
+        mock_session.execute = mock_exec
+        mock_session.commit = AsyncMock()
+        monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+
+        extract_mock = AsyncMock(return_value=MagicMock())
+        persist_mock = AsyncMock(return_value={"entities_created": 2, "relationships_created": 1})
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.extract_from_documents",
+            extract_mock,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.persist_semantic_entities",
+            persist_mock,
+        )
+
+        mock_community = MagicMock()
+        mock_community.community_count = lambda level: 0
+        mock_community.modularity = {0: 0, 1: 0, 2: 0}
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.detect_communities",
+            AsyncMock(return_value=mock_community),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.persist_communities", AsyncMock()
+        )
+        summary_mock = AsyncMock(
+            return_value=MagicMock(communities_summarized=1, embeddings_created=1)
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.summaries.generate_community_summaries",
+            summary_mock,
+        )
+
+        result = await flows.build_knowledge_graph.fn(
+            source_id=source_id,
+            collection_id=collection_id,
+            changed_doc_ids=[],
+            deleted_file_paths=["src/deleted.py"],
+        )
+
+        extract_mock.assert_awaited_once()
+        assert extract_mock.await_args.kwargs["max_chunks"] is None
+        summary_mock.assert_awaited_once()
+        assert result["kg_semantic_entities"] == 2
+        assert result["kg_summaries_created"] == 1
+
+    async def test_semantic_quality_report_is_exposed_in_stats(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_id = str(uuid.uuid4())
+        collection_id = str(uuid.uuid4())
+
+        _setup_kg_base_mocks(monkeypatch)
+        _setup_kg_step1_mock(monkeypatch)
+        _setup_kg_step2_mocks(monkeypatch)
+        _setup_kg_step3_mocks(monkeypatch)
+        _setup_kg_step4_mocks(monkeypatch)
+
+        mock_session = AsyncMock()
+
+        async def mock_exec(stmt):
+            r = MagicMock()
+            r.all.return_value = []
+            r.scalar_one_or_none.return_value = None
+            return r
+
+        mock_session.execute = mock_exec
+        mock_session.commit = AsyncMock()
+        monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+
+        extraction_batch = MagicMock(
+            quality_report={
+                "status": "degraded",
+                "warnings": ["no_semantic_relationships_extracted", "chunk_budget_applied"],
+                "selected_chunks": 10,
+            }
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.extract_from_documents",
+            AsyncMock(return_value=extraction_batch),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.persist_semantic_entities",
+            AsyncMock(return_value={"entities_created": 2, "relationships_created": 0}),
+        )
+
+        mock_community = MagicMock()
+        mock_community.community_count = lambda level: 0
+        mock_community.modularity = {0: 0, 1: 0, 2: 0}
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.detect_communities",
+            AsyncMock(return_value=mock_community),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.persist_communities", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.summaries.generate_community_summaries",
+            AsyncMock(return_value=MagicMock(communities_summarized=0, embeddings_created=0)),
+        )
+
+        result = await flows.build_knowledge_graph.fn(
+            source_id=source_id,
+            collection_id=collection_id,
+        )
+
+        assert result["kg_semantic_quality_status"] == "degraded"
+        assert result["kg_semantic_quality"]["selected_chunks"] == 10
+        assert result["kg_semantic_quality_warnings"] == [
+            "no_semantic_relationships_extracted",
+            "chunk_budget_applied",
+        ]
 
     async def test_semantic_extraction_error_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 966-968: Semantic extraction failure recorded."""

@@ -1,3 +1,4 @@
+import contextmine_core.analyzer.extractors.tests as tests_extractor
 from contextmine_core.analyzer.extractors.flows import synthesize_user_flows
 from contextmine_core.analyzer.extractors.tests import extract_tests_from_files
 from contextmine_core.analyzer.extractors.ui import (
@@ -197,6 +198,56 @@ def test_checkout():
     synthesis = synthesize_user_flows(ui, tests)
     assert synthesis.flows
     assert synthesis.flows[0].steps
+    assert synthesis.flows[0].source_files == ["apps/web/src/checkout.tsx"]
+    assert synthesis.flows[0].steps[0].source_files == ["apps/web/src/checkout.tsx"]
+    assert synthesis.flows[0].steps[1].source_files == ["apps/web/src/checkout.tsx"]
+
+
+def test_flow_synthesis_carries_matching_test_file_provenance() -> None:
+    ui = [
+        UIExtraction(
+            file_path="apps/web/src/orders.tsx",
+            routes=[
+                UIRouteDef(
+                    path="/orders",
+                    file_path="apps/web/src/orders.tsx",
+                    line=1,
+                    view_name_hint="Orders",
+                )
+            ],
+            views=[
+                UIViewDef(
+                    name="Orders",
+                    file_path="apps/web/src/orders.tsx",
+                    line=2,
+                    symbol_hints=["createOrder"],
+                )
+            ],
+        )
+    ]
+    tests = [
+        tests_extractor.TestsExtraction(
+            file_path="tests/test_orders.py",
+            framework="pytest",
+            cases=[
+                tests_extractor.TestCaseDef(
+                    name="test_create_order",
+                    file_path="tests/test_orders.py",
+                    line=5,
+                    symbol_hints=["createOrder"],
+                    natural_key="test_case:orders:create_order",
+                )
+            ],
+        )
+    ]
+
+    synthesis = synthesize_user_flows(ui, tests)
+
+    assert synthesis.flows
+    assert synthesis.flows[0].steps[1].source_files == [
+        "apps/web/src/orders.tsx",
+        "tests/test_orders.py",
+    ]
 
 
 def test_flow_synthesis_truncates_oversized_step_names() -> None:

@@ -162,6 +162,11 @@ def _knowledge_graph_build_timeout_seconds() -> int:
     return max(120, configured)
 
 
+def _semantic_extraction_max_chunks() -> int | None:
+    configured = int(getattr(get_settings(), "semantic_extraction_max_chunks", 0))
+    return configured if configured > 0 else None
+
+
 def _twin_graph_build_timeout_seconds() -> int:
     configured = int(get_settings().twin_graph_build_timeout_seconds)
     return max(120, configured)
@@ -833,7 +838,8 @@ async def _kg_extract_erm(
     source_uuid: object,
     collection_uuid: object,
     research_llm: object,
-) -> int:
+    deleted_file_paths: list[str] | None = None,
+) -> dict[str, int]:
     """Extract ERM tables from Alembic migrations or generic schema files. Returns tables found."""
     from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
     from contextmine_core.analyzer.extractors.erm import (
@@ -847,10 +853,16 @@ async def _kg_extract_erm(
     from contextmine_core.analyzer.extractors.schema import (
         save_erd_artifact as save_generic_erd_artifact,
     )
-    from contextmine_core.models import Document
+    from contextmine_core.knowledge.builder import cleanup_scoped_knowledge_nodes
+    from contextmine_core.models import Document, KnowledgeNodeKind
 
     erm_extractor = ERMExtractor()
     schema_candidates: list[tuple[str, str]] = []
+    cleanup_paths = {
+        path.strip()
+        for path in (deleted_file_paths or [])
+        if isinstance(path, str) and path.strip()
+    }
 
     async with get_session() as session:
         result = await session.execute(
@@ -866,7 +878,19 @@ async def _kg_extract_erm(
                 continue
             if _is_schema_candidate(file_path):
                 schema_candidates.append((file_path, content))
+                cleanup_paths.add(file_path)
             _try_alembic_extraction(file_path, content, erm_extractor, extract_from_alembic)
+
+        cleanup_stats = await cleanup_scoped_knowledge_nodes(
+            session,
+            collection_uuid,
+            kinds={
+                KnowledgeNodeKind.DB_TABLE,
+                KnowledgeNodeKind.DB_COLUMN,
+                KnowledgeNodeKind.DB_CONSTRAINT,
+            },
+            target_file_paths=cleanup_paths,
+        )
 
         if erm_extractor.schema.tables:
             erm_stats = await build_erm_graph(session, collection_uuid, erm_extractor.schema)
@@ -874,10 +898,20 @@ async def _kg_extract_erm(
             await session.commit()
             tables = erm_stats.get("table_nodes_created", 0)
             logger.info("Extracted %d database tables", tables)
-            return tables
+            return {
+                "tables_found": tables,
+                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+            }
 
         if not schema_candidates:
-            return 0
+            if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
+                await session.commit()
+            return {
+                "tables_found": 0,
+                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+            }
 
         aggregated = await _extract_schema_fallback(schema_candidates, research_llm)
         if aggregated and aggregated.tables:
@@ -886,8 +920,18 @@ async def _kg_extract_erm(
             await session.commit()
             tables = schema_stats.get("table_nodes_created", 0)
             logger.info("Extracted %d database tables via generic schema extraction", tables)
-            return tables
-    return 0
+            return {
+                "tables_found": tables,
+                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+            }
+        if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
+            await session.commit()
+        return {
+            "tables_found": 0,
+            "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+            "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+        }
 
 
 async def _extract_schema_fallback(
@@ -979,19 +1023,43 @@ async def _kg_extract_business_rules(
     collection_uuid: object,
     changed_doc_ids: list[str] | None,
     research_llm: object,
-) -> int:
+    deleted_file_paths: list[str] | None = None,
+) -> dict[str, int]:
     """Extract business rules from code files using LLM. Returns rules created count."""
     from contextmine_core.analyzer.extractors.rules import build_rules_graph
+    from contextmine_core.knowledge.builder import cleanup_scoped_knowledge_nodes
+    from contextmine_core.models import KnowledgeNodeKind
 
-    if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+    deleted_paths = {
+        path.strip()
+        for path in (deleted_file_paths or [])
+        if isinstance(path, str) and path.strip()
+    }
+
+    if changed_doc_ids is not None and len(changed_doc_ids) == 0 and not deleted_paths:
         if await _kg_has_business_rules(collection_uuid):
             logger.info("No changed documents and business rules exist - skipping extraction")
-            return 0
+            return {"rules_created": 0, "nodes_deleted": 0, "evidence_deleted": 0}
         logger.info("No changed documents but no business rules found - running initial extraction")
 
     async with get_session() as session:
         docs = await _kg_load_rule_candidate_docs(session, source_uuid, changed_doc_ids)
         logger.info("Extracting business rules from %d documents", len(docs))
+        cleanup_paths = set(deleted_paths)
+        for _doc_id, uri, content in docs:
+            if not content:
+                continue
+            file_path = _uri_to_file_path(uri)
+            if _is_ignored_repo_path(file_path):
+                continue
+            cleanup_paths.add(file_path)
+
+        cleanup_stats = await cleanup_scoped_knowledge_nodes(
+            session,
+            collection_uuid,
+            kinds={KnowledgeNodeKind.BUSINESS_RULE},
+            target_file_paths=cleanup_paths,
+        )
 
         all_extractions = await _kg_extract_rules_from_docs(docs, research_llm)
 
@@ -1000,25 +1068,54 @@ async def _kg_extract_business_rules(
             await session.commit()
             rules_created = rule_stats.get("rules_created", 0)
             logger.info("Extracted %d business rules", rules_created)
-            return rules_created
-    return 0
+            return {
+                "rules_created": rules_created,
+                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+            }
+        if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
+            await session.commit()
+        return {
+            "rules_created": 0,
+            "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+            "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+        }
 
 
-async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> dict[str, int]:
+async def _kg_extract_surfaces(
+    source_uuid: object,
+    collection_uuid: object,
+    deleted_file_paths: list[str] | None = None,
+) -> dict[str, int]:
     """Extract surface catalog (OpenAPI, GraphQL, Protobuf, Jobs) into the KG."""
     from contextmine_core.analyzer.extractors.surface import (
         SurfaceCatalogExtractor,
         build_surface_graph,
     )
-    from contextmine_core.models import Document
+    from contextmine_core.knowledge.builder import cleanup_scoped_knowledge_nodes
+    from contextmine_core.models import Document, KnowledgeNodeKind
 
-    result_stats: dict[str, int] = {"kg_endpoints": 0, "kg_jobs": 0}
+    result_stats: dict[str, int] = {
+        "kg_endpoints": 0,
+        "kg_jobs": 0,
+        "nodes_deleted": 0,
+        "evidence_deleted": 0,
+    }
     surface_extractor = SurfaceCatalogExtractor()
+    cleanup_paths = {
+        path.strip()
+        for path in (deleted_file_paths or [])
+        if isinstance(path, str) and path.strip()
+    }
     async with get_session() as session:
         result = await session.execute(
             select(Document.uri, Document.content_markdown).where(Document.source_id == source_uuid)
         )
         for uri, content in result.all():
+            file_path = _uri_to_file_path(uri)
+            if not content or _is_ignored_repo_path(file_path):
+                continue
+            cleanup_paths.add(file_path)
             _try_surface_extract(
                 uri,
                 content,
@@ -1029,6 +1126,21 @@ async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> 
                     "surface_parse_errors": 0,
                 },
             )
+        cleanup_stats = await cleanup_scoped_knowledge_nodes(
+            session,
+            collection_uuid,
+            kinds={
+                KnowledgeNodeKind.API_ENDPOINT,
+                KnowledgeNodeKind.GRAPHQL_OPERATION,
+                KnowledgeNodeKind.GRAPHQL_TYPE,
+                KnowledgeNodeKind.MESSAGE_SCHEMA,
+                KnowledgeNodeKind.SERVICE_RPC,
+                KnowledgeNodeKind.JOB,
+            },
+            target_file_paths=cleanup_paths,
+        )
+        result_stats["nodes_deleted"] = cleanup_stats.get("nodes_deleted", 0)
+        result_stats["evidence_deleted"] = cleanup_stats.get("evidence_deleted", 0)
         catalog = surface_extractor.catalog
         has_surfaces = (
             catalog.openapi_specs
@@ -1046,6 +1158,8 @@ async def _kg_extract_surfaces(source_uuid: object, collection_uuid: object) -> 
                 result_stats["kg_endpoints"],
                 result_stats["kg_jobs"],
             )
+        elif cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
+            await session.commit()
     return result_stats
 
 
@@ -1087,6 +1201,7 @@ async def _kg_step_semantic_entities(
     llm_provider: object,
     embedder: object,
     changed_doc_ids: list[str] | None,
+    deleted_file_paths: list[str] | None = None,
 ) -> None:
     """Step 5: Extract semantic entities using LLM."""
     try:
@@ -1095,7 +1210,8 @@ async def _kg_step_semantic_entities(
             persist_semantic_entities,
         )
 
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+        has_deleted_files = bool(deleted_file_paths)
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0 and not has_deleted_files:
             # No docs changed — skip only if entities already exist from a prior run
             if await _kg_has_semantic_entities(collection_uuid):
                 logger.info(
@@ -1110,7 +1226,7 @@ async def _kg_step_semantic_entities(
                 collection_id=collection_uuid,
                 llm_provider=llm_provider,
                 embedder=embedder,
-                max_chunks=50,
+                max_chunks=_semantic_extraction_max_chunks(),
             )
             extraction_stats = await persist_semantic_entities(
                 session=session,
@@ -1120,10 +1236,15 @@ async def _kg_step_semantic_entities(
             await session.commit()
             stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
             stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
+            quality_report = dict(getattr(extraction_batch, "quality_report", {}) or {})
+            stats["kg_semantic_quality"] = quality_report
+            stats["kg_semantic_quality_status"] = quality_report.get("status", "unknown")
+            stats["kg_semantic_quality_warnings"] = list(quality_report.get("warnings", []) or [])
             logger.info(
-                "Extracted %d semantic entities, %d relationships",
+                "Extracted %d semantic entities, %d relationships (quality=%s)",
                 stats["kg_semantic_entities"],
                 stats["kg_semantic_relationships"],
+                stats["kg_semantic_quality_status"],
             )
     except Exception as e:
         logger.warning("Failed to extract semantic entities: %s", e)
@@ -1162,12 +1283,14 @@ async def _kg_step_summaries(
     research_llm: object,
     embedder: object,
     changed_doc_ids: list[str] | None,
+    deleted_file_paths: list[str] | None = None,
 ) -> None:
     """Step 7: Generate community summaries and embeddings."""
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries
 
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0:
+        has_deleted_files = bool(deleted_file_paths)
+        if changed_doc_ids is not None and len(changed_doc_ids) == 0 and not has_deleted_files:
             # No docs changed — skip only if semantic entities (and thus summaries)
             # already exist from a prior run
             if await _kg_has_semantic_entities(collection_uuid):
@@ -1208,6 +1331,7 @@ async def build_knowledge_graph(
     source_id: str,
     collection_id: str,
     changed_doc_ids: list[str] | None = None,
+    deleted_file_paths: list[str] | None = None,
 ) -> dict:
     """Build Knowledge Graph from indexed documents.
 
@@ -1237,6 +1361,7 @@ async def build_knowledge_graph(
     stats = {
         "kg_file_nodes": 0,
         "kg_symbol_nodes": 0,
+        "kg_nodes_deleted": 0,
         "kg_business_rules": 0,
         "kg_tables": 0,
         "kg_endpoints": 0,
@@ -1289,17 +1414,23 @@ async def build_knowledge_graph(
 
     # Step 1: Build FILE and SYMBOL nodes from indexed documents
     try:
-        from contextmine_core.knowledge.builder import build_knowledge_graph_for_source
+        from contextmine_core.knowledge.builder import (
+            build_knowledge_graph_for_source,
+            cleanup_orphan_nodes,
+        )
 
         async with get_session() as session:
             kg_build_stats = await build_knowledge_graph_for_source(session, source_uuid)
+            cleanup_stats = await cleanup_orphan_nodes(session, collection_uuid, source_uuid)
             stats["kg_file_nodes"] = kg_build_stats.file_nodes_created
             stats["kg_symbol_nodes"] = kg_build_stats.symbol_nodes_created
+            stats["kg_nodes_deleted"] = cleanup_stats.get("nodes_deleted", 0)
             await session.commit()
             logger.info(
-                "Built KG: %d file nodes, %d symbol nodes",
+                "Built KG: %d file nodes, %d symbol nodes, %d stale nodes removed",
                 stats["kg_file_nodes"],
                 stats["kg_symbol_nodes"],
+                stats["kg_nodes_deleted"],
             )
     except Exception as e:
         logger.warning("Failed to build FILE/SYMBOL nodes: %s", e)
@@ -1312,8 +1443,10 @@ async def build_knowledge_graph(
             collection_uuid,
             changed_doc_ids,
             research_llm,
+            deleted_file_paths,
         )
-        stats["kg_business_rules"] = rules_count
+        stats["kg_business_rules"] = rules_count.get("rules_created", 0)
+        stats["kg_nodes_deleted"] += rules_count.get("nodes_deleted", 0)
     except Exception as e:
         logger.warning("Failed to extract business rules: %s", e)
         stats["kg_errors"].append(f"rules: {e}")
@@ -1324,31 +1457,38 @@ async def build_knowledge_graph(
             source_uuid,
             collection_uuid,
             research_llm,
+            deleted_file_paths,
         )
-        stats["kg_tables"] = tables_found
+        stats["kg_tables"] = tables_found.get("tables_found", 0)
+        stats["kg_nodes_deleted"] += tables_found.get("nodes_deleted", 0)
     except Exception as e:
         logger.warning("Failed to extract ERM: %s", e)
         stats["kg_errors"].append(f"erm: {e}")
 
     # Step 4: Extract Surface Catalog (OpenAPI, GraphQL, Protobuf, Jobs)
     try:
-        surface_result = await _kg_extract_surfaces(source_uuid, collection_uuid)
+        surface_result = await _kg_extract_surfaces(
+            source_uuid, collection_uuid, deleted_file_paths
+        )
         stats["kg_endpoints"] = surface_result.get("kg_endpoints", 0)
         stats["kg_jobs"] = surface_result.get("kg_jobs", 0)
+        stats["kg_nodes_deleted"] += surface_result.get("nodes_deleted", 0)
     except Exception as e:
         logger.warning("Failed to extract surfaces: %s", e)
         stats["kg_errors"].append(f"surface: {e}")
 
     # Step 5: Extract semantic entities using LLM (for proper GraphRAG)
     await _kg_step_semantic_entities(
-        stats, collection_uuid, llm_provider, embedder, changed_doc_ids
+        stats, collection_uuid, llm_provider, embedder, changed_doc_ids, deleted_file_paths
     )
 
     # Step 6: Detect communities using Leiden algorithm (GraphRAG)
     await _kg_step_communities(stats, collection_uuid)
 
     # Step 7: Generate community summaries and embeddings
-    await _kg_step_summaries(stats, collection_uuid, research_llm, embedder, changed_doc_ids)
+    await _kg_step_summaries(
+        stats, collection_uuid, research_llm, embedder, changed_doc_ids, deleted_file_paths
+    )
 
     return stats
 
@@ -1703,6 +1843,7 @@ async def _build_behavioral_graphs(
     collection_uuid: Any,
     source_uuid: Any,
     files: list[tuple[str, str]],
+    deleted_file_paths: list[str] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
     """Extract tests, UI, and flows and build their knowledge graph nodes/edges."""
     from contextmine_core.analyzer.extractors.flows import build_flows_graph, synthesize_user_flows
@@ -1711,14 +1852,58 @@ async def _build_behavioral_graphs(
         extract_tests_from_files,
     )
     from contextmine_core.analyzer.extractors.ui import build_ui_graph, extract_ui_from_files
+    from contextmine_core.knowledge.builder import cleanup_scoped_knowledge_nodes
+    from contextmine_core.models import KnowledgeNodeKind
 
     deep_warnings: list[str] = []
+    cleanup_paths = {
+        path.strip() for path, _content in files if isinstance(path, str) and path.strip()
+    }
+    cleanup_paths.update(
+        path.strip()
+        for path in (deleted_file_paths or [])
+        if isinstance(path, str) and path.strip()
+    )
+    cleanup_kinds = {
+        KnowledgeNodeKind.TEST_SUITE,
+        KnowledgeNodeKind.TEST_CASE,
+        KnowledgeNodeKind.TEST_FIXTURE,
+    }
+    if settings.digital_twin_ui_enabled:
+        cleanup_kinds.update(
+            {
+                KnowledgeNodeKind.UI_ROUTE,
+                KnowledgeNodeKind.UI_VIEW,
+                KnowledgeNodeKind.UI_COMPONENT,
+                KnowledgeNodeKind.INTERFACE_CONTRACT,
+            }
+        )
+    if settings.digital_twin_flows_enabled:
+        cleanup_kinds.update(
+            {
+                KnowledgeNodeKind.USER_FLOW,
+                KnowledgeNodeKind.FLOW_STEP,
+            }
+        )
+
+    cleanup_stats = {"nodes_deleted": 0, "evidence_deleted": 0}
+    if cleanup_paths and cleanup_kinds:
+        cleanup_stats = await cleanup_scoped_knowledge_nodes(
+            session,
+            collection_uuid,
+            kinds=cleanup_kinds,
+            target_file_paths=cleanup_paths,
+        )
+
     test_extractions = (
         extract_tests_from_files(files) if settings.digital_twin_behavioral_enabled else []
     )
     ui_extractions = extract_ui_from_files(files) if settings.digital_twin_ui_enabled else []
 
-    behavioral_stats: dict[str, int] = {}
+    behavioral_stats: dict[str, int] = {
+        "behavioral_nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+        "behavioral_evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+    }
     if test_extractions:
         behavioral_stats.update(
             await build_tests_graph(
@@ -1748,6 +1933,7 @@ async def _materialize_behavioral_layers_impl(
     collection_id: str,
     scenario_id: str | None,
     source_version_id: str | None,
+    deleted_file_paths: list[str] | None = None,
 ) -> dict[str, object]:
     """Build deep behavioral layers (tests/ui/flows) and append twin status metadata."""
     import uuid as uuid_module
@@ -1804,6 +1990,7 @@ async def _materialize_behavioral_layers_impl(
             collection_uuid,
             source_uuid,
             files,
+            deleted_file_paths,
         )
 
         if scenario_uuid:
@@ -1848,6 +2035,7 @@ async def materialize_behavioral_layers(
     collection_id: str,
     scenario_id: str | None = None,
     source_version_id: str | None = None,
+    deleted_file_paths: list[str] | None = None,
 ) -> dict[str, object]:
     """Task wrapper for behavioral layer extraction."""
     try:
@@ -1856,6 +2044,7 @@ async def materialize_behavioral_layers(
             collection_id=collection_id,
             scenario_id=scenario_id,
             source_version_id=source_version_id,
+            deleted_file_paths=deleted_file_paths,
         )
     except Exception as exc:
         import uuid as uuid_module
@@ -2272,6 +2461,7 @@ class _SyncGitHubCtx:
 
     # Document processing
     docs_to_chunk: list[tuple[str, str, str | None]] = field(default_factory=list)
+    deleted_file_paths: list[str] = field(default_factory=list)
     doc_acc: _DocProcessingAccumulator | None = None
     unchunked_docs_count: int = 0
 
@@ -3123,6 +3313,7 @@ async def _gh_phase_diff_and_index_documents(ctx: _SyncGitHubCtx) -> None:
     )  # type: ignore[misc]
 
     changed_files, deleted_files = get_changed_files(ctx.git_repo, ctx.old_sha, ctx.new_sha)
+    ctx.deleted_file_paths = list(deleted_files)
 
     total_files = len(changed_files) + len(deleted_files)
     await update_progress_artifact(  # type: ignore[misc]
@@ -3263,6 +3454,7 @@ async def _gh_phase_build_knowledge_graph(ctx: _SyncGitHubCtx) -> None:
                 source_id=str(ctx.source.id),
                 collection_id=collection_id_str,
                 changed_doc_ids=changed_doc_ids,
+                deleted_file_paths=ctx.deleted_file_paths,
             ),
             timeout=kg_timeout_seconds,
         )
@@ -3486,6 +3678,11 @@ def _build_sync_run_stats(ctx: _SyncGitHubCtx) -> dict[str, Any]:
         "kg_jobs": ctx.kg_stats.get("kg_jobs", 0),
         "kg_semantic_entities": ctx.kg_stats.get("kg_semantic_entities", 0),
         "kg_semantic_relationships": ctx.kg_stats.get("kg_semantic_relationships", 0),
+        "kg_semantic_quality": dict(ctx.kg_stats.get("kg_semantic_quality", {}) or {}),
+        "kg_semantic_quality_status": ctx.kg_stats.get("kg_semantic_quality_status", "unknown"),
+        "kg_semantic_quality_warnings": list(
+            ctx.kg_stats.get("kg_semantic_quality_warnings", []) or []
+        ),
         "kg_communities_l0": ctx.kg_stats.get("kg_communities_l0", 0),
         "kg_communities_l1": ctx.kg_stats.get("kg_communities_l1", 0),
         "kg_communities_l2": ctx.kg_stats.get("kg_communities_l2", 0),
@@ -3588,6 +3785,7 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
                 collection_id=collection_id_str,
                 scenario_id=scenario_for_behavioral,
                 source_version_id=(str(ctx.source_version_id) if ctx.source_version_id else None),
+                deleted_file_paths=ctx.deleted_file_paths,
             )
         )
         background.add_done_callback(_log_background_task_failure)
@@ -3909,6 +4107,7 @@ async def sync_web_source(
                 collection_id=collection_id_str,
                 scenario_id=scenario_for_behavioral,
                 source_version_id=None,
+                deleted_file_paths=None,
             )
         )
         background.add_done_callback(_log_background_task_failure)

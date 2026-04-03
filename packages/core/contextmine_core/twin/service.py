@@ -136,6 +136,21 @@ async def get_or_create_as_is_scenario(
     return scenario
 
 
+async def get_scenario_provenance_node_ids(
+    session: AsyncSession,
+    scenario_id: UUID,
+) -> set[UUID]:
+    """Return active knowledge-node provenance IDs that are present in a scenario."""
+    rows = await session.execute(
+        select(TwinNode.provenance_node_id).where(
+            TwinNode.scenario_id == scenario_id,
+            TwinNode.is_active.is_(True),
+            TwinNode.provenance_node_id.is_not(None),
+        )
+    )
+    return {node_id for node_id in rows.scalars().all() if node_id is not None}
+
+
 async def seed_scenario_from_knowledge_graph(
     session: AsyncSession,
     scenario_id: UUID,

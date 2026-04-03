@@ -75,6 +75,7 @@ class FlowStepDef:
     endpoint_path: str | None = None
     symbol_hints: list[str] = field(default_factory=list)
     test_case_refs: list[str] = field(default_factory=list)
+    source_files: list[str] = field(default_factory=list)
     evidence_ids: list[str] = field(default_factory=list)
     natural_key: str = ""
 
@@ -85,6 +86,7 @@ class UserFlowDef:
 
     name: str
     route_path: str
+    source_files: list[str] = field(default_factory=list)
     evidence_ids: list[str] = field(default_factory=list)
     steps: list[FlowStepDef] = field(default_factory=list)
     natural_key: str = ""
@@ -99,10 +101,11 @@ class FlowSynthesis:
 
 def _collect_route_hints_from_ui(
     ui_extractions: list[UIExtraction],
-) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]]]:
     """Collect symbol and navigation hints per route from UI extractions."""
     route_to_symbol_hints: dict[str, list[str]] = {}
     route_to_navigation_hints: dict[str, list[str]] = {}
+    route_to_source_files: dict[str, list[str]] = {}
 
     for ui in ui_extractions:
         if not ui.routes:
@@ -112,26 +115,33 @@ def _collect_route_hints_from_ui(
         for route in ui.routes:
             route_to_symbol_hints.setdefault(route.path, [])
             route_to_navigation_hints.setdefault(route.path, [])
+            route_to_source_files.setdefault(route.path, [])
+            if route.file_path:
+                route_to_source_files[route.path].append(route.file_path)
             candidate = route.view_name_hint or default_view_name
             if candidate:
                 view = views_by_name.get(candidate)
                 if view is not None:
                     route_to_symbol_hints[route.path].extend(view.symbol_hints)
                     route_to_navigation_hints[route.path].extend(view.navigation_targets)
+                    if view.file_path:
+                        route_to_source_files[route.path].append(view.file_path)
 
-    return route_to_symbol_hints, route_to_navigation_hints
+    return route_to_symbol_hints, route_to_navigation_hints, route_to_source_files
 
 
 def _collect_symbol_test_refs(
     test_extractions: list[TestsExtraction],
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """Map symbol hints to test case natural keys."""
     symbol_to_test_refs: dict[str, list[str]] = {}
+    symbol_to_test_files: dict[str, list[str]] = {}
     for test_file in test_extractions:
         for case in test_file.cases:
             for symbol_hint in case.symbol_hints:
                 symbol_to_test_refs.setdefault(symbol_hint.lower(), []).append(case.natural_key)
-    return symbol_to_test_refs
+                symbol_to_test_files.setdefault(symbol_hint.lower(), []).append(case.file_path)
+    return symbol_to_test_refs, symbol_to_test_files
 
 
 def synthesize_user_flows(
@@ -139,8 +149,10 @@ def synthesize_user_flows(
     test_extractions: list[TestsExtraction],
 ) -> FlowSynthesis:
     """Build deterministic user flows from explicit UI and test symbol evidence."""
-    route_to_symbol_hints, route_to_navigation_hints = _collect_route_hints_from_ui(ui_extractions)
-    symbol_to_test_refs = _collect_symbol_test_refs(test_extractions)
+    route_to_symbol_hints, route_to_navigation_hints, route_to_source_files = (
+        _collect_route_hints_from_ui(ui_extractions)
+    )
+    symbol_to_test_refs, symbol_to_test_files = _collect_symbol_test_refs(test_extractions)
 
     synthesis = FlowSynthesis()
     for route, symbol_hints in sorted(route_to_symbol_hints.items()):
@@ -160,9 +172,11 @@ def synthesize_user_flows(
             )
         )
         flow_name = f"Flow {route}"
+        flow_source_files = list(dict.fromkeys(route_to_source_files.get(route, [])))
         flow = UserFlowDef(
             name=flow_name,
             route_path=route,
+            source_files=flow_source_files,
             natural_key=f"user_flow:{route}:{_hash(route)}",
         )
         flow.steps.append(
@@ -170,6 +184,7 @@ def synthesize_user_flows(
                 name=f"Open {route}",
                 order=1,
                 endpoint_path=None,
+                source_files=list(flow_source_files),
                 natural_key=f"flow_step:{flow.natural_key}:1",
             )
         )
@@ -183,6 +198,11 @@ def synthesize_user_flows(
                     endpoint_path=None,
                     symbol_hints=[symbol],
                     test_case_refs=symbol_to_test_refs.get(symbol.lower(), []),
+                    source_files=list(
+                        dict.fromkeys(
+                            flow_source_files + symbol_to_test_files.get(symbol.lower(), [])
+                        )
+                    ),
                     natural_key=f"flow_step:{flow.natural_key}:{next_order}:{_hash(symbol)}",
                 )
             )
@@ -194,6 +214,7 @@ def synthesize_user_flows(
                     name=_sanitize_step_name("Navigate to", target),
                     order=next_order,
                     endpoint_path=None,
+                    source_files=list(flow_source_files),
                     natural_key=f"flow_step:{flow.natural_key}:{next_order}:{_hash(target)}",
                 )
             )
@@ -245,6 +266,7 @@ async def build_flows_graph(
     for flow in synthesis.flows:
         flow_meta = {
             "route_path": flow.route_path,
+            "source_files": flow.source_files,
             **_provenance(mode="inferred", extractor=_EXTRACTOR_VERSION, confidence=0.8),
         }
         flow_id = await _upsert_node(
@@ -299,6 +321,7 @@ async def _persist_flow_step(
         "endpoint_path": step.endpoint_path,
         "symbol_hints": step.symbol_hints,
         "test_case_refs": step.test_case_refs,
+        "source_files": step.source_files,
         **_provenance(
             mode="inferred" if step.symbol_hints else "deterministic",
             extractor=_EXTRACTOR_VERSION,

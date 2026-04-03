@@ -18,7 +18,11 @@ from contextmine_core.models import (
     MetricSnapshot,
     TwinScenario,
 )
-from contextmine_core.twin import GraphProjection, get_full_scenario_graph
+from contextmine_core.twin import (
+    GraphProjection,
+    get_full_scenario_graph,
+    get_scenario_provenance_node_ids,
+)
 from contextmine_core.twin.grouping import canonical_file_path_from_meta, derive_arch_group
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -431,10 +435,14 @@ async def build_architecture_facts(
         )
     )
 
+    scenario_knowledge_node_ids = await get_scenario_provenance_node_ids(session, scenario_id)
     kg_nodes = (
         (
             await session.execute(
-                select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_id)
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.id.in_(scenario_knowledge_node_ids),
+                )
             )
         )
         .scalars()
@@ -488,7 +496,11 @@ async def build_architecture_facts(
     kg_edges = (
         (
             await session.execute(
-                select(KnowledgeEdge).where(KnowledgeEdge.collection_id == collection_id)
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.source_node_id.in_(scenario_knowledge_node_ids),
+                    KnowledgeEdge.target_node_id.in_(scenario_knowledge_node_ids),
+                )
             )
         )
         .scalars()

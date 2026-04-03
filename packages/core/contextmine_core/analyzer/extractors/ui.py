@@ -1924,8 +1924,9 @@ async def _link_symbol_contracts(
     """Create INTERFACE_CONTRACT nodes from resolved symbol refs and link to endpoints."""
     linked_endpoint_ids: set[UUID] = set()
     for ref in resolved_symbol_refs:
-        contract_key = f"interface_contract:{view.name}:{ref.symbol_node_id}"
+        contract_key = f"interface_contract:{view.file_path}:{view.name}:{ref.symbol_node_id}"
         contract_meta = {
+            "file_path": view.file_path,
             "source_view": view.name,
             "symbol_node_id": str(ref.symbol_node_id),
             "symbol_name": ref.symbol_name,
@@ -1989,8 +1990,11 @@ async def _link_endpoint_hint_contracts(
             continue
 
         method_token = method_hint or "any"
-        contract_key = f"interface_contract:{view.name}:endpoint:{method_token}:{path_hint}"
+        contract_key = (
+            f"interface_contract:{view.file_path}:{view.name}:endpoint:{method_token}:{path_hint}"
+        )
         contract_meta = {
+            "file_path": view.file_path,
             "source_view": view.name,
             "endpoint_hint": endpoint_hint,
             "endpoint_path": path_hint,

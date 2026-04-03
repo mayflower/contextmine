@@ -15,6 +15,7 @@ class TestTwinErmView:
         response = await client.get("/api/twin/collections/some-id/views/erm")
         assert response.status_code == 401
 
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -25,6 +26,7 @@ class TestTwinErmView:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         client: AsyncClient,
     ) -> None:
         collection_id = uuid.uuid4()
@@ -81,6 +83,12 @@ class TestTwinErmView:
             "nullable": False,
             "primary_key": True,
             "foreign_key": None,
+        }
+        mock_get_scenario_knowledge_node_ids.return_value = {
+            table_node.id,
+            id_column.id,
+            account_id_column.id,
+            account_pk_column.id,
         }
 
         table_has_id = MagicMock()

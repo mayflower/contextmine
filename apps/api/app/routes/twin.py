@@ -82,6 +82,7 @@ from contextmine_core.twin import (
     get_knowledge_islands_payload,
     get_or_create_as_is_scenario,
     get_scenario_graph,
+    get_scenario_provenance_node_ids,
     get_temporal_coupling_payload,
     get_variable_flow_multi,
     list_calls_multi,
@@ -335,6 +336,56 @@ async def _resolve_view_scenario(
         return scenario
 
     return await get_or_create_as_is_scenario(db, collection_id, user_id=None)
+
+
+async def _get_scenario_knowledge_node_ids(
+    db: Any,
+    scenario_id: uuid.UUID,
+) -> set[uuid.UUID]:
+    """Return the provenance-backed knowledge nodes that remain active in the scenario."""
+    return await get_scenario_provenance_node_ids(db, scenario_id)
+
+
+async def _load_scenario_knowledge_nodes(
+    db: Any,
+    *,
+    collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID],
+    include_kinds: set[KnowledgeNodeKind] | None = None,
+    exclude_kinds: set[KnowledgeNodeKind] | None = None,
+) -> list[KnowledgeNode]:
+    """Load scenario-scoped knowledge nodes."""
+    if not scenario_node_ids:
+        return []
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id == collection_id,
+        KnowledgeNode.id.in_(scenario_node_ids),
+    )
+    if include_kinds:
+        stmt = stmt.where(KnowledgeNode.kind.in_(include_kinds))
+    if exclude_kinds:
+        stmt = stmt.where(~KnowledgeNode.kind.in_(exclude_kinds))
+    return ((await db.execute(stmt)).scalars().all()) or []
+
+
+async def _load_scenario_knowledge_edges(
+    db: Any,
+    *,
+    collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID],
+    include_kinds: set[KnowledgeEdgeKind] | None = None,
+) -> list[KnowledgeEdge]:
+    """Load scenario-scoped knowledge edges whose endpoints are both in scope."""
+    if not scenario_node_ids:
+        return []
+    stmt = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id == collection_id,
+        KnowledgeEdge.source_node_id.in_(scenario_node_ids),
+        KnowledgeEdge.target_node_id.in_(scenario_node_ids),
+    )
+    if include_kinds:
+        stmt = stmt.where(KnowledgeEdge.kind.in_(include_kinds))
+    return ((await db.execute(stmt)).scalars().all()) or []
 
 
 def _parse_layer(layer: str | None) -> TwinLayer | None:
@@ -1530,21 +1581,20 @@ USER_FLOWS_RECOVERY_EDGE_KINDS: set[KnowledgeEdgeKind] = {
 
 
 async def _try_symbol_graph(
-    db: Any, collection_id: uuid.UUID
+    db: Any,
+    collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID] | None = None,
 ) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
     """Attempt to load SYMBOL nodes with semantic dependency edges."""
-    symbol_nodes = (
-        (
-            await db.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id == collection_id,
-                    KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    node_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id == collection_id,
+        KnowledgeNode.kind == KnowledgeNodeKind.SYMBOL,
     )
+    if scenario_node_ids is not None:
+        if not scenario_node_ids:
+            return None
+        node_stmt = node_stmt.where(KnowledgeNode.id.in_(scenario_node_ids))
+    symbol_nodes = ((await db.execute(node_stmt)).scalars().all()) or []
     if not symbol_nodes:
         return None
     symbol_node_ids = {node.id for node in symbol_nodes}
@@ -1573,21 +1623,20 @@ async def _try_symbol_graph(
 
 
 async def _try_semantic_graph(
-    db: Any, collection_id: uuid.UUID
+    db: Any,
+    collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID] | None = None,
 ) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
     """Attempt to load semantic/architecture nodes with non-code edges."""
-    semantic_nodes = (
-        (
-            await db.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id == collection_id,
-                    KnowledgeNode.kind.in_(GRAPHRAG_SEMANTIC_NODE_KINDS),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    node_stmt = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id == collection_id,
+        KnowledgeNode.kind.in_(GRAPHRAG_SEMANTIC_NODE_KINDS),
     )
+    if scenario_node_ids is not None:
+        if not scenario_node_ids:
+            return None
+        node_stmt = node_stmt.where(KnowledgeNode.id.in_(scenario_node_ids))
+    semantic_nodes = ((await db.execute(node_stmt)).scalars().all()) or []
     if not semantic_nodes:
         return None
     semantic_node_ids = {node.id for node in semantic_nodes}
@@ -1611,21 +1660,23 @@ async def _try_semantic_graph(
 
 
 async def _try_recovery_graph(
-    db: Any, collection_id: uuid.UUID
+    db: Any,
+    collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID] | None = None,
 ) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]] | None:
     """Attempt to load connectivity recovery graph (domain/UI/flow/test/code links)."""
-    recovery_edges = (
-        (
-            await db.execute(
-                select(KnowledgeEdge).where(
-                    KnowledgeEdge.collection_id == collection_id,
-                    KnowledgeEdge.kind.in_(GRAPHRAG_RECOVERY_EDGE_KINDS),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    edge_stmt = select(KnowledgeEdge).where(
+        KnowledgeEdge.collection_id == collection_id,
+        KnowledgeEdge.kind.in_(GRAPHRAG_RECOVERY_EDGE_KINDS),
     )
+    if scenario_node_ids is not None:
+        if not scenario_node_ids:
+            return None
+        edge_stmt = edge_stmt.where(
+            KnowledgeEdge.source_node_id.in_(scenario_node_ids),
+            KnowledgeEdge.target_node_id.in_(scenario_node_ids),
+        )
+    recovery_edges = ((await db.execute(edge_stmt)).scalars().all()) or []
     if not recovery_edges:
         return None
     recovery_node_ids = {edge.source_node_id for edge in recovery_edges} | {
@@ -1660,6 +1711,7 @@ async def _try_recovery_graph(
 async def _load_community_graph(
     db: Any,
     collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID] | None = None,
 ) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], str]:
     """Load preferred graph for community/process views.
 
@@ -1669,36 +1721,48 @@ async def _load_community_graph(
     3. Connectivity recovery graph (domain/UI/flow/test/code links)
     4. Fallback to all knowledge nodes/edges
     """
-    result = await _try_symbol_graph(db, collection_id)
+    result = await _try_symbol_graph(db, collection_id, scenario_node_ids)
     if result:
         return result[0], result[1], "symbol"
 
-    result = await _try_semantic_graph(db, collection_id)
+    result = await _try_semantic_graph(db, collection_id, scenario_node_ids)
     if result:
         return result[0], result[1], "semantic"
 
-    result = await _try_recovery_graph(db, collection_id)
+    result = await _try_recovery_graph(db, collection_id, scenario_node_ids)
     if result:
         return result[0], result[1], "connectivity_recovery"
 
-    nodes = (
-        (
-            await db.execute(
-                select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_id)
+    if scenario_node_ids is None:
+        nodes = (
+            (
+                await db.execute(
+                    select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_id)
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
-    edges = (
-        (
-            await db.execute(
-                select(KnowledgeEdge).where(KnowledgeEdge.collection_id == collection_id)
+        edges = (
+            (
+                await db.execute(
+                    select(KnowledgeEdge).where(KnowledgeEdge.collection_id == collection_id)
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
+    else:
+        nodes = await _load_scenario_knowledge_nodes(
+            db,
+            collection_id=collection_id,
+            scenario_node_ids=scenario_node_ids,
+        )
+        edges = await _load_scenario_knowledge_edges(
+            db,
+            collection_id=collection_id,
+            scenario_node_ids=scenario_node_ids,
+        )
     return nodes, edges, "knowledge_fallback"
 
 
@@ -1786,13 +1850,16 @@ async def _build_structural_community_points(
     db: Any,
     *,
     collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID],
     include_node_kinds: set[KnowledgeNodeKind] | None,
     exclude_node_kinds: set[KnowledgeNodeKind] | None,
     include_edge_kinds: set[KnowledgeEdgeKind] | None,
     page: int,
     limit: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    graph_nodes, graph_edges, graph_source = await _load_community_graph(db, collection_id)
+    graph_nodes, graph_edges, graph_source = await _load_community_graph(
+        db, collection_id, scenario_node_ids
+    )
     warnings = _community_graph_source_warnings(graph_source)
 
     if include_node_kinds:
@@ -2020,6 +2087,7 @@ async def _resolve_knowledge_node(
     db: Any,
     collection_id: uuid.UUID,
     node_ref: str,
+    allowed_node_ids: set[uuid.UUID] | None = None,
 ) -> KnowledgeNode | None:
     node: KnowledgeNode | None = None
     try:
@@ -2028,31 +2096,31 @@ async def _resolve_knowledge_node(
         node_uuid = None
 
     if node_uuid:
-        node = (
-            await db.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.collection_id == collection_id,
-                    KnowledgeNode.id == node_uuid,
-                )
-            )
-        ).scalar_one_or_none()
+        node_filters = [
+            KnowledgeNode.collection_id == collection_id,
+            KnowledgeNode.id == node_uuid,
+        ]
+        if allowed_node_ids is not None:
+            if not allowed_node_ids:
+                return None
+            node_filters.append(KnowledgeNode.id.in_(allowed_node_ids))
+        node = (await db.execute(select(KnowledgeNode).where(*node_filters))).scalar_one_or_none()
     if node:
         return node
 
-    return (
-        (
-            await db.execute(
-                select(KnowledgeNode)
-                .where(
-                    KnowledgeNode.collection_id == collection_id,
-                    KnowledgeNode.natural_key == node_ref,
-                )
-                .limit(1)
-            )
+    node_stmt = (
+        select(KnowledgeNode)
+        .where(
+            KnowledgeNode.collection_id == collection_id,
+            KnowledgeNode.natural_key == node_ref,
         )
-        .scalars()
-        .first()
+        .limit(1)
     )
+    if allowed_node_ids is not None:
+        if not allowed_node_ids:
+            return None
+        node_stmt = node_stmt.where(KnowledgeNode.id.in_(allowed_node_ids))
+    return (await db.execute(node_stmt)).scalars().first()
 
 
 @router.post(
@@ -3453,30 +3521,18 @@ async def erm_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
-
-        table_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
+        table_nodes = await _load_scenario_knowledge_nodes(
+            db,
+            collection_id=collection_uuid,
+            scenario_node_ids=scenario_node_ids,
+            include_kinds={KnowledgeNodeKind.DB_TABLE},
         )
-        column_nodes = (
-            (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.kind == KnowledgeNodeKind.DB_COLUMN,
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        column_nodes = await _load_scenario_knowledge_nodes(
+            db,
+            collection_id=collection_uuid,
+            scenario_node_ids=scenario_node_ids,
+            include_kinds={KnowledgeNodeKind.DB_COLUMN},
         )
 
         erm_result = await _assemble_erm_payload(
@@ -4008,13 +4064,19 @@ def _graphrag_status(
 def _build_graphrag_node_query(
     collection_uuid: uuid.UUID,
     *,
+    scenario_node_ids: set[uuid.UUID],
     include_node_kinds: set[KnowledgeNodeKind] | None,
     exclude_node_kinds: set[KnowledgeNodeKind] | None,
     community_id: str | None,
     communities: dict[str, dict[str, Any]],
 ) -> Any | None:
     """Build the KnowledgeNode query for graphrag. Returns None if the community is empty."""
-    node_query = select(KnowledgeNode).where(KnowledgeNode.collection_id == collection_uuid)
+    if not scenario_node_ids:
+        return None
+    node_query = select(KnowledgeNode).where(
+        KnowledgeNode.collection_id == collection_uuid,
+        KnowledgeNode.id.in_(scenario_node_ids),
+    )
     if include_node_kinds:
         node_query = node_query.where(KnowledgeNode.kind.in_(include_node_kinds))
     if exclude_node_kinds:
@@ -4043,7 +4105,7 @@ def _empty_graphrag_response(
         "entity_level": "knowledge_node",
         "community_mode": community_mode,
         "community_id": community_id,
-        "status": {"status": "unavailable", "reason": "no_knowledge_graph"},
+        "status": {"status": "unavailable", "reason": "no_graphrag_semantic_graph"},
         "graph": {
             "nodes": [],
             "edges": [],
@@ -4091,12 +4153,13 @@ async def graphrag_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
         community_by_node_id: dict[uuid.UUID, str] = {}
         communities: dict[str, dict[str, Any]] = {}
         if resolved_community_mode != "none" or resolved_community_id:
             community_nodes, community_edges, _graph_source = await _load_community_graph(
-                db, collection_uuid
+                db, collection_uuid, scenario_node_ids
             )
             community_by_node_id, communities = _compute_symbol_communities(
                 community_nodes, community_edges
@@ -4107,6 +4170,7 @@ async def graphrag_view(
 
         node_query = _build_graphrag_node_query(
             collection_uuid,
+            scenario_node_ids=scenario_node_ids,
             include_node_kinds=include_node_kinds,
             exclude_node_kinds=exclude_node_kinds,
             community_id=resolved_community_id,
@@ -4215,9 +4279,10 @@ async def graphrag_communities_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
         community_nodes, community_edges, _graph_source = await _load_community_graph(
-            db, collection_uuid
+            db, collection_uuid, scenario_node_ids
         )
         _, communities = _compute_symbol_communities(community_nodes, community_edges)
         ordered = sorted(
@@ -4269,6 +4334,7 @@ async def _load_community_members_and_vectors(
     db: Any,
     collection_uuid: uuid.UUID,
     community_ids: list[uuid.UUID],
+    allowed_node_ids: set[uuid.UUID] | None = None,
 ) -> tuple[dict[uuid.UUID, list[KnowledgeNode]], dict[uuid.UUID, list[float]]]:
     """Load community members and their embedding vectors."""
     members_by_community: dict[uuid.UUID, list[KnowledgeNode]] = defaultdict(list)
@@ -4277,7 +4343,7 @@ async def _load_community_members_and_vectors(
     if not community_ids:
         return members_by_community, vectors_by_community
 
-    member_rows = await db.execute(
+    member_stmt = (
         select(CommunityMember, KnowledgeNode)
         .join(KnowledgeNode, CommunityMember.node_id == KnowledgeNode.id)
         .where(CommunityMember.community_id.in_(community_ids))
@@ -4287,6 +4353,11 @@ async def _load_community_members_and_vectors(
             KnowledgeNode.name,
         )
     )
+    if allowed_node_ids is not None:
+        if not allowed_node_ids:
+            return members_by_community, vectors_by_community
+        member_stmt = member_stmt.where(KnowledgeNode.id.in_(allowed_node_ids))
+    member_rows = await db.execute(member_stmt)
     for member, node in member_rows.all():
         members_by_community[member.community_id].append(node)
 
@@ -4365,6 +4436,7 @@ async def _build_semantic_community_points(
     db: Any,
     *,
     collection_id: uuid.UUID,
+    scenario_node_ids: set[uuid.UUID],
     include_node_kinds: set[KnowledgeNodeKind] | None,
     exclude_node_kinds: set[KnowledgeNodeKind] | None,
     include_edge_kinds: set[KnowledgeEdgeKind] | None,
@@ -4391,6 +4463,7 @@ async def _build_semantic_community_points(
         points, structural_warnings = await _build_structural_community_points(
             db,
             collection_id=collection_id,
+            scenario_node_ids=scenario_node_ids,
             include_node_kinds=include_node_kinds,
             exclude_node_kinds=exclude_node_kinds,
             include_edge_kinds=include_edge_kinds,
@@ -4402,18 +4475,23 @@ async def _build_semantic_community_points(
         return points, warnings
 
     selected_level = min(c.level for c in community_rows)
-    selected_communities = sorted(
+    level_communities = sorted(
         [c for c in community_rows if c.level == selected_level],
         key=lambda c: (c.title, str(c.id)),
     )
+    community_ids = [c.id for c in level_communities]
+    members_by_community, vectors_by_community = await _load_community_members_and_vectors(
+        db,
+        collection_id,
+        community_ids,
+        allowed_node_ids=scenario_node_ids,
+    )
+    selected_communities = [
+        community for community in level_communities if members_by_community.get(community.id)
+    ]
     if page > 0 or limit > 0:
         start = page * limit
         selected_communities = selected_communities[start : start + limit]
-
-    community_ids = [c.id for c in selected_communities]
-    members_by_community, vectors_by_community = await _load_community_members_and_vectors(
-        db, collection_id, community_ids
-    )
 
     points: list[dict[str, Any]] = []
     for community in selected_communities:
@@ -4475,6 +4553,7 @@ async def semantic_map_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
         points: list[dict[str, Any]] = []
         warnings: list[str] = []
@@ -4483,6 +4562,7 @@ async def semantic_map_view(
             points, structural_warnings = await _build_structural_community_points(
                 db,
                 collection_id=collection_uuid,
+                scenario_node_ids=scenario_node_ids,
                 include_node_kinds=include_node_kinds,
                 exclude_node_kinds=exclude_node_kinds,
                 include_edge_kinds=include_edge_kinds,
@@ -4495,6 +4575,7 @@ async def semantic_map_view(
             points, semantic_warnings = await _build_semantic_community_points(
                 db,
                 collection_id=collection_uuid,
+                scenario_node_ids=scenario_node_ids,
                 include_node_kinds=include_node_kinds,
                 exclude_node_kinds=exclude_node_kinds,
                 include_edge_kinds=include_edge_kinds,
@@ -4609,11 +4690,22 @@ async def graphrag_path_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
-        from_node = await _resolve_knowledge_node(db, collection_uuid, from_node_id)
+        from_node = await _resolve_knowledge_node(
+            db,
+            collection_uuid,
+            from_node_id,
+            allowed_node_ids=scenario_node_ids,
+        )
         if not from_node:
             raise HTTPException(status_code=404, detail="from_node_id not found")
-        to_node = await _resolve_knowledge_node(db, collection_uuid, to_node_id)
+        to_node = await _resolve_knowledge_node(
+            db,
+            collection_uuid,
+            to_node_id,
+            allowed_node_ids=scenario_node_ids,
+        )
         if not to_node:
             raise HTTPException(status_code=404, detail="to_node_id not found")
 
@@ -4623,6 +4715,7 @@ async def graphrag_path_view(
             to_node_id=to_node.id,
             collection_id=collection_uuid,
             max_hops=max_hops,
+            allowed_node_ids=scenario_node_ids,
         )
 
         status = "found" if context.entities else "not_found"
@@ -4633,6 +4726,7 @@ async def graphrag_path_view(
                 to_node_id=to_node.id,
                 collection_id=collection_uuid,
                 max_hops=min(max_hops + 4, 20),
+                allowed_node_ids=scenario_node_ids,
             )
             if expanded.entities:
                 status = "truncated"
@@ -4694,8 +4788,11 @@ async def graphrag_processes_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
-        process_nodes, graph_edges, _graph_source = await _load_community_graph(db, collection_uuid)
+        process_nodes, graph_edges, _graph_source = await _load_community_graph(
+            db, collection_uuid, scenario_node_ids
+        )
         community_by_node_id, _ = _compute_symbol_communities(process_nodes, graph_edges)
         processes = _detect_processes(process_nodes, graph_edges, community_by_node_id)
         return {
@@ -4738,9 +4835,10 @@ async def graphrag_process_detail_view(
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
         scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
 
         process_nodes, source_edges, _graph_source = await _load_community_graph(
-            db, collection_uuid
+            db, collection_uuid, scenario_node_ids
         )
         community_by_node_id, _ = _compute_symbol_communities(process_nodes, source_edges)
         processes = _detect_processes(process_nodes, source_edges, community_by_node_id)
@@ -4868,39 +4966,14 @@ async def graphrag_evidence_view(
 
     async with get_db_session() as db:
         await _ensure_member(db, collection_uuid, user_id)
-        await _resolve_view_scenario(db, collection_uuid, scenario_id)
-
-        node: KnowledgeNode | None = None
-        try:
-            node_uuid = uuid.UUID(node_id)
-        except ValueError:
-            node_uuid = None
-
-        if node_uuid:
-            node = (
-                await db.execute(
-                    select(KnowledgeNode).where(
-                        KnowledgeNode.collection_id == collection_uuid,
-                        KnowledgeNode.id == node_uuid,
-                    )
-                )
-            ).scalar_one_or_none()
-
-        if not node:
-            node = (
-                (
-                    await db.execute(
-                        select(KnowledgeNode)
-                        .where(
-                            KnowledgeNode.collection_id == collection_uuid,
-                            KnowledgeNode.natural_key == node_id,
-                        )
-                        .limit(1)
-                    )
-                )
-                .scalars()
-                .first()
-            )
+        scenario = await _resolve_view_scenario(db, collection_uuid, scenario_id)
+        scenario_node_ids = await _get_scenario_knowledge_node_ids(db, scenario.id)
+        node = await _resolve_knowledge_node(
+            db,
+            collection_uuid,
+            node_id,
+            allowed_node_ids=scenario_node_ids,
+        )
 
         if not node:
             raise HTTPException(status_code=404, detail="Knowledge node not found")

@@ -9,7 +9,9 @@ This module provides:
 from contextmine_core.knowledge.builder import (
     GraphBuildStats,
     build_knowledge_graph_for_source,
+    cleanup_orphan_evidence,
     cleanup_orphan_nodes,
+    cleanup_scoped_knowledge_nodes,
 )
 from contextmine_core.knowledge.communities import (
     Community,
@@ -48,7 +50,9 @@ __all__ = [
     # Builder functions
     "GraphBuildStats",
     "build_knowledge_graph_for_source",
+    "cleanup_orphan_evidence",
     "cleanup_orphan_nodes",
+    "cleanup_scoped_knowledge_nodes",
     # Community detection
     "Community",
     "HierarchicalCommunities",

@@ -165,6 +165,7 @@ class TestTwinViewRoutes:
         assert response.status_code == 422
 
     @patch("app.routes.twin._compute_symbol_communities")
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -175,6 +176,7 @@ class TestTwinViewRoutes:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         mock_compute_symbol_communities: Any,
         client: AsyncClient,
     ) -> None:
@@ -196,6 +198,7 @@ class TestTwinViewRoutes:
         symbol_node.name = "CreateInvoice"
         symbol_node.natural_key = "symbol:src/billing/invoice.py:create_invoice"
         symbol_node.meta = {"file_path": "src/billing/invoice.py"}
+        mock_get_scenario_knowledge_node_ids.return_value = {symbol_node.id}
 
         semantic_nodes_result = MagicMock()
         semantic_nodes_result.scalars.return_value.all.return_value = []
@@ -263,6 +266,7 @@ class TestTwinViewRoutes:
         assert payload["thresholds"]["semantic_duplication_max_source_overlap"] == 0.35
         assert payload["thresholds"]["misplaced_min_dominant_ratio"] == 0.6
 
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -273,6 +277,7 @@ class TestTwinViewRoutes:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         client: AsyncClient,
     ) -> None:
         collection_id = str(uuid.uuid4())
@@ -293,6 +298,7 @@ class TestTwinViewRoutes:
         node.kind.value = "symbol"
         node.name = "TestSymbol"
         node.meta = {"foo": "bar"}
+        mock_get_scenario_knowledge_node_ids.return_value = {node.id}
 
         total_result = MagicMock()
         total_result.scalar_one.return_value = 1
@@ -331,6 +337,7 @@ class TestTwinViewRoutes:
 
     @patch("app.routes.twin.graphrag_trace_path", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_knowledge_node", new_callable=AsyncMock)
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -341,6 +348,7 @@ class TestTwinViewRoutes:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         mock_resolve_node: Any,
         mock_trace_path: Any,
         client: AsyncClient,
@@ -359,6 +367,7 @@ class TestTwinViewRoutes:
         to_node.natural_key = "symbol:to"
         to_node.kind.value = "symbol"
         to_node.name = "To"
+        mock_get_scenario_knowledge_node_ids.return_value = {from_node.id, to_node.id}
         mock_resolve_node.side_effect = [from_node, to_node]
 
         context = MagicMock()
@@ -941,6 +950,7 @@ class TestTwinViewRoutes:
         assert payload["summary"]["churn_avg"] is None
         assert payload["hotspots"] == []
 
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -951,6 +961,7 @@ class TestTwinViewRoutes:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         client: AsyncClient,
     ) -> None:
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
@@ -964,6 +975,7 @@ class TestTwinViewRoutes:
         node.id = node_id
         node.name = "Billing Context"
         node.kind.value = "bounded_context"
+        mock_get_scenario_knowledge_node_ids.return_value = {node_id}
 
         evidence = MagicMock()
         evidence.id = evidence_id
@@ -1001,6 +1013,7 @@ class TestTwinViewRoutes:
         assert payload["items"][0]["text_source"] == "snippet"
         assert payload["items"][0]["text"] == "Rule: paid invoices can be finalized"
 
+    @patch("app.routes.twin._get_scenario_knowledge_node_ids", new_callable=AsyncMock)
     @patch("app.routes.twin._resolve_view_scenario", new_callable=AsyncMock)
     @patch("app.routes.twin._ensure_member", new_callable=AsyncMock)
     @patch("app.routes.twin.get_db_session")
@@ -1011,6 +1024,7 @@ class TestTwinViewRoutes:
         mock_db_session_factory: Any,
         _mock_ensure_member: Any,
         mock_resolve_view_scenario: Any,
+        mock_get_scenario_knowledge_node_ids: Any,
         client: AsyncClient,
     ) -> None:
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
@@ -1024,6 +1038,7 @@ class TestTwinViewRoutes:
         node.id = node_id
         node.name = "InvoiceService"
         node.kind.value = "symbol"
+        mock_get_scenario_knowledge_node_ids.return_value = {node_id}
 
         evidence = MagicMock()
         evidence.id = uuid.uuid4()
