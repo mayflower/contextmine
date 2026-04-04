@@ -834,13 +834,38 @@ def _try_alembic_extraction(
         logger.debug("ERM extraction failed for %s: %s", file_path, e)
 
 
+async def _kg_has_db_tables(collection_uuid: object) -> bool:
+    """Check if any DB_TABLE nodes exist for this collection."""
+    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(KnowledgeNode.id)
+            .where(
+                KnowledgeNode.collection_id == collection_uuid,
+                KnowledgeNode.kind == KnowledgeNodeKind.DB_TABLE,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
 async def _kg_extract_erm(
     source_uuid: object,
     collection_uuid: object,
     research_llm: object,
+    changed_doc_ids: list[str] | None = None,
     deleted_file_paths: list[str] | None = None,
 ) -> dict[str, int]:
     """Extract ERM tables from Alembic migrations or generic schema files. Returns tables found."""
+    no_changes = changed_doc_ids is not None and len(changed_doc_ids) == 0
+    no_deletes = not deleted_file_paths
+    if no_changes and no_deletes:
+        if await _kg_has_db_tables(collection_uuid):
+            logger.info("No changed documents and DB tables exist - skipping ERM extraction")
+            return {"tables_found": 0, "nodes_deleted": 0, "evidence_deleted": 0}
+        logger.info("No changed documents but no DB tables found - running initial ERM extraction")
+
     from contextmine_core.analyzer.extractors.alembic import extract_from_alembic
     from contextmine_core.analyzer.extractors.erm import (
         ERMExtractor,
@@ -1457,6 +1482,7 @@ async def build_knowledge_graph(
             source_uuid,
             collection_uuid,
             research_llm,
+            changed_doc_ids,
             deleted_file_paths,
         )
         stats["kg_tables"] = tables_found.get("tables_found", 0)
