@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from contextmine_core.architecture.recovery_model import RecoveredArchitectureModel
+from contextmine_core.architecture.schemas import EvidenceRef
 from contextmine_core.twin.grouping import (
     canonical_file_path_from_node,
     derive_arch_group,
@@ -17,6 +19,7 @@ class GraphProjection(str, Enum):
     """Supported graph projection modes."""
 
     ARCHITECTURE = "architecture"
+    INFERRED_ARCHITECTURE = "inferred_architecture"
     CODE_FILE = "code_file"
     CODE_SYMBOL = "code_symbol"
 
@@ -239,6 +242,186 @@ def build_architecture_projection(
         grouping_strategy = "heuristic"
 
     return projected_nodes, projected_edges, grouping_strategy
+
+
+def _evidence_summary(evidence: tuple[EvidenceRef, ...]) -> list[str]:
+    refs = {
+        str(ref.ref).strip()
+        for ref in evidence
+        if isinstance(ref.ref, str) and str(ref.ref).strip()
+    }
+    return sorted(refs)
+
+
+def _component_container_memberships(
+    model: RecoveredArchitectureModel,
+) -> dict[str, set[str]]:
+    memberships_by_subject: dict[str, list[Any]] = defaultdict(list)
+    for membership in model.memberships:
+        memberships_by_subject[membership.subject_ref].append(membership)
+
+    component_to_containers: dict[str, set[str]] = defaultdict(set)
+    for memberships in memberships_by_subject.values():
+        component_ids = {
+            membership.entity_id
+            for membership in memberships
+            if membership.entity_id.startswith("component:")
+        }
+        container_ids = {
+            membership.entity_id
+            for membership in memberships
+            if membership.entity_id.startswith("container:")
+        }
+        for component_id in component_ids:
+            component_to_containers[component_id].update(container_ids)
+    return component_to_containers
+
+
+def _expanded_entity_node_ids(
+    entity_id: str,
+    component_to_containers: dict[str, set[str]],
+) -> list[str]:
+    if not entity_id.startswith("component:"):
+        return [entity_id]
+    container_ids = sorted(component_to_containers.get(entity_id) or set())
+    if not container_ids:
+        return [entity_id]
+    return [f"{entity_id}@{container_id}" for container_id in container_ids]
+
+
+def _build_entity_projection_node(
+    entity: Any,
+    *,
+    node_id: str,
+    entities_by_id: dict[str, Any],
+    membership_confidence_by_entity_id: dict[str, float],
+    entity_level: str,
+) -> dict[str, Any]:
+    meta = {
+        "confidence": max(
+            float(entity.confidence),
+            float(membership_confidence_by_entity_id.get(entity.entity_id, 0.0)),
+        ),
+        "evidence_summary": _evidence_summary(entity.evidence),
+        "entity_id": entity.entity_id,
+        "level": entity_level,
+        **dict(entity.attributes),
+    }
+    if "@" in node_id:
+        _, container_id = node_id.split("@", 1)
+        container = entities_by_id.get(container_id)
+        if container is not None:
+            meta["container_id"] = container_id
+            meta["container_context"] = container.name
+    return {
+        "id": node_id,
+        "natural_key": node_id,
+        "kind": str(entity.kind),
+        "name": str(entity.name),
+        "meta": meta,
+    }
+
+
+def build_inferred_architecture_projection(
+    model: RecoveredArchitectureModel,
+    entity_level: str = "container",
+) -> dict[str, Any]:
+    """Project a recovered architecture model without collapsing shared memberships."""
+    level = (entity_level or "container").lower()
+    if level not in {"container", "component"}:
+        level = "container"
+
+    entities_by_id = {entity.entity_id: entity for entity in model.entities}
+    component_to_containers = _component_container_memberships(model)
+    membership_confidence_by_entity_id: dict[str, float] = {}
+    for membership in model.memberships:
+        membership_confidence_by_entity_id[membership.entity_id] = max(
+            float(membership.confidence),
+            float(membership_confidence_by_entity_id.get(membership.entity_id, 0.0)),
+        )
+
+    if level == "container":
+        selected_entities = [
+            entity
+            for entity in model.entities
+            if entity.kind in {"container", "data_store", "external_system", "message_channel"}
+        ]
+    else:
+        selected_entities = list(model.entities)
+
+    projected_nodes: list[dict[str, Any]] = []
+    for entity in sorted(selected_entities, key=lambda row: (row.kind, row.entity_id)):
+        for node_id in _expanded_entity_node_ids(entity.entity_id, component_to_containers):
+            projected_nodes.append(
+                _build_entity_projection_node(
+                    entity,
+                    node_id=node_id,
+                    entities_by_id=entities_by_id,
+                    membership_confidence_by_entity_id=membership_confidence_by_entity_id,
+                    entity_level=level,
+                )
+            )
+
+    valid_node_ids = {str(node["id"]) for node in projected_nodes}
+    projected_edges: list[dict[str, Any]] = []
+    seen_edge_ids: set[tuple[str, str, str]] = set()
+    for relationship in sorted(
+        model.relationships,
+        key=lambda row: (row.source_entity_id, row.target_entity_id, row.kind),
+    ):
+        source_ids = _expanded_entity_node_ids(
+            relationship.source_entity_id,
+            component_to_containers,
+        )
+        target_ids = _expanded_entity_node_ids(
+            relationship.target_entity_id,
+            component_to_containers,
+        )
+        for source_id in source_ids:
+            if source_id not in valid_node_ids:
+                continue
+            for target_id in target_ids:
+                if target_id not in valid_node_ids:
+                    continue
+                edge_key = (source_id, target_id, relationship.kind)
+                if edge_key in seen_edge_ids or source_id == target_id:
+                    continue
+                seen_edge_ids.add(edge_key)
+                projected_edges.append(
+                    {
+                        "id": (
+                            f"{relationship.source_entity_id}:"
+                            f"{relationship.kind}:{relationship.target_entity_id}:"
+                            f"{len(projected_edges) + 1}"
+                        ),
+                        "source_node_id": source_id,
+                        "target_node_id": target_id,
+                        "kind": relationship.kind,
+                        "meta": {
+                            "confidence": float(relationship.confidence),
+                            "evidence_summary": _evidence_summary(relationship.evidence),
+                            **dict(relationship.attributes),
+                        },
+                    }
+                )
+
+    return {
+        "nodes": projected_nodes,
+        "edges": projected_edges,
+        "total_nodes": len(projected_nodes),
+        "projection": GraphProjection.INFERRED_ARCHITECTURE.value,
+        "entity_level": level,
+        "grouping_strategy": "recovered",
+        "summary": {
+            "ambiguous_hypotheses": sum(
+                1 for hypothesis in model.hypotheses if hypothesis.status == "ambiguous"
+            ),
+            "unresolved_hypotheses": sum(
+                1 for hypothesis in model.hypotheses if hypothesis.status == "unresolved"
+            ),
+        },
+        "warnings": list(model.warnings),
+    }
 
 
 def _resolve_file_edge_endpoints(

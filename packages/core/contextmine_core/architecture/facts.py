@@ -18,15 +18,13 @@ from contextmine_core.models import (
     MetricSnapshot,
     TwinScenario,
 )
-from contextmine_core.twin import (
-    GraphProjection,
-    get_full_scenario_graph,
-    get_scenario_provenance_node_ids,
-)
+from contextmine_core.twin import get_full_scenario_graph, get_scenario_provenance_node_ids
 from contextmine_core.twin.grouping import canonical_file_path_from_meta, derive_arch_group
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .recovery import recover_architecture_model
+from .recovery_docs import load_recovery_docs
 from .schemas import ArchitectureFact, ArchitectureFactsBundle, EvidenceRef, PortAdapterFact
 
 DETERMINISTIC_CONFIDENCE = 0.9
@@ -62,6 +60,7 @@ OUTBOUND_PROTOCOL_BY_KIND: dict[KnowledgeNodeKind, str] = {
 
 _derive_arch_group = derive_arch_group
 _canonical_file_path = canonical_file_path_from_meta
+_compat_get_full_scenario_graph = get_full_scenario_graph
 
 
 def _evidence_from_symbol_meta(node: KnowledgeNode) -> tuple[EvidenceRef, ...]:
@@ -248,6 +247,209 @@ def _dedupe_ports(facts: list[PortAdapterFact]) -> list[PortAdapterFact]:
     return sorted(by_id.values(), key=lambda row: row.fact_id)
 
 
+def _kg_nodes_to_recovery_inputs(
+    nodes: list[KnowledgeNode],
+) -> tuple[list[dict[str, Any]], dict[UUID, str]]:
+    subject_ref_by_id: dict[UUID, str] = {}
+    recovery_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        subject_ref = str(node.natural_key or node.id)
+        subject_ref_by_id[node.id] = subject_ref
+        recovery_nodes.append(
+            {
+                "id": subject_ref,
+                "kind": node.kind,
+                "name": node.name,
+                "natural_key": node.natural_key,
+                "meta": node.meta or {},
+            }
+        )
+    return recovery_nodes, subject_ref_by_id
+
+
+def _kg_edges_to_recovery_inputs(
+    edges: list[KnowledgeEdge],
+    subject_ref_by_id: dict[UUID, str],
+) -> list[dict[str, Any]]:
+    recovery_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        source_ref = subject_ref_by_id.get(edge.source_node_id)
+        target_ref = subject_ref_by_id.get(edge.target_node_id)
+        if not source_ref or not target_ref:
+            continue
+        recovery_edges.append(
+            {
+                "source_node_id": source_ref,
+                "target_node_id": target_ref,
+                "kind": edge.kind,
+                "meta": {},
+            }
+        )
+    return recovery_edges
+
+
+def _recovered_entity_to_fact(entity: Any) -> ArchitectureFact:
+    return ArchitectureFact(
+        fact_id=f"recovered_entity:{entity.entity_id}",
+        fact_type=entity.kind,
+        title=f"{entity.kind.replace('_', ' ').title()} {entity.name}",
+        description=f"Recovered {entity.kind.replace('_', ' ')} '{entity.name}'",
+        source="deterministic",
+        confidence=float(entity.confidence),
+        tags=("recovered", entity.kind),
+        attributes={"entity_id": entity.entity_id, **entity.attributes},
+        evidence=entity.evidence,
+    )
+
+
+def _recovered_relationship_to_fact(relationship: Any) -> ArchitectureFact:
+    return ArchitectureFact(
+        fact_id=(
+            f"recovered_relationship:{relationship.source_entity_id}:"
+            f"{relationship.kind}:{relationship.target_entity_id}"
+        ),
+        fact_type="recovered_relationship",
+        title="Recovered relationship",
+        description=(
+            f"{relationship.source_entity_id} {relationship.kind} {relationship.target_entity_id}"
+        ),
+        source="deterministic",
+        confidence=float(relationship.confidence),
+        tags=("recovered", "relationship", relationship.kind),
+        attributes={
+            "source_entity_id": relationship.source_entity_id,
+            "target_entity_id": relationship.target_entity_id,
+            "relationship_kind": relationship.kind,
+            **relationship.attributes,
+        },
+        evidence=relationship.evidence,
+    )
+
+
+def _recovered_hypothesis_to_fact(hypothesis: Any) -> ArchitectureFact:
+    return ArchitectureFact(
+        fact_id=f"recovered_hypothesis:{hypothesis.subject_ref}",
+        fact_type="recovered_hypothesis",
+        title=f"Recovered hypothesis for {hypothesis.subject_ref}",
+        description=hypothesis.rationale,
+        source="hybrid",
+        confidence=float(hypothesis.confidence),
+        tags=("recovered", "hypothesis", hypothesis.status),
+        attributes={
+            "subject_ref": hypothesis.subject_ref,
+            "candidate_entity_ids": list(hypothesis.candidate_entity_ids),
+            "selected_entity_ids": list(hypothesis.selected_entity_ids),
+            "status": hypothesis.status,
+        },
+        evidence=hypothesis.evidence,
+    )
+
+
+def _collect_recovered_architecture_facts(bundle: ArchitectureFactsBundle, model: Any) -> None:
+    for entity in model.entities:
+        bundle.facts.append(_recovered_entity_to_fact(entity))
+    for relationship in model.relationships:
+        bundle.facts.append(_recovered_relationship_to_fact(relationship))
+    for hypothesis in model.hypotheses:
+        bundle.facts.append(_recovered_hypothesis_to_fact(hypothesis))
+    for decision in getattr(model, "decisions", ()):
+        bundle.facts.append(
+            ArchitectureFact(
+                fact_id=f"recovered_decision:{decision.title}",
+                fact_type="architecture_decision",
+                title=decision.title,
+                description=decision.summary,
+                source="deterministic",
+                confidence=float(decision.confidence),
+                tags=("recovered", "decision", decision.status),
+                attributes={
+                    "affected_entity_ids": list(decision.affected_entity_ids),
+                    "status": decision.status,
+                },
+                evidence=decision.evidence,
+            )
+        )
+
+
+def _entity_kind(entity_id: str) -> str:
+    return entity_id.split(":", 1)[0]
+
+
+def _best_membership(memberships: list[Any], kind: str) -> Any | None:
+    candidates = [
+        membership for membership in memberships if _entity_kind(membership.entity_id) == kind
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda row: (-float(row.confidence), row.entity_id))[0]
+
+
+def _enrich_ports_with_recovery(ports: list[PortAdapterFact], model: Any) -> list[PortAdapterFact]:
+    entity_name_by_id = {entity.entity_id: entity.name for entity in model.entities}
+    enriched: list[PortAdapterFact] = []
+    for port in ports:
+        subject_refs = [
+            str(port.attributes.get("natural_key") or "").strip(),
+            str(port.attributes.get("source_natural_key") or "").strip(),
+        ]
+        memberships: list[Any] = []
+        for subject_ref in subject_refs:
+            if not subject_ref:
+                continue
+            memberships.extend(model.memberships_for(subject_ref))
+
+        if not memberships:
+            enriched.append(port)
+            continue
+
+        candidate_memberships = sorted({membership.entity_id for membership in memberships})
+        best_container = _best_membership(memberships, "container")
+        best_component = _best_membership(memberships, "component")
+
+        container = port.container
+        if best_container is not None:
+            container = best_container.entity_id.split(":", 1)[1]
+
+        component = port.component
+        if best_component is not None:
+            component = entity_name_by_id.get(best_component.entity_id, component)
+
+        enriched.append(
+            replace(
+                port,
+                container=container,
+                component=component,
+                confidence=max(
+                    float(port.confidence),
+                    max(float(membership.confidence) for membership in memberships),
+                ),
+                attributes={
+                    **port.attributes,
+                    "candidate_memberships": candidate_memberships,
+                },
+            )
+        )
+    return enriched
+
+
+def _append_recovery_warning_counts(bundle: ArchitectureFactsBundle, model: Any) -> None:
+    unresolved_count = sum(
+        1 for hypothesis in model.hypotheses if hypothesis.status == "unresolved"
+    )
+    rejected_count = sum(
+        1 for warning in model.warnings if "rejected adjudication" in warning.lower()
+    )
+    missing_packet_count = sum(
+        1 for warning in model.warnings if "missing evidence packet" in warning.lower()
+    )
+    if unresolved_count:
+        bundle.warnings.append(f"unresolved_hypotheses={unresolved_count}")
+    if rejected_count:
+        bundle.warnings.append(f"rejected_llm_adjudications={rejected_count}")
+    if missing_packet_count:
+        bundle.warnings.append(f"missing_evidence_packets={missing_packet_count}")
+
+
 def _collect_container_facts(bundle: ArchitectureFactsBundle, container_graph: dict) -> None:
     """Add container facts from the architecture graph."""
     for node in container_graph["nodes"]:
@@ -386,26 +588,6 @@ async def build_architecture_facts(
             "ARCH_DOCS_LLM_ENRICH is enabled but no LLM provider is available; using deterministic fallback."
         )
 
-    container_graph = await get_full_scenario_graph(
-        session=session,
-        scenario_id=scenario_id,
-        layer=None,
-        projection=GraphProjection.ARCHITECTURE,
-        entity_level="container",
-        include_kinds={"file"},
-    )
-    component_graph = await get_full_scenario_graph(
-        session=session,
-        scenario_id=scenario_id,
-        layer=None,
-        projection=GraphProjection.ARCHITECTURE,
-        entity_level="component",
-        include_kinds={"file"},
-    )
-
-    _collect_container_facts(bundle, container_graph)
-    _collect_component_facts(bundle, component_graph)
-
     await _collect_c4_view_facts(session, scenario_id, bundle)
 
     metrics = (
@@ -506,6 +688,18 @@ async def build_architecture_facts(
         .scalars()
         .all()
     )
+    recovery_nodes, recovery_subject_refs = _kg_nodes_to_recovery_inputs(kg_nodes)
+    recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, recovery_subject_refs)
+    recovery_docs = await load_recovery_docs(session, kg_nodes)
+    recovered_model = recover_architecture_model(
+        recovery_nodes,
+        recovery_edges,
+        docs=recovery_docs,
+        llm_adjudicator=llm_provider if enable_llm_enrich else None,
+    )
+    _collect_recovered_architecture_facts(bundle, recovered_model)
+    _append_recovery_warning_counts(bundle, recovered_model)
+
     outbound_edges = [
         edge
         for edge in kg_edges
@@ -531,6 +725,7 @@ async def build_architecture_facts(
             )
         ports = enriched
 
+    ports = _enrich_ports_with_recovery(ports, recovered_model)
     bundle.ports_adapters = _dedupe_ports(ports)
 
     return bundle

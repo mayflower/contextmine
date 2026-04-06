@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from .arc42 import SECTION_TITLES
+from .recovery_model import RecoveredArchitectureModel
 from .schemas import Arc42Document
 
 
@@ -185,13 +186,40 @@ def _render_markdown(title: str, sections: dict[str, str]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _arc42_prompt(*, scenario_name: str, section: str | None) -> str:
+def _recovered_architecture_payload(
+    recovered_architecture: RecoveredArchitectureModel | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if recovered_architecture is None:
+        return None
+    if isinstance(recovered_architecture, RecoveredArchitectureModel):
+        return recovered_architecture.canonical_payload()
+    if isinstance(recovered_architecture, dict):
+        return recovered_architecture
+    raise TypeError("recovered_architecture must be a RecoveredArchitectureModel, dict, or None")
+
+
+def _arc42_prompt(
+    *,
+    scenario_name: str,
+    section: str | None,
+    recovered_architecture: RecoveredArchitectureModel | dict[str, Any] | None = None,
+) -> str:
     section_instruction = (
         f"Focus section: {section}. Still return all 12 section keys."
         if section
         else "No section filter. Return all 12 sections."
     )
     section_keys = ", ".join(SECTION_TITLES.keys())
+    recovered_payload = _recovered_architecture_payload(recovered_architecture)
+    recovered_instruction = ""
+    if recovered_payload is not None:
+        recovered_instruction = (
+            "\n\nRecovered architecture payload is provided below. "
+            "Reason explicitly over recovered entities, relationships, hypotheses, and decisions. "
+            "Do not hide ambiguity: if recovered hypotheses are ambiguous or unresolved, carry that uncertainty into the output.\n"
+            "Treat the payload as evidence-backed architecture context; do not invent facts beyond it or the repository evidence.\n"
+            f"Recovered architecture JSON:\n{json.dumps(recovered_payload, sort_keys=True)}"
+        )
     return (
         "Generate a real arc42 document from repository evidence using tools. "
         "Do not invent facts. If evidence is missing, write exactly "
@@ -208,6 +236,7 @@ def _arc42_prompt(*, scenario_name: str, section: str | None) -> str:
         "}\n\n"
         f"Mandatory section keys: {section_keys}\n"
         "No Markdown fences. JSON only."
+        f"{recovered_instruction}"
     )
 
 
@@ -218,6 +247,7 @@ async def generate_arc42_with_claude_sdk(
     scenario_name: str,
     repo_path: Path,
     section: str | None = None,
+    recovered_architecture: RecoveredArchitectureModel | dict[str, Any] | None = None,
     model: str = "claude-sonnet-4-5-20250929",
     max_turns: int = 50,
     permission_mode: str = "bypassPermissions",
@@ -228,7 +258,11 @@ async def generate_arc42_with_claude_sdk(
         raise FileNotFoundError(f"Repository path does not exist: {repo_path}")
 
     scope_key = f"arc42:{collection_id}:{scenario_id}"
-    prompt = _arc42_prompt(scenario_name=scenario_name, section=section)
+    prompt = _arc42_prompt(
+        scenario_name=scenario_name,
+        section=section,
+        recovered_architecture=recovered_architecture,
+    )
     raw_output, runtime_meta = await _SESSION_MANAGER.run_prompt(
         repo_path=repo_path,
         scope_key=scope_key,

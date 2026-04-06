@@ -7,15 +7,24 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from contextmine_core.architecture.recovery import recover_architecture_model
+from contextmine_core.architecture.recovery_docs import load_recovery_docs
+from contextmine_core.architecture.recovery_model import RecoveredArchitectureModel
 from contextmine_core.models import (
+    KnowledgeEdge,
     KnowledgeEvidence,
     KnowledgeNode,
     KnowledgeNodeEvidence,
     KnowledgeNodeKind,
     TwinScenario,
 )
-from contextmine_core.twin import GraphProjection, get_full_scenario_graph
+from contextmine_core.twin import (
+    GraphProjection,
+    get_full_scenario_graph,
+    get_scenario_provenance_node_ids,
+)
 from contextmine_core.twin.grouping import canonical_file_path_from_node, derive_arch_group
+from contextmine_core.twin.projections import build_inferred_architecture_projection
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -151,38 +160,171 @@ def _kind_value(kind: Any) -> str:
     return str(kind)
 
 
+def _kg_nodes_to_recovery_inputs(
+    nodes: list[KnowledgeNode],
+) -> tuple[list[dict[str, Any]], dict[UUID, str]]:
+    subject_ref_by_id: dict[UUID, str] = {}
+    recovery_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        subject_ref = str(node.natural_key or node.id)
+        subject_ref_by_id[node.id] = subject_ref
+        recovery_nodes.append(
+            {
+                "id": subject_ref,
+                "kind": node.kind,
+                "name": node.name,
+                "natural_key": node.natural_key,
+                "meta": node.meta or {},
+            }
+        )
+    return recovery_nodes, subject_ref_by_id
+
+
+def _kg_edges_to_recovery_inputs(
+    edges: list[KnowledgeEdge],
+    subject_ref_by_id: dict[UUID, str],
+) -> list[dict[str, Any]]:
+    recovery_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        source_ref = subject_ref_by_id.get(edge.source_node_id)
+        target_ref = subject_ref_by_id.get(edge.target_node_id)
+        if not source_ref or not target_ref:
+            continue
+        recovery_edges.append(
+            {
+                "source_node_id": source_ref,
+                "target_node_id": target_ref,
+                "kind": edge.kind,
+                "meta": {},
+            }
+        )
+    return recovery_edges
+
+
+async def _load_recovered_architecture_model(
+    session: AsyncSession,
+    scenario_id: UUID,
+    collection_id: UUID,
+) -> RecoveredArchitectureModel:
+    scenario_knowledge_node_ids = await get_scenario_provenance_node_ids(session, scenario_id)
+    if not scenario_knowledge_node_ids:
+        return RecoveredArchitectureModel()
+
+    kg_nodes = (
+        (
+            await session.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.id.in_(scenario_knowledge_node_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    kg_edges = (
+        (
+            await session.execute(
+                select(KnowledgeEdge).where(
+                    KnowledgeEdge.collection_id == collection_id,
+                    KnowledgeEdge.source_node_id.in_(scenario_knowledge_node_ids),
+                    KnowledgeEdge.target_node_id.in_(scenario_knowledge_node_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    recovery_nodes, subject_ref_by_id = _kg_nodes_to_recovery_inputs(kg_nodes)
+    recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, subject_ref_by_id)
+    recovery_docs = await load_recovery_docs(session, kg_nodes)
+    return recover_architecture_model(recovery_nodes, recovery_edges, docs=recovery_docs)
+
+
+def _append_recovery_diagnostics(
+    warnings: list[str],
+    model: RecoveredArchitectureModel,
+) -> None:
+    ambiguous_count = sum(1 for item in model.hypotheses if item.status == "ambiguous")
+    unresolved_count = sum(1 for item in model.hypotheses if item.status == "unresolved")
+    if ambiguous_count:
+        warnings.append(f"Ambiguous recovered memberships: {ambiguous_count}.")
+    if unresolved_count:
+        warnings.append(f"Unresolved recovered memberships: {unresolved_count}.")
+    warnings.extend(model.warnings)
+
+
+def _node_sort_key(node: dict[str, Any]) -> tuple[str, str]:
+    return (str(node.get("kind") or ""), str(node.get("name") or node.get("id") or ""))
+
+
+def _render_recovered_container_node(node: dict[str, Any]) -> str:
+    node_id = _safe_id(str(node.get("id") or ""))
+    kind = _safe_text(str(node.get("kind") or "container"), "container")
+    label = _safe_text(str(node.get("name") or kind), kind)
+    confidence = (node.get("meta") or {}).get("confidence")
+    description = f"{kind} | confidence={confidence}" if confidence is not None else kind
+    return f'  Container({node_id}, "{label}", "{kind}", "{_safe_text(description, kind)}")'
+
+
+def _render_recovered_supporting_node(node: dict[str, Any]) -> str:
+    node_id = _safe_id(str(node.get("id") or ""))
+    kind = _safe_text(str(node.get("kind") or "dependency"), "dependency")
+    label = _safe_text(str(node.get("name") or kind), kind)
+    if kind == "external_system":
+        return f'System_Ext({node_id}, "{label}", "{kind}")'
+    return f'Container({node_id}, "{label}", "{kind}", "{kind}")'
+
+
 async def _render_container_view(
     session: AsyncSession,
     scenario_id: UUID,
+    collection_id: UUID,
     scenario_name: str,
     c4_scope: str | None,
 ) -> C4ExportResult:
     warnings: list[str] = []
-    graph = await get_full_scenario_graph(
-        session=session,
-        scenario_id=scenario_id,
-        layer=None,
-        projection=GraphProjection.ARCHITECTURE,
-        entity_level="container",
-        include_kinds={"file"},
-    )
+    recovered_model = await _load_recovered_architecture_model(session, scenario_id, collection_id)
+    _append_recovery_diagnostics(warnings, recovered_model)
+    projection = build_inferred_architecture_projection(recovered_model, entity_level="container")
 
-    nodes = list(graph["nodes"])
-    edges = list(graph["edges"])
+    nodes = list(projection["nodes"])
+    edges = list(projection["edges"])
+    used_recovered = bool(nodes)
+
+    if not nodes:
+        warnings.append(
+            "Recovered architecture unavailable for container view; used file projection."
+        )
+        graph = await get_full_scenario_graph(
+            session=session,
+            scenario_id=scenario_id,
+            layer=None,
+            projection=GraphProjection.ARCHITECTURE,
+            entity_level="container",
+            include_kinds={"file"},
+        )
+        nodes = list(graph["nodes"])
+        edges = list(graph["edges"])
 
     if c4_scope:
-        nodes, edges, matched = _apply_scope_filter(
-            nodes,
-            edges,
-            c4_scope,
-            ("name", "container", "domain"),
-        )
+        match_fields = ("name", "container", "domain") if not used_recovered else ("name",)
+        nodes, edges, matched = _apply_scope_filter(nodes, edges, c4_scope, match_fields)
         if not matched:
-            warnings.append(f'No container matched scope "{c4_scope}"; rendered all containers.')
+            scope_source = "recovered container" if used_recovered else "container"
+            warnings.append(
+                f'No {scope_source} matched scope "{c4_scope}"; rendered all containers.'
+            )
 
     lines = ["C4Container", f'title "{_safe_text(scenario_name, "Scenario")}"']
     lines.append('System_Boundary(system_boundary, "System") {')
-    for node in nodes:
+    internal_nodes = [node for node in nodes if str(node.get("kind")) == "container"]
+    supporting_nodes = [node for node in nodes if str(node.get("kind")) != "container"]
+    for node in sorted(internal_nodes, key=_node_sort_key):
+        if used_recovered:
+            lines.append(_render_recovered_container_node(node))
+            continue
         node_id = _safe_id(str(node.get("id") or ""))
         kind = _safe_text(str(node.get("kind") or "container"), "container")
         natural_key = _safe_text(str(node.get("natural_key") or ""), "")
@@ -191,6 +333,9 @@ async def _render_container_view(
         description = _safe_text(f"{kind} | members={meta.get('member_count', 0)}", kind)
         lines.append(f'  Container({node_id}, "{label}", "{kind}", "{description}")')
     lines.append("}")
+    if used_recovered:
+        for node in sorted(supporting_nodes, key=_node_sort_key):
+            lines.append(_render_recovered_supporting_node(node))
     lines.extend(_build_relation_lines(edges))
 
     if not nodes:
@@ -230,43 +375,83 @@ def _render_component_container_lines(
 async def _render_component_view(
     session: AsyncSession,
     scenario_id: UUID,
+    collection_id: UUID,
     scenario_name: str,
     c4_scope: str | None,
 ) -> C4ExportResult:
     warnings: list[str] = []
-    graph = await get_full_scenario_graph(
-        session=session,
-        scenario_id=scenario_id,
-        layer=None,
-        projection=GraphProjection.ARCHITECTURE,
-        entity_level="component",
-        include_kinds={"file"},
-    )
+    recovered_model = await _load_recovered_architecture_model(session, scenario_id, collection_id)
+    _append_recovery_diagnostics(warnings, recovered_model)
+    projection = build_inferred_architecture_projection(recovered_model, entity_level="component")
 
-    nodes = list(graph["nodes"])
-    edges = list(graph["edges"])
+    nodes = list(projection["nodes"])
+    edges = list(projection["edges"])
+    used_recovered = bool(nodes)
+
+    if not nodes:
+        warnings.append(
+            "Recovered architecture unavailable for component view; used file projection."
+        )
+        graph = await get_full_scenario_graph(
+            session=session,
+            scenario_id=scenario_id,
+            layer=None,
+            projection=GraphProjection.ARCHITECTURE,
+            entity_level="component",
+            include_kinds={"file"},
+        )
+        nodes = list(graph["nodes"])
+        edges = list(graph["edges"])
 
     if c4_scope:
+        scoped_source_nodes = list(nodes)
+        scoped_source_edges = list(edges)
         nodes, edges, matched = _apply_scope_filter(
             nodes,
             edges,
             c4_scope,
-            ("name", "component", "container"),
+            ("name", "component", "container", "container_context"),
         )
         if not matched:
+            scope_source = "recovered component" if used_recovered else "component/container"
             warnings.append(
-                f'No component/container matched scope "{c4_scope}"; rendered all components.'
+                f'No {scope_source} matched scope "{c4_scope}"; rendered all components.'
             )
+        elif used_recovered:
+            scoped_ids = {str(node.get("id")) for node in nodes}
+            edges = [
+                edge
+                for edge in scoped_source_edges
+                if str(edge.get("source_node_id")) in scoped_ids
+                or str(edge.get("target_node_id")) in scoped_ids
+            ]
+            related_ids = (
+                scoped_ids
+                | {str(edge.get("source_node_id")) for edge in edges}
+                | {str(edge.get("target_node_id")) for edge in edges}
+            )
+            nodes = [node for node in scoped_source_nodes if str(node.get("id")) in related_ids]
 
     container_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    supporting_nodes: list[dict[str, Any]] = []
     for node in nodes:
-        container = _safe_text(str((node.get("meta") or {}).get("container") or "shared"), "shared")
+        if str(node.get("kind")) != "component":
+            supporting_nodes.append(node)
+            continue
+        meta = node.get("meta") or {}
+        container = _safe_text(
+            str(meta.get("container_context") or meta.get("container") or "shared"),
+            "shared",
+        )
         container_groups[container].append(node)
 
     lines = ["C4Component", f'title "{_safe_text(scenario_name, "Scenario")}"']
     lines.append('Container_Boundary(system_container, "System") {')
     lines.extend(_render_component_container_lines(container_groups))
     lines.append("}")
+    if used_recovered:
+        for node in sorted(supporting_nodes, key=_node_sort_key):
+            lines.append(_render_recovered_supporting_node(node))
     lines.extend(_build_relation_lines(edges))
 
     if not nodes:
@@ -298,6 +483,65 @@ def _build_component_path_map(
         component_to_paths[key].add(file_path)
         component_to_container[key] = container
     return component_to_paths, component_to_container
+
+
+def _select_recovered_code_scope_paths(
+    model: RecoveredArchitectureModel,
+    c4_scope: str | None,
+    warnings: list[str],
+) -> tuple[set[str], str | None]:
+    projection = build_inferred_architecture_projection(model, entity_level="component")
+    component_nodes = [node for node in projection["nodes"] if str(node.get("kind")) == "component"]
+    if not component_nodes:
+        return set(), None
+
+    def score(node: dict[str, Any]) -> tuple[float, str]:
+        meta = node.get("meta") or {}
+        return (
+            float(meta.get("confidence") or 0.0),
+            str(node.get("id") or ""),
+        )
+
+    matches = component_nodes
+    if c4_scope:
+        scope = c4_scope.lower()
+        matches = []
+        for node in component_nodes:
+            meta = node.get("meta") or {}
+            values = {
+                str(node.get("name") or "").lower(),
+                str(node.get("id") or "").lower(),
+                str(meta.get("container_context") or "").lower(),
+                str(meta.get("container_id") or "").lower(),
+                str(meta.get("entity_id") or "").lower(),
+            }
+            if scope in values:
+                matches.append(node)
+        if not matches:
+            warnings.append(
+                f'No recovered code scope matched "{c4_scope}"; falling back to file heuristics.'
+            )
+            return set(), None
+        if len(matches) > 1:
+            warnings.append(
+                f'Ambiguous recovered code scope "{c4_scope}" matched {len(matches)} components; defaulted to the strongest recovered candidate.'
+            )
+    elif len(component_nodes) > 1:
+        warnings.append(
+            "No recovered code scope provided; defaulted to the strongest recovered component."
+        )
+
+    selected = sorted(matches, key=score, reverse=True)[0]
+    evidence_paths = {
+        str(path)
+        for path in (selected.get("meta") or {}).get("evidence_summary") or []
+        if isinstance(path, str) and path.strip()
+    }
+    if not evidence_paths:
+        warnings.append(
+            "Recovered code scope lacked file evidence; falling back to file heuristics."
+        )
+    return evidence_paths, str(selected.get("name") or "")
 
 
 def _select_code_scope_component(
@@ -366,11 +610,19 @@ def _render_code_symbol_lines(nodes: list[dict[str, Any]]) -> list[str]:
 async def _render_code_view(
     session: AsyncSession,
     scenario_id: UUID,
+    collection_id: UUID,
     scenario_name: str,
     c4_scope: str | None,
     max_nodes: int,
 ) -> C4ExportResult:
     warnings: list[str] = []
+    recovered_model = await _load_recovered_architecture_model(session, scenario_id, collection_id)
+    _append_recovery_diagnostics(warnings, recovered_model)
+    recovered_scope_paths, recovered_scope_name = _select_recovered_code_scope_paths(
+        recovered_model,
+        c4_scope,
+        warnings,
+    )
 
     file_graph = await get_full_scenario_graph(
         session=session,
@@ -380,8 +632,12 @@ async def _render_code_view(
         entity_level="file",
     )
     component_to_paths, component_to_container = _build_component_path_map(file_graph)
-    selected_component = _select_code_scope_component(component_to_paths, c4_scope, warnings)
+    selected_component = None
+    if not recovered_scope_paths:
+        selected_component = _select_code_scope_component(component_to_paths, c4_scope, warnings)
     scope_paths = component_to_paths.get(selected_component, set()) if selected_component else set()
+    if recovered_scope_paths:
+        scope_paths = recovered_scope_paths
 
     symbol_graph = await get_full_scenario_graph(
         session=session,
@@ -418,7 +674,9 @@ async def _render_code_view(
     edges = _filter_edges_by_node_ids(edges, node_ids)
 
     container_name = "code-scope"
-    if selected_component:
+    if recovered_scope_name:
+        container_name = recovered_scope_name
+    elif selected_component:
         container_name = component_to_container.get(selected_component, container_name)
 
     lines = ["C4Component", f'title "{_safe_text(scenario_name, "Scenario")} - Code"']
@@ -470,11 +728,55 @@ async def _surface_counts(session: AsyncSession, collection_id: UUID) -> dict[st
 async def _render_context_view(
     session: AsyncSession,
     collection_id: UUID,
+    scenario_id: UUID,
     scenario_name: str,
     c4_scope: str | None,
 ) -> C4ExportResult:
     del c4_scope
     warnings: list[str] = []
+    recovered_model = await _load_recovered_architecture_model(session, scenario_id, collection_id)
+    _append_recovery_diagnostics(warnings, recovered_model)
+
+    external_entities = [
+        entity for entity in recovered_model.entities if entity.kind == "external_system"
+    ]
+    supporting_entities = [
+        entity
+        for entity in recovered_model.entities
+        if entity.kind in {"data_store", "message_channel"}
+    ]
+    if external_entities or supporting_entities:
+        lines = ["C4Context", f'title "{_safe_text(scenario_name, "Scenario")}"']
+        lines.append('Person(user_actor, "User", "Application user")')
+        lines.append(
+            f'System(system_target, "{_safe_text(scenario_name, "System")}", "Primary application")'
+        )
+        for index, entity in enumerate(
+            sorted(external_entities, key=lambda item: item.name.lower()),
+            start=1,
+        ):
+            node_id = _safe_id(f"external:{index}:{entity.entity_id}")
+            lines.append(
+                f'System_Ext({node_id}, "{_safe_text(entity.name, "External System")}", "{entity.kind}")'
+            )
+            lines.append(f'Rel(system_target, {node_id}, "uses")')
+        for index, entity in enumerate(
+            sorted(supporting_entities, key=lambda item: item.name.lower()),
+            start=1,
+        ):
+            node_id = _safe_id(f"supporting:{index}:{entity.entity_id}")
+            lines.append(
+                f'System_Ext({node_id}, "{_safe_text(entity.name, entity.kind)}", "{entity.kind}")'
+            )
+            lines.append(f'Rel(system_target, {node_id}, "depends_on")')
+        lines.append('Rel(user_actor, system_target, "Uses")')
+        return C4ExportResult(
+            content="\n".join(lines),
+            c4_view="context",
+            c4_scope=None,
+            warnings=warnings,
+        )
+
     counts = await _surface_counts(session, collection_id)
 
     endpoint_count = (
@@ -507,7 +809,7 @@ async def _render_context_view(
 
     if endpoint_count == 0 and job_count == 0 and data_count == 0:
         warnings.append(
-            "No surface graph signals (API/jobs/data) found; rendered minimal context diagram."
+            "No recovered systems or surface graph signals found; rendered minimal context diagram."
         )
 
     return C4ExportResult(
@@ -601,6 +903,23 @@ def _render_deployment_trigger_lines(
     return lines
 
 
+def _recovered_job_container_names(
+    model: RecoveredArchitectureModel,
+    job: KnowledgeNode,
+) -> list[str]:
+    entity_name_by_id = {entity.entity_id: entity.name for entity in model.entities}
+    container_ids = {
+        membership.entity_id
+        for membership in model.memberships_for(job.natural_key)
+        if membership.entity_id.startswith("container:")
+    }
+    names = [
+        entity_name_by_id.get(container_id, container_id.split(":", 1)[1])
+        for container_id in sorted(container_ids)
+    ]
+    return [name for name in names if name]
+
+
 async def _render_deployment_view(
     session: AsyncSession,
     collection_id: UUID,
@@ -610,6 +929,8 @@ async def _render_deployment_view(
     max_nodes: int,
 ) -> C4ExportResult:
     warnings: list[str] = []
+    recovered_model = await _load_recovered_architecture_model(session, scenario_id, collection_id)
+    _append_recovery_diagnostics(warnings, recovered_model)
 
     job_nodes = (
         (
@@ -669,7 +990,8 @@ async def _render_deployment_view(
     container_name_set = {name.lower() for name in container_names}
 
     jobs_by_container: dict[str, list[KnowledgeNode]] = defaultdict(list)
-    weak_mapping_count = 0
+    heuristic_mapping_count = 0
+    shared_mapping_count = 0
 
     def infer_container(job: KnowledgeNode) -> str:
         return _infer_job_container(
@@ -686,9 +1008,16 @@ async def _render_deployment_view(
         warnings.append(f"Deployment view limited to {max_nodes} jobs for readability.")
 
     for job in source_jobs:
+        recovered_container_names = _recovered_job_container_names(recovered_model, job)
+        if recovered_container_names:
+            for container_name in recovered_container_names:
+                jobs_by_container[container_name].append(job)
+            continue
         container_name = infer_container(job)
         if container_name == "shared":
-            weak_mapping_count += 1
+            shared_mapping_count += 1
+        else:
+            heuristic_mapping_count += 1
         jobs_by_container[container_name].append(job)
 
     lines = ["C4Deployment", f'title "{_safe_text(scenario_name, "Scenario")}"']
@@ -697,9 +1026,13 @@ async def _render_deployment_view(
     lines.append("}")
     lines.extend(_render_deployment_trigger_lines(jobs_by_container))
 
-    if weak_mapping_count > 0:
+    if heuristic_mapping_count > 0:
         warnings.append(
-            f"{weak_mapping_count} jobs could not be mapped to a concrete container and were placed in shared deployment."
+            f"Missing recovered runtime evidence for {heuristic_mapping_count} jobs; used file-path/runtime heuristics."
+        )
+    if shared_mapping_count > 0:
+        warnings.append(
+            f"{shared_mapping_count} jobs could not be mapped to a concrete container and were placed in shared deployment."
         )
 
     return C4ExportResult(
@@ -733,6 +1066,7 @@ async def export_mermaid_c4_result(
         return await _render_context_view(
             session=session,
             collection_id=scenario.collection_id,
+            scenario_id=scenario_id,
             scenario_name=scenario.name,
             c4_scope=normalized_scope,
         )
@@ -740,6 +1074,7 @@ async def export_mermaid_c4_result(
         return await _render_component_view(
             session=session,
             scenario_id=scenario_id,
+            collection_id=scenario.collection_id,
             scenario_name=scenario.name,
             c4_scope=normalized_scope,
         )
@@ -747,6 +1082,7 @@ async def export_mermaid_c4_result(
         return await _render_code_view(
             session=session,
             scenario_id=scenario_id,
+            collection_id=scenario.collection_id,
             scenario_name=scenario.name,
             c4_scope=normalized_scope,
             max_nodes=effective_max_nodes,
@@ -764,6 +1100,7 @@ async def export_mermaid_c4_result(
     return await _render_container_view(
         session=session,
         scenario_id=scenario_id,
+        collection_id=scenario.collection_id,
         scenario_name=scenario.name,
         c4_scope=normalized_scope,
     )
