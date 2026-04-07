@@ -20,8 +20,7 @@ from contextmine_core.twin.service import (
     repair_twin_file_path_canonicalization,
 )
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
 @pytest.fixture
@@ -35,7 +34,7 @@ async def test_session() -> AsyncGenerator[AsyncSession, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async_session_maker = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
     async with async_session_maker() as session:
         yield session
 
