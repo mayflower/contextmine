@@ -34,6 +34,7 @@ from contextmine_worker.flows import (
     _sync_blocking_step_timeout_seconds,
     _sync_document_step_timeout_seconds,
     _sync_documents_per_run_limit,
+    _sync_github_retry_condition,
     _sync_source_timeout_seconds,
     _sync_temporal_coupling_max_files_per_commit,
     _twin_graph_build_timeout_seconds,
@@ -82,6 +83,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "arch_docs_generate_on_sync": False,
         "arch_docs_llm_enrich": False,
         "arch_docs_drift_enabled": False,
+        "arch_docs_llm_max_hypotheses": 12,
         "twin_evolution_window_days": 90,
         "joern_server_url": "",
         "joern_required_for_sync": False,
@@ -118,6 +120,52 @@ class TestConstants:
     def test_stale_after_is_timedelta(self) -> None:
         assert isinstance(SYNC_RUN_STALE_AFTER, timedelta)
         assert timedelta(hours=6) == SYNC_RUN_STALE_AFTER
+
+
+class TestGithubSyncRetryCondition:
+    async def test_disables_retry_for_twin_timeout(self) -> None:
+        should_retry = await _sync_github_retry_condition(
+            None,
+            None,
+            SimpleNamespace(
+                data=RuntimeError("TWIN_BUILD_TIMEOUT: source=abc timeout=3600s"),
+                message="",
+            ),
+        )
+        assert should_retry is False
+
+    async def test_disables_retry_for_non_clone_step_timeout(self) -> None:
+        should_retry = await _sync_github_retry_condition(
+            None,
+            None,
+            SimpleNamespace(
+                data=RuntimeError("STEP_TIMEOUT: metrics_pipeline exceeded 60s"),
+                message="",
+            ),
+        )
+        assert should_retry is False
+
+    async def test_allows_retry_for_clone_step_timeout(self) -> None:
+        should_retry = await _sync_github_retry_condition(
+            None,
+            None,
+            SimpleNamespace(
+                data=RuntimeError("STEP_TIMEOUT: git_clone_or_pull exceeded 60s"),
+                message="",
+            ),
+        )
+        assert should_retry is True
+
+    async def test_allows_retry_for_connection_error(self) -> None:
+        should_retry = await _sync_github_retry_condition(
+            None,
+            None,
+            SimpleNamespace(data=ConnectionError("temporary failure in name resolution"), message=""),
+        )
+        assert should_retry is True
+
+    def test_sync_github_source_uses_retry_condition(self) -> None:
+        assert flows.sync_github_source.retry_condition_fn is _sync_github_retry_condition
 
 
 # ---------------------------------------------------------------------------

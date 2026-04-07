@@ -36,6 +36,7 @@ def _mock_db_session(mock_db):
 def _make_settings(**overrides):
     defaults = {
         "arch_docs_enabled": True,
+        "arch_docs_llm_max_hypotheses": 12,
         "repos_root": "/tmp/repos",
         "default_llm_provider": "openai",
     }

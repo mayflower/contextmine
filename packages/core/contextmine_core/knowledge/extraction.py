@@ -692,14 +692,18 @@ async def extract_from_documents(
     embedder: Any,
     max_chunks: int | None = None,
     similarity_threshold: float = 0.85,
+    changed_doc_ids: list[str] | None = None,
 ) -> ExtractionBatch:
-    """Extract entities and relationships from all documents in a collection.
+    """Extract entities and relationships from documents in a collection.
 
     Implements full GraphRAG extraction including:
     1. Per-document entity extraction (LLM)
     2. Per-document relationship extraction (LLM)
     3. Entity resolution via embedding similarity (merge semantically similar entities)
     4. Cross-document relationship inference (co-occurrence)
+
+    When ``changed_doc_ids`` is provided, only chunks from those documents are
+    processed through the LLM. This dramatically reduces cost on incremental syncs.
 
     Args:
         collection_id: Collection to process
@@ -709,6 +713,8 @@ async def extract_from_documents(
                   naming conventions, and synonyms.
         max_chunks: Optional maximum chunks to process. ``None`` processes all chunks.
         similarity_threshold: Cosine similarity threshold for entity merging (0.85 default)
+        changed_doc_ids: If provided, only extract from chunks belonging to these
+                         document IDs.  Pass ``None`` for a full extraction (initial run).
 
     Returns:
         ExtractionBatch with all extracted entities and relationships
@@ -723,6 +729,8 @@ async def extract_from_documents(
             "languages, naming conventions, and synonyms."
         )
 
+    import uuid as uuid_module
+
     from contextmine_core import get_session
     from contextmine_core.models import Chunk, Document, Source
     from sqlalchemy import select
@@ -732,6 +740,7 @@ async def extract_from_documents(
     # Load pre-split chunks instead of whole documents.  Documents can be
     # much larger than an LLM context window; the Chunk table already
     # contains retrieval-sized pieces, so we use those directly.
+    # When changed_doc_ids is provided, scope to only those documents.
     async with get_session() as session:
         stmt = (
             select(
@@ -745,8 +754,11 @@ async def extract_from_documents(
             .join(Document, Chunk.document_id == Document.id)
             .join(Source, Document.source_id == Source.id)
             .where(Source.collection_id == collection_id)
-            .order_by(Document.uri, Chunk.chunk_index)
         )
+        if changed_doc_ids:
+            changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
+            stmt = stmt.where(Chunk.document_id.in_(changed_uuids))
+        stmt = stmt.order_by(Document.uri, Chunk.chunk_index)
         result = await session.execute(stmt)
         chunks = result.all()
 
@@ -1315,6 +1327,7 @@ async def persist_semantic_entities(
     session: AsyncSession,
     collection_id: UUID,
     batch: ExtractionBatch,
+    changed_doc_ids: list[str] | None = None,
 ) -> dict:
     """Persist extracted entities and relationships to the knowledge graph.
 
@@ -1322,15 +1335,24 @@ async def persist_semantic_entities(
     FILE_MENTIONS_ENTITY edges to connect semantic entities to their
     source files (for graph connectivity in retrieval).
 
+    When ``changed_doc_ids`` is provided, only entities whose evidence
+    references those documents are deleted before re-creation.  Entities
+    from unchanged documents are preserved.
+
     Args:
         session: Database session
         collection_id: Collection UUID
         batch: Extraction batch to persist
+        changed_doc_ids: Scope deletion to entities linked to these docs.
+                         ``None`` deletes all entities (full rebuild).
 
     Returns:
         Stats dict
     """
+    import uuid as uuid_module
+
     from contextmine_core.models import (
+        Chunk,
         KnowledgeEdge,
         KnowledgeEdgeKind,
         KnowledgeEvidence,
@@ -1347,15 +1369,33 @@ async def persist_semantic_entities(
         "evidence_created": 0,
     }
 
-    # Delete existing semantic entities for this collection
-    # (We'll rebuild from scratch each time for simplicity)
-    existing = await session.execute(
-        select(KnowledgeNode.id).where(
-            KnowledgeNode.collection_id == collection_id,
-            KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
+    # Delete existing semantic entities — scoped to changed docs when possible
+    if changed_doc_ids:
+        # Only remove entities whose evidence references changed documents
+        changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
+        stale_q = (
+            select(KnowledgeNode.id)
+            .join(KnowledgeNodeEvidence, KnowledgeNodeEvidence.node_id == KnowledgeNode.id)
+            .join(KnowledgeEvidence, KnowledgeNodeEvidence.evidence_id == KnowledgeEvidence.id)
+            .join(Chunk, KnowledgeEvidence.chunk_id == Chunk.id)
+            .where(
+                KnowledgeNode.collection_id == collection_id,
+                KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
+                Chunk.document_id.in_(changed_uuids),
+            )
+            .distinct()
         )
-    )
-    existing_ids = [row[0] for row in existing.fetchall()]
+        existing = await session.execute(stale_q)
+        existing_ids = [row[0] for row in existing.fetchall()]
+    else:
+        # Full rebuild: delete all semantic entities for this collection
+        existing = await session.execute(
+            select(KnowledgeNode.id).where(
+                KnowledgeNode.collection_id == collection_id,
+                KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
+            )
+        )
+        existing_ids = [row[0] for row in existing.fetchall()]
 
     if existing_ids:
         await session.execute(

@@ -419,7 +419,7 @@ class Source(Base):
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    schedule_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    schedule_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cursor: Mapped[str | None] = mapped_column(Text, nullable=True)

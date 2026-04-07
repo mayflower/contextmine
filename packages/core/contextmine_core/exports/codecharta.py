@@ -9,8 +9,9 @@ from typing import Any, cast
 from uuid import UUID
 
 from contextmine_core.models import MetricSnapshot, TwinNode, TwinScenario
-from contextmine_core.twin import GraphProjection, get_full_scenario_graph
 from contextmine_core.twin.grouping import derive_arch_group
+from contextmine_core.twin.projections import GraphProjection
+from contextmine_core.twin.service import get_full_scenario_graph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

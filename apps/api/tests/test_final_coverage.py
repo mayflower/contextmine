@@ -245,7 +245,7 @@ class TestRequestModels:
     def test_create_source_request_defaults(self) -> None:
         req = CreateSourceRequest(type="github", url="https://github.com/o/r")
         assert req.enabled is True
-        assert req.schedule_interval_minutes == 60
+        assert req.schedule_interval_minutes == 1440
 
     def test_update_source_request_all_none(self) -> None:
         req = UpdateSourceRequest()

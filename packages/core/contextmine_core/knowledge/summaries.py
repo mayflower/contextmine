@@ -11,6 +11,7 @@ extractive fallback (that would defeat the purpose of GraphRAG).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -117,15 +118,43 @@ async def generate_community_summaries(
         # Get community context (members, evidence, etc.)
         context = await _gather_community_context(session, community.id, top_k)
 
+        # Skip unchanged communities: compare membership hash
+        membership_hash = _compute_membership_hash(context)
+        existing_hash = (community.meta or {}).get("membership_hash")
+        if community.summary and existing_hash == membership_hash:
+            stats.communities_skipped += 1
+            # Ensure embedding exists even if summary is cached
+            has_embedding = (
+                await session.execute(
+                    select(KnowledgeEmbedding.id)
+                    .where(
+                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY_SUMMARY,
+                        KnowledgeEmbedding.target_id == community.id,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if has_embedding:
+                stats.embeddings_skipped += 1
+            else:
+                embedding_created = await _embed_community_summary(
+                    session, collection_id, community.id, community.summary, embed_provider
+                )
+                if embedding_created:
+                    stats.embeddings_created += 1
+            continue
+
         # Generate LLM summary (required, no fallback)
         summary = await _llm_summarize_community(provider, context)
         summary_text = _format_llm_summary(summary)
 
-        # Update community summary
+        # Update community summary and store membership hash
+        new_meta = dict(community.meta or {})
+        new_meta["membership_hash"] = membership_hash
         await session.execute(
             update(KnowledgeCommunity)
             .where(KnowledgeCommunity.id == community.id)
-            .values(summary=summary_text)
+            .values(summary=summary_text, meta=new_meta)
         )
         stats.communities_summarized += 1
 
@@ -164,6 +193,16 @@ class CommunityContext:
     entity_descriptions: list[str] = field(default_factory=list)
     source_symbols: list[str] = field(default_factory=list)
     source_files: list[str] = field(default_factory=list)
+
+
+def _compute_membership_hash(context: CommunityContext) -> str:
+    """Compute a stable hash of community membership for change detection."""
+    member_keys = sorted(
+        (m.get("name", ""), m.get("type", ""), m.get("description", ""))
+        for m in context.member_nodes
+    )
+    payload = json.dumps(member_keys, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _add_member_to_context(member: Any, node: Any, context: CommunityContext) -> None:

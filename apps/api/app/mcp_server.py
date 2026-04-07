@@ -2776,6 +2776,7 @@ async def mcp_arc42_drift_report(
                 scenario_id=scenario.id,
                 enable_llm_enrich=settings.arch_docs_llm_enrich,
                 llm_provider=llm_provider,
+                llm_hypothesis_limit=settings.arch_docs_llm_max_hypotheses,
             )
             baseline_bundle = None
             if baseline:
@@ -2785,6 +2786,7 @@ async def mcp_arc42_drift_report(
                     scenario_id=baseline.id,
                     enable_llm_enrich=settings.arch_docs_llm_enrich,
                     llm_provider=llm_provider,
+                    llm_hypothesis_limit=settings.arch_docs_llm_max_hypotheses,
                 )
 
             report = compute_arc42_drift(
@@ -2867,6 +2869,7 @@ async def mcp_list_ports_adapters(
                 scenario_id=scenario.id,
                 enable_llm_enrich=settings.arch_docs_llm_enrich,
                 llm_provider=llm_provider,
+                llm_hypothesis_limit=settings.arch_docs_llm_max_hypotheses,
             )
 
             rows = bundle.ports_adapters

@@ -58,6 +58,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "arch_docs_generate_on_sync": False,
         "arch_docs_llm_enrich": False,
         "arch_docs_drift_enabled": False,
+        "arch_docs_llm_max_hypotheses": 12,
         "twin_evolution_window_days": 90,
         "joern_server_url": "",
         "joern_required_for_sync": False,
@@ -1895,6 +1896,189 @@ class TestBuildTwinGraphArchDocs:
         )
 
         assert result.get("arch_docs_sync_generation") == "skipped_requires_explicit_trigger"
+
+    async def test_generate_arch_docs_skips_llm_when_deterministic_hash_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextmine_core.architecture.schemas import ArchitectureFactsBundle
+
+        collection_id = uuid.uuid4()
+        scenario_id = uuid.uuid4()
+        deterministic_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            scenario_name="AS-IS",
+        )
+        artifact = SimpleNamespace(meta={"facts_hash": deterministic_bundle.facts_hash()})
+        as_is = SimpleNamespace(id=scenario_id, name="AS-IS")
+        settings = _make_settings(arch_docs_llm_enrich=True, arch_docs_drift_enabled=True)
+
+        build_architecture_facts = AsyncMock(return_value=deterministic_bundle)
+        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
+        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+
+        async def mock_execute(stmt):
+            result = MagicMock()
+            statement = str(stmt)
+            if "knowledge_artifacts" in statement:
+                result.scalar_one_or_none.return_value = artifact
+                return result
+            raise AssertionError(f"Unexpected statement: {statement}")
+
+        session = AsyncMock()
+        session.execute = mock_execute
+
+        stats = await flows._generate_arch_docs_on_sync(session, settings, collection_id, as_is)
+
+        assert build_architecture_facts.await_count == 1
+        assert build_architecture_facts.await_args.kwargs["enable_llm_enrich"] is False
+        assert stats["arch_skipped"] is True
+
+    async def test_generate_arch_docs_only_uses_llm_after_hash_miss(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextmine_core.architecture.schemas import ArchitectureFact, ArchitectureFactsBundle
+
+        collection_id = uuid.uuid4()
+        scenario_id = uuid.uuid4()
+        deterministic_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            scenario_name="AS-IS",
+        )
+        enriched_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            scenario_name="AS-IS",
+        )
+        enriched_bundle.facts.append(
+            ArchitectureFact(
+                fact_id="quality",
+                fact_type="quality_summary",
+                title="Quality",
+                description="desc",
+                source="deterministic",
+                confidence=1.0,
+                tags=(),
+                attributes={},
+                evidence=(),
+            )
+        )
+        artifact = SimpleNamespace(meta={"facts_hash": "outdated"})
+        as_is = SimpleNamespace(id=scenario_id, name="AS-IS")
+        settings = _make_settings(arch_docs_llm_enrich=True, arch_docs_drift_enabled=False)
+
+        build_architecture_facts = AsyncMock(side_effect=[deterministic_bundle, enriched_bundle])
+        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
+        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+        monkeypatch.setattr(
+            "contextmine_core.architecture.generate_arc42_from_facts",
+            lambda bundle, scenario, options=None: SimpleNamespace(
+                generated_at=datetime.now(UTC),
+                confidence_summary={},
+                section_coverage={},
+                warnings=[],
+                sections={},
+                markdown="# arc42\n",
+            ),
+        )
+
+        async def mock_execute(stmt):
+            result = MagicMock()
+            statement = str(stmt)
+            if "knowledge_artifacts" in statement:
+                result.scalar_one_or_none.return_value = artifact
+                return result
+            raise AssertionError(f"Unexpected statement: {statement}")
+
+        session = AsyncMock()
+        session.execute = mock_execute
+        session.add = MagicMock()
+
+        await flows._generate_arch_docs_on_sync(session, settings, collection_id, as_is)
+
+        assert build_architecture_facts.await_count == 2
+        assert build_architecture_facts.await_args_list[0].kwargs["enable_llm_enrich"] is False
+        assert build_architecture_facts.await_args_list[1].kwargs["enable_llm_enrich"] is True
+        assert build_architecture_facts.await_args_list[1].kwargs["llm_hypothesis_limit"] == 12
+
+    async def test_generate_arch_docs_uses_deterministic_baseline_for_drift(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextmine_core.architecture.schemas import ArchitectureFactsBundle
+
+        collection_id = uuid.uuid4()
+        scenario_id = uuid.uuid4()
+        baseline_id = uuid.uuid4()
+        deterministic_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            scenario_name="AS-IS",
+        )
+        enriched_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            scenario_name="AS-IS",
+        )
+        baseline_bundle = ArchitectureFactsBundle(
+            collection_id=collection_id,
+            scenario_id=baseline_id,
+            scenario_name="BASELINE",
+        )
+        as_is = SimpleNamespace(id=scenario_id, name="AS-IS")
+        baseline = SimpleNamespace(id=baseline_id)
+        settings = _make_settings(arch_docs_llm_enrich=True, arch_docs_drift_enabled=True)
+
+        build_architecture_facts = AsyncMock(
+            side_effect=[deterministic_bundle, enriched_bundle, baseline_bundle]
+        )
+        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
+        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+        monkeypatch.setattr(
+            "contextmine_core.architecture.generate_arc42_from_facts",
+            lambda bundle, scenario, options=None: SimpleNamespace(
+                generated_at=datetime.now(UTC),
+                confidence_summary={},
+                section_coverage={},
+                warnings=[],
+                sections={},
+                markdown="# arc42\n",
+            ),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.architecture.compute_arc42_drift",
+            lambda current, baseline_bundle, baseline_scenario_id=None: SimpleNamespace(
+                generated_at=datetime.now(UTC),
+                current_hash=current.facts_hash(),
+                baseline_hash=baseline_bundle.facts_hash() if baseline_bundle else None,
+                deltas=[],
+                warnings=[],
+            ),
+        )
+
+        async def mock_execute(stmt):
+            result = MagicMock()
+            statement = str(stmt)
+            if "knowledge_artifacts" in statement:
+                result.scalar_one_or_none.return_value = None
+                return result
+            if "FROM twin_scenarios" in statement:
+                result.scalar_one_or_none.return_value = baseline
+                return result
+            raise AssertionError(f"Unexpected statement: {statement}")
+
+        session = AsyncMock()
+        session.execute = mock_execute
+        session.add = MagicMock()
+
+        await flows._generate_arch_docs_on_sync(session, settings, collection_id, as_is)
+
+        assert build_architecture_facts.await_count == 3
+        assert [call.kwargs["enable_llm_enrich"] for call in build_architecture_facts.await_args_list] == [
+            False,
+            True,
+            False,
+        ]
 
 
 # ---------------------------------------------------------------------------

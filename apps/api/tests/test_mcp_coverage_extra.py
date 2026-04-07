@@ -38,6 +38,7 @@ def _make_settings(**overrides):
         "arch_docs_generate_on_sync": False,
         "arch_docs_llm_enrich": False,
         "arch_docs_drift_enabled": False,
+        "arch_docs_llm_max_hypotheses": 12,
         "arch_docs_agent_sdk_model": "claude-3-5-sonnet-20241022",
         "arch_docs_agent_sdk_max_turns": 10,
         "arch_docs_agent_sdk_permission_mode": "never",

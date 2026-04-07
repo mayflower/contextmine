@@ -18,13 +18,12 @@ from contextmine_core.models import (
     KnowledgeNodeKind,
     TwinScenario,
 )
-from contextmine_core.twin import (
-    GraphProjection,
-    get_full_scenario_graph,
-    get_scenario_provenance_node_ids,
-)
 from contextmine_core.twin.grouping import canonical_file_path_from_node, derive_arch_group
-from contextmine_core.twin.projections import build_inferred_architecture_projection
+from contextmine_core.twin.projections import (
+    GraphProjection,
+    build_inferred_architecture_projection,
+)
+from contextmine_core.twin.service import get_full_scenario_graph, get_scenario_provenance_node_ids
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -390,7 +389,7 @@ async def _render_component_view(
 
     if not nodes:
         warnings.append(
-            "Recovered architecture unavailable for component view; used file projection."
+            "Degraded component view: recovered architecture unavailable; used largest component/file-bucket projection."
         )
         graph = await get_full_scenario_graph(
             session=session,

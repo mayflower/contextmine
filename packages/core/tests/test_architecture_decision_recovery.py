@@ -9,6 +9,10 @@ from uuid import uuid4
 import pytest
 from contextmine_core.architecture import facts as architecture_facts
 from contextmine_core.architecture.recovery import recover_architecture_model
+from contextmine_core.architecture.recovery_decisions import recover_architecture_decisions
+from contextmine_core.architecture.recovery_docs import load_recovery_docs
+from contextmine_core.architecture.recovery_model import RecoveredArchitectureEntity
+from contextmine_core.architecture.schemas import EvidenceRef
 from contextmine_core.models import (
     Document,
     KnowledgeEdge,
@@ -242,3 +246,188 @@ async def test_default_pipeline_loads_persisted_adr_docs_into_recovery(
     assert len(decision_facts) == 1
     assert decision_facts[0].attributes["status"] == "hypothesis"
     assert decision_facts[0].evidence[0].ref == "docs/adr/001-async-embedding-workers.md"
+
+
+def test_structured_adr_fields_produce_confirmed_decision_with_supersedes_and_section_evidence() -> (
+    None
+):
+    entities = (
+        RecoveredArchitectureEntity(
+            entity_id="container:worker",
+            kind="container",
+            name="Worker Runtime",
+            confidence=0.96,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/worker/jobs.py"),),
+            attributes={"container": "worker"},
+        ),
+    )
+    docs = [
+        {
+            "id": "artifact:docs/adr/0007.md",
+            "title": "Placeholder title",
+            "text": (
+                "# Async embedding workers\n\n"
+                "## Decision\nMove embeddings generation to the worker runtime.\n\n"
+                "## Consequences\nRequests remain responsive.\n"
+            ),
+            "summary": "Move embeddings generation to the worker runtime.",
+            "meta": {"file_path": "docs/adr/0007-async-embedding-workers.md"},
+            "structured_data": {
+                "title": "Async embedding workers",
+                "status": "accepted",
+                "decision": "Move embeddings generation to the worker runtime.",
+                "consequences": "Requests remain responsive.",
+                "affected_entity_ids": ["container:worker"],
+                "supersedes": "ADR-0004",
+                "replaces": "Synchronous API embeddings",
+            },
+        }
+    ]
+
+    decisions = recover_architecture_decisions(docs, entities)
+
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert decision.title == "Async embedding workers"
+    assert decision.status == "confirmed"
+    assert decision.summary == "Move embeddings generation to the worker runtime."
+    assert decision.affected_entity_ids == ("container:worker",)
+    assert decision.attributes["supersedes"] == "ADR-0004"
+    assert decision.attributes["replaces"] == "Synchronous API embeddings"
+    assert any(ref.kind == "section" for ref in decision.evidence)
+
+
+def test_decision_entity_linking_uses_entity_id_aliases_and_repo_paths() -> None:
+    entities = (
+        RecoveredArchitectureEntity(
+            entity_id="container:api",
+            kind="container",
+            name="API Runtime",
+            confidence=0.96,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/api/routes.py"),),
+            attributes={"container": "api", "aliases": ["public api", "rest api"]},
+        ),
+        RecoveredArchitectureEntity(
+            entity_id="component:session-service",
+            kind="component",
+            name="Session Service",
+            confidence=0.92,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/api/session_service.py"),),
+        ),
+    )
+    docs = [
+        {
+            "id": "artifact:docs/adr/0012.md",
+            "title": "Session API boundary",
+            "text": (
+                "The public API keeps session creation in container:api and the "
+                "services/contextmine/api/session_service.py implementation."
+            ),
+            "summary": "Clarify session API boundary.",
+            "meta": {"file_path": "docs/adr/0012-session-api-boundary.md"},
+            "structured_data": {
+                "decision": (
+                    "The public API keeps session creation in container:api and the "
+                    "services/contextmine/api/session_service.py implementation."
+                ),
+                "affected_entity_refs": [
+                    "container:api",
+                    "public api",
+                    "services/contextmine/api/session_service.py",
+                ],
+            },
+        }
+    ]
+
+    decisions = recover_architecture_decisions(docs, entities)
+
+    assert len(decisions) == 1
+    assert decisions[0].status == "confirmed"
+    assert decisions[0].affected_entity_ids == (
+        "component:session-service",
+        "container:api",
+    )
+
+
+def test_ambiguous_entity_linking_stays_hypothesis_with_reason_and_counter_evidence() -> None:
+    entities = (
+        RecoveredArchitectureEntity(
+            entity_id="container:api",
+            kind="container",
+            name="API Runtime",
+            confidence=0.96,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/api/routes.py"),),
+            attributes={"container": "api", "aliases": ["request runtime"]},
+        ),
+        RecoveredArchitectureEntity(
+            entity_id="container:worker",
+            kind="container",
+            name="Worker Runtime",
+            confidence=0.95,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/worker/jobs.py"),),
+            attributes={"container": "worker", "aliases": ["processing runtime"]},
+        ),
+    )
+    docs = [
+        {
+            "id": "artifact:docs/notes/runtime-boundary.md",
+            "title": "Runtime boundary note",
+            "text": "The processing runtime should move out of the request runtime path.",
+            "summary": "Keep long-running work off the request path.",
+            "meta": {"file_path": "docs/notes/runtime-boundary.md"},
+        }
+    ]
+
+    decisions = recover_architecture_decisions(docs, entities)
+
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert decision.status == "hypothesis"
+    assert decision.affected_entity_ids == ("container:api", "container:worker")
+    assert decision.attributes["linking_reason"]
+    assert decision.attributes["counter_evidence_entity_ids"] == [
+        "container:api",
+        "container:worker",
+    ]
+
+
+@pytest.mark.anyio
+async def test_repo_artifact_without_document_row_can_drive_confirmed_decision_recovery() -> None:
+    file_node = KnowledgeNode(
+        id=uuid4(),
+        collection_id=uuid4(),
+        kind=KnowledgeNodeKind.FILE,
+        natural_key="docs/records/0014.md",
+        name="Record 14",
+        meta={
+            "uri": "docs/records/0014.md",
+            "file_path": "docs/records/0014.md",
+            "content_markdown": (
+                "---\n"
+                "affected_entity_ids:\n"
+                "  - container:worker\n"
+                "supersedes: ADR-0006\n"
+                "---\n"
+                "# Worker-only embeddings\n\n"
+                "## Decision\nUse container:worker for embeddings generation.\n"
+            ),
+        },
+    )
+    docs = await load_recovery_docs(_FakeSession(None, [], [], documents=[]), [file_node])
+    entities = (
+        RecoveredArchitectureEntity(
+            entity_id="container:worker",
+            kind="container",
+            name="Worker Runtime",
+            confidence=0.96,
+            evidence=(EvidenceRef(kind="file", ref="services/contextmine/worker/jobs.py"),),
+            attributes={"container": "worker"},
+        ),
+    )
+
+    decisions = recover_architecture_decisions(docs, entities)
+
+    assert len(decisions) == 1
+    assert decisions[0].status == "confirmed"
+    assert decisions[0].affected_entity_ids == ("container:worker",)
+    assert any(ref.kind == "section" for ref in decisions[0].evidence)

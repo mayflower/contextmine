@@ -156,3 +156,25 @@ def test_projection_exposes_ambiguity_and_unresolved_counts_for_ui_consumers() -
 
     assert projection["summary"]["ambiguous_hypotheses"] == 1
     assert projection["summary"]["unresolved_hypotheses"] == 1
+
+
+def test_container_level_projection_lifts_component_relationships_with_semantic_kinds() -> None:
+    projection = build_inferred_architecture_projection(
+        _projection_model(), entity_level="container"
+    )
+
+    relationships = {
+        (edge["source_node_id"], edge["target_node_id"], edge["kind"])
+        for edge in projection["edges"]
+    }
+    assert ("container:api", "data_store:sessions", "reads_writes") in relationships
+    assert ("container:worker", "data_store:sessions", "reads_writes") in relationships
+
+
+def test_container_level_projection_warns_when_shared_component_context_is_collapsed() -> None:
+    projection = build_inferred_architecture_projection(
+        _projection_model(), entity_level="container"
+    )
+
+    assert any("lossy" in warning.lower() for warning in projection["warnings"])
+    assert projection["summary"]["collapsed_multi_membership_edges"] == 1

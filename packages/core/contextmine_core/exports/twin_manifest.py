@@ -6,13 +6,14 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID
 
-from contextmine_core.twin import GraphProjection, get_full_scenario_graph
 from contextmine_core.twin.projections import (
+    GraphProjection,
     build_test_matrix_projection,
     build_ui_map_projection,
     build_user_flows_projection,
     compute_rebuild_readiness,
 )
+from contextmine_core.twin.service import get_full_scenario_graph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _INTERFACE_KINDS = {"api_endpoint", "graphql_operation", "service_rpc", "interface_contract"}

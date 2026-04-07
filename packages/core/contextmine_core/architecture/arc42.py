@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from .claim_model import Arc42ClaimTraceability, ArchitectureClaim
 from .schemas import Arc42Document, ArchitectureFact, ArchitectureFactsBundle, summarize_confidence
 
 SECTION_TITLES: dict[str, str] = {
@@ -450,4 +451,131 @@ def generate_arc42_from_facts(
         warnings=list(facts.warnings),
         confidence_summary=confidence_summary,
         section_coverage=section_coverage,
+    )
+
+
+def _claim_index(claims: list[ArchitectureClaim]) -> dict[str, ArchitectureClaim]:
+    return {claim.claim_id: claim for claim in claims}
+
+
+def _sanitize_claim_inputs(
+    *,
+    claims: list[ArchitectureClaim],
+    claim_traceability: list[Arc42ClaimTraceability],
+) -> tuple[list[ArchitectureClaim], list[Arc42ClaimTraceability], list[str]]:
+    traceable_ids = {claim_id for row in claim_traceability for claim_id in row.claim_ids}
+    sanitized_claims: list[ArchitectureClaim] = []
+    warnings: list[str] = []
+
+    for claim in claims:
+        reasons: list[str] = []
+        if not claim.evidence:
+            reasons.append("missing evidence")
+        if claim.claim_id not in traceable_ids:
+            reasons.append("missing claim_traceability")
+        if reasons:
+            warnings.append(f"Dropped claim {claim.claim_id}: {', '.join(reasons)}.")
+            continue
+        sanitized_claims.append(claim)
+
+    kept_ids = {claim.claim_id for claim in sanitized_claims}
+    sanitized_traceability: list[Arc42ClaimTraceability] = []
+    for row in claim_traceability:
+        claim_ids = tuple(claim_id for claim_id in row.claim_ids if claim_id in kept_ids)
+        if not claim_ids:
+            continue
+        sanitized_traceability.append(
+            Arc42ClaimTraceability(
+                section_key=row.section_key,
+                claim_ids=claim_ids,
+                summary=row.summary,
+            )
+        )
+
+    return sanitized_claims, sanitized_traceability, warnings
+
+
+def _claim_lines_for_section(
+    *,
+    section_key: str,
+    claims_by_id: dict[str, ArchitectureClaim],
+    claim_traceability: list[Arc42ClaimTraceability],
+) -> list[str]:
+    lines: list[str] = []
+    section_rows = [row for row in claim_traceability if row.section_key == section_key]
+    if not section_rows:
+        return lines
+
+    lines.append("")
+    lines.append("Traceable claims:")
+    for row in section_rows:
+        if row.summary:
+            lines.append(f"- Trace: {row.summary}")
+        for claim_id in row.claim_ids:
+            claim = claims_by_id.get(claim_id)
+            if claim is None:
+                continue
+            evidence_refs = ", ".join(sorted(ref.ref for ref in claim.evidence[:3]))
+            detail = (
+                f"- `{claim.claim_id}` [{claim.status}, {claim.confidence:.0%}]: {claim.summary}"
+            )
+            if evidence_refs:
+                detail += f" Evidence: {evidence_refs}"
+            lines.append(detail)
+            if claim.status in {"ambiguous", "conflicting", "unknown", "hypothesis"}:
+                lines.append(f"UNKNOWN: ambiguous claim - `{claim.claim_id}`")
+    return lines
+
+
+def render_claim_backed_arc42(
+    facts: ArchitectureFactsBundle,
+    scenario: Any,
+    *,
+    claims: list[ArchitectureClaim],
+    claim_traceability: list[Arc42ClaimTraceability],
+    options: dict[str, Any] | None = None,
+) -> Arc42Document:
+    """Render arc42 directly from facts plus explicit claim traceability."""
+
+    base = generate_arc42_from_facts(facts, scenario, options=options)
+    sanitized_claims, sanitized_traceability, warnings = _sanitize_claim_inputs(
+        claims=claims,
+        claim_traceability=claim_traceability,
+    )
+    claims_by_id = _claim_index(sanitized_claims)
+    sections: dict[str, str] = {}
+    for key, content in base.sections.items():
+        claim_lines = _claim_lines_for_section(
+            section_key=key,
+            claims_by_id=claims_by_id,
+            claim_traceability=sanitized_traceability,
+        )
+        merged = [content.strip()] if content.strip() else []
+        merged.extend(claim_lines)
+        sections[key] = "\n".join(part for part in merged if part).strip()
+
+    markdown_lines = [f"# {base.title}", ""]
+    for key in SECTION_TITLES:
+        if key not in sections:
+            continue
+        markdown_lines.append(f"## {SECTION_TITLES[key]}")
+        markdown_lines.append(sections[key] or "UNKNOWN: insufficient evidence")
+        markdown_lines.append("")
+
+    return Arc42Document(
+        collection_id=base.collection_id,
+        scenario_id=base.scenario_id,
+        scenario_name=base.scenario_name,
+        title=base.title,
+        generated_at=base.generated_at,
+        sections=sections,
+        markdown="\n".join(markdown_lines).strip() + "\n",
+        warnings=[*base.warnings, *warnings],
+        confidence_summary=base.confidence_summary,
+        section_coverage={key: bool((sections.get(key) or "").strip()) for key in SECTION_TITLES if key in sections},
+        claims=sorted(sanitized_claims, key=lambda row: row.claim_id),
+        claim_traceability=sorted(
+            sanitized_traceability,
+            key=lambda row: (row.section_key, row.claim_ids),
+        ),
     )

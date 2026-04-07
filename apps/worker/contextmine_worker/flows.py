@@ -32,6 +32,7 @@ from contextmine_core import (
     get_session,
     get_settings,
 )
+from git.exc import GitCommandError
 from prefect import flow, task
 from prefect.artifacts import create_progress_artifact, update_progress_artifact
 from prefect.cache_policies import INPUTS
@@ -82,6 +83,31 @@ TAG_WEB_CRAWL = "web-crawl"
 TAG_DB_HEAVY = "db-heavy"
 SYNC_RUN_STALE_AFTER = timedelta(hours=6)
 _FILE_NODE_PREFIX = "file:"
+_NON_RETRYABLE_GITHUB_SYNC_ERROR_PREFIXES = (
+    "TWIN_BUILD_TIMEOUT:",
+    "JOERN_PARSE_FAILED:",
+    "METRICS_GATE_FAILED:",
+    "SCIP_GATE_FAILED:",
+)
+_RETRYABLE_GITHUB_SYNC_MESSAGE_FRAGMENTS = (
+    "github api",
+    "rate limit",
+    "too many requests",
+    "temporarily unavailable",
+    "temporary failure",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "remote end hung up unexpectedly",
+    "name resolution",
+    "timed out",
+    "timeout",
+    "tls",
+    "ssl",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+)
 
 
 def _scip_normalize_language(value: object) -> str:
@@ -195,6 +221,35 @@ def _sync_temporal_coupling_max_files_per_commit() -> int:
 def _joern_parse_timeout_seconds() -> int:
     configured = int(get_settings().joern_parse_timeout_seconds)
     return max(30, configured)
+
+
+def _state_exception(state: Any) -> BaseException | None:
+    data = getattr(state, "data", None)
+    if isinstance(data, BaseException):
+        return data
+    return None
+
+
+async def _sync_github_retry_condition(task: Any, task_run: Any, state: Any) -> bool:
+    """Retry only GitHub/network-stage failures, not deterministic pipeline failures."""
+    del task, task_run
+
+    exc = _state_exception(state)
+    message = str(exc or getattr(state, "message", "") or "").strip()
+    normalized = message.lower()
+
+    if message.startswith(_NON_RETRYABLE_GITHUB_SYNC_ERROR_PREFIXES):
+        return False
+
+    if message.startswith("STEP_TIMEOUT:"):
+        # Allow a retry if the repo fetch itself timed out; later step timeouts are
+        # expensive deterministic failures and should fail fast.
+        return "git_clone_or_pull" in normalized
+
+    if isinstance(exc, (ConnectionError, TimeoutError, GitCommandError)):
+        return True
+
+    return any(fragment in normalized for fragment in _RETRYABLE_GITHUB_SYNC_MESSAGE_FRAGMENTS)
 
 
 async def _run_blocking_with_timeout(
@@ -1252,11 +1307,13 @@ async def _kg_step_semantic_entities(
                 llm_provider=llm_provider,
                 embedder=embedder,
                 max_chunks=_semantic_extraction_max_chunks(),
+                changed_doc_ids=changed_doc_ids,
             )
             extraction_stats = await persist_semantic_entities(
                 session=session,
                 collection_id=collection_uuid,
                 batch=extraction_batch,
+                changed_doc_ids=changed_doc_ids,
             )
             await session.commit()
             stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
@@ -1545,14 +1602,13 @@ async def _generate_arch_docs_on_sync(
         except Exception:
             pass
 
-    facts_bundle = await build_architecture_facts(
+    deterministic_bundle = await build_architecture_facts(
         session,
         collection_id=collection_uuid,
         scenario_id=as_is.id,
-        enable_llm_enrich=settings.arch_docs_llm_enrich,
-        llm_provider=llm_provider,
+        enable_llm_enrich=False,
+        llm_provider=None,
     )
-    arc42_doc = generate_arc42_from_facts(facts_bundle, as_is, options={})
     artifact_name = f"{as_is.id}.arc42.md"
 
     artifact = (
@@ -1564,6 +1620,34 @@ async def _generate_arch_docs_on_sync(
             )
         )
     ).scalar_one_or_none()
+
+    # Skip regeneration if deterministic facts haven't changed since last run.
+    deterministic_facts_hash = deterministic_bundle.facts_hash()
+    previous_hash = None
+    if artifact and artifact.meta:
+        previous_hash = artifact.meta.get("deterministic_facts_hash") or artifact.meta.get("facts_hash")
+    if previous_hash == deterministic_facts_hash:
+        logger.info(
+            "Arc42 deterministic facts unchanged (hash=%s), skipping regeneration",
+            deterministic_facts_hash[:12],
+        )
+        stats["arch_facts_count"] = len(deterministic_bundle.facts)
+        stats["arch_ports_adapters_count"] = len(deterministic_bundle.ports_adapters)
+        stats["arch_skipped"] = True
+        return stats
+
+    facts_bundle = deterministic_bundle
+    if settings.arch_docs_llm_enrich and llm_provider is not None:
+        facts_bundle = await build_architecture_facts(
+            session,
+            collection_id=collection_uuid,
+            scenario_id=as_is.id,
+            enable_llm_enrich=True,
+            llm_provider=llm_provider,
+            llm_hypothesis_limit=settings.arch_docs_llm_max_hypotheses,
+        )
+
+    arc42_doc = generate_arc42_from_facts(facts_bundle, as_is, options={})
 
     drift_meta: dict[str, object] | None = None
     if settings.arch_docs_drift_enabled:
@@ -1580,8 +1664,8 @@ async def _generate_arch_docs_on_sync(
                 session,
                 collection_id=collection_uuid,
                 scenario_id=baseline.id,
-                enable_llm_enrich=settings.arch_docs_llm_enrich,
-                llm_provider=llm_provider,
+                enable_llm_enrich=False,
+                llm_provider=None,
             )
             drift_report = compute_arc42_drift(
                 facts_bundle, baseline_bundle, baseline_scenario_id=baseline.id
@@ -1600,6 +1684,7 @@ async def _generate_arch_docs_on_sync(
         "scenario_id": str(as_is.id),
         "generated_at": arc42_doc.generated_at.isoformat(),
         "facts_hash": facts_bundle.facts_hash(),
+        "deterministic_facts_hash": deterministic_facts_hash,
         "confidence_summary": arc42_doc.confidence_summary,
         "section_coverage": arc42_doc.section_coverage,
         "warnings": arc42_doc.warnings,
@@ -3829,6 +3914,7 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
     retries=GITHUB_API_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=2),
     retry_jitter_factor=0.5,
+    retry_condition_fn=_sync_github_retry_condition,
     tags=[TAG_GITHUB_API],
     task_run_name="sync-github-{source.url}",
 )
@@ -3851,6 +3937,22 @@ async def sync_github_source(
     _gh_phase_scip_coverage_gates(ctx)
     await _gh_phase_structural_metrics(ctx)
     await _gh_phase_diff_and_index_documents(ctx)
+
+    # Early exit: skip expensive LLM/embedding phases when nothing changed
+    if not ctx.docs_to_chunk and not ctx.deleted_file_paths:
+        logger.info(
+            "No file changes detected for source %s (sha %s), skipping expensive phases",
+            ctx.source.id,
+            ctx.new_sha,
+        )
+        acc = _DocProcessingAccumulator()
+        acc._docs_deferred = 0  # type: ignore[attr-defined]
+        acc._total_candidate = 0  # type: ignore[attr-defined]
+        acc._changed_doc_ids = []  # type: ignore[attr-defined]
+        ctx.doc_acc = acc
+        await _gh_phase_finalize(ctx)
+        return ctx.stats
+
     await _gh_phase_chunk_and_embed(ctx)
     await _gh_phase_build_knowledge_graph(ctx)
     await _gh_phase_materialize_surfaces(ctx)

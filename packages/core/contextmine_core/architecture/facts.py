@@ -18,8 +18,8 @@ from contextmine_core.models import (
     MetricSnapshot,
     TwinScenario,
 )
-from contextmine_core.twin import get_full_scenario_graph, get_scenario_provenance_node_ids
 from contextmine_core.twin.grouping import canonical_file_path_from_meta, derive_arch_group
+from contextmine_core.twin.service import get_full_scenario_graph, get_scenario_provenance_node_ids
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -403,6 +403,16 @@ def _enrich_ports_with_recovery(ports: list[PortAdapterFact], model: Any) -> lis
             continue
 
         candidate_memberships = sorted({membership.entity_id for membership in memberships})
+        candidate_container_ids = sorted(
+            membership.entity_id
+            for membership in memberships
+            if _entity_kind(membership.entity_id) == "container"
+        )
+        candidate_component_ids = sorted(
+            membership.entity_id
+            for membership in memberships
+            if _entity_kind(membership.entity_id) == "component"
+        )
         best_container = _best_membership(memberships, "container")
         best_component = _best_membership(memberships, "component")
 
@@ -413,6 +423,13 @@ def _enrich_ports_with_recovery(ports: list[PortAdapterFact], model: Any) -> lis
         component = port.component
         if best_component is not None:
             component = entity_name_by_id.get(best_component.entity_id, component)
+
+        legacy_mapping_lossy = len(candidate_container_ids) > 1 or len(candidate_component_ids) > 1
+        legacy_mapping_warning = None
+        if legacy_mapping_lossy:
+            legacy_mapping_warning = (
+                "Legacy port view keeps only one container/component while recovery found multiple matches."
+            )
 
         enriched.append(
             replace(
@@ -426,6 +443,10 @@ def _enrich_ports_with_recovery(ports: list[PortAdapterFact], model: Any) -> lis
                 attributes={
                     **port.attributes,
                     "candidate_memberships": candidate_memberships,
+                    "candidate_container_ids": candidate_container_ids,
+                    "candidate_component_ids": candidate_component_ids,
+                    "legacy_mapping_lossy": legacy_mapping_lossy,
+                    "legacy_mapping_warning": legacy_mapping_warning,
                 },
             )
         )
@@ -563,6 +584,7 @@ async def build_architecture_facts(
     scenario_id: UUID,
     enable_llm_enrich: bool = False,
     llm_provider: Any | None = None,
+    llm_hypothesis_limit: int | None = None,
 ) -> ArchitectureFactsBundle:
     """Build architecture facts from twin, metrics, and knowledge-graph signals."""
 
@@ -696,6 +718,7 @@ async def build_architecture_facts(
         recovery_edges,
         docs=recovery_docs,
         llm_adjudicator=llm_provider if enable_llm_enrich else None,
+        llm_hypothesis_limit=llm_hypothesis_limit if enable_llm_enrich else None,
     )
     _collect_recovered_architecture_facts(bundle, recovered_model)
     _append_recovery_warning_counts(bundle, recovered_model)

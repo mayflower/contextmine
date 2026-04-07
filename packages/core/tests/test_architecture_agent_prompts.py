@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from contextmine_core.architecture.agent_sdk import _arc42_prompt, _recovered_architecture_payload
+from contextmine_core.architecture.agent_sdk import (
+    _arc42_prompt,
+    _prompt_claim_sections,
+    _recovered_architecture_payload,
+)
+from contextmine_core.architecture.claim_model import ArchitectureClaim
 from contextmine_core.architecture.recovery_model import (
     RecoveredArchitectureDecision,
     RecoveredArchitectureEntity,
@@ -82,3 +87,39 @@ def test_arc42_prompt_embeds_recovered_architecture_contract() -> None:
     assert "ambiguous or unresolved" in prompt
     assert "ADR-001 async embedding workers" in prompt
     assert "symbol:session_manager" in prompt
+
+
+def test_prompt_claim_sections_extracts_claims_open_questions_and_evidence_hints() -> None:
+    claims = [
+        ArchitectureClaim(
+            claim_id="claim:runtime:worker",
+            claim_kind="runtime_assignment",
+            summary="Embeddings run in the worker runtime.",
+            status="confirmed",
+            confidence=0.93,
+            entity_ids=("container:worker",),
+            evidence=(EvidenceRef(kind="file", ref="docs/adr/001-async-embedding-workers.md"),),
+            counter_evidence=(),
+            derived_from=("parser",),
+        ),
+        ArchitectureClaim(
+            claim_id="claim:session:shared",
+            claim_kind="ownership",
+            summary="Session manager code is shared between API and worker.",
+            status="ambiguous",
+            confidence=0.72,
+            entity_ids=("container:api", "container:worker"),
+            evidence=(EvidenceRef(kind="file", ref="packages/core/session_manager.py"),),
+            counter_evidence=(),
+            derived_from=("graph_fusion",),
+        ),
+    ]
+
+    sections = _prompt_claim_sections(claims=claims, recovered_architecture=_model())
+
+    assert "Structured claims" in sections
+    assert "Open questions" in sections
+    assert "Evidence hints" in sections
+    assert "claim:runtime:worker" in sections
+    assert "claim:session:shared" in sections
+    assert "symbol:session_manager" in sections

@@ -626,6 +626,7 @@ async def _build_arch_bundle(db, *, collection_id: uuid.UUID, scenario: TwinScen
         scenario_id=scenario.id,
         enable_llm_enrich=settings.arch_docs_llm_enrich,
         llm_provider=llm_provider,
+        llm_hypothesis_limit=settings.arch_docs_llm_max_hypotheses,
     )
 
 

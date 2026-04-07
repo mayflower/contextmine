@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from .arc42 import SECTION_TITLES
+from .claim_model import ArchitectureClaim
 from .recovery_model import RecoveredArchitectureModel
 from .schemas import Arc42Document
 
@@ -198,11 +199,67 @@ def _recovered_architecture_payload(
     raise TypeError("recovered_architecture must be a RecoveredArchitectureModel, dict, or None")
 
 
+def _prompt_claim_sections(
+    *,
+    claims: list[ArchitectureClaim],
+    recovered_architecture: RecoveredArchitectureModel | dict[str, Any] | None,
+) -> str:
+    claim_lines = [
+        f"- {claim.claim_id} [{claim.status}, {claim.confidence:.0%}]: {claim.summary}"
+        for claim in sorted(claims, key=lambda row: row.claim_id)
+    ]
+    open_questions = [
+        f"- {claim.claim_id}: {claim.summary}"
+        for claim in sorted(claims, key=lambda row: row.claim_id)
+        if claim.status in {"ambiguous", "conflicting", "unknown", "hypothesis"}
+    ]
+    if isinstance(recovered_architecture, RecoveredArchitectureModel):
+        open_questions.extend(
+            f"- {item.subject_ref}: {item.rationale}"
+            for item in recovered_architecture.hypotheses
+            if item.status in {"ambiguous", "unresolved"}
+        )
+        evidence_hints = sorted(
+            {
+                ref.ref
+                for claim in claims
+                for ref in claim.evidence
+                if isinstance(ref.ref, str) and ref.ref.strip()
+            }
+            | {
+                ref.ref
+                for item in recovered_architecture.hypotheses
+                for ref in item.evidence
+                if isinstance(ref.ref, str) and ref.ref.strip()
+            }
+        )
+    else:
+        evidence_hints = sorted(
+            {
+                ref.ref
+                for claim in claims
+                for ref in claim.evidence
+                if isinstance(ref.ref, str) and ref.ref.strip()
+            }
+        )
+
+    lines = ["Structured claims:"]
+    lines.extend(claim_lines or ["- none"])
+    lines.append("")
+    lines.append("Open questions:")
+    lines.extend(open_questions or ["- none"])
+    lines.append("")
+    lines.append("Evidence hints:")
+    lines.extend(f"- {hint}" for hint in evidence_hints[:12] or ["none"])
+    return "\n".join(lines)
+
+
 def _arc42_prompt(
     *,
     scenario_name: str,
     section: str | None,
     recovered_architecture: RecoveredArchitectureModel | dict[str, Any] | None = None,
+    claims: list[ArchitectureClaim] | None = None,
 ) -> str:
     section_instruction = (
         f"Focus section: {section}. Still return all 12 section keys."
@@ -220,6 +277,16 @@ def _arc42_prompt(
             "Treat the payload as evidence-backed architecture context; do not invent facts beyond it or the repository evidence.\n"
             f"Recovered architecture JSON:\n{json.dumps(recovered_payload, sort_keys=True)}"
         )
+    claim_instruction = ""
+    if claims:
+        claim_instruction = (
+            "\n\nUse the structured claim layer below as the primary narrative source for prose sections. "
+            "Do not introduce claims that are not covered by these claims or the recovered architecture payload.\n"
+            + _prompt_claim_sections(
+                claims=claims,
+                recovered_architecture=recovered_architecture,
+            )
+        )
     return (
         "Generate a real arc42 document from repository evidence using tools. "
         "Do not invent facts. If evidence is missing, write exactly "
@@ -236,7 +303,7 @@ def _arc42_prompt(
         "}\n\n"
         f"Mandatory section keys: {section_keys}\n"
         "No Markdown fences. JSON only."
-        f"{recovered_instruction}"
+        f"{recovered_instruction}{claim_instruction}"
     )
 
 

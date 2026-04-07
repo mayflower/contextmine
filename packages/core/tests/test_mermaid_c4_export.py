@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from contextmine_core.architecture.recovery_model import (
     RecoveredArchitectureEntity,
+    RecoveredArchitectureHypothesis,
     RecoveredArchitectureMembership,
     RecoveredArchitectureModel,
     RecoveredArchitectureRelationship,
@@ -156,6 +157,17 @@ def _recovered_model() -> RecoveredArchitectureModel:
                 evidence=_evidence("services/contextmine/worker/jobs.py"),
             ),
         ),
+        hypotheses=(
+            RecoveredArchitectureHypothesis(
+                subject_ref="symbol:session_manager",
+                candidate_entity_ids=("container:api", "container:worker"),
+                selected_entity_ids=("container:api", "container:worker"),
+                rationale="Shared session manager code spans API and worker.",
+                status="ambiguous",
+                confidence=0.88,
+                evidence=_evidence("packages/core/session_manager.py"),
+            ),
+        ),
     )
 
 
@@ -195,6 +207,47 @@ async def test_component_view_renders_components(monkeypatch: pytest.MonkeyPatch
     assert "C4Component" in result.content
     assert "reads_writes" in result.content
     assert "Session Manager" in result.content
+    assert any("Ambiguous recovered memberships" in warning for warning in result.warnings)
+
+
+@pytest.mark.anyio
+async def test_component_view_warns_explicitly_before_largest_component_degraded_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_recovered(*_args, **_kwargs):
+        return _empty_recovered_model()
+
+    async def _fake_graph(**_kwargs):  # noqa: ANN003
+        return {
+            "nodes": [
+                {
+                    "id": "largest-component",
+                    "natural_key": "component|contextmine|api|session-manager",
+                    "kind": "component",
+                    "name": "Session Manager",
+                    "meta": {"component": "session-manager", "container": "api", "member_count": 12},
+                }
+            ],
+            "edges": [],
+            "total_nodes": 1,
+            "projection": "architecture",
+            "entity_level": "component",
+            "grouping_strategy": "heuristic",
+            "excluded_kinds": [],
+        }
+
+    monkeypatch.setattr(mermaid_export, "_load_recovered_architecture_model", _fake_recovered)
+    monkeypatch.setattr(mermaid_export, "get_full_scenario_graph", _fake_graph)
+
+    result = await mermaid_export.export_mermaid_c4_result(
+        _FakeSession(),
+        uuid4(),
+        c4_view="component",
+    )
+
+    assert "C4Component" in result.content
+    assert any("degraded" in warning.lower() for warning in result.warnings)
+    assert any("largest component" in warning.lower() for warning in result.warnings)
 
 
 @pytest.mark.anyio

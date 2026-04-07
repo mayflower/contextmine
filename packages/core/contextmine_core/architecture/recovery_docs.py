@@ -11,6 +11,13 @@ from contextmine_core.models import Document, KnowledgeNode, KnowledgeNodeKind
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .artifact_inventory import (
+    ArtifactInventoryEntry,
+    build_document_artifact_inventory,
+    merge_document_and_repo_artifacts,
+)
+from .artifact_parsers import parse_artifact
+
 _TEXT_DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
 _ARCH_PATH_TOKENS = (
     "/adr/",
@@ -115,6 +122,12 @@ def _looks_like_architecture_doc(doc: Any) -> bool:
         return True
     if meta.get("doc_kind") in {"adr", "architecture_decision", "architecture_note"}:
         return True
+    if meta.get("artifact_kind") in {"architecture_decision", "architecture_note"}:
+        return True
+    if meta.get("parser") in {"markdown_adr", "adr_frontmatter_v1"}:
+        return True
+    if meta.get("parser_hint") in {"markdown_adr", "adr_frontmatter_v1"}:
+        return True
 
     lowered_path = file_path.lower()
     title = str(getattr(doc, "title", "") or "").strip().lower()
@@ -156,6 +169,71 @@ def _document_to_recovery_doc(doc: Any) -> dict[str, Any]:
     }
 
 
+def _artifact_to_document_like(artifact: ArtifactInventoryEntry) -> Any:
+    meta: dict[str, Any] = {
+        "file_path": artifact.repo_path,
+        "artifact_kind": artifact.artifact_kind,
+        "parser_hint": artifact.parser_hint,
+    }
+    raw_data = artifact.raw_data if isinstance(artifact.raw_data, dict) else {}
+    title = str(raw_data.get("title") or PurePosixPath(artifact.repo_path).name).strip()
+    uri = str(raw_data.get("uri") or artifact.repo_path).strip()
+    return type(
+        "ArtifactDoc",
+        (),
+        {
+            "id": artifact.artifact_id,
+            "uri": uri,
+            "title": title,
+            "content_markdown": artifact.raw_text or "",
+            "meta": meta,
+        },
+    )()
+
+
+def artifact_inventory_to_recovery_docs(
+    artifacts: list[ArtifactInventoryEntry],
+) -> list[dict[str, Any]]:
+    """Convert typed artifact inventory rows into legacy recovery docs."""
+
+    docs: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        if artifact.parser_hint not in {"markdown", "mdx", "rst", "plain_text"}:
+            continue
+        parsed = parse_artifact(artifact)
+        document_like = _artifact_to_document_like(artifact)
+        if parsed.parser_name == "markdown_adr":
+            affected_entity_ids = parsed.structured_data.get("affected_entity_ids") or []
+            if affected_entity_ids:
+                document_like.meta["affected_entity_ids"] = affected_entity_ids
+            document_like.meta["parser"] = parsed.parser_name
+            document_like.meta["artifact_kind"] = "architecture_decision"
+            title = str(parsed.structured_data.get("title") or document_like.title).strip()
+            if title:
+                document_like.title = title
+            docs.append(
+                {
+                    "id": artifact.artifact_id,
+                    "title": document_like.title,
+                    "name": document_like.title,
+                    "text": artifact.raw_text or "",
+                    "summary": str(
+                        parsed.structured_data.get("decision")
+                        or parsed.structured_data.get("summary")
+                        or artifact.raw_text
+                        or document_like.title
+                    ).strip(),
+                    "meta": dict(document_like.meta),
+                    "structured_data": dict(parsed.structured_data),
+                }
+            )
+            continue
+        elif not _looks_like_architecture_doc(document_like):
+            continue
+        docs.append(_document_to_recovery_doc(document_like))
+    return docs
+
+
 def _scenario_document_refs(kg_nodes: list[KnowledgeNode]) -> tuple[set[UUID], set[str]]:
     document_ids: set[UUID] = set()
     document_uris: set[str] = set()
@@ -173,14 +251,46 @@ def _scenario_document_refs(kg_nodes: list[KnowledgeNode]) -> tuple[set[UUID], s
     return document_ids, document_uris
 
 
+def _scenario_repo_artifacts(kg_nodes: list[KnowledgeNode]) -> list[ArtifactInventoryEntry]:
+    artifacts: list[ArtifactInventoryEntry] = []
+    for node in kg_nodes:
+        if node.kind != KnowledgeNodeKind.FILE:
+            continue
+        meta = node.meta or {}
+        repo_path = str(meta.get("file_path") or meta.get("uri") or node.natural_key or "").strip()
+        if not repo_path:
+            continue
+        raw_text = str(
+            meta.get("content_markdown")
+            or meta.get("content")
+            or meta.get("raw_text")
+            or ""
+        )
+        artifact = ArtifactInventoryEntry(
+            artifact_id=f"artifact:{repo_path}",
+            artifact_kind="documentation",
+            repo_path=repo_path,
+            media_type="text/markdown" if PurePosixPath(repo_path).suffix.lower() in _TEXT_DOC_SUFFIXES else "text/plain",
+            parser_hint="markdown"
+            if PurePosixPath(repo_path).suffix.lower() in {".md", ".mdx"}
+            else "rst"
+            if PurePosixPath(repo_path).suffix.lower() == ".rst"
+            else "plain_text",
+            raw_text=raw_text,
+            raw_data=None,
+            evidence=(),
+        )
+        artifacts.append(artifact)
+    return sorted(artifacts, key=lambda row: row.repo_path)
+
+
 async def load_recovery_docs(
     session: AsyncSession,
     kg_nodes: list[KnowledgeNode],
 ) -> list[dict[str, Any]]:
-    """Load ADR-like document payloads that correspond to scenario FILE nodes."""
+    """Load ADR-like document payloads using typed artifact inventory inputs."""
     document_ids, document_uris = _scenario_document_refs(kg_nodes)
-    if not document_ids and not document_uris:
-        return []
+    repo_artifacts = _scenario_repo_artifacts(kg_nodes)
 
     filters = []
     if document_ids:
@@ -188,13 +298,10 @@ async def load_recovery_docs(
     if document_uris:
         filters.append(Document.uri.in_(document_uris))
 
-    docs = (await session.execute(select(Document).where(or_(*filters)))).scalars().all()
+    docs = []
+    if filters:
+        docs = (await session.execute(select(Document).where(or_(*filters)))).scalars().all()
 
-    recovery_docs = [
-        _document_to_recovery_doc(doc)
-        for doc in sorted(
-            docs, key=lambda row: str(getattr(row, "uri", "") or getattr(row, "id", ""))
-        )
-        if _looks_like_architecture_doc(doc)
-    ]
-    return recovery_docs
+    document_artifacts = build_document_artifact_inventory(docs)
+    merged_artifacts = merge_document_and_repo_artifacts(document_artifacts, repo_artifacts)
+    return artifact_inventory_to_recovery_docs(merged_artifacts)

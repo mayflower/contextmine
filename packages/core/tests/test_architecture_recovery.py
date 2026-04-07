@@ -32,8 +32,12 @@ def test_recovery_preserves_multi_membership_for_shared_session_manager() -> Non
         docs=fixture["docs"],
     )
 
-    memberships = model.memberships_for("symbol:session_manager")
-    assert [membership.entity_id for membership in memberships] == [
+    memberships = [
+        membership.entity_id
+        for membership in model.memberships_for("symbol:session_manager")
+        if membership.relationship_kind == "contained_in"
+    ]
+    assert memberships == [
         "container:api",
         "container:worker",
     ]
@@ -142,6 +146,15 @@ def _build_scoring_fixture() -> dict[str, object]:
                 "natural_key": "symbol:orphan_helper",
                 "meta": {
                     "file_path": "packages/core/orphan_helper.py",
+                },
+            },
+            {
+                "id": "symbol:path_hint_only",
+                "kind": "symbol",
+                "name": "Path Hint Only",
+                "natural_key": "symbol:path_hint_only",
+                "meta": {
+                    "file_path": "services/contextmine/api/path_hint_only.py",
                 },
             },
         ]
@@ -272,10 +285,10 @@ def test_confidence_is_monotonic_explicit_metadata_gt_structural_gt_path_only() 
         and membership.entity_id == "container:api"
     )
     path_only = next(
-        membership
-        for membership in model.memberships
-        if membership.subject_ref == "symbol:event_publisher"
-        and membership.entity_id == "container:api"
+        hypothesis
+        for hypothesis in model.hypotheses
+        if hypothesis.subject_ref == "symbol:path_hint_only"
     )
 
+    assert path_only.status in {"ambiguous", "unresolved"}
     assert explicit.confidence > structural.confidence > path_only.confidence

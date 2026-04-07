@@ -65,6 +65,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "arch_docs_generate_on_sync": False,
         "arch_docs_llm_enrich": False,
         "arch_docs_drift_enabled": False,
+        "arch_docs_llm_max_hypotheses": 12,
         "twin_evolution_window_days": 90,
         "joern_server_url": "",
         "joern_required_for_sync": False,

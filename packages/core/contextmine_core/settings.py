@@ -306,12 +306,16 @@ class Settings(BaseSettings):
         description="Enable architecture facts, arc42 generation, and ports/adapters outputs",
     )
     arch_docs_llm_enrich: bool = Field(
-        default=True,
+        default=False,
         description="Allow optional LLM enrichment for unresolved architecture mappings",
     )
     arch_docs_drift_enabled: bool = Field(
         default=True,
         description="Enable advisory architecture drift report generation",
+    )
+    arch_docs_llm_max_hypotheses: int = Field(
+        default=12,
+        description="Maximum number of ambiguous architecture hypotheses to adjudicate with the LLM per build",
     )
     arch_docs_agent_sdk_model: str = Field(
         default="claude-sonnet-4-5-20250929",

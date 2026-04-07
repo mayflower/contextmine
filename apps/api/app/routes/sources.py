@@ -42,7 +42,7 @@ class CreateSourceRequest(BaseModel):
     type: str  # "github" or "web"
     url: str
     enabled: bool = True
-    schedule_interval_minutes: int = 60
+    schedule_interval_minutes: int = 1440
     # Deprecated M2 no-op, kept for compatibility.
     coverage_report_patterns: list[str] | None = None
 

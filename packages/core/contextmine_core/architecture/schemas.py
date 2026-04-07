@@ -6,8 +6,11 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from .claim_model import Arc42ClaimTraceability, ArchitectureClaim
 
 FactSource = Literal["deterministic", "hybrid", "llm"]
 DeltaType = Literal[
@@ -25,7 +28,7 @@ PortDirection = Literal["inbound", "outbound"]
 class EvidenceRef:
     """Evidence pointer for a fact."""
 
-    kind: Literal["file", "node", "edge", "artifact"]
+    kind: Literal["file", "node", "edge", "artifact", "section"]
     ref: str
     start_line: int | None = None
     end_line: int | None = None
@@ -116,6 +119,8 @@ class Arc42Document:
     warnings: list[str] = field(default_factory=list)
     confidence_summary: dict[str, Any] = field(default_factory=dict)
     section_coverage: dict[str, bool] = field(default_factory=dict)
+    claims: list[ArchitectureClaim] = field(default_factory=list)
+    claim_traceability: list[Arc42ClaimTraceability] = field(default_factory=list)
 
     @classmethod
     def empty(cls, *, collection_id: UUID, scenario_id: UUID, scenario_name: str) -> Arc42Document:
@@ -129,6 +134,40 @@ class Arc42Document:
             sections={},
             markdown="",
         )
+
+    def claim_ids_for_section(self, section_key: str) -> list[str]:
+        claim_ids: list[str] = []
+        for row in self.claim_traceability:
+            if row.section_key != section_key:
+                continue
+            claim_ids.extend(row.claim_ids)
+        return sorted(set(claim_ids))
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "collection_id": str(self.collection_id),
+            "scenario_id": str(self.scenario_id),
+            "scenario_name": self.scenario_name,
+            "title": self.title,
+            "generated_at": self.generated_at.isoformat(),
+            "sections": {key: self.sections[key] for key in sorted(self.sections)},
+            "markdown": self.markdown,
+            "warnings": list(self.warnings),
+            "confidence_summary": self.confidence_summary,
+            "section_coverage": {
+                key: self.section_coverage[key] for key in sorted(self.section_coverage)
+            },
+            "claims": [
+                claim.canonical_payload()
+                for claim in sorted(self.claims, key=lambda row: row.claim_id)
+            ],
+            "claim_traceability": [
+                trace.canonical_payload()
+                for trace in sorted(
+                    self.claim_traceability, key=lambda row: (row.section_key, row.claim_ids)
+                )
+            ],
+        }
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from contextmine_core.architecture import facts as architecture_facts
 from contextmine_core.architecture.recovery_model import (
+    RecoveredArchitectureDecision,
     RecoveredArchitectureEntity,
     RecoveredArchitectureHypothesis,
     RecoveredArchitectureMembership,
@@ -149,6 +150,17 @@ def _recovered_model() -> RecoveredArchitectureModel:
                 evidence=_evidence("packages/core/orphan.py"),
             ),
         ),
+        decisions=(
+            RecoveredArchitectureDecision(
+                title="ADR-001 async embedding workers",
+                summary="Embeddings generation runs in the worker runtime.",
+                status="confirmed",
+                affected_entity_ids=("container:api", "container:worker"),
+                confidence=0.94,
+                evidence=_evidence("docs/adr/001-async-embedding-workers.md"),
+                attributes={"supersedes": "ADR-0004"},
+            ),
+        ),
         warnings=(
             "Rejected adjudication for symbol:session_manager: unknown evidence IDs referenced.",
             "Missing evidence packet for symbol:orphan.",
@@ -251,6 +263,47 @@ async def test_build_architecture_facts_calls_recovery_and_emits_recovered_entit
 
 
 @pytest.mark.anyio
+async def test_build_architecture_facts_is_recovered_first_without_legacy_projection_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_id = uuid4()
+    scenario_id = uuid4()
+    endpoint, symbol, table, edge = _knowledge_fixture(collection_id)
+    scenario = SimpleNamespace(id=scenario_id, collection_id=collection_id, name="AS-IS")
+    session = _FakeSession(scenario, [], [endpoint, symbol, table], [edge])
+
+    async def _fake_c4(*_args, **_kwargs):
+        return SimpleNamespace(content="C4Context", warnings=[])
+
+    async def _fake_node_ids(*_args, **_kwargs):
+        return {endpoint.id, symbol.id, table.id}
+
+    async def _fake_evidence(*_args, **_kwargs):
+        return {endpoint.id: _evidence("services/contextmine/api/routes.py")}
+
+    def _legacy_projection_should_not_be_used(*_args, **_kwargs):
+        raise AssertionError("Legacy architecture projection should not be the primary fact source.")
+
+    monkeypatch.setattr(architecture_facts, "export_mermaid_c4_result", _fake_c4)
+    monkeypatch.setattr(architecture_facts, "get_full_scenario_graph", _legacy_projection_should_not_be_used)
+    monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
+    monkeypatch.setattr(
+        architecture_facts,
+        "recover_architecture_model",
+        lambda *_args, **_kwargs: _recovered_model(),
+    )
+
+    bundle = await architecture_facts.build_architecture_facts(
+        session,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
+    )
+
+    assert any(fact.fact_type == "architecture_decision" for fact in bundle.facts)
+
+
+@pytest.mark.anyio
 async def test_existing_ports_adapters_extraction_still_works_with_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -306,6 +359,47 @@ async def test_multi_membership_keeps_best_legacy_fields_and_preserves_candidate
         "container:api",
         "container:worker",
     ]
+    assert outbound.attributes["candidate_container_ids"] == [
+        "container:api",
+        "container:worker",
+    ]
+    assert outbound.attributes["candidate_component_ids"] == ["component:session-manager"]
+    assert outbound.attributes["legacy_mapping_lossy"] is True
+    assert outbound.attributes["legacy_mapping_warning"] == (
+        "Legacy port view keeps only one container/component while recovery found multiple matches."
+    )
+
+
+@pytest.mark.anyio
+async def test_recovered_decisions_and_hypotheses_flow_into_bundle_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_id = uuid4()
+    scenario_id = uuid4()
+    endpoint, symbol, table, edge = _knowledge_fixture(collection_id)
+    scenario = SimpleNamespace(id=scenario_id, collection_id=collection_id, name="AS-IS")
+    session = _FakeSession(scenario, [], [endpoint, symbol, table], [edge])
+    _install_common_patches(monkeypatch, collection_id, endpoint, symbol, table)
+    monkeypatch.setattr(
+        architecture_facts,
+        "recover_architecture_model",
+        lambda *_args, **_kwargs: _recovered_model(),
+    )
+
+    bundle = await architecture_facts.build_architecture_facts(
+        session,
+        collection_id=collection_id,
+        scenario_id=scenario_id,
+    )
+
+    fact_types = {fact.fact_type for fact in bundle.facts}
+    assert "recovered_hypothesis" in fact_types
+    assert "architecture_decision" in fact_types
+    assert any(
+        fact.attributes.get("candidate_entity_ids") == ["container:api", "container:worker"]
+        for fact in bundle.facts
+        if fact.fact_type == "recovered_hypothesis"
+    )
 
 
 @pytest.mark.anyio

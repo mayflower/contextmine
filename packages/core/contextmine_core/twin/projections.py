@@ -289,6 +289,16 @@ def _expanded_entity_node_ids(
     return [f"{entity_id}@{container_id}" for container_id in container_ids]
 
 
+def _container_projection_ids(
+    entity_id: str,
+    component_to_containers: dict[str, set[str]],
+) -> list[str]:
+    if entity_id.startswith("component:"):
+        container_ids = sorted(component_to_containers.get(entity_id) or set())
+        return container_ids
+    return [entity_id]
+
+
 def _build_entity_projection_node(
     entity: Any,
     *,
@@ -365,18 +375,31 @@ def build_inferred_architecture_projection(
     valid_node_ids = {str(node["id"]) for node in projected_nodes}
     projected_edges: list[dict[str, Any]] = []
     seen_edge_ids: set[tuple[str, str, str]] = set()
+    lossy_relationship_count = 0
     for relationship in sorted(
         model.relationships,
         key=lambda row: (row.source_entity_id, row.target_entity_id, row.kind),
     ):
-        source_ids = _expanded_entity_node_ids(
-            relationship.source_entity_id,
-            component_to_containers,
-        )
-        target_ids = _expanded_entity_node_ids(
-            relationship.target_entity_id,
-            component_to_containers,
-        )
+        if level == "container":
+            source_ids = _container_projection_ids(
+                relationship.source_entity_id,
+                component_to_containers,
+            )
+            target_ids = _container_projection_ids(
+                relationship.target_entity_id,
+                component_to_containers,
+            )
+            if relationship.source_entity_id.startswith("component:") or relationship.target_entity_id.startswith("component:"):
+                lossy_relationship_count += 1
+        else:
+            source_ids = _expanded_entity_node_ids(
+                relationship.source_entity_id,
+                component_to_containers,
+            )
+            target_ids = _expanded_entity_node_ids(
+                relationship.target_entity_id,
+                component_to_containers,
+            )
         for source_id in source_ids:
             if source_id not in valid_node_ids:
                 continue
@@ -405,6 +428,12 @@ def build_inferred_architecture_projection(
                     }
                 )
 
+    warnings = list(model.warnings)
+    if level == "container" and lossy_relationship_count:
+        warnings.append(
+            "Lossy recovered projection: component-scoped relationships were expanded into container-level edges."
+        )
+
     return {
         "nodes": projected_nodes,
         "edges": projected_edges,
@@ -419,8 +448,9 @@ def build_inferred_architecture_projection(
             "unresolved_hypotheses": sum(
                 1 for hypothesis in model.hypotheses if hypothesis.status == "unresolved"
             ),
+            "collapsed_multi_membership_edges": lossy_relationship_count if level == "container" else 0,
         },
-        "warnings": list(model.warnings),
+        "warnings": warnings,
     }
 
 
