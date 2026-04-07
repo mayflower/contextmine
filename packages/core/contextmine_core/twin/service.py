@@ -51,6 +51,7 @@ from contextmine_core.twin.projections import (
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 logger = logging.getLogger(__name__)
 
@@ -964,16 +965,28 @@ async def get_full_scenario_graph(
         )
 
     raw_nodes = (await session.execute(node_stmt)).scalars().all()
-    raw_node_ids = {n.id for n in raw_nodes}
-    edge_stmt = select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)
-    if raw_node_ids:
-        edge_stmt = edge_stmt.where(
-            TwinEdge.source_node_id.in_(raw_node_ids),
-            TwinEdge.target_node_id.in_(raw_node_ids),
-        )
+    if not raw_nodes:
+        raw_edges = []
+    elif layer is None:
+        # Scenario edges already reference nodes within the same scenario, so avoid
+        # building a giant IN (...) filter that can exceed PostgreSQL parameter limits.
+        edge_stmt = select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)
+        raw_edges = (await session.execute(edge_stmt)).scalars().all()
     else:
-        edge_stmt = edge_stmt.limit(0)
-    raw_edges = (await session.execute(edge_stmt)).scalars().all()
+        src_layer = aliased(TwinNodeLayer)
+        dst_layer = aliased(TwinNodeLayer)
+        edge_stmt = (
+            select(TwinEdge)
+            .join(src_layer, src_layer.node_id == TwinEdge.source_node_id)
+            .join(dst_layer, dst_layer.node_id == TwinEdge.target_node_id)
+            .where(
+                TwinEdge.scenario_id == scenario_id,
+                src_layer.layer == layer,
+                dst_layer.layer == layer,
+            )
+            .distinct()
+        )
+        raw_edges = (await session.execute(edge_stmt)).scalars().all()
 
     nodes = [
         {

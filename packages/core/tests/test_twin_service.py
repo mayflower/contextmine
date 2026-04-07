@@ -6,6 +6,7 @@ CRAP score computation, layer inference, and risk mapping.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -1039,3 +1040,81 @@ class TestGetScenarioGraph:
         assert result["total_nodes"] == 0
         assert result["nodes"] == []
         assert result["edges"] == []
+
+
+class TestGetFullScenarioGraph:
+    @pytest.mark.anyio
+    async def test_scenario_wide_edge_load_does_not_build_large_in_filters(self) -> None:
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        scenario_id = uuid4()
+        node = SimpleNamespace(
+            id=uuid4(),
+            natural_key="file:main.py",
+            kind="file",
+            name="main.py",
+            meta={},
+        )
+        edge = SimpleNamespace(
+            id=uuid4(),
+            source_node_id=node.id,
+            target_node_id=node.id,
+            kind="contains",
+            meta={},
+        )
+        session.execute.side_effect = [
+            _scalars_all([node]),
+            _scalars_all([edge]),
+        ]
+
+        with patch(
+            "contextmine_core.twin.service._apply_graph_projection",
+            side_effect=lambda nodes, edges, *_args: {"nodes": nodes, "edges": edges},
+        ):
+            result = await get_full_scenario_graph(session, scenario_id, layer=None)
+
+        assert len(result["nodes"]) == 1
+        assert len(result["edges"]) == 1
+        edge_stmt = session.execute.await_args_list[1].args[0]
+        assert "source_node_id IN" not in str(edge_stmt)
+        assert "target_node_id IN" not in str(edge_stmt)
+
+    @pytest.mark.anyio
+    async def test_layered_edge_load_avoids_parameter_explosion(self) -> None:
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        scenario_id = uuid4()
+        raw_nodes = [
+            SimpleNamespace(
+                id=uuid4(),
+                natural_key=f"symbol:{idx}",
+                kind="symbol",
+                name=f"symbol_{idx}",
+                meta={},
+            )
+            for idx in range(34000)
+        ]
+        session.execute.side_effect = [
+            _scalars_all(raw_nodes),
+            _scalars_all([]),
+        ]
+
+        with patch(
+            "contextmine_core.twin.service._apply_graph_projection",
+            side_effect=lambda nodes, edges, *_args: {"nodes": nodes, "edges": edges},
+        ):
+            result = await get_full_scenario_graph(
+                session,
+                scenario_id,
+                layer=TwinLayer.CODE_CONTROLFLOW,
+            )
+
+        assert len(result["nodes"]) == 34000
+        assert result["edges"] == []
+        edge_stmt = session.execute.await_args_list[1].args[0]
+        edge_sql = str(edge_stmt)
+        assert "source_node_id IN" not in edge_sql
+        assert "target_node_id IN" not in edge_sql
+        assert "JOIN twin_node_layers" in edge_sql
