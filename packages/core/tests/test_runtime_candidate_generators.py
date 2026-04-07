@@ -123,7 +123,13 @@ def test_runtime_candidates_can_come_from_entrypoints_specs_and_deployments() ->
 
     candidates = {entity.entity_id: entity for entity in generate_runtime_candidates(nodes, docs)}
 
-    assert {"container:api", "container:worker", "container:job", "container:scheduler", "container:cli"} <= set(candidates)
+    assert {
+        "container:api",
+        "container:worker",
+        "container:job",
+        "container:scheduler",
+        "container:cli",
+    } <= set(candidates)
     for entity in candidates.values():
         assert entity.confidence > 0
         assert entity.evidence
@@ -136,21 +142,14 @@ def test_data_store_candidates_can_come_from_sql_and_orm_artifacts() -> None:
             file_path="db/schema/customer_sessions.sql",
             parser="sql",
             artifact_kind="sql",
-            text=(
-                "create table customer_sessions (\n"
-                "  id uuid primary key\n"
-                ");\n"
-            ),
+            text=("create table customer_sessions (\n  id uuid primary key\n);\n"),
         ),
         _artifact_doc(
             artifact_id="artifact:orm",
             file_path="app/models/audit_event.py",
             parser="plain_text",
             artifact_kind="documentation",
-            text=(
-                "class AuditEvent(Base):\n"
-                "    __tablename__ = \"audit_events\"\n"
-            ),
+            text=('class AuditEvent(Base):\n    __tablename__ = "audit_events"\n'),
         ),
     ]
 
@@ -181,14 +180,18 @@ def test_message_channel_candidates_can_come_from_asyncapi() -> None:
         ),
     ]
 
-    candidates = {entity.entity_id: entity for entity in generate_message_channel_candidates([], docs)}
+    candidates = {
+        entity.entity_id: entity for entity in generate_message_channel_candidates([], docs)
+    }
 
     assert "message_channel:user-events" in candidates
     assert candidates["message_channel:user-events"].evidence
     assert candidates["message_channel:user-events"].confidence > 0
 
 
-def test_external_system_candidates_can_come_from_config_client_libraries_and_api_artifacts() -> None:
+def test_external_system_candidates_can_come_from_config_client_libraries_and_api_artifacts() -> (
+    None
+):
     docs = [
         _artifact_doc(
             artifact_id="artifact:config",
@@ -220,7 +223,9 @@ def test_external_system_candidates_can_come_from_config_client_libraries_and_ap
         ),
     ]
 
-    candidates = {entity.entity_id: entity for entity in generate_external_system_candidates([], docs)}
+    candidates = {
+        entity.entity_id: entity for entity in generate_external_system_candidates([], docs)
+    }
 
     assert "external_system:stripe-api" in candidates
     assert "external_system:openai" in candidates

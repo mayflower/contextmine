@@ -261,16 +261,15 @@ def _scenario_repo_artifacts(kg_nodes: list[KnowledgeNode]) -> list[ArtifactInve
         if not repo_path:
             continue
         raw_text = str(
-            meta.get("content_markdown")
-            or meta.get("content")
-            or meta.get("raw_text")
-            or ""
+            meta.get("content_markdown") or meta.get("content") or meta.get("raw_text") or ""
         )
         artifact = ArtifactInventoryEntry(
             artifact_id=f"artifact:{repo_path}",
             artifact_kind="documentation",
             repo_path=repo_path,
-            media_type="text/markdown" if PurePosixPath(repo_path).suffix.lower() in _TEXT_DOC_SUFFIXES else "text/plain",
+            media_type="text/markdown"
+            if PurePosixPath(repo_path).suffix.lower() in _TEXT_DOC_SUFFIXES
+            else "text/plain",
             parser_hint="markdown"
             if PurePosixPath(repo_path).suffix.lower() in {".md", ".mdx"}
             else "rst"

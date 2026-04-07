@@ -44,7 +44,9 @@ def test_build_adjudication_packet_includes_only_local_evidence_candidates_and_s
         sorted(item) == ["evidence_id", "kind", "ref", "snippet"] for item in packet["evidence"]
     )
     assert all(item["evidence_id"].startswith("ev-") for item in packet["evidence"])
-    assert any(item["snippet"].strip() and item["snippet"] != item["ref"] for item in packet["evidence"])
+    assert any(
+        item["snippet"].strip() and item["snippet"] != item["ref"] for item in packet["evidence"]
+    )
     assert packet["supporting_evidence"]
     assert packet["counter_evidence"]
     assert packet["allowed_evidence_ids"] == [item["evidence_id"] for item in packet["evidence"]]
@@ -56,7 +58,9 @@ def test_build_adjudication_packet_includes_only_local_evidence_candidates_and_s
     ]
 
 
-def test_build_adjudication_packet_includes_decision_artifact_snippets_not_only_memberships() -> None:
+def test_build_adjudication_packet_includes_decision_artifact_snippets_not_only_memberships() -> (
+    None
+):
     model = _deterministic_model()
     hypothesis = _session_manager_hypothesis(model)
 

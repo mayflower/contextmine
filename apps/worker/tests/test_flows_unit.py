@@ -160,7 +160,9 @@ class TestGithubSyncRetryCondition:
         should_retry = await _sync_github_retry_condition(
             None,
             None,
-            SimpleNamespace(data=ConnectionError("temporary failure in name resolution"), message=""),
+            SimpleNamespace(
+                data=ConnectionError("temporary failure in name resolution"), message=""
+            ),
         )
         assert should_retry is True
 

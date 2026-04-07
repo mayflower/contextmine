@@ -124,7 +124,9 @@ def test_render_claim_backed_arc42_makes_ambiguity_and_traceability_visible() ->
 
     assert "UNKNOWN: ambiguous claim" in document.sections["5_building_block_view"]
     assert "Ambiguous recovered memberships: 1." in document.warnings
-    assert any(trace.section_key == "9_architecture_decisions" for trace in document.claim_traceability)
+    assert any(
+        trace.section_key == "9_architecture_decisions" for trace in document.claim_traceability
+    )
 
 
 def test_render_claim_backed_arc42_does_not_invent_unbacked_claims() -> None:

@@ -135,19 +135,13 @@ def build_snippet_bundle(
     all_refs = _dedupe_evidence(list(supporting_refs) + list(counter_refs))
 
     decision_by_ref = {
-        (ref.kind, ref.ref): decision
-        for decision in decisions
-        for ref in decision.evidence
+        (ref.kind, ref.ref): decision for decision in decisions for ref in decision.evidence
     }
     entity_by_ref = {
-        (ref.kind, ref.ref): entity
-        for entity in candidate_entities
-        for ref in entity.evidence
+        (ref.kind, ref.ref): entity for entity in candidate_entities for ref in entity.evidence
     }
     membership_by_ref = {
-        (ref.kind, ref.ref): membership
-        for membership in memberships
-        for ref in membership.evidence
+        (ref.kind, ref.ref): membership for membership in memberships for ref in membership.evidence
     }
 
     items: list[dict[str, str]] = []
@@ -205,7 +199,11 @@ def build_adjudication_packet(
             "confidence": entity.confidence,
         }
         for entity in sorted(
-            (entity for entity in model.entities if entity.entity_id in hypothesis.candidate_entity_ids),
+            (
+                entity
+                for entity in model.entities
+                if entity.entity_id in hypothesis.candidate_entity_ids
+            ),
             key=lambda row: row.entity_id,
         )
     ]
@@ -254,7 +252,9 @@ def validate_adjudication(
         return None, f"Malformed adjudication for {hypothesis.subject_ref}."
     if not isinstance(rationale, str) or not rationale.strip():
         return None, f"Malformed adjudication for {hypothesis.subject_ref}."
-    if not isinstance(evidence_ids, list) or not all(isinstance(item, str) for item in evidence_ids):
+    if not isinstance(evidence_ids, list) or not all(
+        isinstance(item, str) for item in evidence_ids
+    ):
         return None, f"Malformed adjudication for {hypothesis.subject_ref}."
 
     packet_candidates = set(packet["candidate_entity_ids"])
@@ -287,7 +287,11 @@ def validate_adjudication(
         if not isinstance(rename_suggestions, dict):
             return None, f"Malformed adjudication for {hypothesis.subject_ref}."
         for entity_id, value in rename_suggestions.items():
-            if entity_id not in packet_candidates or not isinstance(value, str) or not value.strip():
+            if (
+                entity_id not in packet_candidates
+                or not isinstance(value, str)
+                or not value.strip()
+            ):
                 return (
                     None,
                     f"Rejected adjudication for {hypothesis.subject_ref}: rename suggestions outside packet candidates.",
@@ -308,7 +312,9 @@ def _suggestion_suffix(adjudication: dict[str, Any]) -> str:
     if isinstance(rename_suggestions, dict) and rename_suggestions:
         suffixes.append(
             "Rename suggestion: "
-            + ", ".join(f"{entity_id} -> {name}" for entity_id, name in sorted(rename_suggestions.items()))
+            + ", ".join(
+                f"{entity_id} -> {name}" for entity_id, name in sorted(rename_suggestions.items())
+            )
             + "."
         )
     return " ".join(suffixes)

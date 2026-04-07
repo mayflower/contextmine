@@ -282,10 +282,14 @@ async def test_build_architecture_facts_is_recovered_first_without_legacy_projec
         return {endpoint.id: _evidence("services/contextmine/api/routes.py")}
 
     def _legacy_projection_should_not_be_used(*_args, **_kwargs):
-        raise AssertionError("Legacy architecture projection should not be the primary fact source.")
+        raise AssertionError(
+            "Legacy architecture projection should not be the primary fact source."
+        )
 
     monkeypatch.setattr(architecture_facts, "export_mermaid_c4_result", _fake_c4)
-    monkeypatch.setattr(architecture_facts, "get_full_scenario_graph", _legacy_projection_should_not_be_used)
+    monkeypatch.setattr(
+        architecture_facts, "get_full_scenario_graph", _legacy_projection_should_not_be_used
+    )
     monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
     monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
     monkeypatch.setattr(

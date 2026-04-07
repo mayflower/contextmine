@@ -1914,8 +1914,12 @@ class TestBuildTwinGraphArchDocs:
         settings = _make_settings(arch_docs_llm_enrich=True, arch_docs_drift_enabled=True)
 
         build_architecture_facts = AsyncMock(return_value=deterministic_bundle)
-        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
-        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+        monkeypatch.setattr(
+            "contextmine_core.architecture.build_architecture_facts", build_architecture_facts
+        )
+        monkeypatch.setattr(
+            "contextmine_core.research.llm.get_llm_provider", lambda *_args: object()
+        )
 
         async def mock_execute(stmt):
             result = MagicMock()
@@ -1969,8 +1973,12 @@ class TestBuildTwinGraphArchDocs:
         settings = _make_settings(arch_docs_llm_enrich=True, arch_docs_drift_enabled=False)
 
         build_architecture_facts = AsyncMock(side_effect=[deterministic_bundle, enriched_bundle])
-        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
-        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+        monkeypatch.setattr(
+            "contextmine_core.architecture.build_architecture_facts", build_architecture_facts
+        )
+        monkeypatch.setattr(
+            "contextmine_core.research.llm.get_llm_provider", lambda *_args: object()
+        )
         monkeypatch.setattr(
             "contextmine_core.architecture.generate_arc42_from_facts",
             lambda bundle, scenario, options=None: SimpleNamespace(
@@ -2032,8 +2040,12 @@ class TestBuildTwinGraphArchDocs:
         build_architecture_facts = AsyncMock(
             side_effect=[deterministic_bundle, enriched_bundle, baseline_bundle]
         )
-        monkeypatch.setattr("contextmine_core.architecture.build_architecture_facts", build_architecture_facts)
-        monkeypatch.setattr("contextmine_core.research.llm.get_llm_provider", lambda *_args: object())
+        monkeypatch.setattr(
+            "contextmine_core.architecture.build_architecture_facts", build_architecture_facts
+        )
+        monkeypatch.setattr(
+            "contextmine_core.research.llm.get_llm_provider", lambda *_args: object()
+        )
         monkeypatch.setattr(
             "contextmine_core.architecture.generate_arc42_from_facts",
             lambda bundle, scenario, options=None: SimpleNamespace(
@@ -2074,7 +2086,9 @@ class TestBuildTwinGraphArchDocs:
         await flows._generate_arch_docs_on_sync(session, settings, collection_id, as_is)
 
         assert build_architecture_facts.await_count == 3
-        assert [call.kwargs["enable_llm_enrich"] for call in build_architecture_facts.await_args_list] == [
+        assert [
+            call.kwargs["enable_llm_enrich"] for call in build_architecture_facts.await_args_list
+        ] == [
             False,
             True,
             False,

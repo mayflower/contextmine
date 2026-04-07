@@ -567,10 +567,22 @@ def generate_data_store_candidates(
         structured = artifact.structured_data
         names: list[str] = []
         if artifact.parser_name == "sql":
-            names.extend(str(name).strip() for name in structured.get("tables") or [] if str(name).strip())
-            names.extend(str(name).strip() for name in structured.get("views") or [] if str(name).strip())
+            names.extend(
+                str(name).strip() for name in structured.get("tables") or [] if str(name).strip()
+            )
+            names.extend(
+                str(name).strip() for name in structured.get("views") or [] if str(name).strip()
+            )
         else:
-            names.extend(_orm_table_names(_doc_text(next((doc for doc in docs or [] if _doc_id(doc) == artifact.artifact_id), {}))))
+            names.extend(
+                _orm_table_names(
+                    _doc_text(
+                        next(
+                            (doc for doc in docs or [] if _doc_id(doc) == artifact.artifact_id), {}
+                        )
+                    )
+                )
+            )
         for name in sorted(set(names)):
             _merge_entity_candidate(
                 entities,
@@ -748,9 +760,17 @@ def _symbol_interaction_targets(
             symbol_links[source_id].add(target_id)
             symbol_links[target_id].add(source_id)
             continue
-        if source_kind == "symbol" and target_kind in {"db_table", "message_schema", "external_system"}:
+        if source_kind == "symbol" and target_kind in {
+            "db_table",
+            "message_schema",
+            "external_system",
+        }:
             resource_links[source_id].add(_entity_id_for_node(target_node) or target_id)
-        if target_kind == "symbol" and source_kind in {"db_table", "message_schema", "external_system"}:
+        if target_kind == "symbol" and source_kind in {
+            "db_table",
+            "message_schema",
+            "external_system",
+        }:
             resource_links[target_id].add(_entity_id_for_node(source_node) or source_id)
     return symbol_links, resource_links
 
@@ -849,14 +869,12 @@ def cluster_component_candidates(
     """Cluster related symbols into evidence-backed components."""
 
     node_by_id = {str(node.get("id")): node for node in nodes}
-    symbol_nodes = {
-        str(node.get("id")): node
-        for node in nodes
-        if _node_kind(node) == "symbol"
-    }
+    symbol_nodes = {str(node.get("id")): node for node in nodes if _node_kind(node) == "symbol"}
     docs_lower = _docs_lower(docs)
     symbol_links, resource_links = _symbol_interaction_targets(nodes, edges)
-    container_memberships_by_subject: dict[str, list[RecoveredArchitectureMembership]] = defaultdict(list)
+    container_memberships_by_subject: dict[str, list[RecoveredArchitectureMembership]] = (
+        defaultdict(list)
+    )
     for membership in memberships:
         if membership.relationship_kind == "contained_in":
             container_memberships_by_subject[membership.subject_ref].append(membership)
@@ -904,15 +922,21 @@ def cluster_component_candidates(
             for idx, subject_ref in enumerate(subject_refs)
             for other in subject_refs[idx + 1 :]
         )
-        shared_resources = set.intersection(
-            *[
-                set(resource_links.get(subject_ref, set()))
-                for subject_ref in subject_refs
-                if resource_links.get(subject_ref)
-            ]
-        ) if all(resource_links.get(subject_ref) for subject_ref in subject_refs) else set()
+        shared_resources = (
+            set.intersection(
+                *[
+                    set(resource_links.get(subject_ref, set()))
+                    for subject_ref in subject_refs
+                    if resource_links.get(subject_ref)
+                ]
+            )
+            if all(resource_links.get(subject_ref) for subject_ref in subject_refs)
+            else set()
+        )
         symbol_names = [_node_name(symbol_nodes[subject_ref]) for subject_ref in subject_refs]
-        doc_hint = _doc_mentions_any(docs_lower, [_component_display_name(file_slug), *symbol_names])
+        doc_hint = _doc_mentions_any(
+            docs_lower, [_component_display_name(file_slug), *symbol_names]
+        )
         if not (call_connected or shared_resources or doc_hint):
             continue
         component_id = f"component:{file_slug}"
@@ -953,7 +977,9 @@ def cluster_component_candidates(
             component_id = f"component:{_component_slug_for_node(node)}"
             evidence = list(_node_evidence(node))
             for target in resource_targets:
-                target_entity = next((entity for entity in nodes if _entity_id_for_node(entity) == target), None)
+                target_entity = next(
+                    (entity for entity in nodes if _entity_id_for_node(entity) == target), None
+                )
                 if target_entity is not None:
                     evidence.extend(_node_evidence(target_entity))
             _add_component_candidate(
@@ -1005,7 +1031,9 @@ def cluster_component_candidates(
                 evidence=structural_evidence[subject_ref][component_id],
                 signal="structural_component",
             )
-            component_evidence_by_id[component_id].extend(structural_evidence[subject_ref][component_id])
+            component_evidence_by_id[component_id].extend(
+                structural_evidence[subject_ref][component_id]
+            )
 
     selections = _select_component_candidates(component_candidate_map)
     component_entities: dict[str, RecoveredArchitectureEntity] = {}
@@ -1019,7 +1047,9 @@ def cluster_component_candidates(
         selected, status = selections.get(subject_ref, ((), "unresolved"))
         for component_id in selected:
             payload = next(
-                payload for payload in candidates.values() if payload["component_id"] == component_id
+                payload
+                for payload in candidates.values()
+                if payload["component_id"] == component_id
             )
             component_memberships.append(
                 RecoveredArchitectureMembership(
@@ -1045,7 +1075,9 @@ def cluster_component_candidates(
         if status == "selected":
             continue
         if status == "ambiguous":
-            rationale = "Multiple component boundaries remain plausible from local cohesion signals."
+            rationale = (
+                "Multiple component boundaries remain plausible from local cohesion signals."
+            )
         else:
             rationale = "No component candidate cleared the threshold from local evidence."
         component_hypotheses.append(
@@ -1059,11 +1091,7 @@ def cluster_component_candidates(
                 status=status,
                 confidence=max(float(payload["score"]) for payload in candidates.values()),
                 evidence=_dedupe_evidence(
-                    [
-                        ref
-                        for payload in candidates.values()
-                        for ref in list(payload["evidence"])
-                    ]
+                    [ref for payload in candidates.values() for ref in list(payload["evidence"])]
                 )
                 or _node_evidence(node),
             )
@@ -1097,7 +1125,9 @@ def _direct_candidate_map(
             runtime_entity = runtime_by_container.get(explicit_container)
             candidates[node_id][explicit_container] = {
                 "score": EXPLICIT_METADATA_SCORE,
-                "evidence": evidence + list(runtime_entity.evidence) if runtime_entity else evidence,
+                "evidence": evidence + list(runtime_entity.evidence)
+                if runtime_entity
+                else evidence,
                 "signal": "explicit",
             }
 
@@ -1134,7 +1164,11 @@ def _direct_candidate_map(
                     "signal": "job_definition",
                 }
 
-        if kind in {"symbol", "file"} and _looks_like_cli_path(_node_file_path(node)) and "cli" in runtime_by_container:
+        if (
+            kind in {"symbol", "file"}
+            and _looks_like_cli_path(_node_file_path(node))
+            and "cli" in runtime_by_container
+        ):
             runtime_entity = runtime_by_container["cli"]
             candidates[node_id]["cli"] = {
                 "score": CLI_RUNTIME_SCORE,

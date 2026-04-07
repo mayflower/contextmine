@@ -187,7 +187,9 @@ def merge_document_and_repo_artifacts(
         if existing is None:
             merged[artifact.repo_path] = artifact
             continue
-        preferred = artifact if len(artifact.raw_text or "") >= len(existing.raw_text or "") else existing
+        preferred = (
+            artifact if len(artifact.raw_text or "") >= len(existing.raw_text or "") else existing
+        )
         merged[artifact.repo_path] = replace(
             preferred,
             evidence=_dedupe_evidence(list(existing.evidence) + list(artifact.evidence)),

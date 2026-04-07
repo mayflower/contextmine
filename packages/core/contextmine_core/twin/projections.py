@@ -389,7 +389,9 @@ def build_inferred_architecture_projection(
                 relationship.target_entity_id,
                 component_to_containers,
             )
-            if relationship.source_entity_id.startswith("component:") or relationship.target_entity_id.startswith("component:"):
+            if relationship.source_entity_id.startswith(
+                "component:"
+            ) or relationship.target_entity_id.startswith("component:"):
                 lossy_relationship_count += 1
         else:
             source_ids = _expanded_entity_node_ids(
@@ -448,7 +450,9 @@ def build_inferred_architecture_projection(
             "unresolved_hypotheses": sum(
                 1 for hypothesis in model.hypotheses if hypothesis.status == "unresolved"
             ),
-            "collapsed_multi_membership_edges": lossy_relationship_count if level == "container" else 0,
+            "collapsed_multi_membership_edges": lossy_relationship_count
+            if level == "container"
+            else 0,
         },
         "warnings": warnings,
     }

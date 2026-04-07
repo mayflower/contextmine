@@ -199,7 +199,9 @@ def test_shared_component_can_belong_to_multiple_containers_and_projection_prese
     assert "component:session-manager@container:worker" in node_ids
 
 
-def test_component_boundary_ambiguity_is_preserved_when_two_clusters_are_equally_plausible() -> None:
+def test_component_boundary_ambiguity_is_preserved_when_two_clusters_are_equally_plausible() -> (
+    None
+):
     nodes = [
         _symbol(
             node_id="symbol:create_session",

@@ -572,7 +572,11 @@ def render_claim_backed_arc42(
         markdown="\n".join(markdown_lines).strip() + "\n",
         warnings=[*base.warnings, *warnings],
         confidence_summary=base.confidence_summary,
-        section_coverage={key: bool((sections.get(key) or "").strip()) for key in SECTION_TITLES if key in sections},
+        section_coverage={
+            key: bool((sections.get(key) or "").strip())
+            for key in SECTION_TITLES
+            if key in sections
+        },
         claims=sorted(sanitized_claims, key=lambda row: row.claim_id),
         claim_traceability=sorted(
             sanitized_traceability,

@@ -101,7 +101,9 @@ def parse_markdown_adr(artifact: ArtifactInventoryEntry) -> ParsedArtifact:
 
     frontmatter, body = _frontmatter_and_body(artifact.raw_text or "")
     sections = _markdown_sections(body)
-    title = str(frontmatter.get("title") or _markdown_title(body) or PurePosixPath(artifact.repo_path).stem)
+    title = str(
+        frontmatter.get("title") or _markdown_title(body) or PurePosixPath(artifact.repo_path).stem
+    )
     status = frontmatter.get("status")
     supersedes = frontmatter.get("supersedes") or frontmatter.get("replaces")
     affected_entity_ids = frontmatter.get("affected_entity_ids") or []
@@ -124,11 +126,7 @@ def parse_markdown_adr(artifact: ArtifactInventoryEntry) -> ParsedArtifact:
         "affected_entity_ids": affected_entity_ids,
     }
 
-    signals = sum(
-        1
-        for key in ("context", "decision", "consequences")
-        if structured.get(key)
-    )
+    signals = sum(1 for key in ("context", "decision", "consequences") if structured.get(key))
     has_structured_frontmatter = bool(
         structured.get("status")
         or structured.get("supersedes")
@@ -173,7 +171,15 @@ def parse_openapi_spec(artifact: ArtifactInventoryEntry) -> ParsedArtifact:
         if not isinstance(path_item, dict):
             continue
         for method, _operation in path_item.items():
-            if str(method).lower() not in {"get", "post", "put", "patch", "delete", "options", "head"}:
+            if str(method).lower() not in {
+                "get",
+                "post",
+                "put",
+                "patch",
+                "delete",
+                "options",
+                "head",
+            }:
                 continue
             operations.append(f"{str(method).upper()} {path_name}")
 
@@ -336,7 +342,10 @@ def parse_deployment_manifest(artifact: ArtifactInventoryEntry) -> ParsedArtifac
                 if isinstance(target_port, int):
                     ports.append(target_port)
                 service_bindings.append(
-                    {"service": name, "target_port": target_port if isinstance(target_port, int) else None}
+                    {
+                        "service": name,
+                        "target_port": target_port if isinstance(target_port, int) else None,
+                    }
                 )
         template = payload.get("spec") if isinstance(payload.get("spec"), dict) else {}
         if lowered_kind == "cronjob":
@@ -346,7 +355,9 @@ def parse_deployment_manifest(artifact: ArtifactInventoryEntry) -> ParsedArtifac
                 else {}
             )
         else:
-            template = template.get("template", {}) if isinstance(template.get("template"), dict) else {}
+            template = (
+                template.get("template", {}) if isinstance(template.get("template"), dict) else {}
+            )
         pod_spec = template.get("spec") if isinstance(template.get("spec"), dict) else {}
         for container in pod_spec.get("containers") or []:
             if not isinstance(container, dict):
@@ -373,7 +384,9 @@ def parse_deployment_manifest(artifact: ArtifactInventoryEntry) -> ParsedArtifac
             "images": sorted(set(images)),
             "ports": sorted(set(ports)),
             "jobs": jobs,
-            "service_bindings": [binding for binding in service_bindings if binding["target_port"] is not None],
+            "service_bindings": [
+                binding for binding in service_bindings if binding["target_port"] is not None
+            ],
         },
         evidence=artifact.evidence,
     )

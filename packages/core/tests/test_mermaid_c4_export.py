@@ -225,7 +225,11 @@ async def test_component_view_warns_explicitly_before_largest_component_degraded
                     "natural_key": "component|contextmine|api|session-manager",
                     "kind": "component",
                     "name": "Session Manager",
-                    "meta": {"component": "session-manager", "container": "api", "member_count": 12},
+                    "meta": {
+                        "component": "session-manager",
+                        "container": "api",
+                        "member_count": 12,
+                    },
                 }
             ],
             "edges": [],

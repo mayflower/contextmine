@@ -196,7 +196,10 @@ def test_parse_deployment_manifest_extracts_deployables_images_ports_jobs_and_bi
     assert parsed.parser_name == "kubernetes_manifest"
     assert parsed.structured_data["deployables"] == ["api"]
     assert parsed.structured_data["container_names"] == ["api", "worker"]
-    assert parsed.structured_data["images"] == ["contextmine/api:latest", "contextmine/worker:latest"]
+    assert parsed.structured_data["images"] == [
+        "contextmine/api:latest",
+        "contextmine/worker:latest",
+    ]
     assert parsed.structured_data["ports"] == [80, 8080]
     assert parsed.structured_data["jobs"] == ["embeddings-sync"]
     assert parsed.structured_data["service_bindings"] == [{"service": "api", "target_port": 8080}]
@@ -213,7 +216,7 @@ def test_parse_artifact_supports_compose_and_helm_manifests() -> None:
                 "  api:\n"
                 "    image: contextmine/api:latest\n"
                 "    ports:\n"
-                "      - \"8080:8080\"\n"
+                '      - "8080:8080"\n'
                 "  worker:\n"
                 "    image: contextmine/worker:latest\n"
             ),
@@ -251,7 +254,9 @@ def test_parse_sql_schema_extracts_tables_views_and_owner_hints() -> None:
     assert parsed.parser_name == "sql"
     assert parsed.structured_data["tables"] == ["sessions"]
     assert parsed.structured_data["views"] == ["active_sessions"]
-    assert parsed.structured_data["owner_hints"] == [{"object_name": "sessions", "owner": "contextmine_app"}]
+    assert parsed.structured_data["owner_hints"] == [
+        {"object_name": "sessions", "owner": "contextmine_app"}
+    ]
 
 
 def test_parse_artifact_treats_mermaid_plantuml_and_c4dsl_as_typed_diagrams() -> None:
@@ -276,7 +281,7 @@ def test_parse_artifact_treats_mermaid_plantuml_and_c4dsl_as_typed_diagrams() ->
             repo_path="architecture/context.c4.dsl",
             parser_hint="c4_dsl",
             artifact_kind="diagram",
-            raw_text="workspace { model { softwareSystem = softwareSystem \"Contextmine\" } }",
+            raw_text='workspace { model { softwareSystem = softwareSystem "Contextmine" } }',
         )
     )
 
@@ -300,4 +305,3 @@ def test_parse_artifact_uses_low_confidence_fallback_only_when_no_parser_matches
     assert parsed.parser_name == "fallback_heuristic"
     assert parsed.confidence < 0.5
     assert parsed.structured_data["summary"] == "just a loose note without structured sections"
-

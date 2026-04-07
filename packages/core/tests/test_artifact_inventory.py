@@ -24,7 +24,9 @@ def _write(tmp_path: Path, repo_path: str, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def test_build_repo_artifact_inventory_reads_repo_files_without_document_rows(tmp_path: Path) -> None:
+def test_build_repo_artifact_inventory_reads_repo_files_without_document_rows(
+    tmp_path: Path,
+) -> None:
     _write(
         tmp_path,
         "docs/architecture/decision-record.md",
@@ -170,4 +172,3 @@ def test_artifact_inventory_can_feed_recovery_without_scenario_file_refs(
 
     assert len(model.decisions) == 1
     assert model.decisions[0].affected_entity_ids == ("container:api", "container:worker")
-

@@ -89,9 +89,7 @@ def _entity_aliases(entity: RecoveredArchitectureEntity) -> set[str]:
 
 def _entity_file_paths(entity: RecoveredArchitectureEntity) -> set[str]:
     return {
-        _normalize(ref.ref)
-        for ref in entity.evidence
-        if ref.kind == "file" and _normalize(ref.ref)
+        _normalize(ref.ref) for ref in entity.evidence if ref.kind == "file" and _normalize(ref.ref)
     }
 
 
@@ -232,13 +230,14 @@ def recover_architecture_decisions(
             continue
 
         title = str(
-            structured.get("title") or doc.get("title") or doc.get("name") or doc.get("id") or "Architecture Decision"
+            structured.get("title")
+            or doc.get("title")
+            or doc.get("name")
+            or doc.get("id")
+            or "Architecture Decision"
         ).strip()
         summary = str(
-            structured.get("decision")
-            or doc.get("summary")
-            or doc.get("text")
-            or title
+            structured.get("decision") or doc.get("summary") or doc.get("text") or title
         ).strip()
         evidence = _decision_evidence(doc)
         if not evidence:

@@ -83,4 +83,3 @@ def claim_counter_evidence(claim: ArchitectureClaim) -> tuple[EvidenceRef, ...]:
     """Return counter-evidence attached to one claim."""
 
     return claim.counter_evidence
-

@@ -231,7 +231,9 @@ def test_no_confirmed_container_only_from_path_heuristic() -> None:
 
     memberships = model.memberships_for("symbol:event_publisher")
     assert not memberships
-    hypothesis = next(row for row in model.hypotheses if row.subject_ref == "symbol:event_publisher")
+    hypothesis = next(
+        row for row in model.hypotheses if row.subject_ref == "symbol:event_publisher"
+    )
     assert hypothesis.status in {"ambiguous", "unresolved"}
 
 
@@ -266,7 +268,9 @@ def test_no_decision_without_documentable_source() -> None:
 def test_no_llm_adjudication_with_unknown_evidence_ids() -> None:
     fixture = build_architecture_recovery_fixture()
     model = recover_architecture_model(fixture["nodes"], fixture["edges"], docs=fixture["docs"])
-    hypothesis = next(row for row in model.hypotheses if row.subject_ref == "symbol:session_manager")
+    hypothesis = next(
+        row for row in model.hypotheses if row.subject_ref == "symbol:session_manager"
+    )
     packet = build_adjudication_packet(model=model, hypothesis=hypothesis)
 
     updated = apply_adjudication(
@@ -334,7 +338,9 @@ async def test_no_silent_reduction_of_multi_membership_to_single_membership(
 
     monkeypatch.setattr(mermaid_export, "export_mermaid_c4_result", _fake_c4)
     monkeypatch.setattr("contextmine_core.architecture.facts.export_mermaid_c4_result", _fake_c4)
-    monkeypatch.setattr("contextmine_core.architecture.facts.get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(
+        "contextmine_core.architecture.facts.get_scenario_provenance_node_ids", _fake_node_ids
+    )
     monkeypatch.setattr("contextmine_core.architecture.facts._load_node_evidence", _fake_evidence)
     monkeypatch.setattr(
         "contextmine_core.architecture.facts.recover_architecture_model",
@@ -448,7 +454,11 @@ async def test_fallback_modes_warn_explicitly_and_avoid_generic_best_effort(
                     "natural_key": "component|contextmine|api|session-manager",
                     "kind": "component",
                     "name": "Session Manager",
-                    "meta": {"component": "session-manager", "container": "api", "member_count": 12},
+                    "meta": {
+                        "component": "session-manager",
+                        "container": "api",
+                        "member_count": 12,
+                    },
                 }
             ],
             "edges": [],
@@ -469,4 +479,6 @@ async def test_fallback_modes_warn_explicitly_and_avoid_generic_best_effort(
     )
 
     assert any("degraded" in warning.lower() for warning in result.warnings)
-    assert not any("best effort due sparse source signals" in warning.lower() for warning in result.warnings)
+    assert not any(
+        "best effort due sparse source signals" in warning.lower() for warning in result.warnings
+    )

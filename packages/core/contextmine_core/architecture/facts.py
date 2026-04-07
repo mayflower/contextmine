@@ -427,9 +427,7 @@ def _enrich_ports_with_recovery(ports: list[PortAdapterFact], model: Any) -> lis
         legacy_mapping_lossy = len(candidate_container_ids) > 1 or len(candidate_component_ids) > 1
         legacy_mapping_warning = None
         if legacy_mapping_lossy:
-            legacy_mapping_warning = (
-                "Legacy port view keeps only one container/component while recovery found multiple matches."
-            )
+            legacy_mapping_warning = "Legacy port view keeps only one container/component while recovery found multiple matches."
 
         enriched.append(
             replace(

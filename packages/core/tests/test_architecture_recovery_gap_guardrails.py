@@ -107,7 +107,9 @@ async def test_repo_artifacts_should_not_require_document_rows_to_be_visible() -
     assert docs, "Repo inventory should surface ADR-like artifacts without a Document row."
 
 
-def test_architecture_doc_detection_should_accept_typed_artifact_hints_without_token_matches() -> None:
+def test_architecture_doc_detection_should_accept_typed_artifact_hints_without_token_matches() -> (
+    None
+):
     doc = SimpleNamespace(
         uri="docs/records/0007.md",
         title="Record 7",
@@ -122,7 +124,9 @@ def test_architecture_doc_detection_should_accept_typed_artifact_hints_without_t
     assert _looks_like_architecture_doc(doc) is True
 
 
-def test_component_recovery_should_cluster_related_symbols_instead_of_aliasing_each_symbol() -> None:
+def test_component_recovery_should_cluster_related_symbols_instead_of_aliasing_each_symbol() -> (
+    None
+):
     nodes = [
         _symbol_node(
             natural_key="symbol:create_session",
@@ -159,7 +163,9 @@ def test_adjudication_packets_should_contain_real_snippets_not_only_refs() -> No
         fixture["edges"],
         docs=fixture["docs"],
     )
-    hypothesis = next(row for row in model.hypotheses if row.subject_ref == "symbol:session_manager")
+    hypothesis = next(
+        row for row in model.hypotheses if row.subject_ref == "symbol:session_manager"
+    )
 
     packet = build_adjudication_packet(model=model, hypothesis=hypothesis)
 

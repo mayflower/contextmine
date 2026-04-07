@@ -1625,7 +1625,9 @@ async def _generate_arch_docs_on_sync(
     deterministic_facts_hash = deterministic_bundle.facts_hash()
     previous_hash = None
     if artifact and artifact.meta:
-        previous_hash = artifact.meta.get("deterministic_facts_hash") or artifact.meta.get("facts_hash")
+        previous_hash = artifact.meta.get("deterministic_facts_hash") or artifact.meta.get(
+            "facts_hash"
+        )
     if previous_hash == deterministic_facts_hash:
         logger.info(
             "Arc42 deterministic facts unchanged (hash=%s), skipping regeneration",
