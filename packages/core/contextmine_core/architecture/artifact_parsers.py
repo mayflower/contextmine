@@ -157,7 +157,8 @@ def parse_openapi_spec(artifact: ArtifactInventoryEntry) -> ParsedArtifact:
         return _fallback_result(artifact)
 
     title = payload.get("info", {}).get("title") if isinstance(payload.get("info"), dict) else None
-    servers = payload.get("servers") if isinstance(payload.get("servers"), list) else []
+    raw_servers = payload.get("servers")
+    servers: list[object] = raw_servers if isinstance(raw_servers, list) else []
     server_urls = [
         str(server.get("url")).strip()
         for server in servers
