@@ -9,6 +9,7 @@ use hex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use spider::configuration::Configuration;
+use spider::reqwest::header::HeaderName;
 use spider::website::Website;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -182,13 +183,7 @@ async fn main() {
 
     // Use subscribe + crawl pattern (recommended by spider v2 API)
     // subscribe() creates a channel that receives pages as they are crawled
-    let mut rx = match website.subscribe(16) {
-        Some(rx) => rx,
-        None => {
-            eprintln!("[spider_md] Failed to create subscription channel");
-            std::process::exit(1);
-        }
-    };
+    let mut rx = website.subscribe(16);
 
     let max_pages = args.max_pages;
     let base_url_clone = base_url.clone();
@@ -228,13 +223,11 @@ async fn main() {
             // Extract HTTP cache headers if available
             let (etag, last_modified) = if let Some(ref headers) = page.headers {
                 let etag: Option<String> = headers
-                    .get("etag")
-                    .or_else(|| headers.get("ETag"))
+                    .get(HeaderName::from_static("etag"))
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
                 let last_modified: Option<String> = headers
-                    .get("last-modified")
-                    .or_else(|| headers.get("Last-Modified"))
+                    .get(HeaderName::from_static("last-modified"))
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
                 (etag, last_modified)
