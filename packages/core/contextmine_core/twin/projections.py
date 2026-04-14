@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from contextmine_core.architecture.recovery_model import RecoveredArchitectureModel
@@ -15,7 +15,7 @@ from contextmine_core.twin.grouping import (
 )
 
 
-class GraphProjection(str, Enum):
+class GraphProjection(StrEnum):
     """Supported graph projection modes."""
 
     ARCHITECTURE = "architecture"
@@ -200,11 +200,17 @@ def build_architecture_projection(
                 "member_count": 0,
                 "confidence_sum": 0.0,
                 "derived_from": set(),
+                "explicit_member_count": 0,
+                "heuristic_member_count": 0,
             },
         )
         stat["member_count"] += 1
         stat["confidence_sum"] += float(group[4])
         stat["derived_from"].add(group[3])
+        if group[3] == "explicit":
+            stat["explicit_member_count"] += 1
+        else:
+            stat["heuristic_member_count"] += 1
 
     projected_nodes: list[dict[str, Any]] = []
     key_to_node_id: dict[str, str] = {}
@@ -214,6 +220,14 @@ def build_architecture_projection(
         node_id = f"arch:{level}:{idx}"
         key_to_node_id[key] = node_id
         name = _resolve_projected_node_name(stat)
+        explicit_member_count = int(stat["explicit_member_count"])
+        heuristic_member_count = int(stat["heuristic_member_count"])
+        if explicit_member_count and heuristic_member_count:
+            provenance = "mixed"
+        elif explicit_member_count:
+            provenance = "explicit"
+        else:
+            provenance = "heuristic"
         projected_nodes.append(
             ArchitectureProjectionNode(
                 id=node_id,
@@ -227,6 +241,9 @@ def build_architecture_projection(
                     "member_count": stat["member_count"],
                     "confidence": round(stat["confidence_sum"] / max(stat["member_count"], 1), 4),
                     "derived_from": sorted(stat["derived_from"]),
+                    "provenance": provenance,
+                    "explicit_member_count": explicit_member_count,
+                    "heuristic_member_count": heuristic_member_count,
                     "level": level,
                 },
             ).__dict__

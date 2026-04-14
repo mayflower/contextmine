@@ -81,6 +81,7 @@ const DEFAULT_GRAPH: TwinGraphResponse = {
   page: 0,
   limit: 0,
   total_nodes: 0,
+  warnings: [],
 }
 
 const DEFAULT_STATES: DataStates = {
@@ -432,6 +433,8 @@ export function useCockpitData({
         entity_level: payload.entity_level ?? g.entity_level,
         grouping_strategy: payload.grouping_strategy ?? g.grouping_strategy,
         excluded_kinds: payload.excluded_kinds ?? g.excluded_kinds,
+        warnings: payload.warnings ?? g.warnings ?? [],
+        provenance: payload.provenance ?? g.provenance,
       })
       setViewState(view, 'ready')
       markUpdated(view)
@@ -468,6 +471,8 @@ export function useCockpitData({
           ...(uiResult.value.graph || DEFAULT_GRAPH),
           projection: 'code_symbol',
           entity_level: uiResult.value.entity_level,
+          warnings: uiResult.value.warnings ?? uiResult.value.graph?.warnings ?? [],
+          provenance: uiResult.value.graph?.provenance,
         }
         setUiMapGraph(nextUiGraph)
         successCount += 1
@@ -483,6 +488,8 @@ export function useCockpitData({
           ...(flowsResult.value.graph || DEFAULT_GRAPH),
           projection: 'code_symbol',
           entity_level: flowsResult.value.entity_level,
+          warnings: flowsResult.value.warnings ?? flowsResult.value.graph?.warnings ?? [],
+          provenance: flowsResult.value.graph?.provenance,
         }
         setUserFlowsGraph(nextFlowsGraph)
         successCount += 1
@@ -522,6 +529,8 @@ export function useCockpitData({
         ...(payload.graph || DEFAULT_GRAPH),
         projection: 'code_symbol',
         entity_level: payload.entity_level,
+        warnings: payload.warnings ?? payload.graph?.warnings ?? [],
+        provenance: payload.graph?.provenance,
       })
       setViewState('test_matrix', 'ready')
       markUpdated('test_matrix')

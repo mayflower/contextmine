@@ -1041,6 +1041,83 @@ class TestGetScenarioGraph:
         assert result["nodes"] == []
         assert result["edges"] == []
 
+    @pytest.mark.anyio
+    async def test_exposes_slice_metadata_and_hidden_cross_page_edges(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_scenario_graph
+
+        session = _make_mock_session()
+        scenario_id = uuid4()
+
+        node_a = SimpleNamespace(
+            id=uuid4(),
+            natural_key="file:a.py",
+            kind="file",
+            name="a.py",
+            meta={},
+        )
+        node_b = SimpleNamespace(
+            id=uuid4(),
+            natural_key="file:b.py",
+            kind="file",
+            name="b.py",
+            meta={},
+        )
+        edge = SimpleNamespace(
+            id=uuid4(),
+            source_node_id=node_a.id,
+            target_node_id=node_b.id,
+            kind="symbol_references_symbol",
+            meta={},
+        )
+
+        session.execute.side_effect = [
+            _scalars_all([node_a, node_b]),
+            _scalars_all([edge]),
+        ]
+
+        result = await get_scenario_graph(
+            session,
+            scenario_id,
+            layer=None,
+            page=0,
+            limit=1,
+            projection=GraphProjection.CODE_FILE,
+        )
+
+        assert result["slice_strategy"] == "edge_aware_seed_window"
+        assert result["candidate_nodes"] == 2
+        assert result["visible_nodes"] == 1
+        assert result["dropped_cross_page_edges"] == 1
+        assert result["warnings"]
+
+    def test_edge_aware_paging_preserves_bfs_frontier_across_pages(self) -> None:
+        from contextmine_core.twin.service import paginate_graph_edge_aware
+
+        nodes = [
+            {"id": "a", "natural_key": "file:a.py"},
+            {"id": "b", "natural_key": "file:b.py"},
+            {"id": "c", "natural_key": "file:c.py"},
+            {"id": "d", "natural_key": "file:d.py"},
+            {"id": "e", "natural_key": "file:e.py"},
+        ]
+        edges = [
+            {"source_node_id": "a", "target_node_id": "b"},
+            {"source_node_id": "a", "target_node_id": "c"},
+            {"source_node_id": "b", "target_node_id": "d"},
+            {"source_node_id": "c", "target_node_id": "e"},
+        ]
+
+        second_page = paginate_graph_edge_aware(
+            nodes,
+            edges,
+            page=1,
+            limit=2,
+            sorted_by="natural_key,id",
+        )
+
+        assert [node["id"] for node in second_page["nodes"]] == ["c", "d"]
+
 
 class TestGetFullScenarioGraph:
     @pytest.mark.anyio

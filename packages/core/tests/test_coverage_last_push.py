@@ -72,8 +72,7 @@ class TestDeriveArchGroup:
         from contextmine_core.twin.grouping import derive_arch_group
 
         result = derive_arch_group("main.py")
-        assert result is not None
-        assert result[0] == "main.py"
+        assert result is None
 
     def test_empty_path(self) -> None:
         from contextmine_core.twin.grouping import derive_arch_group
@@ -84,16 +83,16 @@ class TestDeriveArchGroup:
     def test_incomplete_explicit_meta(self) -> None:
         from contextmine_core.twin.grouping import derive_arch_group
 
-        # Missing container — should fall back to path heuristic
+        # Missing container should still fall back to a substantive path after generic wrappers.
         result = derive_arch_group(
-            "src/main.py",
+            "src/billing/api/main.py",
             {
                 "architecture": {"domain": "core"},
             },
         )
         assert result is not None
-        # Falls back to path-based derivation
-        assert result[0] == "src"
+        assert result[0] == "billing"
+        assert result[1] == "api"
 
 
 class TestCanonicalFilePath:

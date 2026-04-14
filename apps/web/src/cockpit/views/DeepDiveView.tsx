@@ -25,6 +25,12 @@ function getLayoutName(density: number): 'cose' | 'breadthfirst' {
   return density > 5000 ? 'breadthfirst' : 'cose'
 }
 
+function humanizeSliceStrategy(strategy: string | undefined): string {
+  if (strategy === 'edge_aware_seed_window') return 'edge-aware seed paging'
+  if (strategy === 'sorted_page_slice') return 'sorted page slicing'
+  return 'graph paging'
+}
+
 export default function DeepDiveView({
   graph,
   state,
@@ -163,6 +169,14 @@ export default function DeepDiveView({
       graphRef.current = null
     }
   }, [graph, state, showLabels, density, overlay, selectedNodeId, onSelectNodeId])
+  const warnings = graph.warnings || []
+  const provenanceNotes: string[] = []
+  if (graph.provenance?.source === 'knowledge_recovery') {
+    provenanceNotes.push('This view is being recovered from the knowledge graph while scenario extraction catches up.')
+  }
+  if (mode === 'symbol_callgraph' && graph.slice_strategy) {
+    provenanceNotes.push(`Callgraph pages now use ${humanizeSliceStrategy(graph.slice_strategy)} to preserve local connectivity.`)
+  }
 
   return (
     <ViewShell
@@ -179,11 +193,28 @@ export default function DeepDiveView({
       <div className="cockpit2-panel-header-row">
         <h3>Deep dive graph</h3>
         <p className="muted">
-          Nodes: {graph.nodes.length} / Total: {graph.total_nodes} • Edges: {graph.edges.length}
+          Nodes: {graph.visible_nodes ?? graph.nodes.length} / Total: {graph.candidate_nodes ?? graph.total_nodes} • Edges: {graph.visible_edges ?? graph.edges.length}
           {graph.projection ? ` • Projection: ${graph.projection}` : ''}
           {mode ? ` • Mode: ${mode}` : ''}
+          {graph.slice_strategy ? ` • Slice: ${humanizeSliceStrategy(graph.slice_strategy)}` : ''}
         </p>
       </div>
+
+      {provenanceNotes.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          {provenanceNotes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+      ) : null}
+
+      {warnings.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      ) : null}
 
       {density > 5000 ? (
         <div className="cockpit2-overlay-legend">

@@ -192,6 +192,44 @@ class TestArchitectureProjection:
         )
         assert grouping_strategy == "mixed"
         assert any(node["meta"]["domain"] == "core" for node in projected_nodes)
+        assert any(node["meta"]["provenance"] == "explicit" for node in projected_nodes)
+
+    def test_projected_nodes_expose_grouping_provenance_counts(self) -> None:
+        nodes = _sample_nodes()
+        nodes[0]["meta"] = {
+            "file_path": "services/billing/api/invoice.py",
+            "architecture": {
+                "domain": "core",
+                "container": "billing",
+                "component": "invoice-api",
+            },
+        }
+        projected_nodes, _, _ = build_architecture_projection(
+            nodes=nodes,
+            edges=_sample_edges(),
+            entity_level="component",
+        )
+        assert any(
+            node["meta"]["explicit_member_count"] > 0 or node["meta"]["heuristic_member_count"] > 0
+            for node in projected_nodes
+        )
+
+    def test_generic_support_roots_are_not_projected_as_architecture(self) -> None:
+        projected_nodes, _, grouping_strategy = build_architecture_projection(
+            nodes=[
+                {
+                    "id": "f1",
+                    "natural_key": "file:packages/core/service.py",
+                    "kind": "file",
+                    "name": "packages/core/service.py",
+                    "meta": {"file_path": "packages/core/service.py"},
+                }
+            ],
+            edges=[],
+            entity_level="container",
+        )
+        assert projected_nodes == []
+        assert grouping_strategy == "heuristic"
 
     def test_folds_edge_weights(self) -> None:
         _, projected_edges, _ = build_architecture_projection(

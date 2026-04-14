@@ -161,6 +161,7 @@ describe('C4DiffView rendering', () => {
 
   it('renders warnings in compare mode', () => {
     render(<C4DiffView {...makeProps({ mermaid: compareMermaid })} />)
+    expect(screen.getByText(/Degraded or truncated diagram output/)).toBeInTheDocument()
     expect(screen.getByText('Partial diagram')).toBeInTheDocument()
     expect(screen.getByText('AS-IS had issues')).toBeInTheDocument()
     expect(screen.getByText('TO-BE had issues')).toBeInTheDocument()

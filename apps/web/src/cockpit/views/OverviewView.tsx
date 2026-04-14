@@ -40,6 +40,12 @@ function metricsUnavailableMessage(reason: string | undefined): string {
   return 'Real metrics are currently unavailable for this scenario.'
 }
 
+function metricsStatusLabel(reason: string | undefined): string {
+  if (reason === 'awaiting_ci_coverage') return 'Coverage ingest pending'
+  if (reason === 'coverage_ingest_failed') return 'Coverage ingest failed'
+  return 'Metrics unavailable'
+}
+
 function sortHotspots(
   city: CityPayload | null,
   sortKey: SortKey,
@@ -123,9 +129,11 @@ export default function OverviewView({
         <article className="cockpit2-panel">
           <h3>System health summary</h3>
           {metricsUnavailable ? (
-            <p className="muted">
-              {metricsUnavailableMessage(unavailableReason)}
-            </p>
+            <div className="cockpit2-alert inline">
+              <p>
+                <strong>{metricsStatusLabel(unavailableReason)}.</strong> {metricsUnavailableMessage(unavailableReason)}
+              </p>
+            </div>
           ) : null}
           <div className="cockpit2-kpis">
             <div>

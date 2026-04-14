@@ -61,6 +61,7 @@ const populatedGraph: TwinGraphResponse = {
   limit: 1200,
   total_nodes: 3,
   projection: 'architecture',
+  grouping_strategy: 'heuristic',
 }
 
 function makeProps(overrides: Partial<Parameters<typeof TopologyView>[0]> = {}) {
@@ -192,6 +193,16 @@ describe('TopologyView rendering', () => {
     expect(screen.getByText('Fit view')).toBeInTheDocument()
     expect(screen.getByText('Show labels')).toBeInTheDocument()
     expect(screen.getByText('Display options')).toBeInTheDocument()
+  })
+
+  it('renders provenance note for heuristic architecture grouping', () => {
+    render(<TopologyView {...makeProps()} />)
+    expect(screen.getByText(/Architecture grouping is heuristic/)).toBeInTheDocument()
+  })
+
+  it('renders graph warnings when present', () => {
+    render(<TopologyView {...makeProps({ graph: { ...populatedGraph, warnings: ['2 cross-page edges are hidden outside this graph slice.'] } })} />)
+    expect(screen.getByText(/cross-page edges are hidden/)).toBeInTheDocument()
   })
 
   it('toggles show labels button text on click', async () => {

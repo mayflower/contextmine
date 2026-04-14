@@ -259,8 +259,9 @@ describe('EvolutionView rendering', () => {
   })
 
   it('renders empty knowledge islands state', () => {
-    render(<EvolutionView {...makeProps({ knowledgeIslands: { ...knowledgePayload, entities: [] } })} />)
+    render(<EvolutionView {...makeProps({ knowledgeIslands: { ...knowledgePayload, entities: [], reason: 'no_ownership_snapshots' } })} />)
     expect(screen.getByText('No ownership data available')).toBeInTheDocument()
+    expect(screen.getByText(/no ownership snapshots/)).toBeInTheDocument()
   })
 
   it('renders empty coupling graph state', () => {
@@ -269,8 +270,17 @@ describe('EvolutionView rendering', () => {
   })
 
   it('renders empty fitness state', () => {
-    render(<EvolutionView {...makeProps({ fitnessFunctions: { ...fitnessPayload, rules: [], violations: [] } })} />)
+    render(<EvolutionView {...makeProps({ fitnessFunctions: { ...fitnessPayload, rules: [], violations: [], reason: 'no_persisted_fitness_findings' } })} />)
     expect(screen.getByText('No fitness findings available')).toBeInTheDocument()
+  })
+
+  it('renders knowledge and temporal warnings when present', () => {
+    render(<EvolutionView {...makeProps({
+      knowledgeIslands: { ...knowledgePayload, warnings: ['Ownership coverage is partial'] },
+      temporalCoupling: { ...couplingPayload, warnings: ['Coupling history only covers recent commits'] },
+    })} />)
+    expect(screen.getByText('Ownership coverage is partial')).toBeInTheDocument()
+    expect(screen.getByText('Coupling history only covers recent commits')).toBeInTheDocument()
   })
 
   it('renders panel errors for each section', () => {

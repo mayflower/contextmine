@@ -91,6 +91,12 @@ function overlayColorForNode(overlay: OverlayState, naturalKey: string, fallback
   return '#1d4ed8'
 }
 
+function humanizeSliceStrategy(strategy: string | undefined): string {
+  if (strategy === 'edge_aware_seed_window') return 'edge-aware seed paging'
+  if (strategy === 'sorted_page_slice') return 'sorted page slicing'
+  return 'graph paging'
+}
+
 function buildRFNode(
   node: TwinGraphResponse['nodes'][number],
   index: number,
@@ -240,6 +246,16 @@ export default function TopologyView({
       }
     })
   }, [graph.edges, graph.nodes, overlay])
+  const warnings = graph.warnings || []
+  const provenanceNotes: string[] = []
+  if (graph.projection === 'architecture' && graph.grouping_strategy === 'heuristic') {
+    provenanceNotes.push('Architecture grouping is heuristic because explicit architecture metadata is missing.')
+  } else if (graph.projection === 'architecture' && graph.grouping_strategy === 'mixed') {
+    provenanceNotes.push('Architecture grouping mixes explicit metadata with conservative path heuristics.')
+  }
+  if (graph.provenance?.source === 'knowledge_recovery') {
+    provenanceNotes.push('This view is being recovered from the knowledge graph while scenario extraction catches up.')
+  }
 
   return (
     <ViewShell
@@ -256,10 +272,27 @@ export default function TopologyView({
       <div className="cockpit2-panel-header-row">
         <h3>Topology graph</h3>
         <p className="muted">
-          Nodes: {graph.nodes.length} / Total: {graph.total_nodes} • Edges: {graph.edges.length}
+          Nodes: {graph.visible_nodes ?? graph.nodes.length} / Total: {graph.candidate_nodes ?? graph.total_nodes} • Edges: {graph.visible_edges ?? graph.edges.length}
+          {graph.slice_strategy ? ` • Slice: ${humanizeSliceStrategy(graph.slice_strategy)}` : ''}
           {layoutStatus === 'coarse' ? ' • Refining layout…' : ''}
         </p>
       </div>
+
+      {provenanceNotes.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          {provenanceNotes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+      ) : null}
+
+      {warnings.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      ) : null}
 
       <div className="cockpit2-graph-toolbar">
         <button type="button" className="secondary" onClick={() => instance?.fitView({ duration: 300 })}>

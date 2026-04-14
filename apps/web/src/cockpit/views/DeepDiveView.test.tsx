@@ -45,6 +45,7 @@ const populatedGraph: TwinGraphResponse = {
   limit: 5000,
   total_nodes: 2,
   projection: 'code_file',
+  slice_strategy: 'edge_aware_seed_window',
 }
 
 function makeProps(overrides: Partial<Parameters<typeof DeepDiveView>[0]> = {}) {
@@ -109,6 +110,11 @@ describe('DeepDiveView rendering', () => {
     expect(screen.getByText('Fit view')).toBeInTheDocument()
     expect(screen.getByText('Reset layout')).toBeInTheDocument()
     expect(screen.getByText('Hide labels')).toBeInTheDocument()
+  })
+
+  it('renders slice warnings when present', () => {
+    render(<DeepDiveView {...makeProps({ graph: { ...populatedGraph, warnings: ['1 cross-page edge is hidden outside this graph slice.'] } })} />)
+    expect(screen.getByText(/cross-page edge is hidden/i)).toBeInTheDocument()
   })
 
   it('toggles label button text on click', async () => {

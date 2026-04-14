@@ -41,6 +41,11 @@ function bubbleColor(quadrant: string): string {
   return '#6b7280'
 }
 
+function evolutionReasonMessage(reason: string | undefined, fallback: string): string {
+  if (!reason || reason === 'ok') return fallback
+  return `${fallback} (${reason.replaceAll('_', ' ')}).`
+}
+
 function toCouplingNodes(payload: TemporalCouplingPayload | null): RFNode[] {
   if (!payload) return []
   const nodes = payload.graph.nodes || []
@@ -140,7 +145,12 @@ export default function EvolutionView({
           {investmentItems.length === 0 ? (
             <div className="cockpit2-empty">
               <h3>No investment data available</h3>
-              <p>Evolution snapshots may still be missing for this scenario.</p>
+              <p>
+                {evolutionReasonMessage(
+                  investmentUtilization?.reason,
+                  'Evolution snapshots may still be missing for this scenario',
+                )}
+              </p>
             </div>
           ) : (
             <div className="cockpit2-evolution-scatter-wrap">
@@ -186,6 +196,14 @@ export default function EvolutionView({
             </div>
           ) : null}
 
+          {(knowledgeIslands?.warnings || []).length > 0 ? (
+            <div className="cockpit2-alert inline">
+              {(knowledgeIslands?.warnings || []).map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          ) : null}
+
           {knowledgeIslands?.entities?.length ? (
             <>
               <div className="cockpit2-arch-kpis">
@@ -228,7 +246,12 @@ export default function EvolutionView({
           ) : (
             <div className="cockpit2-empty">
               <h3>No ownership data available</h3>
-              <p>Run a Git-backed sync to compute knowledge islands.</p>
+              <p>
+                {evolutionReasonMessage(
+                  knowledgeIslands?.reason,
+                  'Run a Git-backed sync to compute knowledge islands',
+                )}
+              </p>
             </div>
           )}
         </article>
@@ -243,6 +266,14 @@ export default function EvolutionView({
             <div className="cockpit2-alert error inline">
               <p>{panelErrors.coupling}</p>
               <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+            </div>
+          ) : null}
+
+          {(temporalCoupling?.warnings || []).length > 0 ? (
+            <div className="cockpit2-alert inline">
+              {(temporalCoupling?.warnings || []).map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
             </div>
           ) : null}
 
@@ -265,7 +296,12 @@ export default function EvolutionView({
           ) : (
             <div className="cockpit2-empty">
               <h3>No coupling graph available</h3>
-              <p>Temporal coupling edges are unavailable for this scenario.</p>
+              <p>
+                {evolutionReasonMessage(
+                  temporalCoupling?.reason,
+                  'Temporal coupling edges are unavailable for this scenario',
+                )}
+              </p>
             </div>
           )}
         </article>
@@ -281,6 +317,14 @@ export default function EvolutionView({
           <div className="cockpit2-alert error inline">
             <p>{panelErrors.fitness}</p>
             <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+          </div>
+        ) : null}
+
+        {(fitnessFunctions?.warnings || []).length > 0 ? (
+          <div className="cockpit2-alert inline">
+            {(fitnessFunctions?.warnings || []).map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
           </div>
         ) : null}
 
@@ -321,7 +365,12 @@ export default function EvolutionView({
         ) : (
           <div className="cockpit2-empty">
             <h3>No fitness findings available</h3>
-            <p>Fitness rules have not produced findings for this scenario yet.</p>
+            <p>
+              {evolutionReasonMessage(
+                fitnessFunctions?.reason,
+                'Fitness rules have not produced findings for this scenario yet',
+              )}
+            </p>
           </div>
         )}
       </article>

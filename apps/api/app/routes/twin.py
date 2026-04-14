@@ -103,6 +103,7 @@ from contextmine_core.twin.projections import (
     build_user_flows_projection,
     compute_rebuild_readiness,
 )
+from contextmine_core.twin.service import paginate_graph_edge_aware
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -118,6 +119,7 @@ router = APIRouter(prefix="/twin", tags=["twin"])
 _ERR_INVALID_SCENARIO_ID = "Invalid scenario_id"
 _ERR_INVALID_COLLECTION_ID = "Invalid collection_id"
 _ERR_ARCH_DOCS_DISABLED = "Architecture docs are disabled"
+_SORTED_PAGE_SLICE = "sorted_page_slice"
 
 
 class CreateScenarioRequest(BaseModel):
@@ -1264,6 +1266,8 @@ def _paginate_graph(
     page: int,
     limit: int,
 ) -> dict[str, Any]:
+    normalized_page = max(page, 0)
+    normalized_limit = max(limit, 1)
     sorted_nodes = sorted(
         nodes,
         key=lambda node: (
@@ -1274,8 +1278,8 @@ def _paginate_graph(
         ),
     )
     total_nodes = len(sorted_nodes)
-    start = max(page, 0) * max(limit, 1)
-    end = start + max(limit, 1)
+    start = normalized_page * normalized_limit
+    end = start + normalized_limit
     page_nodes = sorted_nodes[start:end]
     page_ids = {str(node.get("id")) for node in page_nodes}
     page_edges = [
@@ -1284,12 +1288,37 @@ def _paginate_graph(
         if str(edge.get("source_node_id")) in page_ids
         and str(edge.get("target_node_id")) in page_ids
     ]
+    dropped_cross_page_edges = sum(
+        1
+        for edge in edges
+        if (str(edge.get("source_node_id")) in page_ids)
+        ^ (str(edge.get("target_node_id")) in page_ids)
+    )
+    total_pages = math.ceil(total_nodes / normalized_limit) if total_nodes else 0
+    warnings: list[str] = []
+    if total_pages > 1 and page_nodes:
+        warnings.append(
+            f"Showing graph slice {normalized_page + 1} of {total_pages} using sorted page slicing."
+        )
+    if dropped_cross_page_edges > 0:
+        warnings.append(
+            f"{dropped_cross_page_edges} cross-page edges are hidden outside this graph slice."
+        )
+    if normalized_page >= total_pages and total_nodes:
+        warnings.append("Requested graph page is out of range for the current slice strategy.")
     return {
         "nodes": page_nodes,
         "edges": page_edges,
-        "page": max(page, 0),
-        "limit": max(limit, 1),
+        "page": normalized_page,
+        "limit": normalized_limit,
         "total_nodes": total_nodes,
+        "slice_strategy": _SORTED_PAGE_SLICE,
+        "sorted_by": "kind,name,natural_key,id",
+        "candidate_nodes": total_nodes,
+        "visible_nodes": len(page_nodes),
+        "visible_edges": len(page_edges),
+        "dropped_cross_page_edges": dropped_cross_page_edges,
+        "warnings": warnings,
     }
 
 
@@ -3600,6 +3629,8 @@ async def topology_view(
             "entity_level": graph["entity_level"],
             "grouping_strategy": graph["grouping_strategy"],
             "excluded_kinds": graph["excluded_kinds"],
+            "warnings": graph.get("warnings") or [],
+            "provenance": graph.get("provenance"),
             "graph": graph,
         }
 
@@ -3645,25 +3676,35 @@ async def _build_callgraph_page(
             str(node.get("natural_key") or node.get("id")),
         )
     )
-    start = page * limit
-    page_nodes = connected_nodes[start : start + limit]
-    page_ids = {str(node.get("id")) for node in page_nodes}
-    page_edges = [
-        edge
-        for edge in all_edges
-        if str(edge.get("source_node_id")) in page_ids
-        and str(edge.get("target_node_id")) in page_ids
-    ]
+    paged = paginate_graph_edge_aware(
+        connected_nodes,
+        all_edges,
+        page=page,
+        limit=limit,
+        sorted_by="degree_desc,natural_key,id",
+        preserve_order=True,
+    )
+    provenance = dict(full_graph.get("provenance") or {})
+    provenance.setdefault("source", "scenario_graph")
+    provenance["mode"] = "symbol_callgraph"
     return {
-        "nodes": page_nodes,
-        "edges": page_edges,
-        "page": page,
-        "limit": limit,
-        "total_nodes": len(connected_nodes),
+        "nodes": paged["nodes"],
+        "edges": paged["edges"],
+        "page": paged["page"],
+        "limit": paged["limit"],
+        "total_nodes": paged["total_nodes"],
         "projection": full_graph["projection"],
         "entity_level": full_graph["entity_level"],
         "grouping_strategy": full_graph["grouping_strategy"],
         "excluded_kinds": full_graph["excluded_kinds"],
+        "slice_strategy": paged["slice_strategy"],
+        "sorted_by": paged["sorted_by"],
+        "candidate_nodes": paged["candidate_nodes"],
+        "visible_nodes": paged["visible_nodes"],
+        "visible_edges": paged["visible_edges"],
+        "dropped_cross_page_edges": paged["dropped_cross_page_edges"],
+        "warnings": list(dict.fromkeys([*(full_graph.get("warnings") or []), *paged["warnings"]])),
+        "provenance": provenance,
     }
 
 
@@ -3749,6 +3790,8 @@ async def deep_dive_view(
             "entity_level": graph["entity_level"],
             "grouping_strategy": graph["grouping_strategy"],
             "excluded_kinds": graph["excluded_kinds"],
+            "warnings": graph.get("warnings") or [],
+            "provenance": graph.get("provenance"),
             "graph": graph,
         }
 
@@ -3811,6 +3854,18 @@ async def ui_map_view(
             )
         if projection["summary"]["routes"] == 0:
             warnings.append("No UI route nodes found. UI extraction may still be pending.")
+        all_warnings = list(dict.fromkeys([*(graph.get("warnings") or []), *warnings]))
+        graph = {
+            **graph,
+            "warnings": all_warnings,
+            "provenance": {
+                "source": graph_source,
+                "projection": "ui_map",
+                "empty_state_reason": "missing_ui_extraction"
+                if projection["summary"]["routes"] == 0
+                else None,
+            },
+        }
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -3818,7 +3873,7 @@ async def ui_map_view(
             "entity_level": "ui",
             "graph_source": graph_source,
             "summary": projection["summary"],
-            "warnings": warnings,
+            "warnings": all_warnings,
             "graph": graph,
         }
 
@@ -3860,6 +3915,18 @@ async def test_matrix_view(
         warnings: list[str] = []
         if projection["summary"]["test_cases"] == 0:
             warnings.append("No TEST_CASE nodes found. Test extraction may still be pending.")
+        all_warnings = list(dict.fromkeys([*(graph.get("warnings") or []), *warnings]))
+        graph = {
+            **graph,
+            "warnings": all_warnings,
+            "provenance": {
+                "source": "scenario_graph",
+                "projection": "test_matrix",
+                "empty_state_reason": "missing_test_extraction"
+                if projection["summary"]["test_cases"] == 0
+                else None,
+            },
+        }
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -3867,7 +3934,7 @@ async def test_matrix_view(
             "entity_level": "test_case",
             "summary": projection["summary"],
             "matrix": projection["matrix"],
-            "warnings": warnings,
+            "warnings": all_warnings,
             "graph": graph,
         }
 
@@ -3929,6 +3996,18 @@ async def user_flows_view(
             )
         if projection["summary"]["user_flows"] == 0:
             warnings.append("No USER_FLOW nodes found. Flow synthesis may still be pending.")
+        all_warnings = list(dict.fromkeys([*(graph.get("warnings") or []), *warnings]))
+        graph = {
+            **graph,
+            "warnings": all_warnings,
+            "provenance": {
+                "source": graph_source,
+                "projection": "user_flows",
+                "empty_state_reason": "missing_user_flow_extraction"
+                if projection["summary"]["user_flows"] == 0
+                else None,
+            },
+        }
         return {
             "collection_id": str(collection_uuid),
             "scenario": _serialize_scenario(scenario),
@@ -3937,7 +4016,7 @@ async def user_flows_view(
             "graph_source": graph_source,
             "summary": projection["summary"],
             "flows": projection["flows"],
-            "warnings": warnings,
+            "warnings": all_warnings,
             "graph": graph,
         }
 

@@ -143,7 +143,15 @@ describe('OverviewView', () => {
       metrics_status: { status: 'unavailable', reason: 'coverage_ingest_failed', strict_mode: false },
     })
     render(<OverviewView {...defaultProps} city={city} />)
-    expect(screen.getByText(/Coverage ingest failed/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Coverage ingest failed/).length).toBeGreaterThan(0)
+  })
+
+  it('renders a metrics status label when coverage is pending', () => {
+    const city = makeCity({
+      metrics_status: { status: 'unavailable', reason: 'awaiting_ci_coverage', strict_mode: false },
+    })
+    render(<OverviewView {...defaultProps} city={city} />)
+    expect(screen.getByText(/Coverage ingest pending/)).toBeInTheDocument()
   })
 
   it('shows awaiting CI coverage message', () => {

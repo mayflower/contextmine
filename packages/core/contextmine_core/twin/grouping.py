@@ -9,6 +9,100 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+_GENERIC_ARCH_SEGMENTS = {
+    ".github",
+    ".vscode",
+    "__pycache__",
+    "alembic",
+    "assets",
+    "build",
+    "ci",
+    "config",
+    "configs",
+    "coverage",
+    "dist",
+    "doc",
+    "docs",
+    "documentation",
+    "example",
+    "examples",
+    "fixture",
+    "fixtures",
+    "infra",
+    "lib",
+    "libs",
+    "migration",
+    "migrations",
+    "node_modules",
+    "ops",
+    "out",
+    "package",
+    "packages",
+    "public",
+    "sample",
+    "samples",
+    "script",
+    "scripts",
+    "shared",
+    "spec",
+    "specs",
+    "src",
+    "static",
+    "support",
+    "target",
+    "temp",
+    "test",
+    "tests",
+    "tmp",
+    "tool",
+    "tooling",
+    "tools",
+    "vendor",
+}
+
+
+def _is_generic_arch_segment(segment: str) -> bool:
+    normalized = segment.strip().lower()
+    return not normalized or normalized in _GENERIC_ARCH_SEGMENTS
+
+
+def _component_from_path(normalized: str, fallback: str) -> str:
+    component = PurePosixPath(normalized).stem or fallback
+    return fallback if _is_generic_arch_segment(component) else component
+
+
+def _has_path_suffix(segment: str) -> bool:
+    return bool(PurePosixPath(segment).suffix)
+
+
+def _scan_path_pair(parts: list[str]) -> tuple[str, str] | None:
+    for index, segment in enumerate(parts):
+        if _is_generic_arch_segment(segment) or _has_path_suffix(segment):
+            continue
+        if segment == "services" and index + 2 < len(parts):
+            domain = parts[index + 1]
+            container = parts[index + 2]
+            if not _is_generic_arch_segment(domain) and not _has_path_suffix(domain):
+                if not _is_generic_arch_segment(container) and not _has_path_suffix(container):
+                    return domain, container
+                # Preserve a usable group for short service paths like
+                # ``services/billing/a.py`` where the file sits directly under the domain.
+                if _has_path_suffix(container):
+                    return domain, domain
+            continue
+        if segment == "apps" and index + 1 < len(parts):
+            app_name = parts[index + 1]
+            if not _is_generic_arch_segment(app_name) and not _has_path_suffix(app_name):
+                return app_name, app_name
+            continue
+        if index + 1 >= len(parts):
+            break
+        next_segment = parts[index + 1]
+        if _is_generic_arch_segment(next_segment) or _has_path_suffix(next_segment):
+            continue
+        return segment, next_segment
+    return None
+
 
 def _arch_group_from_meta(meta: dict[str, Any]) -> tuple[str, str, str] | None:
     """Try to resolve arch group from explicit architecture metadata."""
@@ -30,15 +124,18 @@ def _arch_group_from_path(path: str) -> tuple[str, str, str] | None:
     if not parts:
         return None
 
-    if parts[0] == "services" and len(parts) >= 3:
-        domain, container = parts[1], parts[2]
-    elif parts[0] == "apps" and len(parts) >= 2:
-        domain, container = parts[1], parts[1]
-    else:
-        domain = parts[0]
-        container = parts[1] if len(parts) > 1 else parts[0]
+    if len(parts) < 3:
+        return None
 
-    component = PurePosixPath(normalized).stem or container
+    pair = _scan_path_pair(parts)
+    if pair is None:
+        return None
+    domain, container = pair
+
+    if _is_generic_arch_segment(domain) or _is_generic_arch_segment(container):
+        return None
+
+    component = _component_from_path(normalized, container)
     return domain, container, component
 
 

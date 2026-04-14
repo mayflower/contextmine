@@ -124,7 +124,10 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: Readonly<
 
       {warnings.length > 0 ? (
         <div className="cockpit2-alert inline">
-          <p>{warnings.join(' ')}</p>
+          <p><strong>Degraded or truncated diagram output.</strong></p>
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
         </div>
       ) : null}
 
@@ -167,7 +170,11 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: Readonly<
               <span className="badge asis">Baseline</span>
             </header>
             {asIsWarnings.length > 0 ? (
-              <p className="muted">{asIsWarnings.join(' ')}</p>
+              <div className="cockpit2-alert inline">
+                {asIsWarnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
             ) : null}
             {showSource || !cockpitFlags.c4RenderedDiff ? (
               <pre>{transformed.asIs}</pre>
@@ -187,7 +194,11 @@ export default function C4DiffView({ mermaid, state, error, onRetry }: Readonly<
               <span className="badge tobe">Target</span>
             </header>
             {toBeWarnings.length > 0 ? (
-              <p className="muted">{toBeWarnings.join(' ')}</p>
+              <div className="cockpit2-alert inline">
+                {toBeWarnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
             ) : null}
             {showSource || !cockpitFlags.c4RenderedDiff ? (
               <pre>{transformed.toBe}</pre>

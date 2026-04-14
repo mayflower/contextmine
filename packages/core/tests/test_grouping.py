@@ -58,6 +58,14 @@ class TestDeriveArchGroup:
         assert container == "api"
         assert component == "handler"
 
+    def test_path_services_domain_file_fallback(self) -> None:
+        result = derive_arch_group("services/billing/handler.py")
+        assert result is not None
+        domain, container, component = result
+        assert domain == "billing"
+        assert container == "billing"
+        assert component == "handler"
+
     # --- path heuristic: apps/<name>/... ---
 
     def test_path_apps_prefix(self) -> None:
@@ -72,20 +80,34 @@ class TestDeriveArchGroup:
 
     def test_path_generic_two_parts(self) -> None:
         result = derive_arch_group("packages/core/service.py")
-        assert result is not None
-        domain, container, component = result
-        assert domain == "packages"
-        assert container == "core"
-        assert component == "service"
+        assert result is None
 
     def test_path_generic_single_part(self) -> None:
-        result = derive_arch_group("README.md")
+        assert derive_arch_group("README.md") is None
+
+    def test_path_skips_generic_prefixes(self) -> None:
+        result = derive_arch_group("src/billing/api/handler.py")
         assert result is not None
         domain, container, component = result
-        assert domain == "README.md"
-        assert container == "README.md"
-        # stem of a single part
-        assert component == "README"
+        assert domain == "billing"
+        assert container == "api"
+        assert component == "handler"
+
+    def test_path_skips_packages_prefix(self) -> None:
+        result = derive_arch_group("packages/core/contextmine_core/models.py")
+        assert result is not None
+        domain, container, component = result
+        assert domain == "core"
+        assert container == "contextmine_core"
+        assert component == "models"
+
+    def test_path_non_generic_three_parts(self) -> None:
+        result = derive_arch_group("billing/api/handler.py")
+        assert result is not None
+        domain, container, component = result
+        assert domain == "billing"
+        assert container == "api"
+        assert component == "handler"
 
     # --- None / empty paths ---
 
@@ -112,12 +134,7 @@ class TestDeriveArchGroup:
     # --- services with only two parts ---
 
     def test_services_only_two_parts(self) -> None:
-        """services/x -> generic fallback (len < 3)."""
-        result = derive_arch_group("services/billing")
-        assert result is not None
-        domain, container, _component = result
-        assert domain == "services"
-        assert container == "billing"
+        assert derive_arch_group("services/billing") is None
 
 
 # ---------------------------------------------------------------------------

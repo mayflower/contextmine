@@ -112,6 +112,14 @@ export interface TwinGraphResponse {
   entity_level?: string
   grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
   excluded_kinds?: string[]
+  slice_strategy?: string
+  sorted_by?: string
+  candidate_nodes?: number
+  visible_nodes?: number
+  visible_edges?: number
+  dropped_cross_page_edges?: number
+  warnings?: string[]
+  provenance?: Record<string, unknown>
 }
 
 export interface GraphNeighborhoodResponse {
@@ -130,6 +138,8 @@ export interface GraphViewPayload {
   entity_level?: string
   grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
   excluded_kinds?: string[]
+  warnings?: string[]
+  provenance?: Record<string, unknown>
   graph: TwinGraphResponse
 }
 

@@ -133,6 +133,11 @@ describe('TestMatrixView rendering', () => {
     expect(screen.getByText(/Behavioral extraction may still be pending/)).toBeInTheDocument()
   })
 
+  it('renders backend warnings when present', () => {
+    render(<TestMatrixView {...makeProps({ payload: { ...populatedPayload, warnings: ['No TEST_CASE nodes found. Test extraction may still be pending.'] } })} />)
+    expect(screen.getByText(/No TEST_CASE nodes found/)).toBeInTheDocument()
+  })
+
   it('renders loading skeleton when loading with no data', () => {
     render(<TestMatrixView {...makeProps({ state: 'loading', payload: null })} />)
     expect(screen.queryByText('Test matrix')).not.toBeInTheDocument()

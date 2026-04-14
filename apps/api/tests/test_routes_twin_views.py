@@ -385,6 +385,8 @@ class TestTopologyView:
             "entity_level": "domain",
             "grouping_strategy": "domain",
             "excluded_kinds": [],
+            "warnings": ["Heuristic grouping in use"],
+            "provenance": {"source": "scenario_graph"},
         }
         # DB calls: _ensure_member, _resolve_view_scenario (is_as_is query),
         # get_or_create fallback
@@ -415,6 +417,7 @@ class TestTopologyView:
         assert "graph" in body
         assert "scenario" in body
         assert body["projection"] == "architecture"
+        assert body["warnings"] == ["Heuristic grouping in use"]
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +438,8 @@ class TestDeepDiveView:
             "entity_level": "file",
             "grouping_strategy": "file",
             "excluded_kinds": [],
+            "warnings": ["Cross-page edges hidden"],
+            "provenance": {"source": "scenario_graph"},
         }
         db = _make_db(collection=_fake_collection())
         with (
@@ -459,6 +464,7 @@ class TestDeepDiveView:
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
         assert "graph" in body
+        assert body["warnings"] == ["Cross-page edges hidden"]
 
     async def test_symbol_callgraph_mode(self) -> None:
         fake_scenario = _fake_scenario()
@@ -497,6 +503,54 @@ class TestDeepDiveView:
         assert resp.status_code == 200
         body = resp.json()
         assert body["projection"] == "code_symbol"
+
+    async def test_symbol_callgraph_mode_preserves_frontier_order_across_pages(self) -> None:
+        fake_scenario = _fake_scenario()
+        fake_full_graph = {
+            "nodes": [
+                {"id": "a", "natural_key": "sym:a"},
+                {"id": "b", "natural_key": "sym:b"},
+                {"id": "c", "natural_key": "sym:c"},
+                {"id": "d", "natural_key": "sym:d"},
+                {"id": "e", "natural_key": "sym:e"},
+            ],
+            "edges": [
+                {"source_node_id": "a", "target_node_id": "b"},
+                {"source_node_id": "a", "target_node_id": "c"},
+                {"source_node_id": "b", "target_node_id": "d"},
+                {"source_node_id": "c", "target_node_id": "e"},
+            ],
+            "projection": "code_symbol",
+            "entity_level": "symbol",
+            "grouping_strategy": "symbol",
+            "excluded_kinds": [],
+            "warnings": [],
+            "provenance": {"source": "scenario_graph"},
+        }
+        db = _make_db(collection=_fake_collection())
+        with (
+            patch("app.routes.twin._ensure_member", new_callable=AsyncMock),
+            patch(
+                "app.routes.twin._resolve_view_scenario",
+                new_callable=AsyncMock,
+                return_value=fake_scenario,
+            ),
+            patch(
+                "app.routes.twin.get_full_scenario_graph",
+                new_callable=AsyncMock,
+                return_value=fake_full_graph,
+            ),
+        ):
+            resp = await _get(
+                f"/api/twin/collections/{_COLLECTION_ID}/views/deep-dive",
+                db,
+                mode="symbol_callgraph",
+                page=1,
+                limit=2,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [node["id"] for node in body["graph"]["nodes"]] == ["c", "d"]
 
     async def test_contains_hierarchy_mode(self) -> None:
         fake_scenario = _fake_scenario()

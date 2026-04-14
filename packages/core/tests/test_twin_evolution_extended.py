@@ -212,6 +212,8 @@ class TestDeriveArchGroupExtended:
         group = derive_arch_group("packages/core/contextmine_core/models.py")
         assert group is not None
         assert isinstance(group, EntityGroup)
+        assert group.domain == "core"
+        assert group.container == "contextmine_core"
 
     def test_deep_nested_path(self) -> None:
         group = derive_arch_group("services/billing/api/v2/endpoints/invoice.py")

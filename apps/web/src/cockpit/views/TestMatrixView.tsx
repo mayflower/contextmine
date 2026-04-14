@@ -10,6 +10,7 @@ interface TestMatrixViewProps {
 
 export default function TestMatrixView({ state, error, payload, onRetry }: Readonly<TestMatrixViewProps>) {
   const rows = payload?.matrix || []
+  const warnings = payload?.warnings || []
 
   return (
     <ViewShell
@@ -29,6 +30,14 @@ export default function TestMatrixView({ state, error, payload, onRetry }: Reado
           Cases: {payload?.summary.test_cases ?? 0} • Suites: {payload?.summary.test_suites ?? 0}
         </p>
       </div>
+
+      {warnings.length > 0 ? (
+        <div className="cockpit2-alert inline">
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      ) : null}
 
       {rows.length === 0 ? (
         <section className="cockpit2-empty">

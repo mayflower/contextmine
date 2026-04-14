@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -56,6 +57,7 @@ from sqlalchemy.orm import aliased
 logger = logging.getLogger(__name__)
 
 _FILE_PREFIX = "file:"
+_EDGE_AWARE_SLICE_STRATEGY = "edge_aware_seed_window"
 
 
 def _compute_crap_score(
@@ -924,26 +926,163 @@ async def get_scenario_graph(
         exclude_kinds=exclude_kinds,
         include_edge_kinds=include_edge_kinds,
     )
-    all_nodes = sorted(graph["nodes"], key=lambda n: str(n.get("natural_key") or n.get("id")))
-    page_nodes = all_nodes[page * limit : (page + 1) * limit]
-    page_ids = {str(n["id"]) for n in page_nodes}
-    page_edges = [
-        edge
-        for edge in graph["edges"]
-        if str(edge.get("source_node_id")) in page_ids
-        and str(edge.get("target_node_id")) in page_ids
-    ]
+    paged = paginate_graph_edge_aware(
+        graph["nodes"],
+        graph["edges"],
+        page=page,
+        limit=limit,
+        sorted_by="natural_key,id",
+    )
 
     return {
-        "nodes": page_nodes,
-        "edges": page_edges,
-        "page": page,
-        "limit": limit,
+        "nodes": paged["nodes"],
+        "edges": paged["edges"],
+        "page": paged["page"],
+        "limit": paged["limit"],
         "total_nodes": int(graph["total_nodes"]),
         "projection": graph["projection"],
         "entity_level": graph["entity_level"],
         "grouping_strategy": graph["grouping_strategy"],
         "excluded_kinds": graph["excluded_kinds"],
+        "slice_strategy": paged["slice_strategy"],
+        "sorted_by": paged["sorted_by"],
+        "candidate_nodes": paged["candidate_nodes"],
+        "visible_nodes": paged["visible_nodes"],
+        "visible_edges": paged["visible_edges"],
+        "dropped_cross_page_edges": paged["dropped_cross_page_edges"],
+        "warnings": list(dict.fromkeys([*(graph.get("warnings") or []), *paged["warnings"]])),
+        "provenance": graph.get("provenance"),
+    }
+
+
+def _sorted_graph_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        nodes, key=lambda node: (str(node.get("natural_key") or ""), str(node.get("id") or ""))
+    )
+
+
+def _edge_aware_node_order(
+    ordered_nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> list[str]:
+    node_ids = [str(node.get("id")) for node in ordered_nodes if node.get("id") is not None]
+    if not node_ids:
+        return []
+
+    order_by_node_id = {node_id: index for index, node_id in enumerate(node_ids)}
+    adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    for edge in edges:
+        source_id = str(edge.get("source_node_id") or "")
+        target_id = str(edge.get("target_node_id") or "")
+        if source_id not in adjacency or target_id not in adjacency or source_id == target_id:
+            continue
+        adjacency[source_id].add(target_id)
+        adjacency[target_id].add(source_id)
+
+    remaining = set(node_ids)
+    ordered: list[str] = []
+    queue: deque[str] = deque()
+    queued: set[str] = set()
+
+    while remaining:
+        if not queue:
+            next_anchor = next((node_id for node_id in node_ids if node_id in remaining), None)
+            if next_anchor is None:
+                break
+            queue.append(next_anchor)
+            queued.add(next_anchor)
+
+        current_id = queue.popleft()
+        if current_id not in remaining:
+            continue
+        ordered.append(current_id)
+        remaining.remove(current_id)
+
+        ordered_neighbors = sorted(
+            adjacency.get(current_id) or (),
+            key=lambda node_id: order_by_node_id.get(node_id, len(node_ids)),
+        )
+        for neighbor_id in ordered_neighbors:
+            if neighbor_id in remaining and neighbor_id not in queued:
+                queue.append(neighbor_id)
+                queued.add(neighbor_id)
+
+    return ordered
+
+
+def _edge_aware_page_windows(
+    ordered_nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[list[str]]:
+    normalized_limit = max(limit, 1)
+    node_ids = _edge_aware_node_order(ordered_nodes, edges)
+    if not node_ids:
+        return []
+
+    return [
+        node_ids[index : index + normalized_limit]
+        for index in range(0, len(node_ids), normalized_limit)
+    ]
+
+
+def paginate_graph_edge_aware(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    page: int,
+    limit: int,
+    sorted_by: str,
+    preserve_order: bool = False,
+) -> dict[str, Any]:
+    normalized_page = max(page, 0)
+    normalized_limit = max(limit, 1)
+    ordered_nodes = list(nodes) if preserve_order else _sorted_graph_nodes(nodes)
+    node_by_id = {str(node.get("id")): node for node in ordered_nodes if node.get("id") is not None}
+    windows = _edge_aware_page_windows(ordered_nodes, edges, limit=normalized_limit)
+    page_ids = windows[normalized_page] if normalized_page < len(windows) else []
+    visible_node_ids = set(page_ids)
+    page_nodes = [node_by_id[node_id] for node_id in page_ids if node_id in node_by_id]
+    page_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source_node_id")) in visible_node_ids
+        and str(edge.get("target_node_id")) in visible_node_ids
+    ]
+    dropped_cross_page_edges = sum(
+        1
+        for edge in edges
+        if (str(edge.get("source_node_id")) in visible_node_ids)
+        ^ (str(edge.get("target_node_id")) in visible_node_ids)
+    )
+
+    warnings: list[str] = []
+    total_pages = len(windows)
+    if total_pages > 1 and page_nodes:
+        warnings.append(
+            f"Showing graph slice {normalized_page + 1} of {total_pages} using edge-aware seed paging."
+        )
+    if dropped_cross_page_edges > 0:
+        warnings.append(
+            f"{dropped_cross_page_edges} cross-page edges are hidden outside this graph slice."
+        )
+    if normalized_page >= total_pages and ordered_nodes:
+        warnings.append("Requested graph page is out of range for the current slice strategy.")
+
+    return {
+        "nodes": page_nodes,
+        "edges": page_edges,
+        "page": normalized_page,
+        "limit": normalized_limit,
+        "total_nodes": len(ordered_nodes),
+        "slice_strategy": _EDGE_AWARE_SLICE_STRATEGY,
+        "sorted_by": sorted_by,
+        "candidate_nodes": len(ordered_nodes),
+        "visible_nodes": len(page_nodes),
+        "visible_edges": len(page_edges),
+        "dropped_cross_page_edges": dropped_cross_page_edges,
+        "warnings": warnings,
     }
 
 
@@ -1073,6 +1212,11 @@ def _apply_graph_projection(
         "entity_level": effective_entity_level,
         "grouping_strategy": grouping_strategy,
         "excluded_kinds": effective_excluded_kinds,
+        "warnings": [],
+        "provenance": {
+            "source": "scenario_graph",
+            "projection": projection.value,
+        },
     }
 
 
@@ -1102,6 +1246,21 @@ def _project_architecture(
         include_kinds=include_kinds_norm,
         exclude_kinds=effective_excluded,
     )
+    explicit_assignment_count = sum(
+        int((node.get("meta") or {}).get("explicit_member_count") or 0) for node in projected_nodes
+    )
+    heuristic_assignment_count = sum(
+        int((node.get("meta") or {}).get("heuristic_member_count") or 0) for node in projected_nodes
+    )
+    warnings: list[str] = []
+    if grouping_strategy == "heuristic":
+        warnings.append(
+            "Architecture grouping is heuristic because explicit architecture metadata was not found."
+        )
+    elif grouping_strategy == "mixed":
+        warnings.append(
+            "Architecture grouping mixes explicit metadata with conservative path heuristics."
+        )
     return {
         "nodes": projected_nodes,
         "edges": projected_edges,
@@ -1110,6 +1269,14 @@ def _project_architecture(
         "entity_level": effective_entity_level,
         "grouping_strategy": grouping_strategy,
         "excluded_kinds": sorted(effective_excluded),
+        "warnings": warnings,
+        "provenance": {
+            "source": "scenario_graph",
+            "projection": GraphProjection.ARCHITECTURE.value,
+            "explicit_assignment_count": explicit_assignment_count,
+            "heuristic_assignment_count": heuristic_assignment_count,
+            "grouping_strategy": grouping_strategy,
+        },
     }
 
 
