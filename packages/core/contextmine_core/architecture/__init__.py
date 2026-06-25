@@ -54,6 +54,9 @@ def __getattr__(name: str) -> Any:
     if name not in _EXPORTS:
         raise AttributeError(name)
     module_name, attr_name = _EXPORTS[name]
+    # module_name is always a hardcoded value from _EXPORTS (lazy re-export table),
+    # never untrusted input.
+    # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
     module = import_module(module_name, __name__)
     value = getattr(module, attr_name)
     globals()[name] = value

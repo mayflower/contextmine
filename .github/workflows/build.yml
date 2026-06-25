@@ -92,19 +92,24 @@ jobs:
             exit 0
           fi
 
+          # Use the runner's built-in GITHUB_* env vars rather than github-context
+          # interpolation in the run block (avoids shell injection via context data).
           response=$(curl --silent --show-error --fail-with-body \
             -X POST "${CONTEXTMINE_URL}/api/sources/${CONTEXTMINE_SOURCE_ID}/metrics/coverage-ingest" \
             -H "X-ContextMine-Ingest-Token: ${CONTEXTMINE_INGEST_TOKEN}" \
-            -F "commit_sha=${{ github.sha }}" \
-            -F "branch=${{ github.ref_name }}" \
-            -F "workflow_run_id=${{ github.run_id }}" \
+            -F "commit_sha=${GITHUB_SHA}" \
+            -F "branch=${GITHUB_REF_NAME}" \
+            -F "workflow_run_id=${GITHUB_RUN_ID}" \
             -F "provider=github_actions" \
             -F "reports=@coverage.xml")
           echo "ContextMine ingest response: ${response}"
         continue-on-error: true
 
-      # SonarQube scan
+      # SonarQube scan. Advisory: a Sonar server outage (e.g. HTTP 500 from the
+      # analysis API) should not fail the build. The quality gate below is also
+      # intentionally not enforced.
       - uses: SonarSource/sonarqube-scan-action@v6
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}

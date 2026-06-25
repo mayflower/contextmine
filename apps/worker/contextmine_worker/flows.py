@@ -2388,6 +2388,9 @@ async def get_github_token_for_source(_source_id: str, collection_id: str) -> st
         token_rows = result.scalars().all()
         token_record = token_rows[0] if token_rows else None
         if len(token_rows) > 1:
+            # Logs the token COUNT and user id only, never a token value. The rule
+            # fires on the word "token" in the message string.
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.warning(
                 "Found %d GitHub OAuth tokens for user %s; using most recent token.",
                 len(token_rows),
