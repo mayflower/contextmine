@@ -322,8 +322,8 @@ def get_llm_provider(
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-        # Note: ChatAnthropic's typed field is `model_name` while ChatOpenAI's is `model`
-        # (each aliases the other at runtime); they are kept asymmetric to satisfy ty.
+        # ChatAnthropic and ChatOpenAI accept the model id under different kwarg names
+        # in their type stubs (model_name vs model); keep them asymmetric so ty passes.
         chat_model = ChatAnthropic(
             model_name=selected_model,
             api_key=resolved_key,

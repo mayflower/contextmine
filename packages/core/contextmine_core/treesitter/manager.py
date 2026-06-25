@@ -21,6 +21,23 @@ from contextmine_core.treesitter.languages import TreeSitterLanguage, detect_lan
 logger = logging.getLogger(__name__)
 
 
+def build_parser(language: str) -> Any:
+    """Construct a tree-sitter ``Parser`` for a grammar by name.
+
+    Built from ``get_language()`` rather than tree-sitter-language-pack's
+    ``get_parser()``: the pack's 1.x ``get_parser()`` ships an incompatible parser
+    binding, so ``Parser(get_language(...))`` is used to keep the stable tree_sitter API.
+
+    Raises:
+        ImportError: If tree-sitter / tree-sitter-language-pack is not installed.
+        DownloadError: If the pack has no grammar for ``language``.
+    """
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    return Parser(get_language(language))
+
+
 @dataclass
 class CachedTree:
     """A cached parsed tree."""
@@ -111,21 +128,8 @@ class TreeSitterManager:
             return self._parsers[language]
 
     def _create_parser(self, language: TreeSitterLanguage) -> Any:
-        """Create a parser for the specified language.
-
-        Args:
-            language: The programming language
-
-        Returns:
-            Configured Parser instance
-        """
-        from tree_sitter import Parser
-        from tree_sitter_language_pack import get_language
-
-        # Build a standard tree_sitter.Parser from the grammar. tree-sitter-language-pack
-        # 1.x ships its own get_parser() binding with an incompatible API, so we construct
-        # the parser ourselves from get_language() to keep the stable tree_sitter API.
-        return Parser(get_language(language.value))
+        """Create a parser for the specified language."""
+        return build_parser(language.value)
 
     def parse(
         self,

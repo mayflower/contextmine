@@ -10,16 +10,13 @@ logger = logging.getLogger(__name__)
 
 def parse_with_language(language: str, content: str) -> Any | None:
     """Parse content with the requested tree-sitter grammar."""
-    try:
-        from tree_sitter import Parser
-        from tree_sitter_language_pack import get_language
-    except ImportError:
-        return None
+    from contextmine_core.treesitter.manager import build_parser
 
     try:
-        # Construct a standard tree_sitter.Parser; the pack's get_parser() 1.x binding
-        # has an incompatible API, so we build from get_language() instead.
-        parser = Parser(get_language(language))
+        parser = build_parser(language)
+    except ImportError:
+        # tree-sitter is an optional dependency; skip silently when unavailable.
+        return None
     except Exception:
         # get_language raises (e.g. DownloadError) for an unknown/unavailable grammar.
         # Log it so a grammar regression after a dependency bump is visible rather than
