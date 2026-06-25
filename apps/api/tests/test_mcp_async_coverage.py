@@ -19,10 +19,10 @@ import pytest
 pytestmark = pytest.mark.anyio
 
 _resolve_arc42_repo_checkout = mcp_mod._resolve_arc42_repo_checkout
-_research_validation = mcp_mod.research_validation.fn
-_research_architecture = mcp_mod.research_architecture.fn
-_code_references = mcp_mod.code_references.fn
-_code_expand = mcp_mod.code_expand.fn
+_research_validation = mcp_mod.research_validation
+_research_architecture = mcp_mod.research_architecture
+_code_references = mcp_mod.code_references
+_code_expand = mcp_mod.code_expand
 
 
 def _mock_db_session(mock_db):
@@ -103,14 +103,14 @@ class TestResolveCollectionForToolUserPath:
 # list_documents: owner/member access (lines 390-404)
 # ---------------------------------------------------------------------------
 
-_list_documents = mcp_mod.list_documents.fn
+_list_documents = mcp_mod.list_documents
 
 
 # ---------------------------------------------------------------------------
 # list_collections with user_id (line 322)
 # ---------------------------------------------------------------------------
 
-_list_collections = mcp_mod.list_collections.fn
+_list_collections = mcp_mod.list_collections
 
 
 class TestListCollectionsUser:
@@ -877,7 +877,7 @@ class TestCodeExpand:
 # research_data_model
 # ---------------------------------------------------------------------------
 
-_research_data_model = mcp_mod.research_data_model.fn
+_research_data_model = mcp_mod.research_data_model
 
 
 class TestResearchDataModel:

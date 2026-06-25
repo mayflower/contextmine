@@ -30,27 +30,27 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-# Tool function references (unwrap FunctionTool decorator)
-_list_collections = mcp_mod.list_collections.fn
-_get_context_markdown = mcp_mod.get_context_markdown.fn
-_research_validation = mcp_mod.research_validation.fn
-_research_architecture = mcp_mod.research_architecture.fn
-_get_arc42 = mcp_mod.mcp_get_arc42.fn
-_arc42_drift = mcp_mod.mcp_arc42_drift_report.fn
-_list_ports_adapters = mcp_mod.mcp_list_ports_adapters.fn
-_get_codebase_summary = mcp_mod.mcp_get_codebase_summary.fn
-_list_methods = mcp_mod.mcp_list_methods.fn
-_list_calls = mcp_mod.mcp_list_calls.fn
-_get_cfg = mcp_mod.mcp_get_cfg.fn
-_get_variable_flow = mcp_mod.mcp_get_variable_flow.fn
-_find_taint_sources = mcp_mod.mcp_find_taint_sources.fn
-_find_taint_sinks = mcp_mod.mcp_find_taint_sinks.fn
-_find_taint_flows = mcp_mod.mcp_find_taint_flows.fn
-_store_findings = mcp_mod.mcp_store_findings.fn
-_export_sarif = mcp_mod.mcp_export_sarif.fn
-_export_twin_view = mcp_mod.mcp_export_twin_view.fn
-_validation_dashboard = mcp_mod.mcp_get_validation_dashboard.fn
-_code_expand = mcp_mod.code_expand.fn
+# Tool function references (FastMCP 3 exposes them directly)
+_list_collections = mcp_mod.list_collections
+_get_context_markdown = mcp_mod.get_context_markdown
+_research_validation = mcp_mod.research_validation
+_research_architecture = mcp_mod.research_architecture
+_get_arc42 = mcp_mod.mcp_get_arc42
+_arc42_drift = mcp_mod.mcp_arc42_drift_report
+_list_ports_adapters = mcp_mod.mcp_list_ports_adapters
+_get_codebase_summary = mcp_mod.mcp_get_codebase_summary
+_list_methods = mcp_mod.mcp_list_methods
+_list_calls = mcp_mod.mcp_list_calls
+_get_cfg = mcp_mod.mcp_get_cfg
+_get_variable_flow = mcp_mod.mcp_get_variable_flow
+_find_taint_sources = mcp_mod.mcp_find_taint_sources
+_find_taint_sinks = mcp_mod.mcp_find_taint_sinks
+_find_taint_flows = mcp_mod.mcp_find_taint_flows
+_store_findings = mcp_mod.mcp_store_findings
+_export_sarif = mcp_mod.mcp_export_sarif
+_export_twin_view = mcp_mod.mcp_export_twin_view
+_validation_dashboard = mcp_mod.mcp_get_validation_dashboard
+_code_expand = mcp_mod.code_expand
 _resolve_collection_for_tool = mcp_mod._resolve_collection_for_tool
 _resolve_collection_access = mcp_mod._resolve_collection_access
 _parse_csv_list = mcp_mod._parse_csv_list

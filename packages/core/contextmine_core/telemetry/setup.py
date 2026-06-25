@@ -137,10 +137,10 @@ async def shutdown_telemetry() -> None:
     def _sync_shutdown() -> None:
         tracer_provider = trace.get_tracer_provider()
         if hasattr(tracer_provider, "shutdown"):
-            tracer_provider.shutdown()
+            tracer_provider.shutdown()  # ty: ignore[call-non-callable]
         meter_provider = metrics.get_meter_provider()
         if hasattr(meter_provider, "shutdown"):
-            meter_provider.shutdown()
+            meter_provider.shutdown()  # ty: ignore[call-non-callable]
 
     await asyncio.to_thread(_sync_shutdown)
 

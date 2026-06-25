@@ -18,10 +18,10 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-# Tool function references (unwrap FunctionTool decorator)
-_research_validation = mcp_mod.research_validation.fn
-_research_architecture = mcp_mod.research_architecture.fn
-_graph_rag = mcp_mod.mcp_graph_rag.fn
+# Tool function references (FastMCP 3 exposes them directly)
+_research_validation = mcp_mod.research_validation
+_research_architecture = mcp_mod.research_architecture
+_graph_rag = mcp_mod.mcp_graph_rag
 
 
 def _mock_db_session(mock_db):

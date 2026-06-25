@@ -322,10 +322,9 @@ def get_llm_provider(
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-        # LangChain type stubs may not match runtime API; timeout accepts these params
         chat_model = ChatAnthropic(
             model_name=selected_model,
-            api_key=resolved_key,  # ty: ignore[unknown-argument]
+            api_key=resolved_key,
             timeout=timeout,
             max_retries=max_retries,
         )
@@ -343,11 +342,10 @@ def get_llm_provider(
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
-        # LangChain type stubs may not match runtime API; timeout/api_key use different names
         chat_model = ChatOpenAI(
-            model_name=selected_model,
-            api_key=resolved_key,  # ty: ignore[unknown-argument]
-            request_timeout=timeout,
+            model=selected_model,
+            api_key=resolved_key,
+            timeout=timeout,
             max_retries=max_retries,
         )
         return LangChainProvider(

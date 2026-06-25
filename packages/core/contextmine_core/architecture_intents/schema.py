@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class IntentAction(str, Enum):
+class IntentAction(StrEnum):
     """Supported intent actions for v1."""
 
     EXTRACT_DOMAIN = "EXTRACT_DOMAIN"
@@ -44,7 +44,7 @@ class ArchitectureIntentV1(BaseModel):
     requested_by: UUID | None = None
 
 
-class IntentRisk(str, Enum):
+class IntentRisk(StrEnum):
     """Execution risk class used by gate logic."""
 
     LOW = "low"

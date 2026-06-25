@@ -150,8 +150,14 @@ class TestGeminiEmbedder:
         with pytest.raises(ValueError, match="Unknown Gemini model"):
             GeminiEmbedder(model_name="unknown-model", api_key="test-key")
 
-    def test_init_without_api_key_raises_error(self) -> None:
+    def test_init_without_api_key_raises_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that missing API key raises ValueError."""
+        import contextmine_core.settings as settings_module
+
+        # Clear any cached settings and ensure no API key is set
+        monkeypatch.setattr(settings_module, "_settings", None)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
         with pytest.raises(ValueError, match="API key required"):
             GeminiEmbedder(model_name="text-embedding-004", api_key=None)
 

@@ -50,10 +50,14 @@ export async function initFaro(): Promise<Faro | null> {
         version: config.version,
         environment: import.meta.env.MODE,
       },
+      // Faro 2.x moved console level config off getWebInstrumentations; an empty
+      // disabledLevels list captures all console levels (was captureConsoleDisabledLevels: []).
+      consoleInstrumentation: {
+        disabledLevels: [],
+      },
       instrumentations: [
         ...getWebInstrumentations({
           captureConsole: true,
-          captureConsoleDisabledLevels: [],
         }),
         new TracingInstrumentation({
           instrumentationOptions: {

@@ -8,12 +8,15 @@ from typing import Any
 def parse_with_language(language: str, content: str) -> Any | None:
     """Parse content with the requested tree-sitter grammar."""
     try:
-        from tree_sitter_language_pack import get_parser
+        from tree_sitter import Parser
+        from tree_sitter_language_pack import get_language
     except ImportError:
         return None
 
     try:
-        parser = get_parser(language)
+        # Construct a standard tree_sitter.Parser; the pack's get_parser() 1.x binding
+        # has an incompatible API, so we build from get_language() instead.
+        parser = Parser(get_language(language))
     except Exception:
         return None
 

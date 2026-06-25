@@ -119,10 +119,13 @@ class TreeSitterManager:
         Returns:
             Configured Parser instance
         """
-        from tree_sitter_language_pack import get_parser
+        from tree_sitter import Parser
+        from tree_sitter_language_pack import get_language
 
-        # tree-sitter-language-pack uses language names directly
-        return get_parser(language.value)
+        # Build a standard tree_sitter.Parser from the grammar. tree-sitter-language-pack
+        # 1.x ships its own get_parser() binding with an incompatible API, so we construct
+        # the parser ourselves from get_language() to keep the stable tree_sitter API.
+        return Parser(get_language(language.value))
 
     def parse(
         self,

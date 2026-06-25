@@ -1,10 +1,10 @@
 """Language detection and server configuration for LSP."""
 
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 
-class SupportedLanguage(str, Enum):
+class SupportedLanguage(StrEnum):
     """Languages supported by the LSP manager."""
 
     PYTHON = "python"

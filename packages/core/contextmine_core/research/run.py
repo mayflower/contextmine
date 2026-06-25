@@ -5,14 +5,14 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from contextmine_core.research.verification import VerificationResult
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
     """Status of a research run."""
 
     RUNNING = "running"

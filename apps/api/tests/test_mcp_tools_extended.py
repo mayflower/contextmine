@@ -13,38 +13,38 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import app.mcp_server as mcp_mod
 import pytest
 
-# Unwrap FunctionTool -> coroutine
-_list_collections = mcp_mod.list_collections.fn
-_list_documents = mcp_mod.list_documents.fn
-_get_context_markdown = mcp_mod.get_context_markdown.fn
-_code_outline = mcp_mod.code_outline.fn
-_code_find_symbol = mcp_mod.code_find_symbol.fn
-_code_definition = mcp_mod.code_definition.fn
-_code_references = mcp_mod.code_references.fn
-_graph_neighborhood = mcp_mod.mcp_graph_neighborhood.fn
-_trace_path = mcp_mod.mcp_trace_path.fn
-_graph_rag = mcp_mod.mcp_graph_rag.fn
-_research_validation = mcp_mod.research_validation.fn
-_research_data_model = mcp_mod.research_data_model.fn
-_research_architecture = mcp_mod.research_architecture.fn
-_get_arc42 = mcp_mod.mcp_get_arc42.fn
-_arc42_drift = mcp_mod.mcp_arc42_drift_report.fn
-_store_findings = mcp_mod.mcp_store_findings.fn
-_export_twin_view = mcp_mod.mcp_export_twin_view.fn
-_get_twin_graph = mcp_mod.mcp_get_twin_graph.fn
-_get_twin_status = mcp_mod.mcp_get_twin_status.fn
-_refresh_twin = mcp_mod.mcp_refresh_twin.fn
-_create_intent = mcp_mod.mcp_create_architecture_intent.fn
-_approve_intent = mcp_mod.mcp_approve_architecture_intent.fn
-_list_methods = mcp_mod.mcp_list_methods.fn
-_list_calls = mcp_mod.mcp_list_calls.fn
-_get_cfg = mcp_mod.mcp_get_cfg.fn
-_get_variable_flow = mcp_mod.mcp_get_variable_flow.fn
-_get_codebase_summary = mcp_mod.mcp_get_codebase_summary.fn
-_find_taint_sources = mcp_mod.mcp_find_taint_sources.fn
-_find_taint_sinks = mcp_mod.mcp_find_taint_sinks.fn
-_find_taint_flows = mcp_mod.mcp_find_taint_flows.fn
-_export_sarif = mcp_mod.mcp_export_sarif.fn
+# Tool function references (FastMCP 3 exposes them directly)
+_list_collections = mcp_mod.list_collections
+_list_documents = mcp_mod.list_documents
+_get_context_markdown = mcp_mod.get_context_markdown
+_code_outline = mcp_mod.code_outline
+_code_find_symbol = mcp_mod.code_find_symbol
+_code_definition = mcp_mod.code_definition
+_code_references = mcp_mod.code_references
+_graph_neighborhood = mcp_mod.mcp_graph_neighborhood
+_trace_path = mcp_mod.mcp_trace_path
+_graph_rag = mcp_mod.mcp_graph_rag
+_research_validation = mcp_mod.research_validation
+_research_data_model = mcp_mod.research_data_model
+_research_architecture = mcp_mod.research_architecture
+_get_arc42 = mcp_mod.mcp_get_arc42
+_arc42_drift = mcp_mod.mcp_arc42_drift_report
+_store_findings = mcp_mod.mcp_store_findings
+_export_twin_view = mcp_mod.mcp_export_twin_view
+_get_twin_graph = mcp_mod.mcp_get_twin_graph
+_get_twin_status = mcp_mod.mcp_get_twin_status
+_refresh_twin = mcp_mod.mcp_refresh_twin
+_create_intent = mcp_mod.mcp_create_architecture_intent
+_approve_intent = mcp_mod.mcp_approve_architecture_intent
+_list_methods = mcp_mod.mcp_list_methods
+_list_calls = mcp_mod.mcp_list_calls
+_get_cfg = mcp_mod.mcp_get_cfg
+_get_variable_flow = mcp_mod.mcp_get_variable_flow
+_get_codebase_summary = mcp_mod.mcp_get_codebase_summary
+_find_taint_sources = mcp_mod.mcp_find_taint_sources
+_find_taint_sinks = mcp_mod.mcp_find_taint_sinks
+_find_taint_flows = mcp_mod.mcp_find_taint_flows
+_export_sarif = mcp_mod.mcp_export_sarif
 
 
 def _mock_db_session(mock_db):

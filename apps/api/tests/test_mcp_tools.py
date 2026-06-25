@@ -3,8 +3,8 @@
 Tests the async tool functions in mcp_server.py by directly calling them
 with mocked database sessions and external dependencies.
 
-NOTE: Functions decorated with @mcp.tool() are wrapped in FunctionTool objects.
-To call the underlying async function, use the `.fn` attribute (e.g. tool.fn()).
+NOTE: With FastMCP 3, @mcp.tool() returns the original function unchanged and
+registers it on the server, so the decorated name is the async function itself.
 """
 
 import json
@@ -15,44 +15,44 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import app.mcp_server as mcp_mod
 import pytest
 
-# Convenience aliases for tool functions (unwrap FunctionTool -> coroutine)
-_list_collections = mcp_mod.list_collections.fn
-_list_documents = mcp_mod.list_documents.fn
-_get_context_markdown = mcp_mod.get_context_markdown.fn
-_code_outline = mcp_mod.code_outline.fn
-_code_find_symbol = mcp_mod.code_find_symbol.fn
-_code_definition = mcp_mod.code_definition.fn
-_code_references = mcp_mod.code_references.fn
-_code_expand = mcp_mod.code_expand.fn
-_code_deep_research = mcp_mod.code_deep_research.fn
-_graph_neighborhood = mcp_mod.mcp_graph_neighborhood.fn
-_trace_path = mcp_mod.mcp_trace_path.fn
-_graph_rag = mcp_mod.mcp_graph_rag.fn
-_research_validation = mcp_mod.research_validation.fn
-_research_data_model = mcp_mod.research_data_model.fn
-_research_architecture = mcp_mod.research_architecture.fn
-_get_arc42 = mcp_mod.mcp_get_arc42.fn
-_arc42_drift = mcp_mod.mcp_arc42_drift_report.fn
-_store_findings = mcp_mod.mcp_store_findings.fn
-_export_twin_view = mcp_mod.mcp_export_twin_view.fn
-_get_twin_graph = mcp_mod.mcp_get_twin_graph.fn
-_get_twin_status = mcp_mod.mcp_get_twin_status.fn
-_refresh_twin = mcp_mod.mcp_refresh_twin.fn
-_validation_dashboard = mcp_mod.mcp_get_validation_dashboard.fn
-_query_twin_cypher = mcp_mod.mcp_query_twin_cypher.fn
-_create_intent = mcp_mod.mcp_create_architecture_intent.fn
-_approve_intent = mcp_mod.mcp_approve_architecture_intent.fn
-_list_ports_adapters = mcp_mod.mcp_list_ports_adapters.fn
-_list_methods = mcp_mod.mcp_list_methods.fn
-_list_calls = mcp_mod.mcp_list_calls.fn
-_get_cfg = mcp_mod.mcp_get_cfg.fn
-_get_variable_flow = mcp_mod.mcp_get_variable_flow.fn
-_get_codebase_summary = mcp_mod.mcp_get_codebase_summary.fn
-_find_taint_sources = mcp_mod.mcp_find_taint_sources.fn
-_find_taint_sinks = mcp_mod.mcp_find_taint_sinks.fn
-_find_taint_flows = mcp_mod.mcp_find_taint_flows.fn
-_export_sarif = mcp_mod.mcp_export_sarif.fn
-_get_twin_timeline = mcp_mod.mcp_get_twin_timeline.fn
+# Convenience aliases for tool functions (FastMCP 3 exposes them directly)
+_list_collections = mcp_mod.list_collections
+_list_documents = mcp_mod.list_documents
+_get_context_markdown = mcp_mod.get_context_markdown
+_code_outline = mcp_mod.code_outline
+_code_find_symbol = mcp_mod.code_find_symbol
+_code_definition = mcp_mod.code_definition
+_code_references = mcp_mod.code_references
+_code_expand = mcp_mod.code_expand
+_code_deep_research = mcp_mod.code_deep_research
+_graph_neighborhood = mcp_mod.mcp_graph_neighborhood
+_trace_path = mcp_mod.mcp_trace_path
+_graph_rag = mcp_mod.mcp_graph_rag
+_research_validation = mcp_mod.research_validation
+_research_data_model = mcp_mod.research_data_model
+_research_architecture = mcp_mod.research_architecture
+_get_arc42 = mcp_mod.mcp_get_arc42
+_arc42_drift = mcp_mod.mcp_arc42_drift_report
+_store_findings = mcp_mod.mcp_store_findings
+_export_twin_view = mcp_mod.mcp_export_twin_view
+_get_twin_graph = mcp_mod.mcp_get_twin_graph
+_get_twin_status = mcp_mod.mcp_get_twin_status
+_refresh_twin = mcp_mod.mcp_refresh_twin
+_validation_dashboard = mcp_mod.mcp_get_validation_dashboard
+_query_twin_cypher = mcp_mod.mcp_query_twin_cypher
+_create_intent = mcp_mod.mcp_create_architecture_intent
+_approve_intent = mcp_mod.mcp_approve_architecture_intent
+_list_ports_adapters = mcp_mod.mcp_list_ports_adapters
+_list_methods = mcp_mod.mcp_list_methods
+_list_calls = mcp_mod.mcp_list_calls
+_get_cfg = mcp_mod.mcp_get_cfg
+_get_variable_flow = mcp_mod.mcp_get_variable_flow
+_get_codebase_summary = mcp_mod.mcp_get_codebase_summary
+_find_taint_sources = mcp_mod.mcp_find_taint_sources
+_find_taint_sinks = mcp_mod.mcp_find_taint_sinks
+_find_taint_flows = mcp_mod.mcp_find_taint_flows
+_export_sarif = mcp_mod.mcp_export_sarif
+_get_twin_timeline = mcp_mod.mcp_get_twin_timeline
 
 # Direct utility function references (not decorated, callable directly)
 escape_like_pattern = mcp_mod.escape_like_pattern

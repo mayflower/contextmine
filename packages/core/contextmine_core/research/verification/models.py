@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class VerificationStatus(str, Enum):
+class VerificationStatus(StrEnum):
     """Status of answer verification."""
 
     PASSED = "passed"
