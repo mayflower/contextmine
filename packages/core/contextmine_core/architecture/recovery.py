@@ -5,15 +5,16 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+import anyio
 from contextmine_core.twin.grouping import derive_arch_group
 
 from .artifact_inventory import ArtifactInventoryEntry
 from .artifact_parsers import ParsedArtifact, parse_artifact
 from .recovery_decisions import recover_architecture_decisions
-from .recovery_llm import apply_adjudication, build_adjudication_packet
+from .recovery_llm import adjudicate_packet, apply_adjudication, build_adjudication_packet
 from .recovery_model import (
     RecoveredArchitectureEntity,
     RecoveredArchitectureHypothesis,
@@ -22,6 +23,9 @@ from .recovery_model import (
     RecoveredArchitectureRelationship,
 )
 from .schemas import EvidenceRef
+
+if TYPE_CHECKING:
+    from contextmine_core.research.llm.provider import LLMProvider
 
 EXPLICIT_METADATA_SCORE = 0.98
 STRUCTURAL_EDGE_BASE_SCORE = 0.78
@@ -1498,6 +1502,39 @@ def _run_adjudicator(llm_adjudicator: Any, packet: dict[str, Any]) -> Any:
     raise TypeError("llm_adjudicator must be callable or expose adjudicate(packet).")
 
 
+_ADJUDICABLE_STATUSES = {"ambiguous", "unresolved"}
+
+
+def _select_adjudication_candidates(
+    model: RecoveredArchitectureModel,
+    llm_hypothesis_limit: int | None,
+) -> tuple[RecoveredArchitectureModel, list[RecoveredArchitectureHypothesis]]:
+    """Pick ambiguous/unresolved hypotheses to adjudicate, honoring the limit.
+
+    Returns the (possibly warning-annotated) model and the candidate hypotheses.
+    Shared by the sync and async adjudication paths.
+    """
+    candidates = [
+        hypothesis for hypothesis in model.hypotheses if hypothesis.status in _ADJUDICABLE_STATUSES
+    ]
+    if llm_hypothesis_limit is not None:
+        limit = max(0, int(llm_hypothesis_limit))
+        if limit < len(candidates):
+            skipped = len(candidates) - limit
+            model = replace(
+                model,
+                warnings=tuple(
+                    list(model.warnings)
+                    + [
+                        "Skipped LLM adjudication for "
+                        f"{skipped} architecture hypotheses due to llm_hypothesis_limit={limit}."
+                    ]
+                ),
+            )
+            candidates = candidates[:limit]
+    return model, candidates
+
+
 def recover_architecture_model(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -1553,29 +1590,9 @@ def recover_architecture_model(
     if llm_adjudicator is None:
         return model
 
-    adjudication_candidates = [
-        hypothesis
-        for hypothesis in model.hypotheses
-        if hypothesis.status in {"ambiguous", "unresolved"}
-    ]
-    if llm_hypothesis_limit is not None:
-        limit = max(0, int(llm_hypothesis_limit))
-        if limit < len(adjudication_candidates):
-            skipped = len(adjudication_candidates) - limit
-            model = replace(
-                model,
-                warnings=tuple(
-                    list(model.warnings)
-                    + [
-                        "Skipped LLM adjudication for "
-                        f"{skipped} architecture hypotheses due to llm_hypothesis_limit={limit}."
-                    ]
-                ),
-            )
-            adjudication_candidates = adjudication_candidates[:limit]
-
+    model, adjudication_candidates = _select_adjudication_candidates(model, llm_hypothesis_limit)
     for hypothesis in tuple(adjudication_candidates):
-        if hypothesis.status not in {"ambiguous", "unresolved"}:
+        if hypothesis.status not in _ADJUDICABLE_STATUSES:
             continue
         packet = build_adjudication_packet(model=model, hypothesis=hypothesis)
         try:
@@ -1594,5 +1611,63 @@ def recover_architecture_model(
             hypothesis=hypothesis,
             packet=packet,
             adjudication=adjudication,
+        )
+    return model
+
+
+async def adjudicate_architecture_model_async(
+    model: RecoveredArchitectureModel,
+    provider: LLMProvider,
+    *,
+    llm_hypothesis_limit: int | None = None,
+) -> RecoveredArchitectureModel:
+    """Adjudicate ambiguous/unresolved hypotheses with a real (async) LLM provider.
+
+    This is the production path: ``recover_architecture_model`` builds the base model
+    synchronously, then this runs the constrained-adjudication packets through the
+    provider concurrently. Each result is still validated closed-world by
+    ``apply_adjudication`` (selections must be packet-local candidates), so a
+    hallucinated id becomes a rejected-adjudication warning, never a stored fact.
+    """
+    model, candidates = _select_adjudication_candidates(model, llm_hypothesis_limit)
+    candidates = [h for h in candidates if h.status in _ADJUDICABLE_STATUSES]
+    if not candidates:
+        return model
+
+    packets = {
+        hypothesis.subject_ref: build_adjudication_packet(model=model, hypothesis=hypothesis)
+        for hypothesis in candidates
+    }
+    outcomes: dict[str, dict[str, Any] | str] = {}
+
+    async def _run(subject_ref: str, packet: dict[str, Any]) -> None:
+        try:
+            outcomes[subject_ref] = await adjudicate_packet(provider, packet)
+        except Exception as exc:  # noqa: BLE001
+            outcomes[subject_ref] = str(exc)
+
+    async with anyio.create_task_group() as task_group:
+        for hypothesis in candidates:
+            task_group.start_soon(_run, hypothesis.subject_ref, packets[hypothesis.subject_ref])
+
+    for hypothesis in candidates:
+        outcome = outcomes.get(hypothesis.subject_ref)
+        if not isinstance(outcome, dict):
+            model = replace(
+                model,
+                warnings=tuple(
+                    list(model.warnings)
+                    + [
+                        f"Malformed adjudication for {hypothesis.subject_ref}: "
+                        f"{outcome or 'no result'}"
+                    ]
+                ),
+            )
+            continue
+        model = apply_adjudication(
+            model=model,
+            hypothesis=hypothesis,
+            packet=packets[hypothesis.subject_ref],
+            adjudication=outcome,
         )
     return model

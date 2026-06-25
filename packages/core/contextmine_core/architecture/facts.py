@@ -23,7 +23,7 @@ from contextmine_core.twin.service import get_full_scenario_graph, get_scenario_
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .recovery import recover_architecture_model
+from .recovery import adjudicate_architecture_model_async, recover_architecture_model
 from .recovery_docs import load_recovery_docs
 from .schemas import ArchitectureFact, ArchitectureFactsBundle, EvidenceRef, PortAdapterFact
 
@@ -715,9 +715,14 @@ async def build_architecture_facts(
         recovery_nodes,
         recovery_edges,
         docs=recovery_docs,
-        llm_adjudicator=llm_provider if enable_llm_enrich else None,
-        llm_hypothesis_limit=llm_hypothesis_limit if enable_llm_enrich else None,
     )
+    if enable_llm_enrich and llm_provider is not None:
+        # Real (async) LLM adjudication; selections are validated closed-world.
+        recovered_model = await adjudicate_architecture_model_async(
+            recovered_model,
+            llm_provider,
+            llm_hypothesis_limit=llm_hypothesis_limit,
+        )
     _collect_recovered_architecture_facts(bundle, recovered_model)
     _append_recovery_warning_counts(bundle, recovered_model)
 

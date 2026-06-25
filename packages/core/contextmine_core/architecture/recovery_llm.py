@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import PurePosixPath
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+from pydantic import BaseModel, Field
 
 from .recovery_model import (
     RecoveredArchitectureDecision,
@@ -14,6 +16,9 @@ from .recovery_model import (
     RecoveredArchitectureModel,
 )
 from .schemas import EvidenceRef
+
+if TYPE_CHECKING:
+    from contextmine_core.research.llm.provider import LLMProvider
 
 _ALLOWED_OPERATIONS = [
     "select_existing_candidates",
@@ -376,3 +381,80 @@ def apply_adjudication(
         memberships=updated_memberships,
         hypotheses=updated_hypotheses,
     )
+
+
+class AdjudicationOutput(BaseModel):
+    """Structured adjudication output, validated closed-world by validate_adjudication."""
+
+    selected_entity_ids: list[str] = Field(
+        default_factory=list,
+        description="Entity ids the subject belongs to, chosen only from the packet candidates",
+    )
+    rationale: str = Field(description="Why these candidates fit, grounded in the cited evidence")
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        description="Evidence ids cited in support, drawn only from the packet evidence",
+    )
+    merge_entity_ids: list[str] = Field(
+        default_factory=list, description="Optional: candidate ids that should be merged"
+    )
+    split_entity_ids: list[str] = Field(
+        default_factory=list, description="Optional: candidate ids that should be split"
+    )
+    rename_suggestions: dict[str, str] = Field(
+        default_factory=dict, description="Optional: candidate id -> suggested name"
+    )
+
+
+_ADJUDICATION_SYSTEM = (
+    "You are a precise software-architecture adjudicator. Decide which existing "
+    "candidate component a subject belongs to using ONLY the supplied candidates and "
+    "evidence. Never invent ids. If the evidence does not support a unique choice, "
+    "select multiple candidates (ambiguous) or none. Cite the evidence ids you used."
+)
+
+
+def _render_adjudication_prompt(packet: dict[str, Any]) -> str:
+    """Render a packet into a closed-world adjudication prompt."""
+    candidates = (
+        "\n".join(
+            f"- {candidate['entity_id']}: {candidate['kind']} {candidate['name']}"
+            for candidate in packet["candidates"]
+        )
+        or "(none)"
+    )
+    evidence = (
+        "\n".join(
+            f"- {item['evidence_id']} ({item['kind']}:{item['ref']}): {item['snippet']}"
+            for item in packet["evidence"]
+        )
+        or "(none)"
+    )
+    return (
+        f"Subject: {packet['subject_ref']} (current status: {packet['status']})\n\n"
+        f"Candidate components (select only these entity_ids):\n{candidates}\n\n"
+        f"Evidence (cite only these evidence_ids):\n{evidence}\n\n"
+        f"Allowed operations: {', '.join(packet['allowed_operations'])}.\n"
+        "Return selected_entity_ids (a subset of the candidates), evidence_ids (a subset "
+        "of the evidence), and a rationale. If nothing fits, return no selections."
+    )
+
+
+async def adjudicate_packet(
+    provider: LLMProvider,
+    packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Adjudicate one hypothesis packet with an LLM provider.
+
+    Returns a plain dict in the shape ``validate_adjudication`` expects. The provider
+    only ever sees packet-local candidates/evidence, and the result is still validated
+    closed-world by ``apply_adjudication`` before anything is applied.
+    """
+    output = await provider.generate_structured(
+        system=_ADJUDICATION_SYSTEM,
+        messages=[{"role": "user", "content": _render_adjudication_prompt(packet)}],
+        output_schema=AdjudicationOutput,
+        temperature=0.0,
+        max_tokens=1024,
+    )
+    return output.model_dump()
