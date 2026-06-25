@@ -148,13 +148,19 @@ async def generate_community_summaries(
         summary = await _llm_summarize_community(provider, context)
         summary_text = _format_llm_summary(summary)
 
-        # Update community summary and store membership hash
+        # Update community summary/title and store membership hash. The LLM-generated
+        # title is the semantic name; fall back to the existing (keyword-derived) title
+        # only if the model returned an empty one.
         new_meta = dict(community.meta or {})
         new_meta["membership_hash"] = membership_hash
         await session.execute(
             update(KnowledgeCommunity)
             .where(KnowledgeCommunity.id == community.id)
-            .values(summary=summary_text, meta=new_meta)
+            .values(
+                summary=summary_text,
+                title=_resolve_community_title(summary, community.title),
+                meta=new_meta,
+            )
         )
         stats.communities_summarized += 1
 
@@ -387,6 +393,16 @@ def _build_summary_prompt(context: CommunityContext) -> str:
             lines.append(f"```\n{snippet[:200]}\n```")
 
     return "\n".join(lines)
+
+
+def _resolve_community_title(summary: CommunitySummaryOutput, existing_title: str | None) -> str:
+    """Prefer the LLM-generated semantic title; fall back to the existing title.
+
+    The previous behaviour embedded the LLM title only in the summary body and left
+    the structured ``KnowledgeCommunity.title`` column as the keyword-derived name.
+    """
+    llm_title = (summary.title or "").strip()
+    return llm_title or (existing_title or "")
 
 
 def _format_llm_summary(summary: CommunitySummaryOutput) -> str:
