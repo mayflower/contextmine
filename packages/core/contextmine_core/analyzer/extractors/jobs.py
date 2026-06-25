@@ -1,12 +1,16 @@
-"""Job/workflow definition extractor using LLM.
+"""Job/workflow definition extractor.
 
-This module extracts job and workflow definitions from ANY orchestration framework:
-- CI/CD: GitHub Actions, GitLab CI, Jenkins, CircleCI, Azure Pipelines, Bitbucket Pipelines
-- Workflow engines: Airflow, Prefect, Dagster, Luigi, Temporal, AWS Step Functions
-- Schedulers: Kubernetes CronJobs, systemd timers, cron files
-- Any other job/task/workflow definition format
+Two paths:
+- Deterministic structural parsers for the common formats (GitHub Actions workflows,
+  Kubernetes CronJobs, Prefect flows). This is the path the System Surface Catalog
+  wires in today (``extract_jobs`` / ``surface._is_job_file``).
+- An optional LLM-based path (``extract_jobs_from_files`` + ``triage_files_for_jobs``)
+  for broader orchestration formats when a provider is configured.
 
-Uses LLM for semantic analysis - no framework-specific hardcoding.
+Parsing structured manifests deterministically is the right tool; the LLM is only for
+formats without a deterministic parser. (An earlier docstring claimed "ANY framework,
+no hardcoding" - that described the optional LLM path, not the wired deterministic
+one, which recognises GitHub Actions / k8s CronJob / Prefect.)
 """
 
 from __future__ import annotations

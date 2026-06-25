@@ -1,12 +1,13 @@
-"""Database schema extractor using LLM.
+"""Database schema extractor.
 
-This module extracts database schema definitions from ANY format:
-- Migrations: Alembic, Django, Rails, Knex, Flyway, Liquibase, Prisma Migrate
-- ORMs: SQLAlchemy models, Django models, TypeORM entities, Sequelize, ActiveRecord
-- Schema files: Prisma schema, GraphQL SDL, SQL DDL
-- Any other database schema definition format
+Deterministic structural parsers handle the common formats directly - SQL DDL, Prisma
+schema, and SQLAlchemy / Django ORM models - via explicit type maps and pattern
+matching. An LLM fallback covers other formats when a deterministic parser is not
+available and a provider is configured.
 
-Uses LLM for semantic analysis - no framework-specific hardcoding.
+Parsing these structured formats deterministically is the right tool: the module is
+intentionally framework-aware. (An earlier docstring claimed "no framework-specific
+hardcoding", which contradicted the ~600 lines of format-specific parsers below.)
 """
 
 from __future__ import annotations

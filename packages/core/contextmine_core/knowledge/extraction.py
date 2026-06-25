@@ -1270,6 +1270,24 @@ def _extract_cross_document_relationships(
     return relationships
 
 
+def _relationship_edge_meta(rel: SemanticRelationship) -> dict[str, Any]:
+    """Build edge meta that distinguishes how a relationship was derived.
+
+    CO_OCCURS edges are a statistical co-occurrence heuristic ("appeared in the same
+    document"), not an LLM-extracted semantic relationship. They share the
+    SEMANTIC_RELATIONSHIP edge kind, so the meta carries an explicit ``method`` and
+    ``inferred`` flag for consumers to tell a guess from a real extraction.
+    """
+    is_co_occurrence = rel.relationship_type.upper() == "CO_OCCURS"
+    return {
+        "relationship_type": rel.relationship_type,
+        "description": rel.description,
+        "strength": rel.strength,
+        "method": "co_occurrence" if is_co_occurrence else "llm_extracted",
+        "inferred": is_co_occurrence,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Persistence functions
 # -----------------------------------------------------------------------------
@@ -1469,11 +1487,7 @@ async def persist_semantic_entities(
             source_node_id=source_id,
             target_node_id=target_id,
             kind=KnowledgeEdgeKind.SEMANTIC_RELATIONSHIP,
-            meta={
-                "relationship_type": rel.relationship_type,
-                "description": rel.description,
-                "strength": rel.strength,
-            },
+            meta=_relationship_edge_meta(rel),
         )
         session.add(edge)
         stats["relationships_created"] += 1
