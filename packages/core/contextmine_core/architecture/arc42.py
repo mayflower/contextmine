@@ -244,41 +244,39 @@ def _render_constraints(bundle: ArchitectureFactsBundle) -> str:
 
 
 def _render_strategy(bundle: ArchitectureFactsBundle) -> str:
+    """Report observed structure. Pattern names are hedged heuristics, never asserted.
+
+    A container count does not establish "microservices"; we report the structural
+    observation and, at most, a clearly-labelled heuristic hint.
+    """
     containers = _facts_by_type(bundle, "container")
     lines: list[str] = []
 
-    # Detect patterns from facts
-    has_ports_adapters = bool(bundle.ports_adapters)
-    has_microservices = len(containers) > 3
-    has_monolith = len(containers) <= 1 and containers
-
-    if has_monolith:
-        lines.append("Architecture pattern: **monolithic** (single container detected).")
-    elif has_microservices:
+    if containers:
         lines.append(
-            f"Architecture pattern: **distributed** ({len(containers)} containers suggest "
-            "microservices or modular decomposition)."
+            f"Observed structure: {len(containers)} container(s) identified from the graph."
         )
-    if has_ports_adapters:
+        if len(containers) == 1:
+            lines.append(
+                "Consistent with a single-deployable (monolithic) layout "
+                "(heuristic from container count, not a recorded decision)."
+            )
+        elif len(containers) > 3:
+            lines.append(
+                "Consistent with a distributed/modular layout "
+                "(heuristic from container count, not a recorded decision)."
+            )
+
+    if bundle.ports_adapters:
         inbound = [f for f in bundle.ports_adapters if f.direction == "inbound"]
         outbound = [f for f in bundle.ports_adapters if f.direction == "outbound"]
         lines.append(
-            f"Integration strategy: ports/adapters with {len(inbound)} inbound "
-            f"and {len(outbound)} outbound interfaces."
-        )
-
-    # Source breakdown
-    det_count = sum(1 for f in bundle.facts if f.source == "deterministic")
-    total = len(bundle.facts)
-    if total > 0:
-        pct = int(det_count / total * 100)
-        lines.append(
-            f"Evidence strategy: {pct}% of facts from deterministic extraction, "
-            f"remainder from hybrid/LLM analysis."
+            f"Integration surface: {len(inbound)} inbound and {len(outbound)} outbound "
+            "interface(s) detected (ports/adapters style)."
         )
 
     if not lines:
-        lines.append("Insufficient data to infer architecture strategy.")
+        lines.append("Insufficient evidence to describe the solution strategy.")
     return "\n".join(lines)
 
 
@@ -307,10 +305,13 @@ def _render_crosscutting(bundle: ArchitectureFactsBundle) -> str:
     if components:
         lines.append(f"**Component structure**: {len(components)} components identified.")
 
-    # Security patterns from tags
+    # Tag-based count only; this is not a security assessment.
     security_facts = _facts_with_tag(bundle, "security") + _facts_with_tag(bundle, "auth")
     if security_facts:
-        lines.append(f"**Security**: {len(security_facts)} security-related facts detected.")
+        lines.append(
+            f"**Security/auth**: {len(security_facts)} fact(s) tagged security or auth "
+            "(tag-based count, not a security assessment)."
+        )
 
     if not lines:
         lines.append("No crosscutting concepts detected from extraction pipeline.")
@@ -318,9 +319,14 @@ def _render_crosscutting(bundle: ArchitectureFactsBundle) -> str:
 
 
 def _render_decisions(bundle: ArchitectureFactsBundle) -> str:
+    """Render only architecture decisions actually recovered from evidence (e.g. ADRs).
+
+    Decisions are NOT invented from the presence of an API surface or a container
+    count: a REST endpoint existing is an observation, not a recorded decision. When
+    no decision evidence exists we say so rather than fabricating "REST API strategy".
+    """
     lines: list[str] = []
 
-    # Infer decisions from extracted facts
     decision_facts = _facts_by_type(bundle, "architecture_decision")
     if decision_facts:
         for fact in decision_facts[:10]:
@@ -328,26 +334,14 @@ def _render_decisions(bundle: ArchitectureFactsBundle) -> str:
                 f"- **{fact.title}**: {fact.description} (confidence: {fact.confidence:.0%})"
             )
     else:
-        # Infer from patterns
-        containers = _facts_by_type(bundle, "container")
-        if len(containers) > 1:
-            names = ", ".join(str(f.attributes.get("container") or f.title) for f in containers[:5])
-            lines.append(f"- Multi-container deployment: {names}")
-
-        has_graphql = bool(_facts_by_type(bundle, "graphql_operation"))
-        has_rest = bool(_facts_by_type(bundle, "api_endpoint"))
-        if has_graphql and has_rest:
-            lines.append("- Dual API strategy: both REST and GraphQL interfaces exposed")
-        elif has_graphql:
-            lines.append("- GraphQL-first API strategy")
-        elif has_rest:
-            lines.append("- REST API strategy")
+        lines.append(
+            "No architecture decisions were recovered: none were found in the indexed "
+            "sources (no ADRs or decision records). API surfaces and container counts are "
+            "reported under Context and Building Blocks as observations, not decisions."
+        )
 
     lines.append("")
     lines.append("*Governance: advisory mode — drift deltas are reported but do not block CI.*")
-
-    if len(lines) <= 2:
-        lines.insert(0, "No explicit architecture decisions recorded; inferred patterns above.")
     return "\n".join(lines)
 
 
