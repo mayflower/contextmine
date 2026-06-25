@@ -1,4 +1,4 @@
-"""MCP server implementation with FastMCP 2 and Streamable HTTP transport."""
+"""MCP server implementation with FastMCP 3 and Streamable HTTP transport."""
 
 import json
 import uuid

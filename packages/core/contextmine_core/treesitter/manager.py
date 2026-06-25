@@ -97,7 +97,7 @@ class TreeSitterManager:
 
         Raises:
             ImportError: If tree-sitter-language-pack is not installed
-            ValueError: If language is not supported
+            DownloadError: If tree-sitter-language-pack has no grammar for the language
         """
         if not self.is_available():
             raise ImportError(

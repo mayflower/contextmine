@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def parse_with_language(language: str, content: str) -> Any | None:
@@ -18,6 +21,12 @@ def parse_with_language(language: str, content: str) -> Any | None:
         # has an incompatible API, so we build from get_language() instead.
         parser = Parser(get_language(language))
     except Exception:
+        # get_language raises (e.g. DownloadError) for an unknown/unavailable grammar.
+        # Log it so a grammar regression after a dependency bump is visible rather than
+        # silently extracting nothing.
+        logger.warning(
+            "Failed to load tree-sitter grammar for language %r", language, exc_info=True
+        )
         return None
 
     try:
