@@ -60,6 +60,17 @@ SANITIZER_PATTERNS: dict[str, list[str]] = {
     "php": ["htmlspecialchars", "htmlentities", "intval", "filter_var"],
 }
 
+# The graphrag taint engine matches the above keyword lists against symbol *names*.
+# It is a fast heuristic, not real data-flow analysis: it cannot see argument flow, so
+# it produces false positives (e.g. json_response matched as a source) and false
+# negatives (a real sink whose name does not contain a keyword). Results are tagged so
+# consumers do not mistake them for sound taint findings; use the lsp/joern engines for
+# data-flow-aware analysis.
+TAINT_APPROXIMATION_REASON = (
+    "name-substring keyword match over symbol names; not data-flow analysis. "
+    "Use the lsp or joern engine for sound taint tracking."
+)
+
 SEVERITY_ORDER: dict[str, int] = {
     "critical": 4,
     "high": 3,
@@ -1594,6 +1605,8 @@ async def find_taint_sources(
             "scenario_id": str(scenario.id),
             "language": lang,
             "patterns": patterns,
+            "approximation": True,
+            "approximation_reason": TAINT_APPROXIMATION_REASON,
             "items": [
                 {
                     "id": str(row.id),
@@ -1640,6 +1653,8 @@ async def find_taint_sinks(
             "scenario_id": str(scenario.id),
             "language": lang,
             "patterns": patterns,
+            "approximation": True,
+            "approximation_reason": TAINT_APPROXIMATION_REASON,
             "items": [
                 {
                     "id": str(row.id),
@@ -1791,6 +1806,8 @@ async def find_taint_flows(
                 "collection_id": str(collection_id),
                 "scenario_id": str(scenario.id),
                 "language": lang,
+                "approximation": True,
+                "approximation_reason": TAINT_APPROXIMATION_REASON,
                 "flows": [],
                 "total": 0,
             }
@@ -1837,6 +1854,8 @@ async def find_taint_flows(
             "collection_id": str(collection_id),
             "scenario_id": str(scenario.id),
             "language": lang,
+            "approximation": True,
+            "approximation_reason": TAINT_APPROXIMATION_REASON,
             "flows": flows,
             "total": len(flows),
         }
