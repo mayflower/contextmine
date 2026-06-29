@@ -125,10 +125,12 @@ def validate_github_url(url: str) -> dict:
             detail="Invalid GitHub URL. Must be https://github.com/owner/repo",
         )
 
+    # branch=None means "use the repository's actual default branch"; the worker
+    # resolves it at clone time rather than assuming a hard-coded branch name.
     return {
         "owner": match.group(1),
         "repo": match.group(2),
-        "branch": "main",
+        "branch": None,
     }
 
 

@@ -2630,7 +2630,7 @@ async def _gh_phase_auth_and_clone(ctx: _SyncGitHubCtx) -> None:
     config = ctx.source.config or {}
     ctx.owner = config.get("owner", "")
     ctx.repo = config.get("repo", "")
-    ctx.branch = config.get("branch", "main")
+    ctx.branch = config.get("branch") or None
 
     if not ctx.owner or not ctx.repo:
         raise ValueError("GitHub source missing owner/repo in config")

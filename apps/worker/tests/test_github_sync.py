@@ -82,6 +82,65 @@ def test_clone_or_pull_repo_resets_divergence_and_cleans_worktree(tmp_path: Path
     assert (local_path / "README.md").read_text(encoding="utf-8") == "upstream update\n"
 
 
+def _create_remote_origin_with_default(tmp_path: Path, default_branch: str) -> tuple[Repo, Path]:
+    """Create a bare origin whose default branch (HEAD) is ``default_branch``."""
+    remote_worktree = tmp_path / "remote_worktree"
+    remote_worktree.mkdir(parents=True, exist_ok=True)
+    remote_repo = Repo.init(remote_worktree)
+    with remote_repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
+
+    readme = remote_worktree / "README.md"
+    readme.write_text("initial\n", encoding="utf-8")
+    remote_repo.index.add(["README.md"])
+    remote_repo.index.commit("initial commit")
+    remote_repo.git.branch("-M", default_branch)
+
+    bare_origin = tmp_path / "origin.git"
+    Repo.init(bare_origin, bare=True)
+    remote_repo.create_remote("origin", str(bare_origin))
+    remote_repo.git.push("--set-upstream", "origin", default_branch)
+    # Point the bare repo's HEAD at the default branch so clones check it out.
+    Repo(bare_origin).git.symbolic_ref("HEAD", f"refs/heads/{default_branch}")
+    return remote_repo, bare_origin
+
+
+def test_clone_uses_remote_default_branch_when_branch_unset(tmp_path: Path) -> None:
+    _, origin_path = _create_remote_origin_with_default(tmp_path, "next")
+    local_path = tmp_path / "local_clone"
+
+    repo = clone_or_pull_repo(local_path, str(origin_path), branch=None)
+
+    assert repo.active_branch.name == "next"
+
+
+def test_clone_falls_back_to_default_when_configured_branch_missing(tmp_path: Path) -> None:
+    _, origin_path = _create_remote_origin_with_default(tmp_path, "next")
+    local_path = tmp_path / "local_clone"
+
+    # "main" does not exist on this remote; sync should fall back to the default.
+    repo = clone_or_pull_repo(local_path, str(origin_path), branch="main")
+
+    assert repo.active_branch.name == "next"
+
+
+def test_pull_uses_default_branch_when_branch_unset(tmp_path: Path) -> None:
+    remote_repo, origin_path = _create_remote_origin_with_default(tmp_path, "next")
+    local_path = tmp_path / "local_clone"
+    clone_or_pull_repo(local_path, str(origin_path), branch=None)
+
+    remote_readme = Path(remote_repo.working_tree_dir or "") / "README.md"
+    remote_readme.write_text("upstream update\n", encoding="utf-8")
+    remote_repo.index.add(["README.md"])
+    upstream_commit = remote_repo.index.commit("upstream update")
+    remote_repo.git.push("origin", "next")
+
+    refreshed_repo = clone_or_pull_repo(local_path, str(origin_path), branch=None)
+
+    assert refreshed_repo.head.commit.hexsha == upstream_commit.hexsha
+
+
 def test_compute_git_evolution_snapshots_falls_back_when_since_filter_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

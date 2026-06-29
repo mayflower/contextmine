@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     curl \
     gnupg \
+    unzip \
     openjdk-21-jre-headless \
     php-cli \
     && rm -rf /var/lib/apt/lists/* \
@@ -64,7 +65,8 @@ RUN ARCH=$(dpkg --print-architecture) && \
       --install-dir /usr/local/bin && \
     curl -sS https://getcomposer.org/installer \
       | php -- --install-dir=/usr/local/bin --filename=composer && \
-    composer global config repositories.scip-php vcs ${SCIP_PHP_REPO_URL} && \
+    composer global config -g github-protocols https && \
+    composer global config repositories.scip-php "{\"type\":\"vcs\",\"url\":\"${SCIP_PHP_REPO_URL}\",\"no-api\":true}" && \
     composer global require davidrjenni/scip-php:${SCIP_PHP_VERSION} && \
     composer install \
       --working-dir=${COMPOSER_HOME}/vendor/davidrjenni/scip-php \

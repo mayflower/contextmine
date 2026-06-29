@@ -237,10 +237,28 @@ def https_url_to_ssh(https_url: str) -> str:
     return https_url  # Fallback
 
 
+def resolve_remote_default_branch(repo: Repo, env: dict[str, str]) -> str | None:
+    """Return the remote's default branch name (without the ``origin/`` prefix).
+
+    Reads ``origin/HEAD``; if it isn't set locally (common after a shallow or
+    GitPython clone), asks the remote to populate it first.
+    """
+    try:
+        with repo.git.custom_environment(**env):
+            try:
+                head = repo.git.rev_parse("--abbrev-ref", "origin/HEAD")
+            except GitCommandError:
+                repo.git.remote("set-head", "origin", "--auto")
+                head = repo.git.rev_parse("--abbrev-ref", "origin/HEAD")
+    except GitCommandError:
+        return None
+    return head.split("/", 1)[1] if "/" in head else head
+
+
 def clone_or_pull_repo(
     repo_path: Path,
     clone_url: str,
-    branch: str,
+    branch: str | None = None,
     token: str | None = None,
     ssh_private_key: str | None = None,
 ) -> Repo:
@@ -249,12 +267,14 @@ def clone_or_pull_repo(
     Args:
         repo_path: Local path for the repo
         clone_url: HTTPS URL of the repo
-        branch: Branch to checkout
+        branch: Branch to checkout. When falsy, the repository's actual default
+            branch is used. When a branch is given but missing on the remote, we
+            fall back to the default branch rather than failing the sync.
         token: Optional GitHub token for private repos (used if no SSH key)
         ssh_private_key: Optional SSH private key for private repos (preferred)
 
     Returns:
-        Git Repo object
+        Git Repo object (its checked-out branch reflects what was actually used)
     """
     env = os.environ.copy()
     key_file_path: str | None = None
@@ -299,17 +319,40 @@ def clone_or_pull_repo(
             # those artifacts must not leak into later runs/retries.
             with repo.git.custom_environment(**env):
                 origin.fetch()
-                remote_ref = f"origin/{branch}"
+                # Use the configured branch only if it exists on the remote;
+                # otherwise fall back to the repository's actual default branch.
+                target = branch
+                if not target or f"origin/{target}" not in [r.name for r in origin.refs]:
+                    default_branch = resolve_remote_default_branch(repo, env)
+                    if branch and default_branch and default_branch != branch:
+                        logger.warning(
+                            "Branch %r not found on remote; using default branch %r",
+                            branch,
+                            default_branch,
+                        )
+                    target = default_branch or target
+                remote_ref = f"origin/{target}"
                 try:
-                    repo.git.checkout(branch)
+                    repo.git.checkout(target)
                 except GitCommandError:
-                    repo.git.checkout("-B", branch, remote_ref)
+                    repo.git.checkout("-B", target, remote_ref)
                 repo.git.reset("--hard", remote_ref)
                 repo.git.clean("-fdx")
         else:
-            # Clone
+            # Clone the repository's default branch, then switch to the configured
+            # branch if one was requested and exists (fall back to default otherwise).
             repo_path.parent.mkdir(parents=True, exist_ok=True)
-            repo = Repo.clone_from(clone_url, repo_path, branch=branch, env=env)
+            repo = Repo.clone_from(clone_url, repo_path, env=env)
+            if branch:
+                try:
+                    with repo.git.custom_environment(**env):
+                        repo.git.checkout(branch)
+                except GitCommandError:
+                    logger.warning(
+                        "Branch %r not found on remote; using default branch %r",
+                        branch,
+                        repo.active_branch.name,
+                    )
 
         return repo
 

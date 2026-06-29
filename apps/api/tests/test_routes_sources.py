@@ -39,7 +39,8 @@ class TestValidateGithubUrl:
         result = validate_github_url("https://github.com/owner/repo")
         assert result["owner"] == "owner"
         assert result["repo"] == "repo"
-        assert result["branch"] == "main"
+        # branch is left unset so the worker resolves the repo's actual default branch
+        assert result["branch"] is None
 
     def test_valid_url_with_git_suffix(self) -> None:
         from app.routes.sources import validate_github_url
