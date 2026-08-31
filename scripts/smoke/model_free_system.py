@@ -11,10 +11,10 @@ import asyncio
 import json
 import os
 import uuid
+from http.client import HTTPConnection
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from urllib.request import urlopen
 
 from contextmine_core import (
     Chunk,
@@ -59,7 +59,6 @@ def _require_environment(name: str) -> str:
 
 FIXTURE_PATH = Path(_require_environment("CONTEXTMINE_SMOKE_FIXTURE_DIR")).resolve()
 FIXTURE_REVISION = _require_environment("CONTEXTMINE_SMOKE_FIXTURE_REVISION")
-API_HEALTH_URL = _require_environment("CONTEXTMINE_SMOKE_API_HEALTH_URL")
 
 
 def _assert_fixture() -> None:
@@ -74,8 +73,15 @@ def _assert_fixture() -> None:
 
 
 def _assert_api_health() -> None:
-    with urlopen(API_HEALTH_URL, timeout=10) as response:
-        payload = json.load(response)
+    connection = HTTPConnection("api", 8000, timeout=10)
+    try:
+        connection.request("GET", "/api/health")
+        response = connection.getresponse()
+        if response.status != 200:
+            raise AssertionError(f"API health returned HTTP {response.status}")
+        payload = json.loads(response.read())
+    finally:
+        connection.close()
     if payload != {"status": "ok"}:
         raise AssertionError(f"Unexpected API health response: {payload}")
 

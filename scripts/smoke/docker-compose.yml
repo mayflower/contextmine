@@ -116,7 +116,6 @@ services:
       TWIN_GRAPH_BUILD_TIMEOUT_SECONDS: "1800"
       CONTEXTMINE_SMOKE_FIXTURE_DIR: /fixtures/repository
       CONTEXTMINE_SMOKE_FIXTURE_REVISION: ${CONTEXTMINE_SMOKE_FIXTURE_REVISION:?fixture revision is required}
-      CONTEXTMINE_SMOKE_API_HEALTH_URL: http://api:8000/api/health
     volumes:
       - ./:/smoke:ro
       - ${CONTEXTMINE_SMOKE_FIXTURE_DIR:?fixture directory is required}:/fixtures/repository:ro
