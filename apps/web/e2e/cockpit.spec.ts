@@ -1000,7 +1000,7 @@ test('graphrag empty state is guided when no knowledge graph exists', async ({ p
 
   await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=graphrag')
   await expect(page.getByText('No knowledge graph available yet')).toBeVisible()
-  await expect(page.getByText('Run sync/build pipeline')).toBeVisible()
+  await expect(page.getByText(/Run the sync\/build pipeline to populate GraphRAG nodes and evidence\./)).toBeVisible()
 })
 
 test('c4 diff shows AS-IS and TO-BE compare panes', async ({ page }) => {
@@ -1035,12 +1035,18 @@ test('architecture view renders arc42, ports/adapters, erm/erd, and drift sectio
   await expect(page.getByRole('tab', { name: 'Architecture' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByText('Architecture intelligence')).toBeVisible()
   await expect(page.getByText('arc42 sections')).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Ports/Adapters' }).click()
   await expect(page.getByText('Ports & adapters map')).toBeVisible()
-  await expect(page.getByText('ERM data model')).toBeVisible()
-  await expect(page.getByText('Advisory drift report')).toBeVisible()
   await expect(page.getByText('CreateInvoice', { exact: true })).toBeVisible()
+
+  await page.getByRole('tab', { name: 'ERD' }).click()
+  await expect(page.getByText('ERM data model')).toBeVisible()
   await expect(page.locator('.cockpit2-erd-pane')).toBeVisible()
   await expect(page.getByText('users')).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Drift' }).click()
+  await expect(page.getByText('Advisory drift report')).toBeVisible()
   await expect(page.getByText('new_port')).toBeVisible()
 })
 
