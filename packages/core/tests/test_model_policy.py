@@ -26,7 +26,7 @@ def model_calls_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_model_calls_are_enabled_by_default() -> None:
-    assert Settings(_env_file=None).model_calls_enabled is True
+    assert Settings.model_fields["model_calls_enabled"].default is True
 
 
 def test_model_factories_fail_closed(model_calls_disabled: None) -> None:
