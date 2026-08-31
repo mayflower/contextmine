@@ -18,7 +18,16 @@ from contextmine_worker.github_sync import (
     SyncStats,
     _path_is_within,
     is_eligible_file,
+    read_file_content,
 )
+
+
+class TestReadFileContent:
+    def test_escapes_nul_bytes_for_postgres_text(self, tmp_path: Path) -> None:
+        source = tmp_path / "source.ts"
+        source.write_bytes(b"const separator = '\x00';\n")
+
+        assert read_file_content(tmp_path, "source.ts") == "const separator = '\\0';\n"
 
 
 class TestIsEligibleFile:
