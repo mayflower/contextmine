@@ -296,6 +296,8 @@ Copy `.env.example` to `.env` and configure these variables:
 | `GEMINI_API_KEY` | Alternative to OpenAI for embeddings |
 | `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
 | `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
+| `CODECHARTA_PORT` | Local CodeCharta host port used by Docker Compose and the Vite dev proxy (default: `9001`) |
+| `VITE_CODECHARTA_URL` | Optional full CodeCharta dev-proxy target overriding `CODECHARTA_PORT` |
 | `POSTGRES_PLATFORM` | Docker Compose postgres image platform override (default: `linux/amd64`) |
 | `METRICS_STRICT_MODE` | Enforce strict real metrics gate for GitHub syncs (default: `true`) |
 | `METRICS_LANGUAGES` | Metrics language scope (default: `python,typescript,javascript,java,php`) |

@@ -29,7 +29,6 @@ from contextmine_worker.flows import (
     _is_ignored_repo_path,
     _joern_parse_timeout_seconds,
     _knowledge_graph_build_timeout_seconds,
-    _log_background_task_failure,
     _run_blocking_with_timeout,
     _sync_blocking_step_timeout_seconds,
     _sync_document_step_timeout_seconds,
@@ -453,33 +452,6 @@ class TestRunBlockingWithTimeout:
 
 
 # ---------------------------------------------------------------------------
-# _log_background_task_failure
-# ---------------------------------------------------------------------------
-
-
-class TestLogBackgroundTaskFailure:
-    def test_cancelled_task_logs_warning(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = True
-        # Should not raise
-        _log_background_task_failure(mock_task)
-        mock_task.cancelled.assert_called_once()
-
-    def test_task_with_exception_logs_warning(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = False
-        mock_task.exception.return_value = RuntimeError("boom")
-        _log_background_task_failure(mock_task)
-        mock_task.exception.assert_called_once()
-
-    def test_successful_task_no_error(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = False
-        mock_task.exception.return_value = None
-        _log_background_task_failure(mock_task)
-
-
-# ---------------------------------------------------------------------------
 # _build_scip_index_config
 # ---------------------------------------------------------------------------
 
@@ -612,6 +584,44 @@ class TestMaterializeSurfaceCatalog:
         )
 
         assert result["surface_files_scanned"] == 0
+
+
+class TestRecoverUnchunkedDocuments:
+    async def test_does_not_queue_new_document_twice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        queued_id = uuid.uuid4()
+        recovered_id = uuid.uuid4()
+        source_id = uuid.uuid4()
+        ctx = SimpleNamespace(
+            source=SimpleNamespace(id=source_id),
+            docs_to_chunk=[(str(queued_id), "queued", "src/queued.py")],
+            unchunked_docs_count=0,
+        )
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (
+                queued_id,
+                "queued",
+                "git://github.com/owner/repo/src/queued.py?ref=main",
+            ),
+            (
+                recovered_id,
+                "recovered",
+                "git://github.com/owner/repo/src/recovered.py?ref=main",
+            ),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=mock_result)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(flows, "get_session", lambda: session_cm)
+
+        await flows._gh_recover_unchunked_documents(ctx)
+
+        assert [item[0] for item in ctx.docs_to_chunk].count(str(queued_id)) == 1
+        assert [item[0] for item in ctx.docs_to_chunk].count(str(recovered_id)) == 1
+        assert ctx.unchunked_docs_count == 2
 
 
 # ---------------------------------------------------------------------------
