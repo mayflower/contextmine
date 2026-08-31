@@ -364,12 +364,7 @@ export default function GraphRagView({
   const [focusedProcessId, setFocusedProcessId] = useState('')
   const [focusedProcessNodeIds, setFocusedProcessNodeIds] = useState<Set<string>>(new Set())
   const [modalOpen, setModalOpen] = useState(false)
-
-  useEffect(() => {
-    if (!pathFrom && selectedNodeId) {
-      setPathFrom(selectedNodeId)
-    }
-  }, [pathFrom, selectedNodeId])
+  const resolvedPathFrom = pathFrom || selectedNodeId
 
   const communityColorById = useMemo(() => {
     const map = new Map<string, string>()
@@ -758,7 +753,7 @@ export default function GraphRagView({
         <div className="cockpit2-graph-toolbar">
           <label>
             From{' '}
-            <input value={pathFrom} onChange={(event) => setPathFrom(event.target.value)} />
+            <input value={resolvedPathFrom} onChange={(event) => setPathFrom(event.target.value)} />
           </label>
           <label>
             To{' '}
@@ -774,7 +769,7 @@ export default function GraphRagView({
               onChange={(event) => setPathHops(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
             />
           </label>
-          <button type="button" onClick={() => onTracePath(pathFrom, pathTo, pathHops)}>
+          <button type="button" onClick={() => onTracePath(resolvedPathFrom, pathTo, pathHops)}>
             {pathState === 'loading' ? 'Tracing…' : 'Trace'}
           </button>
         </div>

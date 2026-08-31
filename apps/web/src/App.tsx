@@ -635,7 +635,7 @@ function App() {
   }, [])
 
   // Fetch dashboard stats
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const response = await fetch('/api/stats')
       if (response.ok) {
@@ -647,14 +647,17 @@ function App() {
     } catch {
       // Silently fail - stats are optional
     }
-  }
+  }, [])
 
   // Load stats when switching to Dashboard page
   useEffect(() => {
     if (currentPage === 'dashboard' && user) {
-      fetchStats()
+      const timeoutId = globalThis.setTimeout(() => {
+        void fetchStats()
+      }, 0)
+      return () => globalThis.clearTimeout(timeoutId)
     }
-  }, [currentPage, user])
+  }, [currentPage, fetchStats, user])
 
   const handleLogin = () => {
     globalThis.location.href = '/api/auth/login'
@@ -666,7 +669,7 @@ function App() {
   }
 
   // Fetch collections
-  const fetchCollections = async () => {
+  const fetchCollections = useCallback(async () => {
     setCollectionsLoading(true)
     try {
       const response = await fetch('/api/collections', { credentials: 'include' })
@@ -679,14 +682,17 @@ function App() {
     } finally {
       setCollectionsLoading(false)
     }
-  }
+  }, [])
 
   // Load collections when switching to Collections page
   useEffect(() => {
     if (currentPage === 'collections' && user) {
-      fetchCollections()
+      const timeoutId = globalThis.setTimeout(() => {
+        void fetchCollections()
+      }, 0)
+      return () => globalThis.clearTimeout(timeoutId)
     }
-  }, [currentPage, user])
+  }, [currentPage, fetchCollections, user])
 
   // Fetch collection members, invites, and sources
   const fetchCollectionDetails = async (collection: Collection) => {
@@ -1154,7 +1160,7 @@ function App() {
   }
 
   // Fetch runs for a source
-  const fetchRuns = async (source: Source) => {
+  const fetchRuns = useCallback(async (source: Source) => {
     setRunsLoading(true)
     try {
       const response = await fetch(`/api/runs?source_id=${source.id}`, { credentials: 'include' })
@@ -1167,10 +1173,10 @@ function App() {
     } finally {
       setRunsLoading(false)
     }
-  }
+  }, [])
 
   // Fetch Prefect flow runs
-  const fetchPrefectFlowRuns = async () => {
+  const fetchPrefectFlowRuns = useCallback(async () => {
     try {
       const response = await fetch('/api/prefect/flow-runs', { credentials: 'include' })
       if (response.ok) {
@@ -1180,34 +1186,38 @@ function App() {
     } catch {
       // Error fetching Prefect flow runs
     }
-  }
+  }, [])
 
   // Load collections and Prefect runs when switching to runs page
   useEffect(() => {
     if (currentPage === 'runs' && user) {
-      fetchCollections()
-      fetchPrefectFlowRuns()
-      // Refresh selected source's runs if one is selected
-      if (selectedRunSource) {
-        fetchRuns(selectedRunSource)
-      }
-      // Poll for active runs and selected source runs every 5 seconds
-      const interval = setInterval(() => {
-        fetchPrefectFlowRuns()
+      const refreshRunsPage = () => {
+        void fetchCollections()
+        void fetchPrefectFlowRuns()
         if (selectedRunSource) {
-          fetchRuns(selectedRunSource)
+          void fetchRuns(selectedRunSource)
         }
-      }, 5000)
-      return () => clearInterval(interval)
+      }
+
+      const timeoutId = globalThis.setTimeout(refreshRunsPage, 0)
+      // Poll for active runs and selected source runs every 5 seconds
+      const interval = globalThis.setInterval(refreshRunsPage, 5000)
+      return () => {
+        globalThis.clearTimeout(timeoutId)
+        globalThis.clearInterval(interval)
+      }
     }
-  }, [currentPage, user, selectedRunSource])
+  }, [currentPage, fetchCollections, fetchPrefectFlowRuns, fetchRuns, selectedRunSource, user])
 
   // Load collections for dashboard (needed for query form)
   useEffect(() => {
     if ((currentPage === 'dashboard' || currentPage === 'cockpit') && user) {
-      fetchCollections()
+      const timeoutId = globalThis.setTimeout(() => {
+        void fetchCollections()
+      }, 0)
+      return () => globalThis.clearTimeout(timeoutId)
     }
-  }, [currentPage, user])
+  }, [currentPage, fetchCollections, user])
 
   // Handle query submission with SSE streaming
   const handleQuery = async (e: React.FormEvent) => {

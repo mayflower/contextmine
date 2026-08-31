@@ -48,14 +48,8 @@ export default function DeepDiveView({
 }: Readonly<DeepDiveViewProps>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<Core | null>(null)
-  const [showLabels, setShowLabels] = useState(true)
-  const [labelsPinned, setLabelsPinned] = useState(false)
-
-  useEffect(() => {
-    if (density > 5000 && !labelsPinned) {
-      setShowLabels(false)
-    }
-  }, [density, labelsPinned])
+  const [showLabelsOverride, setShowLabelsOverride] = useState<boolean | null>(null)
+  const showLabels = showLabelsOverride ?? density <= 5000
 
   useEffect(() => {
     if (!containerRef.current || state === 'loading' || graph.nodes.length === 0) {
@@ -237,8 +231,7 @@ export default function DeepDiveView({
           type="button"
           className="secondary"
           onClick={() => {
-            setLabelsPinned(true)
-            setShowLabels((prev) => !prev)
+            setShowLabelsOverride((prev) => !(prev ?? density <= 5000))
           }}
         >
           {showLabels ? 'Hide labels' : 'Show labels'}

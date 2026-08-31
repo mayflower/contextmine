@@ -193,33 +193,36 @@ export default function TopologyView({
   }
 
   useEffect(() => {
-    if (graph.nodes.length === 0) {
-      setLayoutPositions({})
-      setLayoutStatus('idle')
-      return
-    }
-
-    const coarse = runGridLayout(graph.nodes.map((node) => ({ id: node.id })), columns)
-    setLayoutPositions(coarse)
-    setLayoutStatus(preferredEngine === 'grid' ? 'refined' : 'coarse')
-    if (preferredEngine === 'grid') {
-      return
-    }
-
     const cancelRef = { current: false }
-    applyElkLayout({
-      nodes: graph.nodes.map((node) => ({ id: node.id })),
-      edges: graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
-      engine: preferredEngine,
-      columns,
-      cancelled: cancelRef,
-      startedAt: performance.now(),
-      onPositions: setLayoutPositions,
-      onCompleted: onLayoutCompleted,
-      onFinish: () => setLayoutStatus('refined'),
-    })
+    const timeoutId = globalThis.setTimeout(() => {
+      if (graph.nodes.length === 0) {
+        setLayoutPositions({})
+        setLayoutStatus('idle')
+        return
+      }
+
+      const coarse = runGridLayout(graph.nodes.map((node) => ({ id: node.id })), columns)
+      setLayoutPositions(coarse)
+      setLayoutStatus(preferredEngine === 'grid' ? 'refined' : 'coarse')
+      if (preferredEngine === 'grid') {
+        return
+      }
+
+      void applyElkLayout({
+        nodes: graph.nodes.map((node) => ({ id: node.id })),
+        edges: graph.edges.map((edge) => ({ source: edge.source_node_id, target: edge.target_node_id })),
+        engine: preferredEngine,
+        columns,
+        cancelled: cancelRef,
+        startedAt: performance.now(),
+        onPositions: setLayoutPositions,
+        onCompleted: onLayoutCompleted,
+        onFinish: () => setLayoutStatus('refined'),
+      })
+    }, 0)
     return () => {
       cancelRef.current = true
+      globalThis.clearTimeout(timeoutId)
     }
   }, [graph.edges, graph.nodes, columns, preferredEngine, onLayoutCompleted])
 

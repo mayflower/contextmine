@@ -218,9 +218,10 @@ export default function CockpitPage({
     setToast({ id: Date.now(), kind, message })
   }, [])
 
-  useEffect(() => {
-    setOverlayData((prev) => ({ ...prev, mode: overlayMode }))
-  }, [overlayMode])
+  const activeOverlayData = useMemo<OverlayState>(
+    () => ({ ...overlayData, mode: overlayMode }),
+    [overlayData, overlayMode],
+  )
 
   const graphFilters = useMemo(
     () => ({
@@ -371,6 +372,50 @@ export default function CockpitPage({
     onScenarioAutoSelect: setScenarioId,
     onViewError,
   })
+
+  const openCollections = useCallback(() => {
+    if (onOpenCollections) {
+      onOpenCollections()
+      return
+    }
+    globalThis.location.href = '/?page=collections'
+  }, [onOpenCollections])
+
+  const openRuns = useCallback(() => {
+    if (onOpenRuns) {
+      onOpenRuns()
+      return
+    }
+    globalThis.location.href = '/?page=runs'
+  }, [onOpenRuns])
+
+  const trackFilterChange = useCallback(() => {
+    getFaro()?.api.pushEvent('cockpit_filter_changed', {
+      query: graphQuery,
+      include: includeKinds.join(','),
+      exclude: excludeKinds.join(','),
+      edge_kinds: edgeKinds.join(','),
+    })
+  }, [edgeKinds, excludeKinds, graphQuery, includeKinds])
+
+  const handleLoadOverlayFile = useCallback(async (file: File) => {
+    try {
+      const parsed = await parseOverlayFile(file)
+      setOverlayData((prev) => ({
+        ...prev,
+        ...parsed,
+        mode: overlayMode,
+        loadedAt: new Date().toISOString(),
+      }))
+      pushToast('success', `Loaded overlay file: ${file.name}`)
+      getFaro()?.api.pushEvent('cockpit_overlay_enabled', {
+        mode: overlayMode,
+        file: file.name,
+      })
+    } catch (error) {
+      pushToast('error', error instanceof Error ? error.message : 'Could not parse overlay file.')
+    }
+  }, [overlayMode, pushToast])
 
   const selectedScenario = useMemo(
     () => scenarios.find((scenario) => scenario.id === selection.scenarioId) ?? null,
@@ -562,9 +607,9 @@ export default function CockpitPage({
     neighborhood,
     neighborhoodState,
     neighborhoodError,
-    overlay: overlayData,
+    overlay: activeOverlayData,
     onClearSelection: () => setSelectedNodeId(''),
-  }), [resolvedNodeId, graph, neighborhood, neighborhoodState, neighborhoodError, overlayData, setSelectedNodeId])
+  }), [resolvedNodeId, graph, neighborhood, neighborhoodState, neighborhoodError, activeOverlayData, setSelectedNodeId])
 
   useEffect(() => {
     const isGraphView =
@@ -585,8 +630,11 @@ export default function CockpitPage({
       return
     }
 
-    setLayer('code_controlflow')
-    pushToast('info', 'No nodes in this layer. Switched to Code / Controlflow.')
+    const timeoutId = globalThis.setTimeout(() => {
+      setLayer('code_controlflow')
+      pushToast('info', 'No nodes in this layer. Switched to Code / Controlflow.')
+    }, 0)
+    return () => globalThis.clearTimeout(timeoutId)
   }, [activeState, graph.nodes.length, graph.total_nodes, pushToast, selection.layer, selection.view, setLayer])
 
   useEffect(() => {
@@ -652,50 +700,6 @@ export default function CockpitPage({
     pushToast('info', 'Downloaded export artifact.')
   }
 
-  function openCollections() {
-    if (onOpenCollections) {
-      onOpenCollections()
-      return
-    }
-    globalThis.location.href = '/?page=collections'
-  }
-
-  function openRuns() {
-    if (onOpenRuns) {
-      onOpenRuns()
-      return
-    }
-    globalThis.location.href = '/?page=runs'
-  }
-
-  function trackFilterChange() {
-    getFaro()?.api.pushEvent('cockpit_filter_changed', {
-      query: graphQuery,
-      include: includeKinds.join(','),
-      exclude: excludeKinds.join(','),
-      edge_kinds: edgeKinds.join(','),
-    })
-  }
-
-  async function handleLoadOverlayFile(file: File) {
-    try {
-      const parsed = await parseOverlayFile(file)
-      setOverlayData((prev) => ({
-        ...prev,
-        ...parsed,
-        mode: overlayMode,
-        loadedAt: new Date().toISOString(),
-      }))
-      pushToast('success', `Loaded overlay file: ${file.name}`)
-      getFaro()?.api.pushEvent('cockpit_overlay_enabled', {
-        mode: overlayMode,
-        file: file.name,
-      })
-    } catch (error) {
-      pushToast('error', error instanceof Error ? error.message : 'Could not parse overlay file.')
-    }
-  }
-
   const handleSelectNodeId = (nodeId: string) => {
     setSelectedNodeId(nodeId)
     getFaro()?.api.pushEvent('cockpit_node_selected', {
@@ -730,7 +734,7 @@ export default function CockpitPage({
               density={topologyDensity}
               layoutEngine={topologyLayoutEngine}
               elkEnabled={cockpitFlags.elkLayout}
-              overlay={overlayData}
+              overlay={activeOverlayData}
               selectedNodeId={resolvedNodeId}
               onDensityChange={setTopologyDensity}
               onLayoutEngineChange={setTopologyLayoutEngine}
@@ -757,7 +761,7 @@ export default function CockpitPage({
               layer={selection.layer}
               density={deepDiveDensity}
               mode={deepDiveMode}
-              overlay={overlayData}
+              overlay={activeOverlayData}
               selectedNodeId={resolvedNodeId}
               onModeChange={setDeepDiveMode}
               onDensityChange={setDeepDiveDensity}
@@ -949,7 +953,7 @@ export default function CockpitPage({
                 density={topologyDensity}
                 layoutEngine={topologyLayoutEngine}
                 elkEnabled={cockpitFlags.elkLayout}
-                overlay={overlayData}
+                overlay={activeOverlayData}
                 selectedNodeId={resolvedNodeId}
                 onDensityChange={setTopologyDensity}
                 onLayoutEngineChange={setTopologyLayoutEngine}
