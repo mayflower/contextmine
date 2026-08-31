@@ -1384,6 +1384,53 @@ class TestMaterializeBehavioralLayersTask:
         record_mock.assert_awaited()
 
 
+class TestRunBehavioralMaterialization:
+    async def test_awaits_materialization_to_completion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        expected = {
+            "behavioral_layers_status": "ready",
+            "last_behavioral_materialized_at": "2026-01-01T00:00:00+00:00",
+        }
+        materialize = AsyncMock(return_value=expected)
+        monkeypatch.setattr(
+            flows,
+            "materialize_behavioral_layers",
+            SimpleNamespace(fn=materialize),
+        )
+
+        result = await flows._run_behavioral_materialization(
+            source_id=str(uuid.uuid4()),
+            collection_id=str(uuid.uuid4()),
+            scenario_id=str(uuid.uuid4()),
+            source_version_id=str(uuid.uuid4()),
+            deleted_file_paths=["deleted.py"],
+        )
+
+        assert result == expected
+        materialize.assert_awaited_once()
+
+    async def test_returns_advisory_failure_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        materialize = AsyncMock(side_effect=RuntimeError("behavioral failed"))
+        monkeypatch.setattr(
+            flows,
+            "materialize_behavioral_layers",
+            SimpleNamespace(fn=materialize),
+        )
+
+        result = await flows._run_behavioral_materialization(
+            source_id=str(uuid.uuid4()),
+            collection_id=str(uuid.uuid4()),
+            scenario_id=str(uuid.uuid4()),
+            source_version_id=None,
+            deleted_file_paths=None,
+        )
+
+        assert result["behavioral_layers_status"] == "failed"
+        assert result["deep_warnings"] == ["behavioral failed"]
+        materialize.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # ingest_coverage_metrics: deeper paths
 # ---------------------------------------------------------------------------

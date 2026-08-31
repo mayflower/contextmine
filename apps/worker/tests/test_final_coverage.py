@@ -5,11 +5,9 @@ Each section targets specific uncovered lines from --cov-report=term-missing.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from contextmine_worker.flows import (
     IGNORED_REPO_PATH_PARTS,
@@ -17,7 +15,6 @@ from contextmine_worker.flows import (
     _is_ignored_repo_path,
     _joern_parse_timeout_seconds,
     _knowledge_graph_build_timeout_seconds,
-    _log_background_task_failure,
     _sync_blocking_step_timeout_seconds,
     _sync_document_step_timeout_seconds,
     _sync_documents_per_run_limit,
@@ -284,25 +281,6 @@ class TestIgnoredRepoParts:
         assert "vendor" in IGNORED_REPO_PATH_PARTS
         assert "__pycache__" in IGNORED_REPO_PATH_PARTS
         assert ".git" in IGNORED_REPO_PATH_PARTS
-
-
-class TestLogBackgroundTaskFailure:
-    def test_cancelled_task(self) -> None:
-        task = MagicMock(spec=asyncio.Task)
-        task.cancelled.return_value = True
-        _log_background_task_failure(task)  # Should not raise
-
-    def test_task_with_exception(self) -> None:
-        task = MagicMock(spec=asyncio.Task)
-        task.cancelled.return_value = False
-        task.exception.return_value = RuntimeError("test")
-        _log_background_task_failure(task)  # Should not raise
-
-    def test_task_no_exception(self) -> None:
-        task = MagicMock(spec=asyncio.Task)
-        task.cancelled.return_value = False
-        task.exception.return_value = None
-        _log_background_task_failure(task)  # Should not raise
 
 
 # ============================================================================

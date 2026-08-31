@@ -268,15 +268,6 @@ async def _run_blocking_with_timeout(
         raise RuntimeError(f"STEP_TIMEOUT: {step_name} exceeded {int(timeout_seconds)}s") from exc
 
 
-def _log_background_task_failure(task: "asyncio.Task[object]") -> None:
-    if task.cancelled():
-        logger.warning("Behavioral layer background extraction task was cancelled.")
-        return
-    exc = task.exception()
-    if exc:
-        logger.warning("Behavioral layer background extraction failed: %s", exc)
-
-
 def _uri_to_file_path(uri: str) -> str:
     """Normalize document URI to repo-relative file path."""
     return uri.split("?")[0].split("/", 5)[-1] if "/" in uri else uri
@@ -2203,6 +2194,32 @@ async def materialize_behavioral_layers(
         raise
 
 
+async def _run_behavioral_materialization(
+    *,
+    source_id: str,
+    collection_id: str,
+    scenario_id: str,
+    source_version_id: str | None,
+    deleted_file_paths: list[str] | None,
+) -> dict[str, object]:
+    """Await advisory behavioral extraction before the parent sync can finish."""
+    try:
+        return await materialize_behavioral_layers.fn(
+            source_id=source_id,
+            collection_id=collection_id,
+            scenario_id=scenario_id,
+            source_version_id=source_version_id,
+            deleted_file_paths=deleted_file_paths,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Behavioral layer extraction failed: %s", exc)
+        return {
+            "behavioral_layers_status": "failed",
+            "last_behavioral_materialized_at": None,
+            "deep_warnings": [str(exc)],
+        }
+
+
 def _build_scip_index_config():
     """Build IndexConfig from settings.
 
@@ -2585,6 +2602,7 @@ class _SyncGitHubCtx:
     kg_stats: dict[str, Any] = field(default_factory=dict)
     surface_stats: dict[str, int] = field(default_factory=dict)
     twin_stats: dict[str, Any] = field(default_factory=dict)
+    behavioral_stats: dict[str, object] = field(default_factory=dict)
 
 
 def _default_scip_stats() -> dict[str, Any]:
@@ -3678,6 +3696,16 @@ def _compute_metrics_gate(twin_stats: dict[str, Any]) -> str:
     return "pass" if mapped >= requested else "fail"
 
 
+def _behavioral_stats_subset(stats: dict[str, object]) -> dict[str, object]:
+    """Normalize behavioral materialization status for run/version stats."""
+    return {
+        "behavioral_layers_status": stats.get("behavioral_layers_status", "not_run"),
+        "last_behavioral_materialized_at": stats.get("last_behavioral_materialized_at"),
+        "deep_warnings": list(stats.get("deep_warnings", []) or []),
+        "behavioral_extract": dict(stats.get("behavioral_extract", {}) or {}),
+    }
+
+
 def _build_source_version_stats(
     ctx: _SyncGitHubCtx, scenario_id_raw: object, scenario_version: int | None
 ) -> dict[str, Any]:
@@ -3716,6 +3744,7 @@ def _build_source_version_stats(
         "metrics_gate": _compute_metrics_gate(ctx.twin_stats),
         "scenario_id": scenario_id_raw,
         "scenario_version": scenario_version,
+        **_behavioral_stats_subset(ctx.behavioral_stats),
     }
 
 
@@ -3818,11 +3847,29 @@ def _build_sync_run_stats(ctx: _SyncGitHubCtx) -> dict[str, Any]:
         "surface_proto_nodes": ctx.surface_stats.get("proto_nodes", 0),
         "surface_job_nodes": ctx.surface_stats.get("job_nodes", 0),
         "surface_edges_created": ctx.surface_stats.get("edges_created", 0),
+        **_behavioral_stats_subset(ctx.behavioral_stats),
     }
 
 
 async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
-    """Save sync run stats, mark source version ready, schedule behavioral layers."""
+    """Finish behavioral materialization, then persist terminal sync state."""
+    collection_id_str = str(ctx.source.collection_id)
+    scenario_id_raw = ctx.twin_stats.get("twin_asis_scenario_id")
+    scenario_for_behavioral = str(scenario_id_raw or "")
+    if scenario_for_behavioral:
+        await update_progress_artifact(  # type: ignore[misc]
+            ctx.progress_id,
+            progress=97,
+            description="Materializing behavioral layers...",
+        )
+        ctx.behavioral_stats = await _run_behavioral_materialization(
+            source_id=str(ctx.source.id),
+            collection_id=collection_id_str,
+            scenario_id=scenario_for_behavioral,
+            source_version_id=(str(ctx.source_version_id) if ctx.source_version_id else None),
+            deleted_file_paths=ctx.deleted_file_paths,
+        )
+
     await update_progress_artifact(ctx.progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     from contextmine_core.twin import record_twin_event, set_source_version_status
@@ -3837,7 +3884,6 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
         db_run.status = SyncRunStatus.SUCCESS
         db_run.finished_at = datetime.now(UTC)
         scenario_version = None
-        scenario_id_raw = ctx.twin_stats.get("twin_asis_scenario_id")
         if scenario_id_raw:
             scenario = (
                 await session.execute(
@@ -3894,20 +3940,6 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
 
         db_run.stats = _build_sync_run_stats(ctx)
         await session.commit()
-
-    collection_id_str = str(ctx.source.collection_id)
-    scenario_for_behavioral = str(ctx.twin_stats.get("twin_asis_scenario_id") or "")
-    if scenario_for_behavioral:
-        background = asyncio.create_task(
-            _materialize_behavioral_layers_impl(
-                source_id=str(ctx.source.id),
-                collection_id=collection_id_str,
-                scenario_id=scenario_for_behavioral,
-                source_version_id=(str(ctx.source_version_id) if ctx.source_version_id else None),
-                deleted_file_paths=ctx.deleted_file_paths,
-            )
-        )
-        background.add_done_callback(_log_background_task_failure)
 
     await update_progress_artifact(ctx.progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 
@@ -4188,6 +4220,22 @@ async def sync_web_source(
             f"TWIN_BUILD_TIMEOUT: source={source.id} timeout={twin_timeout_seconds}s"
         ) from exc
 
+    behavioral_stats: dict[str, object] = {}
+    scenario_for_behavioral = str(twin_stats.get("twin_asis_scenario_id") or "")
+    if scenario_for_behavioral:
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id,
+            progress=97,
+            description="Materializing behavioral layers...",
+        )
+        behavioral_stats = await _run_behavioral_materialization(
+            source_id=str(source.id),
+            collection_id=collection_id_str,
+            scenario_id=scenario_for_behavioral,
+            source_version_id=None,
+            deleted_file_paths=None,
+        )
+
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
     async with get_session() as session:
@@ -4231,22 +4279,10 @@ async def sync_web_source(
             "surface_proto_nodes": surface_stats.get("proto_nodes", 0),
             "surface_job_nodes": surface_stats.get("job_nodes", 0),
             "surface_edges_created": surface_stats.get("edges_created", 0),
+            **_behavioral_stats_subset(behavioral_stats),
         }
 
         await session.commit()
-
-    scenario_for_behavioral = str(twin_stats.get("twin_asis_scenario_id") or "")
-    if scenario_for_behavioral:
-        background = asyncio.create_task(
-            _materialize_behavioral_layers_impl(
-                source_id=str(source.id),
-                collection_id=collection_id_str,
-                scenario_id=scenario_for_behavioral,
-                source_version_id=None,
-                deleted_file_paths=None,
-            )
-        )
-        background.add_done_callback(_log_background_task_failure)
 
     await update_progress_artifact(progress_id, progress=100, description="Sync complete!")  # type: ignore[misc]
 

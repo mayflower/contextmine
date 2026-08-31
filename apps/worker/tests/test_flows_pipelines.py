@@ -792,16 +792,10 @@ class TestSyncGithubSourceHappyPath:
             ),
         )
 
-        # Mock behavioral layers
         monkeypatch.setattr(
             flows,
             "_materialize_behavioral_layers_impl",
             AsyncMock(return_value={}),
-        )
-        monkeypatch.setattr(
-            flows,
-            "_log_background_task_failure",
-            lambda task: None,
         )
 
         result = await flows.sync_github_source.fn(source, sync_run, run_started_at)
@@ -1029,12 +1023,12 @@ class TestSyncGithubSourceHappyPath:
                 }
             ),
         )
+        behavioral_impl = AsyncMock(return_value={})
         monkeypatch.setattr(
             flows,
             "_materialize_behavioral_layers_impl",
-            AsyncMock(return_value={}),
+            behavioral_impl,
         )
-        monkeypatch.setattr(flows, "_log_background_task_failure", lambda task: None)
 
         result = await flows.sync_github_source.fn(source, sync_run, run_started_at)
 
@@ -1042,3 +1036,4 @@ class TestSyncGithubSourceHappyPath:
         assert result.files_scanned == 1
         assert result.files_indexed == 1
         assert result.docs_deleted >= 0
+        behavioral_impl.assert_awaited_once()
