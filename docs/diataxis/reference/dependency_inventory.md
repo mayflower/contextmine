@@ -84,7 +84,7 @@ The normal CI checks remain required:
 
 1. Ruff lint and formatting plus `ty` type checking.
 2. The complete PostgreSQL-backed Python test suite.
-3. Web ESLint, Vitest, and production build.
+3. Web ESLint, Vitest, Playwright end-to-end tests, and production build.
 4. Rust 1.88 formatting, strict Clippy, and all crawler tests.
 5. Security workflows and the relevant container/Helm build checks. Helm
    publication waits for the complete image-build dependency chain.
