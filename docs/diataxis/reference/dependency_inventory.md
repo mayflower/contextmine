@@ -6,14 +6,14 @@ the commands used to refresh the snapshot. It is not a request to upgrade every
 package in one change.
 
 Snapshot date: **2026-08-31**  
-Repository baseline: **6832263b7911c536958facaf99e0d1e9ecbf560b**
+Repository baseline: **95caf9654eae39318a00d8c30eac0e6a3b2db242**
 
 ## Inventory Summary
 
 | Surface | Manifest and lock | Current size | Runtime role |
 | --- | --- | ---: | --- |
 | Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 230 locked packages; 29 core, 8 API, 11 worker, and 9 development declarations | API, MCP, sync worker, analysis, search, graph, telemetry |
-| Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 9 runtime and 19 development declarations; 481 lock entries | React cockpit, diagrams, observability |
+| Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 9 runtime and 19 development declarations; 456 lock entries | React cockpit, diagrams, observability |
 | Rust crawler | `rust/spider_md/Cargo.toml`, `rust/spider_md/Cargo.lock` | 8 direct declarations; 357 locked packages | Deterministic website crawling binary embedded in the worker image |
 | Runtime images | Dockerfiles, Compose files, Helm values | API, worker, web, PostgreSQL/pg4ai, Prefect, CodeCharta, OpenTelemetry | Build and deployment compatibility |
 | CI actions and tools | `.github/workflows/*.yml`, `.pre-commit-config.yaml` | SHA-pinned GitHub Actions plus scanner/tool versions | Verification and delivery |
@@ -57,16 +57,13 @@ A read-only refresh on the snapshot date found a broad pending set:
   Prefect, FastAPI, FastMCP, Uvicorn, tree-sitter-language-pack, and the
   OpenTelemetry family also have newer compatible resolutions.
 - The web runtime has compatible updates for the Grafana Faro family,
-  Cytoscape, Mermaid, React, and React DOM. ELK moves from `0.11.1` to `0.12.0`;
-  because it is pre-1.0, treat that as a potentially breaking change. Separate
-  tooling majors are available for ESLint 10, TypeScript 7, jsdom 30, and
-  Testing Library jest-dom 7.
-- `npm audit` reports seven fixable findings in the current lock: two moderate
-  and five high. Mermaid is the only direct affected package; its current
-  `11.15.0` declaration resolves below the fixed `11.16.1` boundary. The other
-  findings are transitive `brace-expansion`, `dompurify`, `js-yaml`, `nanoid`,
-  `postcss`, and `undici` versions. A non-major web lock refresh, including
-  Mermaid, is therefore the first security-priority upgrade slice.
+  Cytoscape, React, and React DOM. ELK moves from `0.11.1` to `0.12.0`; because
+  it is pre-1.0, treat that as a potentially breaking change. Separate tooling
+  majors are available for ESLint 10, TypeScript 7, jsdom 30, and Testing
+  Library jest-dom 7.
+- The completed non-major web security refresh moved Mermaid above its fixed
+  boundary and refreshed affected transitive packages. `npm audit` now reports
+  zero vulnerabilities in the current lock.
 - `cargo update --dry-run` proposes 121 compatible lock changes, including
   `spider 2.52.4 -> 2.53.6`. This is a lock refresh, not evidence that a future
   direct major is safe.
