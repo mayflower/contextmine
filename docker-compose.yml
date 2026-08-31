@@ -45,7 +45,7 @@ services:
   codecharta:
     image: codecharta/codecharta-visualization:latest
     ports:
-      - "9001:80"
+      - "${CODECHARTA_PORT:-9001}:80"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
       interval: 10s
