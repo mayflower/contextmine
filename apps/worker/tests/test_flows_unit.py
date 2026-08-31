@@ -29,7 +29,6 @@ from contextmine_worker.flows import (
     _is_ignored_repo_path,
     _joern_parse_timeout_seconds,
     _knowledge_graph_build_timeout_seconds,
-    _log_background_task_failure,
     _run_blocking_with_timeout,
     _sync_blocking_step_timeout_seconds,
     _sync_document_step_timeout_seconds,
@@ -449,33 +448,6 @@ class TestRunBlockingWithTimeout:
             assert result == 100
 
         asyncio.run(_inner())
-
-
-# ---------------------------------------------------------------------------
-# _log_background_task_failure
-# ---------------------------------------------------------------------------
-
-
-class TestLogBackgroundTaskFailure:
-    def test_cancelled_task_logs_warning(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = True
-        # Should not raise
-        _log_background_task_failure(mock_task)
-        mock_task.cancelled.assert_called_once()
-
-    def test_task_with_exception_logs_warning(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = False
-        mock_task.exception.return_value = RuntimeError("boom")
-        _log_background_task_failure(mock_task)
-        mock_task.exception.assert_called_once()
-
-    def test_successful_task_no_error(self) -> None:
-        mock_task = MagicMock()
-        mock_task.cancelled.return_value = False
-        mock_task.exception.return_value = None
-        _log_background_task_failure(mock_task)
 
 
 # ---------------------------------------------------------------------------
