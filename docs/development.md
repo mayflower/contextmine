@@ -90,9 +90,13 @@ For hot-reloading frontend development:
 # Terminal 1: API server
 uv run uvicorn apps.api.app.main:app --reload --port 8000
 
-# Terminal 2: Frontend dev server (proxies to :8000)
+# Terminal 2: Frontend dev server (proxies the API and local CodeCharta instance)
 cd apps/web && npm run dev
 ```
+
+The CodeCharta proxy derives its local target from `CODECHARTA_PORT` in the repository-root
+`.env` file (default: `9001`). Set `VITE_CODECHARTA_URL` only when the proxy should use a
+different full URL.
 
 ## Running Tests
 
