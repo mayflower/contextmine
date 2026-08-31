@@ -126,14 +126,14 @@ async def test_recovered_decisions_flow_through_architecture_facts(
     async def _fake_c4(*_args, **_kwargs):
         return SimpleNamespace(content="C4Context", warnings=[])
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {endpoint.id, symbol.id}
 
     async def _fake_evidence(*_args, **_kwargs):
         return {}
 
     monkeypatch.setattr(architecture_facts, "export_mermaid_c4_result", _fake_c4)
-    monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(architecture_facts, "scenario_provenance_node_ids_select", _fake_node_ids)
     monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
     monkeypatch.setattr(
         architecture_facts, "recover_architecture_model", lambda *_args, **_kwargs: model
@@ -220,7 +220,7 @@ async def test_default_pipeline_loads_persisted_adr_docs_into_recovery(
     async def _fake_c4(*_args, **_kwargs):
         return SimpleNamespace(content="C4Context", warnings=[])
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {adr_file.id, api_symbol.id, worker_job.id}
 
     async def _fake_evidence(*_args, **_kwargs):
@@ -234,7 +234,7 @@ async def test_default_pipeline_loads_persisted_adr_docs_into_recovery(
     )
 
     monkeypatch.setattr(architecture_facts, "export_mermaid_c4_result", _fake_c4)
-    monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(architecture_facts, "scenario_provenance_node_ids_select", _fake_node_ids)
     monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
     bundle = await architecture_facts.build_architecture_facts(
         session,

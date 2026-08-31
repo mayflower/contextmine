@@ -16,6 +16,7 @@ from contextmine_core.architecture_intents import IntentRisk
 from contextmine_core.models import (
     IntentRiskLevel,
     KnowledgeEdgeKind,
+    KnowledgeNode,
     TwinLayer,
 )
 from contextmine_core.semantic_snapshot.models import RelationKind
@@ -26,11 +27,26 @@ from contextmine_core.twin.service import (
     _risk_to_model,
     infer_edge_layers,
     infer_node_layers,
+    scenario_provenance_node_ids_select,
 )
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 
 # ---------------------------------------------------------------------------
 # _relation_to_edge_kind
 # ---------------------------------------------------------------------------
+
+
+def test_scenario_provenance_selector_stays_database_side() -> None:
+    scenario_id = uuid4()
+    statement = select(KnowledgeNode.id).where(
+        KnowledgeNode.id.in_(scenario_provenance_node_ids_select(scenario_id))
+    )
+
+    compiled = statement.compile(dialect=postgresql.dialect())
+
+    assert list(compiled.params.values()) == [scenario_id]
+    assert "SELECT twin_nodes.provenance_node_id" in str(compiled)
 
 
 class TestRelationToEdgeKind:

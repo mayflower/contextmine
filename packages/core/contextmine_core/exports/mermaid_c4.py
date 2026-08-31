@@ -23,7 +23,10 @@ from contextmine_core.twin.projections import (
     GraphProjection,
     build_inferred_architecture_projection,
 )
-from contextmine_core.twin.service import get_full_scenario_graph, get_scenario_provenance_node_ids
+from contextmine_core.twin.service import (
+    get_full_scenario_graph,
+    scenario_provenance_node_ids_select,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -205,9 +208,7 @@ async def _load_recovered_architecture_model(
     scenario_id: UUID,
     collection_id: UUID,
 ) -> RecoveredArchitectureModel:
-    scenario_knowledge_node_ids = await get_scenario_provenance_node_ids(session, scenario_id)
-    if not scenario_knowledge_node_ids:
-        return RecoveredArchitectureModel()
+    scenario_knowledge_node_ids = scenario_provenance_node_ids_select(scenario_id)
 
     kg_nodes = (
         (
