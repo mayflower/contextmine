@@ -162,7 +162,7 @@ class TestValidateGithubUrl:
         result = validate_github_url("https://github.com/owner/repo")
         assert result["owner"] == "owner"
         assert result["repo"] == "repo"
-        assert result["branch"] == "main"
+        assert result["branch"] is None
 
     def test_valid_url_with_git(self) -> None:
         result = validate_github_url("https://github.com/owner/repo.git")
