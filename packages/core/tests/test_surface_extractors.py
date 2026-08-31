@@ -1,5 +1,6 @@
 """Tests for System Surface Catalog extractors."""
 
+from unittest.mock import patch
 from uuid import uuid4
 
 from contextmine_core.analyzer.extractors.graphql import extract_from_graphql
@@ -512,6 +513,17 @@ settings:
         result = extractor.add_file("config.yaml", content)
         assert result is False
         assert len(extractor.catalog.openapi_specs) == 0
+
+    def test_unrelated_json_skips_yaml_parser(self) -> None:
+        """Large non-spec JSON files should be rejected before YAML parsing."""
+        extractor = SurfaceCatalogExtractor()
+        with patch(
+            "contextmine_core.analyzer.extractors.surface.yaml.safe_load",
+            side_effect=AssertionError("parser must not run"),
+        ):
+            result = extractor.add_file("translations.json", '{"messages": {"ok": "OK"}}')
+
+        assert result is False
 
     def test_invalid_yaml_returns_false(self) -> None:
         """Malformed YAML is gracefully rejected."""
