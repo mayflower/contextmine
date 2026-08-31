@@ -116,6 +116,11 @@ class SurfaceCatalogExtractor:
         if not file_path.endswith((*_YAML_EXTENSIONS, ".json")):
             return None
 
+        # Most large repositories contain many unrelated JSON/YAML files. Avoid
+        # feeding all of them through the comparatively expensive YAML parser.
+        if "openapi" not in content and "swagger" not in content:
+            return None
+
         try:
             parsed = yaml.safe_load(content)
         except (yaml.YAMLError, json.JSONDecodeError):

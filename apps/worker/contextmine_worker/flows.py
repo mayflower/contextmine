@@ -3528,6 +3528,7 @@ async def _gh_upsert_document(
 
 async def _gh_recover_unchunked_documents(ctx: _SyncGitHubCtx) -> None:
     """Find documents missing chunks and add them to the chunking queue."""
+    queued_document_ids = {doc_id for doc_id, _, _ in ctx.docs_to_chunk}
     async with get_session() as session:
         docs_with_chunks = select(Chunk.document_id).distinct().subquery()
         result = await session.execute(
@@ -3541,9 +3542,11 @@ async def _gh_recover_unchunked_documents(ctx: _SyncGitHubCtx) -> None:
         unchunked_docs = result.all()
 
         for doc_id, content, uri in unchunked_docs:
-            if content:
+            doc_id_str = str(doc_id)
+            if content and doc_id_str not in queued_document_ids:
                 file_path = uri.split("?")[0].split("/", 5)[-1] if "/" in uri else None
-                ctx.docs_to_chunk.append((str(doc_id), content, file_path))
+                ctx.docs_to_chunk.append((doc_id_str, content, file_path))
+                queued_document_ids.add(doc_id_str)
 
         ctx.unchunked_docs_count = len(unchunked_docs)
 
