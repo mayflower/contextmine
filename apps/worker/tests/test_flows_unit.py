@@ -585,6 +585,44 @@ class TestMaterializeSurfaceCatalog:
         assert result["surface_files_scanned"] == 0
 
 
+class TestRecoverUnchunkedDocuments:
+    async def test_does_not_queue_new_document_twice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        queued_id = uuid.uuid4()
+        recovered_id = uuid.uuid4()
+        source_id = uuid.uuid4()
+        ctx = SimpleNamespace(
+            source=SimpleNamespace(id=source_id),
+            docs_to_chunk=[(str(queued_id), "queued", "src/queued.py")],
+            unchunked_docs_count=0,
+        )
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (
+                queued_id,
+                "queued",
+                "git://github.com/owner/repo/src/queued.py?ref=main",
+            ),
+            (
+                recovered_id,
+                "recovered",
+                "git://github.com/owner/repo/src/recovered.py?ref=main",
+            ),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=mock_result)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(flows, "get_session", lambda: session_cm)
+
+        await flows._gh_recover_unchunked_documents(ctx)
+
+        assert [item[0] for item in ctx.docs_to_chunk].count(str(queued_id)) == 1
+        assert [item[0] for item in ctx.docs_to_chunk].count(str(recovered_id)) == 1
+        assert ctx.unchunked_docs_count == 2
+
+
 # ---------------------------------------------------------------------------
 # get_embedding_model_for_collection
 # ---------------------------------------------------------------------------

@@ -330,7 +330,7 @@ async def test_no_silent_reduction_of_multi_membership_to_single_membership(
     async def _fake_c4(*_args, **_kwargs):
         return SimpleNamespace(content="C4Context", warnings=[])
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {endpoint.id, symbol.id, table.id}
 
     async def _fake_evidence(*_args, **_kwargs):
@@ -339,7 +339,8 @@ async def test_no_silent_reduction_of_multi_membership_to_single_membership(
     monkeypatch.setattr(mermaid_export, "export_mermaid_c4_result", _fake_c4)
     monkeypatch.setattr("contextmine_core.architecture.facts.export_mermaid_c4_result", _fake_c4)
     monkeypatch.setattr(
-        "contextmine_core.architecture.facts.get_scenario_provenance_node_ids", _fake_node_ids
+        "contextmine_core.architecture.facts.scenario_provenance_node_ids_select",
+        _fake_node_ids,
     )
     monkeypatch.setattr("contextmine_core.architecture.facts._load_node_evidence", _fake_evidence)
     monkeypatch.setattr(

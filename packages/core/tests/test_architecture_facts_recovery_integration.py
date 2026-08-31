@@ -216,7 +216,7 @@ def _install_common_patches(
     async def _fake_projection(**_kwargs):
         return {"nodes": [], "edges": [], "grouping_strategy": "heuristic"}
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {endpoint.id, symbol.id, table.id}
 
     async def _fake_evidence(*_args, **_kwargs):
@@ -224,7 +224,7 @@ def _install_common_patches(
 
     monkeypatch.setattr(architecture_facts, "export_mermaid_c4_result", _fake_c4)
     monkeypatch.setattr(architecture_facts, "get_full_scenario_graph", _fake_projection)
-    monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(architecture_facts, "scenario_provenance_node_ids_select", _fake_node_ids)
     monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
 
 
@@ -275,7 +275,7 @@ async def test_build_architecture_facts_is_recovered_first_without_legacy_projec
     async def _fake_c4(*_args, **_kwargs):
         return SimpleNamespace(content="C4Context", warnings=[])
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {endpoint.id, symbol.id, table.id}
 
     async def _fake_evidence(*_args, **_kwargs):
@@ -290,7 +290,7 @@ async def test_build_architecture_facts_is_recovered_first_without_legacy_projec
     monkeypatch.setattr(
         architecture_facts, "get_full_scenario_graph", _legacy_projection_should_not_be_used
     )
-    monkeypatch.setattr(architecture_facts, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(architecture_facts, "scenario_provenance_node_ids_select", _fake_node_ids)
     monkeypatch.setattr(architecture_facts, "_load_node_evidence", _fake_evidence)
     monkeypatch.setattr(
         architecture_facts,

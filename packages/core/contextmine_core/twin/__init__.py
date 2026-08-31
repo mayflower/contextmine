@@ -60,6 +60,7 @@ from contextmine_core.twin.service import (
     list_scenario_patches,
     refresh_metric_snapshots,
     repair_twin_file_path_canonicalization,
+    scenario_provenance_node_ids_select,
     seed_scenario_from_knowledge_graph,
     submit_intent,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "get_cfg",
     "get_cfg_multi",
     "get_scenario_provenance_node_ids",
+    "scenario_provenance_node_ids_select",
     "get_scenario_graph",
     "get_variable_flow",
     "get_variable_flow_multi",

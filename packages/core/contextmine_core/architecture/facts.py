@@ -19,7 +19,10 @@ from contextmine_core.models import (
     TwinScenario,
 )
 from contextmine_core.twin.grouping import canonical_file_path_from_meta, derive_arch_group
-from contextmine_core.twin.service import get_full_scenario_graph, get_scenario_provenance_node_ids
+from contextmine_core.twin.service import (
+    get_full_scenario_graph,
+    scenario_provenance_node_ids_select,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -637,7 +640,7 @@ async def build_architecture_facts(
         )
     )
 
-    scenario_knowledge_node_ids = await get_scenario_provenance_node_ids(session, scenario_id)
+    scenario_knowledge_node_ids = scenario_provenance_node_ids_select(scenario_id)
     kg_nodes = (
         (
             await session.execute(

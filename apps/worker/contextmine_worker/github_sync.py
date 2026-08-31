@@ -1091,11 +1091,16 @@ def _numstat_path_variants(raw_path: str) -> list[str]:
 
 
 def read_file_content(repo_path: Path, file_path: str) -> str | None:
-    """Read file content, returning None if not readable."""
+    """Read file content, returning None if not readable.
+
+    PostgreSQL text columns reject NUL bytes even when the surrounding file is
+    otherwise valid UTF-8. Preserve the byte's meaning as a visible escape so
+    one unusual source file cannot abort an entire repository sync.
+    """
     full_path = repo_path / file_path
     try:
         content = full_path.read_text(encoding="utf-8")
-        return content
+        return content.replace("\x00", "\\0")
     except (OSError, UnicodeDecodeError):
         return None
 
