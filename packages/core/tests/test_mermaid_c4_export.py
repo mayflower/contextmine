@@ -436,10 +436,10 @@ async def test_load_recovered_architecture_model_includes_persisted_docs(
         last_seen_at=datetime.now(UTC),
     )
 
-    async def _fake_node_ids(*_args, **_kwargs):
+    def _fake_node_ids(*_args, **_kwargs):
         return {adr_file.id, api_symbol.id, worker_job.id}
 
-    monkeypatch.setattr(mermaid_export, "get_scenario_provenance_node_ids", _fake_node_ids)
+    monkeypatch.setattr(mermaid_export, "scenario_provenance_node_ids_select", _fake_node_ids)
 
     model = await mermaid_export._load_recovered_architecture_model(
         _FakeSession(

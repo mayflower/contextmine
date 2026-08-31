@@ -53,6 +53,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql import Select
 
 logger = logging.getLogger(__name__)
 
@@ -144,14 +145,17 @@ async def get_scenario_provenance_node_ids(
     scenario_id: UUID,
 ) -> set[UUID]:
     """Return active knowledge-node provenance IDs that are present in a scenario."""
-    rows = await session.execute(
-        select(TwinNode.provenance_node_id).where(
-            TwinNode.scenario_id == scenario_id,
-            TwinNode.is_active.is_(True),
-            TwinNode.provenance_node_id.is_not(None),
-        )
-    )
+    rows = await session.execute(scenario_provenance_node_ids_select(scenario_id))
     return {node_id for node_id in rows.scalars().all() if node_id is not None}
+
+
+def scenario_provenance_node_ids_select(scenario_id: UUID) -> Select[tuple[UUID | None]]:
+    """Build a database-side selector for active scenario provenance IDs."""
+    return select(TwinNode.provenance_node_id).where(
+        TwinNode.scenario_id == scenario_id,
+        TwinNode.is_active.is_(True),
+        TwinNode.provenance_node_id.is_not(None),
+    )
 
 
 async def seed_scenario_from_knowledge_graph(
