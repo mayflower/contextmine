@@ -33,6 +33,8 @@ MCP authentication uses GitHub OAuth. When you first connect, your MCP client wi
 #### `get_markdown`
 
 Semantic search across all indexed documentation and code. Returns synthesized context.
+When `MODEL_CALLS_ENABLED=false`, this tool automatically returns raw full-text
+evidence without embeddings or LLM synthesis, regardless of the `raw` argument.
 
 ```
 get_markdown(
@@ -52,7 +54,7 @@ get_markdown(query="how does authentication work?")
 
 #### `deep_research`
 
-Multi-step research agent for complex codebase questions. Uses an iterative approach with multiple tools to search, read code, and build answers with citations.
+Multi-step research agent for complex codebase questions. Uses an iterative approach with multiple tools to search, read code, and build answers with citations. This tool is unavailable when `MODEL_CALLS_ENABLED=false`.
 
 ```
 deep_research(
@@ -70,7 +72,7 @@ deep_research(question="explain the payment flow", budget=15)
 
 #### `graph_rag`
 
-Graph-augmented retrieval implementing Microsoft GraphRAG approach with global (community) and local (entity) context.
+Graph-augmented retrieval implementing Microsoft GraphRAG approach with global (community) and local (entity) context. In model-free mode, context retrieval uses full-text seeds and deterministic graph expansion; `answer=true` remains unavailable.
 
 ```
 graph_rag(

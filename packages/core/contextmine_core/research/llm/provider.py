@@ -11,6 +11,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
@@ -163,6 +164,7 @@ class LangChainProvider(LLMProvider):
         temperature: float = 0.0,
     ) -> str:
         """Generate text response with retry logic."""
+        ensure_model_calls_enabled()
         from opentelemetry import trace
         from opentelemetry.trace import Status, StatusCode
 
@@ -222,6 +224,7 @@ class LangChainProvider(LLMProvider):
         temperature: float = 0.0,
     ) -> T:
         """Generate structured output with validation and retry."""
+        ensure_model_calls_enabled()
         lc_messages = self._build_messages(system, messages)
 
         # Try using LangChain's built-in structured output first
@@ -314,6 +317,8 @@ def get_llm_provider(
     Raises:
         ValueError: If provider is not supported
     """
+    ensure_model_calls_enabled()
+
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 

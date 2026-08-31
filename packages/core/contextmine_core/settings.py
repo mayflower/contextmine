@@ -64,6 +64,15 @@ class Settings(BaseSettings):
         description="Base URL for MCP OAuth callbacks. Must match where the server is accessible.",
     )
 
+    # External model policy
+    model_calls_enabled: bool = Field(
+        default=True,
+        description=(
+            "Allow external embedding and generative-model calls. When disabled, "
+            "sync uses deterministic extraction and retrieval uses full-text search only."
+        ),
+    )
+
     # Embedding providers
     openai_api_key: str | None = Field(
         default=None,

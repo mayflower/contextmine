@@ -298,13 +298,13 @@ async def graph_rag_context(
     Returns:
         ContextPack with global + local context
     """
-    from contextmine_core import get_settings
     from contextmine_core.embeddings import get_embedder, parse_embedding_model_spec
     from contextmine_core.search import (
         SearchResponse,
         get_accessible_collection_ids,
         hybrid_search,
     )
+    from contextmine_core.settings import get_settings
 
     pack = ContextPack(query=query)
 
@@ -317,18 +317,19 @@ async def graph_rag_context(
     if not collection_ids:
         return pack
 
-    # Get query embedding - REQUIRED for GraphRAG (no fake embedder fallback)
+    # Community similarity requires an embedding. In model-free mode, retain
+    # deterministic local graph expansion by seeding it from FTS results.
     settings = get_settings()
-    emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
-    embedder = get_embedder(emb_provider, emb_model)
-
-    embed_result = await embedder.embed_batch([query])
-    query_embedding = embed_result.embeddings[0]
-
-    # Step 1: Global context - Community similarity
-    communities = await _find_relevant_communities(
-        session, query_embedding, collection_ids, max_communities
-    )
+    query_embedding: list[float] | None = None
+    communities: list[CommunityContext] = []
+    if settings.model_calls_enabled:
+        emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
+        embedder = get_embedder(emb_provider, emb_model)
+        embed_result = await embedder.embed_batch([query])
+        query_embedding = embed_result.embeddings[0]
+        communities = await _find_relevant_communities(
+            session, query_embedding, collection_ids, max_communities
+        )
     pack.communities = communities
 
     # Step 2: Hybrid search for local context seeds
@@ -344,8 +345,10 @@ async def graph_rag_context(
     seed_node_ids = await _map_search_to_nodes(session, search_response, collection_ids)
 
     # Step 4: Add community member nodes as additional seeds
-    community_member_ids = await _get_community_member_nodes(
-        session, [c.community_id for c in communities], limit=10
+    community_member_ids = (
+        await _get_community_member_nodes(session, [c.community_id for c in communities], limit=10)
+        if communities
+        else []
     )
     all_seed_ids = list(set(seed_node_ids + community_member_ids))
 

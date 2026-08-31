@@ -58,7 +58,7 @@ def get_current_user_id(request: Request) -> uuid.UUID | None:
     return uuid.UUID(user_id)
 
 
-async def get_query_embedding(query: str, collection_id: str | None = None) -> list[float]:
+async def get_query_embedding(query: str, collection_id: str | None = None) -> list[float] | None:
     """Get embedding for query text.
 
     Uses FakeEmbedder for now; will be replaced with real embedder.
@@ -67,6 +67,8 @@ async def get_query_embedding(query: str, collection_id: str | None = None) -> l
     from contextmine_core import FakeEmbedder, get_embedder, parse_embedding_model_spec
 
     settings = get_settings()
+    if not settings.model_calls_enabled:
+        return None
 
     # If collection_id provided, could look up collection's embedding config
     # For now, use global default

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
+
 from .arc42 import SECTION_TITLES
 from .claim_model import ArchitectureClaim
 from .recovery_model import RecoveredArchitectureModel
@@ -320,6 +322,7 @@ async def generate_arc42_with_claude_sdk(
     permission_mode: str = "bypassPermissions",
 ) -> tuple[Arc42Document, dict[str, Any]]:
     """Generate an arc42 document via shared ClaudeSDKClient session."""
+    ensure_model_calls_enabled()
 
     if not repo_path.exists() or not repo_path.is_dir():
         raise FileNotFoundError(f"Repository path does not exist: {repo_path}")

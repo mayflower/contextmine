@@ -23,6 +23,7 @@ from contextmine_core.architecture import (
 )
 from contextmine_core.context import assemble_context
 from contextmine_core.embeddings import FakeEmbedder, get_embedder, parse_embedding_model_spec
+from contextmine_core.model_policy import ModelCallsDisabledError
 from contextmine_core.search import hybrid_search
 from fastmcp import FastMCP
 from sqlalchemy import func, or_, select
@@ -466,8 +467,9 @@ async def get_context_markdown(
     offset: Annotated[int, "Pagination offset"] = 0,
     raw: Annotated[bool, "Return raw chunks without LLM synthesis (faster)"] = False,
 ) -> str:
-    """Semantic search across all indexed documentation and code. Returns synthesized context."""
+    """Search indexed documentation and code, with synthesis when model calls are enabled."""
     user_id = get_current_user_id()
+    settings = get_settings()
 
     # Parse collection_id if provided
     collection_uuid: uuid.UUID | None = None
@@ -478,8 +480,8 @@ async def get_context_markdown(
             return f"# Error\n\nInvalid collection_id: {collection_id}"
 
     try:
-        # If raw mode or topic filter, we need to do the search ourselves
-        if raw or topic:
+        # Model-free operation is evidence-only and must never synthesize an answer.
+        if raw or topic or not settings.model_calls_enabled:
             return await _get_raw_chunks(
                 query=query,
                 user_id=user_id,
@@ -513,15 +515,16 @@ async def _get_raw_chunks(
     """Get raw search results without LLM assembly."""
     settings = get_settings()
 
-    # Get query embedding
-    try:
-        emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
-        embedder = get_embedder(emb_provider, emb_model)
-    except Exception:
-        embedder = FakeEmbedder()
+    query_embedding: list[float] | None = None
+    if settings.model_calls_enabled:
+        try:
+            emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
+            embedder = get_embedder(emb_provider, emb_model)
+        except Exception:
+            embedder = FakeEmbedder()
 
-    embed_result = await embedder.embed_batch([query])
-    query_embedding = embed_result.embeddings[0]
+        embed_result = await embedder.embed_batch([query])
+        query_embedding = embed_result.embeddings[0]
 
     # Search with extra results to handle topic filtering and offset
     search_limit = max_chunks + offset + 50 if topic else max_chunks + offset
@@ -553,6 +556,8 @@ async def _get_raw_chunks(
 
     # Build markdown output
     lines = [f"# Search Results for: {query}\n"]
+    if not settings.model_calls_enabled:
+        lines.append("*Retrieval mode: deterministic full-text search; model calls disabled.*\n")
     if topic:
         lines.append(f"*Filtered by topic: {topic}*\n")
 
@@ -2510,7 +2515,7 @@ async def _arc42_regenerate(db, collection, scenario, existing, section_key, set
             max_turns=int(settings.arch_docs_agent_sdk_max_turns),
             permission_mode=settings.arch_docs_agent_sdk_permission_mode,
         )
-    except ClaudeAgentSdkUnavailableError as exc:
+    except (ClaudeAgentSdkUnavailableError, ModelCallsDisabledError) as exc:
         return f"# Error\n\n{exc}"
 
     if section_key:

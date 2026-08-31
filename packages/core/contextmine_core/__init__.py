@@ -30,6 +30,7 @@ from contextmine_core.embeddings import (
     parse_embedding_model_spec,
 )
 from contextmine_core.joern import JoernClient, JoernResponse, parse_joern_output
+from contextmine_core.model_policy import ModelCallsDisabledError, ensure_model_calls_enabled
 from contextmine_core.models import (
     AppKV,
     ArchitectureIntent,
@@ -136,12 +137,14 @@ __all__ = [
     "ValidationSnapshot",
     "ValidationSourceKind",
     "MetricSnapshot",
+    "ModelCallsDisabledError",
     "assemble_context",
     "assemble_context_stream",
     "close_engine",
     "compute_ssh_key_fingerprint",
     "decrypt_token",
     "encrypt_token",
+    "ensure_model_calls_enabled",
     "exchange_code_for_token",
     "generate_state",
     "get_embedder",

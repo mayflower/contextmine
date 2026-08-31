@@ -3,6 +3,7 @@ import os
 import re
 from typing import Annotated
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import tool
 from langgraph.graph import START, StateGraph
@@ -66,6 +67,7 @@ def glob_tool(pattern: str, repo_path: str) -> str:
 
 
 def build_agent():
+    ensure_model_calls_enabled()
     tools = [bash_tool, read_tool, glob_tool]
 
     # Initialize LLM

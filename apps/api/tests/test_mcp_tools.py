@@ -627,6 +627,21 @@ class TestGetMarkdown:
         assert "Search Results" in result
 
     @pytest.mark.anyio
+    async def test_model_free_mode_forces_raw_retrieval(self, _patch_user_id) -> None:
+        settings = MagicMock(model_calls_enabled=False)
+        with (
+            patch("app.mcp_server.get_settings", return_value=settings),
+            patch("app.mcp_server._get_raw_chunks", new_callable=AsyncMock) as mock_raw,
+            patch("app.mcp_server.assemble_context", new_callable=AsyncMock) as mock_assemble,
+        ):
+            mock_raw.return_value = "# Search Results\n\nEvidence"
+            result = await _get_context_markdown(query="test")
+
+        assert "Evidence" in result
+        mock_raw.assert_awaited_once()
+        mock_assemble.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_error_returns_error_message(self, _patch_user_id) -> None:
         with patch("app.mcp_server.assemble_context", new_callable=AsyncMock) as mock_ac:
             mock_ac.side_effect = RuntimeError("LLM provider not configured")

@@ -7,7 +7,7 @@ assemble_context with mocked DB, and LLM provider selection.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from contextmine_core.context import (
@@ -17,10 +17,14 @@ from contextmine_core.context import (
     FakeLLM,
     LLMProvider,
     StreamingContextMetadata,
+    assemble_context,
+    assemble_context_stream,
     build_context_prompt,
+    build_retrieval_markdown,
     extract_sources,
     get_llm,
 )
+from contextmine_core.search import SearchResponse, SearchResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -110,6 +114,88 @@ class TestExtractSources:
     def test_empty_chunks(self) -> None:
         sources = extract_sources([])
         assert sources == []
+
+
+def _search_result() -> SearchResult:
+    return SearchResult(
+        chunk_id="chunk-1",
+        document_id="document-1",
+        source_id="source-1",
+        collection_id="collection-1",
+        content="Deterministic evidence",
+        uri="git://github.com/org/repo/src/main.py?ref=main",
+        title="main.py",
+        score=1.0,
+        fts_rank=1,
+        vector_rank=None,
+        fts_score=0.9,
+        vector_score=None,
+    )
+
+
+class TestModelFreeContext:
+    @pytest.mark.anyio
+    async def test_assemble_context_returns_fts_evidence_without_models(self) -> None:
+        settings = MagicMock(
+            model_calls_enabled=False,
+            default_embedding_model="openai:text-embedding-3-small",
+        )
+        llm = AsyncMock()
+        search = AsyncMock(
+            return_value=SearchResponse(
+                results=[_search_result()],
+                query="auth",
+                total_fts_matches=1,
+                total_vector_matches=0,
+            )
+        )
+
+        with (
+            patch("contextmine_core.context.get_settings", return_value=settings),
+            patch("contextmine_core.context.hybrid_search", search),
+            patch(
+                "contextmine_core.embeddings.get_embedder",
+                side_effect=AssertionError("embedder must not be initialized"),
+            ),
+        ):
+            response = await assemble_context(query="auth", llm=llm)
+
+        assert "Deterministic evidence" in response.markdown
+        assert "model calls disabled" in response.markdown
+        assert response.chunks_used == 1
+        assert search.await_args.kwargs["query_embedding"] is None
+        llm.generate.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_streaming_context_returns_one_deterministic_document(self) -> None:
+        settings = MagicMock(
+            model_calls_enabled=False,
+            default_embedding_model="openai:text-embedding-3-small",
+        )
+        search = AsyncMock(
+            return_value=SearchResponse(
+                results=[_search_result()],
+                query="auth",
+                total_fts_matches=1,
+                total_vector_matches=0,
+            )
+        )
+
+        with (
+            patch("contextmine_core.context.get_settings", return_value=settings),
+            patch("contextmine_core.context.hybrid_search", search),
+        ):
+            items = [item async for item in assemble_context_stream(query="auth")]
+
+        assert isinstance(items[0], StreamingContextMetadata)
+        assert len(items) == 2
+        assert "Deterministic evidence" in items[1]
+        assert search.await_args.kwargs["query_embedding"] is None
+
+    def test_retrieval_markdown_lists_unique_sources(self) -> None:
+        markdown = build_retrieval_markdown("auth", [_search_result(), _search_result()])
+
+        assert markdown.count("- git://github.com/org/repo/src/main.py?ref=main") == 1
 
 
 # ---------------------------------------------------------------------------

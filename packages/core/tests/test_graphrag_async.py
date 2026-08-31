@@ -1052,7 +1052,8 @@ class TestGraphRagContext:
             ) as mock_acl,
         ):
             mock_settings.return_value = MagicMock(
-                default_embedding_model="openai:text-embedding-3-small"
+                default_embedding_model="openai:text-embedding-3-small",
+                model_calls_enabled=True,
             )
             mock_parse.return_value = ("openai", "text-embedding-3-small")
             mock_embedder = AsyncMock()
@@ -1096,7 +1097,8 @@ class TestGraphRagContext:
             ) as mock_cit_by,
         ):
             mock_settings.return_value = MagicMock(
-                default_embedding_model="openai:text-embedding-3-small"
+                default_embedding_model="openai:text-embedding-3-small",
+                model_calls_enabled=True,
             )
             mock_parse.return_value = ("openai", "text-embedding-3-small")
             mock_embedder = AsyncMock()
@@ -1121,3 +1123,52 @@ class TestGraphRagContext:
             pack = await graph_rag_context(session, "query", collection_id=coll_id)
             assert isinstance(pack, ContextPack)
             assert len(pack.entities) == 1
+
+    @pytest.mark.anyio
+    async def test_model_free_mode_uses_fts_without_embedding(self) -> None:
+        session = _mock_session()
+        coll_id = uuid4()
+
+        with (
+            patch("contextmine_core.settings.get_settings") as mock_settings,
+            patch("contextmine_core.embeddings.parse_embedding_model_spec") as mock_parse,
+            patch("contextmine_core.embeddings.get_embedder") as mock_get_emb,
+            patch("contextmine_core.search.hybrid_search", new_callable=AsyncMock) as mock_search,
+            patch(
+                "contextmine_core.graphrag._find_relevant_communities", new_callable=AsyncMock
+            ) as mock_comms,
+            patch(
+                "contextmine_core.graphrag._map_search_to_nodes", new_callable=AsyncMock
+            ) as mock_map,
+            patch(
+                "contextmine_core.graphrag._get_community_member_nodes", new_callable=AsyncMock
+            ) as mock_members,
+            patch(
+                "contextmine_core.graphrag._expand_from_seeds", new_callable=AsyncMock
+            ) as mock_expand,
+            patch(
+                "contextmine_core.graphrag._gather_citations", new_callable=AsyncMock
+            ) as mock_cit,
+            patch(
+                "contextmine_core.graphrag._citations_by_node", new_callable=AsyncMock
+            ) as mock_cit_by,
+        ):
+            mock_settings.return_value = MagicMock(
+                default_embedding_model="openai:text-embedding-3-small",
+                model_calls_enabled=False,
+            )
+            mock_search.return_value = MagicMock(results=[])
+            mock_map.return_value = []
+            mock_expand.return_value = ([], [])
+            mock_cit.return_value = []
+            mock_cit_by.return_value = {}
+
+            pack = await graph_rag_context(session, "query", collection_id=coll_id)
+
+        assert isinstance(pack, ContextPack)
+        assert pack.communities == []
+        mock_parse.assert_not_called()
+        mock_get_emb.assert_not_called()
+        mock_comms.assert_not_awaited()
+        mock_members.assert_not_awaited()
+        assert mock_search.await_args.kwargs["query_embedding"] is None

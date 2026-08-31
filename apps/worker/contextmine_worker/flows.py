@@ -300,6 +300,7 @@ class _DocProcessingAccumulator:
     chunks_deleted: int = 0
     chunks_embedded: int = 0
     chunks_deduplicated: int = 0
+    embedding_documents_skipped: int = 0
     tokens_used: int = 0
     symbols_created: int = 0
     symbols_deleted: int = 0
@@ -375,6 +376,8 @@ async def _process_single_document(
     acc.chunks_embedded += embed_stats["chunks_embedded"]
     acc.chunks_deduplicated += embed_stats.get("chunks_deduplicated", 0)
     acc.tokens_used += embed_stats["tokens_used"]
+    if embed_stats.get("skipped"):
+        acc.embedding_documents_skipped += 1
 
 
 async def _process_document_batch(
@@ -829,11 +832,20 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
     Returns:
         Stats dict with chunks_embedded, chunks_deduplicated, and tokens_used
     """
+    settings = get_settings()
+    if not settings.model_calls_enabled:
+        return {
+            "chunks_embedded": 0,
+            "chunks_deduplicated": 0,
+            "tokens_used": 0,
+            "skipped": True,
+            "skip_reason": "model_calls_disabled",
+        }
+
     # Get embedding model spec from collection config or global default
     if collection_id:
         model_spec = await get_embedding_model_for_collection(collection_id)
     else:
-        settings = get_settings()
         model_spec = settings.default_embedding_model
 
     provider, model_name = parse_embedding_model_spec(model_spec)
@@ -908,7 +920,7 @@ async def _kg_has_db_tables(collection_uuid: object) -> bool:
 async def _kg_extract_erm(
     source_uuid: object,
     collection_uuid: object,
-    research_llm: object,
+    research_llm: object | None,
     changed_doc_ids: list[str] | None = None,
     deleted_file_paths: list[str] | None = None,
 ) -> dict[str, int]:
@@ -985,6 +997,15 @@ async def _kg_extract_erm(
             }
 
         if not schema_candidates:
+            if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
+                await session.commit()
+            return {
+                "tables_found": 0,
+                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
+                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
+            }
+
+        if research_llm is None:
             if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
                 await session.commit()
             return {
@@ -1427,8 +1448,9 @@ async def build_knowledge_graph(
     - Hierarchical Leiden communities
     - Community summaries and embeddings
 
-    REQUIRES: LLM provider and embedder must be configured.
-    GraphRAG features require both for proper entity resolution and community summaries.
+    With model calls disabled, deterministic file, symbol, schema, surface, and
+    community extraction remains available. Semantic enrichment requires an LLM
+    provider and embedder.
 
     Returns:
         Stats dict with KG extraction metrics
@@ -1449,50 +1471,59 @@ async def build_knowledge_graph(
         "kg_endpoints": 0,
         "kg_jobs": 0,
         "kg_errors": [],
+        "kg_mode": "full",
+        "kg_model_steps_skipped": [],
     }
 
     source_uuid = uuid_module.UUID(source_id)
     collection_uuid = uuid_module.UUID(collection_id)
 
-    # REQUIRED: Get LLM provider and embedder upfront
-    # GraphRAG is the core feature - no point running without these
     settings = get_settings()
-
-    # Get LLM provider (required for entity extraction and community summaries)
     llm_provider = None
-    if settings.default_llm_provider:
+    research_llm = None
+    embedder = None
+    if settings.model_calls_enabled:
+        if settings.default_llm_provider:
+            try:
+                llm_provider = get_llm_provider(settings.default_llm_provider)
+            except Exception as e:
+                raise ValueError(f"LLM provider configured but failed to initialize: {e}") from e
+        else:
+            raise ValueError(
+                "LLM provider required for Knowledge Graph. "
+                "Set DEFAULT_LLM_PROVIDER (e.g., 'openai', 'anthropic', 'gemini')."
+            )
+
+        research_llm = get_research_llm_provider()
+        if not research_llm:
+            raise ValueError(
+                "Research LLM provider required for business rule extraction. "
+                "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY."
+            )
+
         try:
-            llm_provider = get_llm_provider(settings.default_llm_provider)
+            provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
+            embedder = get_embedder(provider_name, model_name)
         except Exception as e:
-            raise ValueError(f"LLM provider configured but failed to initialize: {e}") from e
+            raise ValueError(
+                f"Embedder required for Knowledge Graph but failed to initialize: {e}. "
+                f"Set DEFAULT_EMBEDDING_MODEL (e.g., 'openai:text-embedding-3-small')."
+            ) from e
+
+        logger.info(
+            "Knowledge Graph build starting with LLM=%s, embedder=%s",
+            settings.default_llm_provider,
+            settings.default_embedding_model,
+        )
     else:
-        raise ValueError(
-            "LLM provider required for Knowledge Graph. "
-            "Set DEFAULT_LLM_PROVIDER (e.g., 'openai', 'anthropic', 'gemini')."
-        )
-
-    research_llm = get_research_llm_provider()
-    if not research_llm:
-        raise ValueError(
-            "Research LLM provider required for business rule extraction. "
-            "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY."
-        )
-
-    # Get embedder (required for entity resolution and community retrieval)
-    try:
-        provider_name, model_name = parse_embedding_model_spec(settings.default_embedding_model)
-        embedder = get_embedder(provider_name, model_name)
-    except Exception as e:
-        raise ValueError(
-            f"Embedder required for Knowledge Graph but failed to initialize: {e}. "
-            f"Set DEFAULT_EMBEDDING_MODEL (e.g., 'openai:text-embedding-3-small')."
-        ) from e
-
-    logger.info(
-        "Knowledge Graph build starting with LLM=%s, embedder=%s",
-        settings.default_llm_provider,
-        settings.default_embedding_model,
-    )
+        stats["kg_mode"] = "deterministic"
+        stats["kg_model_steps_skipped"] = [
+            "business_rules",
+            "generic_schema_extraction",
+            "semantic_entities",
+            "community_summaries",
+        ]
+        logger.info("Knowledge Graph build starting in deterministic model-free mode")
 
     # Step 1: Build FILE and SYMBOL nodes from indexed documents
     try:
@@ -1519,19 +1550,20 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"file_symbol: {e}")
 
     # Step 2: Extract business rules from code files using LLM (INCREMENTAL)
-    try:
-        rules_count = await _kg_extract_business_rules(
-            source_uuid,
-            collection_uuid,
-            changed_doc_ids,
-            research_llm,
-            deleted_file_paths,
-        )
-        stats["kg_business_rules"] = rules_count.get("rules_created", 0)
-        stats["kg_nodes_deleted"] += rules_count.get("nodes_deleted", 0)
-    except Exception as e:
-        logger.warning("Failed to extract business rules: %s", e)
-        stats["kg_errors"].append(f"rules: {e}")
+    if settings.model_calls_enabled:
+        try:
+            rules_count = await _kg_extract_business_rules(
+                source_uuid,
+                collection_uuid,
+                changed_doc_ids,
+                research_llm,
+                deleted_file_paths,
+            )
+            stats["kg_business_rules"] = rules_count.get("rules_created", 0)
+            stats["kg_nodes_deleted"] += rules_count.get("nodes_deleted", 0)
+        except Exception as e:
+            logger.warning("Failed to extract business rules: %s", e)
+            stats["kg_errors"].append(f"rules: {e}")
 
     # Step 3: Extract ERM from Alembic migrations
     try:
@@ -1561,17 +1593,19 @@ async def build_knowledge_graph(
         stats["kg_errors"].append(f"surface: {e}")
 
     # Step 5: Extract semantic entities using LLM (for proper GraphRAG)
-    await _kg_step_semantic_entities(
-        stats, collection_uuid, llm_provider, embedder, changed_doc_ids, deleted_file_paths
-    )
+    if settings.model_calls_enabled:
+        await _kg_step_semantic_entities(
+            stats, collection_uuid, llm_provider, embedder, changed_doc_ids, deleted_file_paths
+        )
 
     # Step 6: Detect communities using Leiden algorithm (GraphRAG)
     await _kg_step_communities(stats, collection_uuid)
 
     # Step 7: Generate community summaries and embeddings
-    await _kg_step_summaries(
-        stats, collection_uuid, research_llm, embedder, changed_doc_ids, deleted_file_paths
-    )
+    if settings.model_calls_enabled:
+        await _kg_step_summaries(
+            stats, collection_uuid, research_llm, embedder, changed_doc_ids, deleted_file_paths
+        )
 
     return stats
 
@@ -3691,6 +3725,7 @@ def _build_source_version_stats(
         "docs_processing_failures": int(doc_acc.processing_failures),  # type: ignore[union-attr]
         "docs_processing_timeouts": int(doc_acc.processing_timeouts),  # type: ignore[union-attr]
         "docs_processing_error_samples": list(doc_acc.error_samples)[:25],  # type: ignore[union-attr]
+        "embedding_documents_skipped": int(doc_acc.embedding_documents_skipped),  # type: ignore[union-attr]
         "joern_status": "ready" if ctx.joern_ok else "failed",
         "joern_error": ctx.joern_error if not ctx.joern_ok else "",
         **scip_sub,
@@ -3740,6 +3775,7 @@ def _build_sync_run_stats(ctx: _SyncGitHubCtx) -> dict[str, Any]:
         "chunks_embedded": doc_acc.chunks_embedded,  # type: ignore[union-attr]
         "chunks_deduplicated": doc_acc.chunks_deduplicated,  # type: ignore[union-attr]
         "embedding_tokens_used": doc_acc.tokens_used,  # type: ignore[union-attr]
+        "embedding_documents_skipped": doc_acc.embedding_documents_skipped,  # type: ignore[union-attr]
         "symbols_created": doc_acc.symbols_created,  # type: ignore[union-attr]
         "symbols_deleted": doc_acc.symbols_deleted,  # type: ignore[union-attr]
         "commit_sha": ctx.new_sha,
@@ -4210,6 +4246,7 @@ async def sync_web_source(
             "chunks_embedded": total_chunks_embedded,
             "chunks_deduplicated": total_chunks_deduplicated,
             "embedding_tokens_used": total_tokens_used,
+            "embedding_documents_skipped": doc_acc.embedding_documents_skipped,
             "symbols_created": total_symbols_created,
             "symbols_deleted": total_symbols_deleted,
             # Twin stats

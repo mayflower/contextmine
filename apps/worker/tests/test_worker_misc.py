@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import contextmine_core.settings as settings_module
 import pytest
+from contextmine_core.model_policy import ModelCallsDisabledError
+from contextmine_core.settings import Settings
 from contextmine_worker.chunking import (
     ChunkResult,
     chunk_document,
@@ -25,6 +28,27 @@ from contextmine_worker.telemetry import (
 )
 
 pytestmark = pytest.mark.anyio
+
+
+def test_deployment_agent_respects_model_call_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextmine_worker.agents import deployment
+
+    monkeypatch.setattr(
+        settings_module,
+        "_settings",
+        Settings(model_calls_enabled=False),
+    )
+
+    with (
+        patch.object(deployment, "ChatAnthropic") as chat_anthropic,
+        pytest.raises(ModelCallsDisabledError),
+    ):
+        deployment.build_agent()
+
+    chat_anthropic.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Worker telemetry decorators

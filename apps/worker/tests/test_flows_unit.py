@@ -63,6 +63,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "joern_parse_timeout_seconds": 120,
         "default_embedding_model": "openai:text-embedding-3-small",
         "default_llm_provider": "openai",
+        "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
         "scip_timeout_python": 300,
@@ -688,6 +689,32 @@ class TestGetEmbeddingModelForCollection:
 
 
 class TestEmbedDocument:
+    async def test_skips_when_model_calls_are_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        get_collection_model = AsyncMock()
+        monkeypatch.setattr(
+            flows,
+            "get_settings",
+            lambda: _make_settings(model_calls_enabled=False),
+        )
+        monkeypatch.setattr(
+            flows,
+            "get_embedding_model_for_collection",
+            get_collection_model,
+        )
+
+        result = await flows.embed_document(str(uuid.uuid4()), str(uuid.uuid4()))
+
+        assert result == {
+            "chunks_embedded": 0,
+            "chunks_deduplicated": 0,
+            "tokens_used": 0,
+            "skipped": True,
+            "skip_reason": "model_calls_disabled",
+        }
+        get_collection_model.assert_not_awaited()
+
     async def test_uses_collection_model_when_provided(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1604,7 +1631,114 @@ class TestTaskIndexScipProject:
 # ---------------------------------------------------------------------------
 
 
+async def test_model_free_erm_skips_generic_schema_model_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_result = MagicMock()
+    mock_result.all.return_value = [
+        (
+            "git://github.com/example/repo/db/schema.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )
+    ]
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(flows, "get_session", lambda: mock_cm)
+
+    cleanup = AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0})
+    monkeypatch.setattr(
+        "contextmine_core.knowledge.builder.cleanup_scoped_knowledge_nodes",
+        cleanup,
+    )
+    generic_fallback = AsyncMock(side_effect=AssertionError("model fallback must not run"))
+    monkeypatch.setattr(flows, "_extract_schema_fallback", generic_fallback)
+
+    result = await flows._kg_extract_erm(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        research_llm=None,
+    )
+
+    assert result == {"tables_found": 0, "nodes_deleted": 0, "evidence_deleted": 0}
+    generic_fallback.assert_not_awaited()
+
+
 class TestBuildKnowledgeGraph:
+    async def test_model_free_mode_runs_deterministic_steps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            flows,
+            "get_settings",
+            lambda: _make_settings(model_calls_enabled=False),
+        )
+
+        def unexpected_provider(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("model provider must not be initialized")
+
+        monkeypatch.setattr(
+            "contextmine_core.research.llm.get_llm_provider",
+            unexpected_provider,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.research.llm.get_research_llm_provider",
+            unexpected_provider,
+        )
+        monkeypatch.setattr(flows, "get_embedder", unexpected_provider)
+
+        mock_session = AsyncMock()
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(flows, "get_session", lambda: mock_cm)
+
+        build_stats = SimpleNamespace(file_nodes_created=7, symbol_nodes_created=13)
+        build_files = AsyncMock(return_value=build_stats)
+        cleanup = AsyncMock(return_value={"nodes_deleted": 2})
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.build_knowledge_graph_for_source",
+            build_files,
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.builder.cleanup_orphan_nodes",
+            cleanup,
+        )
+
+        extract_erm = AsyncMock(
+            return_value={"tables_found": 3, "nodes_deleted": 1, "evidence_deleted": 0}
+        )
+        extract_surfaces = AsyncMock(
+            return_value={"kg_endpoints": 5, "kg_jobs": 2, "nodes_deleted": 0}
+        )
+        communities = AsyncMock()
+        monkeypatch.setattr(flows, "_kg_extract_erm", extract_erm)
+        monkeypatch.setattr(flows, "_kg_extract_surfaces", extract_surfaces)
+        monkeypatch.setattr(flows, "_kg_step_communities", communities)
+
+        result = await flows.build_knowledge_graph.fn(
+            source_id=str(uuid.uuid4()),
+            collection_id=str(uuid.uuid4()),
+        )
+
+        assert result["kg_mode"] == "deterministic"
+        assert result["kg_model_steps_skipped"] == [
+            "business_rules",
+            "generic_schema_extraction",
+            "semantic_entities",
+            "community_summaries",
+        ]
+        assert result["kg_file_nodes"] == 7
+        assert result["kg_symbol_nodes"] == 13
+        assert result["kg_tables"] == 3
+        assert result["kg_endpoints"] == 5
+        assert result["kg_jobs"] == 2
+        assert result["kg_nodes_deleted"] == 3
+        assert extract_erm.await_args.args[2] is None
+        communities.assert_awaited_once()
+
     async def test_raises_when_no_llm_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             flows,

@@ -38,6 +38,7 @@ from contextmine_core.exports import (
 )
 from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
 from contextmine_core.graphrag import trace_path as graphrag_trace_path
+from contextmine_core.model_policy import ModelCallsDisabledError
 from contextmine_core.models import (
     CommunityMember,
     CoverageIngestJob,
@@ -3172,7 +3173,7 @@ async def arc42_view(
                 max_turns=int(settings.arch_docs_agent_sdk_max_turns),
                 permission_mode=settings.arch_docs_agent_sdk_permission_mode,
             )
-        except ClaudeAgentSdkUnavailableError as exc:
+        except (ClaudeAgentSdkUnavailableError, ModelCallsDisabledError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
