@@ -5,9 +5,10 @@ import struct
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from contextmine_core.model_policy import ModelCallsDisabledError, ensure_model_calls_enabled
 from contextmine_core.models import EmbeddingProvider
 from contextmine_core.settings import get_settings
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 
 @dataclass
@@ -172,11 +173,13 @@ class OpenAIEmbedder(Embedder):
         return self._dimensions[self._model_name]
 
     @retry(
+        retry=retry_if_not_exception_type(ModelCallsDisabledError),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
     )
     async def embed_batch(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts using OpenAI API."""
+        ensure_model_calls_enabled()
         from contextmine_core.telemetry.spans import trace_embedding_call
         from openai import AsyncOpenAI
 
@@ -238,11 +241,13 @@ class GeminiEmbedder(Embedder):
         return self._dimensions[self._model_name]
 
     @retry(
+        retry=retry_if_not_exception_type(ModelCallsDisabledError),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
     )
     async def embed_batch(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts using Gemini API."""
+        ensure_model_calls_enabled()
         from contextmine_core.telemetry.spans import trace_embedding_call
         from google import genai
         from google.genai import types
@@ -283,6 +288,8 @@ def get_embedder(
     Returns:
         Embedder instance
     """
+    ensure_model_calls_enabled()
+
     if isinstance(provider, str):
         provider = EmbeddingProvider(provider)
 

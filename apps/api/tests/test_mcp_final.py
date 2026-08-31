@@ -91,6 +91,7 @@ def _make_settings(**overrides):
         "arch_docs_agent_sdk_max_turns": 10,
         "arch_docs_agent_sdk_permission_mode": "never",
         "default_llm_provider": "openai",
+        "model_calls_enabled": True,
         "repos_root": "/tmp/repos",
         "twin_analysis_cache_ttl_seconds": 300,
     }

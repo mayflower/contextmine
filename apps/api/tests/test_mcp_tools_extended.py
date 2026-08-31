@@ -218,6 +218,34 @@ class TestGetContextMarkdownRaw:
         assert "Payment" not in result
 
     @pytest.mark.anyio
+    async def test_model_free_raw_search_never_initializes_embedder(self, _patch_user_id) -> None:
+        mock_search_response = MagicMock()
+        mock_search_response.results = [
+            MagicMock(uri="doc://a", title="Evidence", content="deterministic content")
+        ]
+        settings = MagicMock(
+            model_calls_enabled=False,
+            default_embedding_model="openai:text-embedding-3-small",
+        )
+
+        with (
+            patch("app.mcp_server.get_settings", return_value=settings),
+            patch(
+                "app.mcp_server.get_embedder",
+                side_effect=AssertionError("embedder must not be initialized"),
+            ),
+            patch(
+                "app.mcp_server.hybrid_search",
+                new_callable=AsyncMock,
+                return_value=mock_search_response,
+            ) as mock_search,
+        ):
+            result = await _get_context_markdown(query="test query", raw=True)
+
+        assert "model calls disabled" in result
+        assert mock_search.await_args.kwargs["query_embedding"] is None
+
+    @pytest.mark.anyio
     async def test_assembled_mode_calls_assemble_context(self, _patch_user_id) -> None:
         """Test the LLM-assembled path."""
         mock_response = MagicMock()

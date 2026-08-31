@@ -249,7 +249,7 @@ async def get_chunk_details(
 
 async def hybrid_search(
     query: str,
-    query_embedding: list[float],
+    query_embedding: list[float] | None,
     user_id: uuid.UUID | None = None,
     collection_id: uuid.UUID | None = None,
     top_k: int = 20,
@@ -260,7 +260,7 @@ async def hybrid_search(
 
     Args:
         query: The search query text
-        query_embedding: The query embedding vector
+        query_embedding: The query embedding vector, or None for full-text-only search
         user_id: Optional user ID for access control
         collection_id: Optional collection ID to filter by
         top_k: Number of results to return
@@ -295,9 +295,13 @@ async def hybrid_search(
                 total_vector_matches=0,
             )
 
-        # Perform both searches
+        # Full-text search remains available when external embeddings are disabled.
         fts_results = await search_fts(session, query, collection_ids, fts_limit)
-        vector_results = await search_vector(session, query_embedding, collection_ids, vector_limit)
+        vector_results = (
+            await search_vector(session, query_embedding, collection_ids, vector_limit)
+            if query_embedding is not None
+            else []
+        )
 
         # Compute RRF scores
         rrf_scores = compute_rrf_scores(fts_results, vector_results)

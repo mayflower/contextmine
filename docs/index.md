@@ -108,17 +108,23 @@ helm install contextmine oci://ghcr.io/mayflower/contextmine -f my-values.yaml
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
 | `SESSION_SECRET` | Secret for session cookies |
 | `TOKEN_ENCRYPTION_KEY` | Key for encrypting stored tokens |
-| `OPENAI_API_KEY` | OpenAI API key for embeddings |
 
 ### Optional Environment Variables
 
 | Variable | Description |
 |----------|-------------|
+| `MODEL_CALLS_ENABLED` | Enable external embedding and LLM calls (default: `true`) |
+| `OPENAI_API_KEY` | OpenAI API key for embeddings and LLM features |
 | `GEMINI_API_KEY` | Alternative to OpenAI for embeddings |
 | `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
 | `DEFAULT_LLM_PROVIDER` | LLM provider: `openai`, `anthropic`, or `gemini` |
 | `DEFAULT_LLM_MODEL` | Model name (e.g., `claude-haiku-4-5-20251001`) |
 | `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
+
+With `MODEL_CALLS_ENABLED=false`, indexing retains deterministic document,
+symbol, schema, surface, and graph-community extraction. Search and context
+retrieval fall back to full-text evidence, while model-dependent enrichment,
+research agents, and generated architecture narratives are disabled.
 
 ### Setting Up GitHub OAuth
 

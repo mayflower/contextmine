@@ -286,12 +286,13 @@ Copy `.env.example` to `.env` and configure these variables:
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
 | `SESSION_SECRET` | Secret for session cookies |
 | `TOKEN_ENCRYPTION_KEY` | Key for encrypting stored tokens |
-| `OPENAI_API_KEY` | OpenAI API key for embeddings |
 
 ### Optional
 
 | Variable | Description |
 |----------|-------------|
+| `MODEL_CALLS_ENABLED` | Enable external embedding and LLM calls (default: `true`) |
+| `OPENAI_API_KEY` | OpenAI API key for embeddings and LLM features |
 | `GEMINI_API_KEY` | Alternative to OpenAI for embeddings |
 | `ANTHROPIC_API_KEY` | For deep_research agent (uses Claude) |
 | `MCP_ALLOWED_ORIGINS` | CORS origins for MCP in production |
@@ -302,6 +303,12 @@ Copy `.env.example` to `.env` and configure these variables:
 | `METRICS_LANGUAGES` | Metrics language scope (default: `python,typescript,javascript,java,php`) |
 | `COVERAGE_INGEST_MAX_PAYLOAD_MB` | Max multipart payload size for CI coverage uploads (default: `25`) |
 | `COVERAGE_INGEST_PREFECT_FLOW_NAME` | Prefect flow name for async coverage ingest (default: `ingest_coverage_metrics`) |
+
+Set `MODEL_CALLS_ENABLED=false` to operate without external model calls. Syncs
+still extract documents, symbols, deterministic schemas, API surfaces, and
+graph communities. Search, context assembly, and MCP retrieval use full-text
+evidence without embeddings or LLM synthesis. Model-dependent enrichment,
+research agents, and generated architecture narratives remain unavailable.
 
 ### Setting Up GitHub OAuth
 

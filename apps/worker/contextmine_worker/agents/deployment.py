@@ -3,6 +3,7 @@ import os
 import re
 from typing import Annotated
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import tool
 from langgraph.graph import START, StateGraph
@@ -66,11 +67,12 @@ def glob_tool(pattern: str, repo_path: str) -> str:
 
 
 def build_agent():
+    ensure_model_calls_enabled()
     tools = [bash_tool, read_tool, glob_tool]
 
     # Initialize LLM
     api_key = os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_TOKEN"))
-    llm = ChatAnthropic(model="claude-3-5-sonnet-latest", api_key=api_key)  # ty: ignore[missing-argument,unknown-argument]
+    llm = ChatAnthropic(model_name="claude-3-5-sonnet-latest", api_key=api_key)
     llm_with_tools = llm.bind_tools(tools)
 
     def agent_node(state: AgentState):

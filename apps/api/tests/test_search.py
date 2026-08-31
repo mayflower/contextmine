@@ -189,6 +189,81 @@ class TestAccessControl:
             assert result.query == "test query"
 
 
+class TestModelFreeSearch:
+    @pytest.mark.anyio
+    async def test_hybrid_search_skips_vector_query_without_embedding(self) -> None:
+        import uuid
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from contextmine_core.search import hybrid_search
+
+        collection_id = uuid.uuid4()
+        chunk_id = uuid.uuid4()
+
+        @asynccontextmanager
+        async def mock_get_session():
+            yield MagicMock()
+
+        vector_search = AsyncMock()
+        with (
+            patch("contextmine_core.search.get_session", mock_get_session),
+            patch(
+                "contextmine_core.search.get_accessible_collection_ids",
+                AsyncMock(return_value=[collection_id]),
+            ),
+            patch(
+                "contextmine_core.search.search_fts",
+                AsyncMock(return_value=[(chunk_id, 0.9, 1)]),
+            ),
+            patch("contextmine_core.search.search_vector", vector_search),
+            patch(
+                "contextmine_core.search.get_chunk_details",
+                AsyncMock(
+                    return_value={
+                        chunk_id: {
+                            "document_id": uuid.uuid4(),
+                            "content": "evidence",
+                            "uri": "doc://evidence",
+                            "title": "Evidence",
+                            "source_id": uuid.uuid4(),
+                            "collection_id": collection_id,
+                        }
+                    }
+                ),
+            ),
+        ):
+            result = await hybrid_search(
+                query="evidence",
+                query_embedding=None,
+                user_id=None,
+                top_k=10,
+            )
+
+        assert len(result.results) == 1
+        assert result.total_vector_matches == 0
+        vector_search.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_api_query_embedding_is_none_when_models_are_disabled(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from app.routes.search import get_query_embedding
+
+        with (
+            patch(
+                "app.routes.search.get_settings",
+                return_value=SimpleNamespace(model_calls_enabled=False),
+            ),
+            patch(
+                "contextmine_core.get_embedder",
+                side_effect=AssertionError("embedder must not be initialized"),
+            ),
+        ):
+            assert await get_query_embedding("evidence") is None
+
+
 class TestSearchIntegration:
     """Integration tests for the search endpoint.
 

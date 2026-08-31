@@ -39,6 +39,7 @@ def _make_settings(**overrides):
         "arch_docs_llm_max_hypotheses": 12,
         "repos_root": "/tmp/repos",
         "default_llm_provider": "openai",
+        "model_calls_enabled": True,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

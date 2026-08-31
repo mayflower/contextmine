@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
 from contextmine_core.search import SearchResult, hybrid_search
 from contextmine_core.settings import get_settings
 
@@ -109,6 +110,30 @@ def extract_sources(chunks: list[SearchResult]) -> list[dict]:
             sources.append(source)
 
     return sources
+
+
+def build_retrieval_markdown(query: str, chunks: list[SearchResult]) -> str:
+    """Render retrieved evidence without synthesizing a model-generated answer."""
+    lines = [
+        f"# Retrieved Context for: {query}",
+        "",
+        "*Retrieval mode: deterministic full-text search; model calls disabled.*",
+        "",
+    ]
+    for index, chunk in enumerate(chunks, 1):
+        lines.extend(
+            [
+                f"## Result {index}: {chunk.title}",
+                f"*Source: {chunk.uri}*",
+                "",
+                chunk.content,
+                "",
+            ]
+        )
+
+    lines.append("## Sources")
+    lines.extend(f"- {source['uri']}" for source in extract_sources(chunks))
+    return "\n".join(lines)
 
 
 class LLM(ABC):
@@ -232,6 +257,7 @@ class OpenAILLM(LLM):
 
     async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
         """Generate using OpenAI API."""
+        ensure_model_calls_enabled()
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key)
@@ -249,6 +275,7 @@ class OpenAILLM(LLM):
         self, system_prompt: str, user_prompt: str, max_tokens: int
     ) -> AsyncIterator[str]:
         """Generate streaming response using OpenAI API."""
+        ensure_model_calls_enabled()
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key)
@@ -277,6 +304,7 @@ class AnthropicLLM(LLM):
 
     async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
         """Generate using Anthropic API."""
+        ensure_model_calls_enabled()
         import anthropic
 
         client = anthropic.AsyncAnthropic(api_key=self.api_key)
@@ -297,6 +325,7 @@ class AnthropicLLM(LLM):
         self, system_prompt: str, user_prompt: str, max_tokens: int
     ) -> AsyncIterator[str]:
         """Generate streaming response using Anthropic API."""
+        ensure_model_calls_enabled()
         import anthropic
 
         client = anthropic.AsyncAnthropic(api_key=self.api_key)
@@ -321,6 +350,7 @@ class GeminiLLM(LLM):
 
     async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
         """Generate using Gemini API."""
+        ensure_model_calls_enabled()
         from google import genai
         from google.genai import types
 
@@ -339,6 +369,7 @@ class GeminiLLM(LLM):
         self, system_prompt: str, user_prompt: str, max_tokens: int
     ) -> AsyncIterator[str]:
         """Generate streaming response using Gemini API."""
+        ensure_model_calls_enabled()
         from google import genai
         from google.genai import types
 
@@ -371,6 +402,8 @@ def get_llm(
     Returns:
         LLM instance
     """
+    ensure_model_calls_enabled()
+
     if isinstance(provider, str):
         provider = LLMProvider(provider)
 
@@ -425,15 +458,16 @@ async def assemble_context(
 
     settings = get_settings()
 
-    # Get query embedding
-    try:
-        emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
-        embedder = get_embedder(emb_provider, emb_model)
-    except Exception:
-        embedder = FakeEmbedder()
+    query_embedding: list[float] | None = None
+    if settings.model_calls_enabled:
+        try:
+            emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
+            embedder = get_embedder(emb_provider, emb_model)
+        except Exception:
+            embedder = FakeEmbedder()
 
-    embed_result = await embedder.embed_batch([query])
-    query_embedding = embed_result.embeddings[0]
+        embed_result = await embedder.embed_batch([query])
+        query_embedding = embed_result.embeddings[0]
 
     # Retrieve chunks
     search_response = await hybrid_search(
@@ -452,6 +486,14 @@ async def assemble_context(
             query=query,
             chunks_used=0,
             sources=[],
+        )
+
+    if not settings.model_calls_enabled:
+        return ContextResponse(
+            markdown=build_retrieval_markdown(query, chunks),
+            query=query,
+            chunks_used=len(chunks),
+            sources=extract_sources(chunks),
         )
 
     # Build prompt
@@ -516,15 +558,16 @@ async def assemble_context_stream(
 
     settings = get_settings()
 
-    # Get query embedding
-    try:
-        emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
-        embedder = get_embedder(emb_provider, emb_model)
-    except Exception:
-        embedder = FakeEmbedder()
+    query_embedding: list[float] | None = None
+    if settings.model_calls_enabled:
+        try:
+            emb_provider, emb_model = parse_embedding_model_spec(settings.default_embedding_model)
+            embedder = get_embedder(emb_provider, emb_model)
+        except Exception:
+            embedder = FakeEmbedder()
 
-    embed_result = await embedder.embed_batch([query])
-    query_embedding = embed_result.embeddings[0]
+        embed_result = await embedder.embed_batch([query])
+        query_embedding = embed_result.embeddings[0]
 
     # Retrieve chunks
     search_response = await hybrid_search(
@@ -545,6 +588,10 @@ async def assemble_context_stream(
     # Extract sources and yield metadata first
     sources = extract_sources(chunks)
     yield StreamingContextMetadata(query=query, chunks_used=len(chunks), sources=sources)
+
+    if not settings.model_calls_enabled:
+        yield build_retrieval_markdown(query, chunks)
+        return
 
     # Build prompt and stream response
     user_prompt = build_context_prompt(query, chunks)

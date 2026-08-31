@@ -45,6 +45,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "joern_parse_timeout_seconds": 120,
         "default_embedding_model": "openai:text-embedding-3-small",
         "default_llm_provider": "openai",
+        "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
         "scip_timeout_python": 300,
