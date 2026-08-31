@@ -13,6 +13,7 @@ nav:
           - Extracted Views QA Checklist: extracted_views_qa_checklist.md
       - Reference:
           - Cockpit Contracts: diataxis/reference/cockpit_contracts.md
+          - Dependency and Upgrade Inventory: diataxis/reference/dependency_inventory.md
       - Explanation:
           - Strict Metrics Pipeline: diataxis/explanation/strict_metrics_pipeline.md
   - MCP Interface: mcp.md

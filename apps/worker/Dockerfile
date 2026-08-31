@@ -92,8 +92,9 @@ COPY packages/ packages/
 COPY apps/worker/ apps/worker/
 COPY apps/api/pyproject.toml apps/api/
 
-# Sync dependencies, create non-root user and data/cache directories
-RUN uv sync --frozen --no-dev && \
+# Sync the worker package and its workspace dependencies during the image build.
+# The container must not resolve or install packages when it starts.
+RUN uv sync --frozen --no-dev --package contextmine-worker && \
     useradd --create-home --shell /bin/bash appuser && \
     mkdir -p /data/repos \
       /home/appuser/.npm \
@@ -115,5 +116,5 @@ USER appuser
 # Set working directory to worker
 WORKDIR /app/apps/worker
 
-# Run the worker
-CMD ["uv", "run", "python", "-m", "contextmine_worker.main"]
+# Run from the environment materialized during the image build.
+CMD ["/app/.venv/bin/python", "-m", "contextmine_worker.main"]

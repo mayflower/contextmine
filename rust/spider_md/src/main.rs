@@ -5,15 +5,14 @@
 //! processing by Python (trafilatura) for content extraction.
 
 use clap::Parser;
-use hex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use spider::configuration::Configuration;
 use spider::reqwest::header::HeaderName;
 use spider::website::Website;
 use std::io::{self, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -34,7 +33,10 @@ struct Args {
     max_pages: usize,
 
     /// User agent string
-    #[arg(long, default_value = "Mozilla/5.0 (compatible; ContextMine/1.0; +https://github.com/mayflower/contextmine)")]
+    #[arg(
+        long,
+        default_value = "Mozilla/5.0 (compatible; ContextMine/1.0; +https://github.com/mayflower/contextmine)"
+    )]
     user_agent: String,
 
     /// Request delay in milliseconds
@@ -129,7 +131,7 @@ async fn main() {
     let base_url = match Url::parse(&args.base_url) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("Invalid base URL: {}", e);
+            eprintln!("Invalid base URL: {e}");
             std::process::exit(1);
         }
     };
@@ -141,7 +143,7 @@ async fn main() {
     let start_url = match Url::parse(start_url_str) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("Invalid start URL: {}", e);
+            eprintln!("Invalid start URL: {e}");
             std::process::exit(1);
         }
     };
@@ -154,10 +156,7 @@ async fn main() {
 
     // Start URL must be within base URL scope
     if !is_url_in_scope(start_url.as_str(), &base_url) {
-        eprintln!(
-            "Start URL {} is not within base URL scope {}",
-            start_url, base_url
-        );
+        eprintln!("Start URL {start_url} is not within base URL scope {base_url}");
         std::process::exit(1);
     }
 
@@ -254,7 +253,7 @@ async fn main() {
     });
 
     // Start the crawl (pages are sent to the subscriber as they are discovered)
-    eprintln!("[spider_md] Starting crawl of {}", start_url);
+    eprintln!("[spider_md] Starting crawl of {start_url}");
     website.crawl().await;
     website.unsubscribe();
     eprintln!("[spider_md] Crawl completed");
@@ -267,13 +266,11 @@ async fn main() {
     let mut handle = stdout.lock();
     let outputs = collected_outputs.lock().await;
     for json in outputs.iter() {
-        let _ = writeln!(handle, "{}", json);
+        let _ = writeln!(handle, "{json}");
     }
 
-    eprintln!(
-        "[spider_md] Done: {} pages collected",
-        page_count.load(Ordering::Relaxed)
-    );
+    let collected_page_count = page_count.load(Ordering::Relaxed);
+    eprintln!("[spider_md] Done: {collected_page_count} pages collected");
 }
 
 #[cfg(test)]
@@ -284,7 +281,10 @@ mod tests {
     fn test_url_in_scope_same_host() {
         let base = Url::parse("https://example.com/docs/").unwrap();
         assert!(is_url_in_scope("https://example.com/docs/intro", &base));
-        assert!(is_url_in_scope("https://example.com/docs/guide/start", &base));
+        assert!(is_url_in_scope(
+            "https://example.com/docs/guide/start",
+            &base
+        ));
         assert!(!is_url_in_scope("https://example.com/blog/", &base));
         assert!(!is_url_in_scope("https://other.com/docs/", &base));
     }

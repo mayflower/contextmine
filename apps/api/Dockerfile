@@ -34,8 +34,9 @@ COPY packages/ packages/
 COPY apps/api/ apps/api/
 COPY apps/worker/pyproject.toml apps/worker/
 
-# Sync dependencies (includes multilspy + jedi-language-server for LSP support)
-RUN uv sync --frozen --no-dev
+# Sync the API package and its workspace dependencies during the image build.
+# The container must not resolve or install packages when it starts.
+RUN uv sync --frozen --no-dev --package contextmine-api
 
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /app/dist /app/static

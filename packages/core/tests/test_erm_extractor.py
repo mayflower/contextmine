@@ -160,10 +160,12 @@ def upgrade():
         extractor.add_alembic_extraction(extract_from_alembic("002.py", migration2))
 
         assert "users" in extractor.schema.tables
+        assert extractor.schema.tables["users"].description is None
         cols = {c.name: c for c in extractor.schema.tables["users"].columns}
         assert "id" in cols
         assert "name" in cols
         assert "email" in cols
+        assert cols["id"].description is None
 
     def test_collect_sources(self) -> None:
         """Test that source files are tracked."""
