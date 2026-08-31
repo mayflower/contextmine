@@ -72,7 +72,7 @@ def build_agent():
 
     # Initialize LLM
     api_key = os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_TOKEN"))
-    llm = ChatAnthropic(model="claude-3-5-sonnet-latest", api_key=api_key)
+    llm = ChatAnthropic(model_name="claude-3-5-sonnet-latest", api_key=api_key)
     llm_with_tools = llm.bind_tools(tools)
 
     def agent_node(state: AgentState):
