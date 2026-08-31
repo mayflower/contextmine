@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   PYTHON_VERSION: "3.12"
@@ -112,10 +111,41 @@ jobs:
       - name: Build web application
         run: npm run build
 
+  rust:
+    name: Rust Format, Clippy & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust/spider_md
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust 1.88 toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+
+      - name: Check formatting
+        run: cargo +1.88.0 fmt --check
+
+      - name: Run Clippy
+        run: cargo +1.88.0 clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo +1.88.0 test --locked --all-targets --all-features
+
+  model-free-system-smoke:
+    name: Model-free System & Live Web Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run pinned repository sync gate
+        run: ./scripts/smoke/model-free-system.sh
+
   build:
     name: Build & Push Containers
     runs-on: ubuntu-latest
-    needs: [lint, test, web]
+    needs: [lint, test, web, rust, model-free-system-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -169,7 +199,7 @@ jobs:
   helm:
     name: Publish Helm Chart
     runs-on: ubuntu-latest
-    needs: [lint, test, web]
+    needs: [build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

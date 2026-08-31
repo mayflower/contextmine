@@ -1,0 +1,10 @@
+.git
+.venv
+**/.git
+**/.venv
+**/node_modules
+**/dist
+**/coverage
+**/playwright-report
+**/target
+**/test-results

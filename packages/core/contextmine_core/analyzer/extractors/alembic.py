@@ -27,6 +27,7 @@ class ColumnDef:
     nullable: bool = True
     primary_key: bool = False
     foreign_key: str | None = None  # "table.column" format
+    description: str | None = None
 
 
 @dataclass
@@ -36,6 +37,7 @@ class TableDef:
     name: str
     columns: list[ColumnDef] = field(default_factory=list)
     primary_keys: list[str] = field(default_factory=list)
+    description: str | None = None
 
 
 @dataclass

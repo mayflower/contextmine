@@ -1,0 +1,129 @@
+services:
+  postgres:
+    image: ghcr.io/mayflower/pg4ai:latest@sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: contextmine
+      POSTGRES_PASSWORD: contextmine
+      POSTGRES_DB: contextmine
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ../../scripts/docker/init-db.sql:/docker-entrypoint-initdb.d/10-init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextmine -d contextmine"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  prefect-server:
+    image: prefecthq/prefect:3-python3.12@sha256:6c0dc14195cae814eddeb66104a8333810a0a9886a5d7f0c45443136f167b3e0
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/prefect
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
+      PREFECT_API_URL: http://prefect-server:4200/api
+      MODEL_CALLS_ENABLED: "false"
+      OTEL_ENABLED: "false"
+      GITHUB_CLIENT_ID: contextmine-smoke
+      GITHUB_CLIENT_SECRET: contextmine-smoke-not-a-real-secret
+      PUBLIC_BASE_URL: https://contextmine-smoke.invalid
+      MCP_OAUTH_BASE_URL: https://contextmine-smoke.invalid
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_URL: http://api:8000
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: web
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://localhost:5173/').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  browser:
+    image: chromedp/headless-shell:stable@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04
+    shm_size: 1gb
+
+  smoke:
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: INFO
+      MODEL_CALLS_ENABLED: "false"
+      OTEL_ENABLED: "false"
+      SCIP_LANGUAGES: python,typescript,javascript
+      SCIP_INSTALL_DEPS_MODE: never
+      SCIP_BEST_EFFORT: "false"
+      SCIP_REQUIRE_LANGUAGE_COVERAGE: "true"
+      SCIP_REQUIRE_RELATION_COVERAGE: "true"
+      METRICS_STRICT_MODE: "true"
+      METRICS_LANGUAGES: python,typescript,javascript
+      JOERN_REQUIRED_FOR_SYNC: "false"
+      SYNC_DOCUMENTS_PER_RUN_LIMIT: "0"
+      SYNC_SOURCE_TIMEOUT_SECONDS: "3600"
+      SYNC_BLOCKING_STEP_TIMEOUT_SECONDS: "1200"
+      KNOWLEDGE_GRAPH_BUILD_TIMEOUT_SECONDS: "1800"
+      TWIN_GRAPH_BUILD_TIMEOUT_SECONDS: "1800"
+      CONTEXTMINE_SMOKE_FIXTURE_DIR: /fixtures/repository
+      CONTEXTMINE_SMOKE_FIXTURE_REVISION: ${CONTEXTMINE_SMOKE_FIXTURE_REVISION:?fixture revision is required}
+    volumes:
+      - ./:/smoke:ro
+      - ${CONTEXTMINE_SMOKE_FIXTURE_DIR:?fixture directory is required}:/fixtures/repository:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    command: ["/bin/bash", "/smoke/run-model-free-system.sh"]

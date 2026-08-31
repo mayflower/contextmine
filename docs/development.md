@@ -121,6 +121,19 @@ uv run pytest packages/core/tests/test_metrics_pipeline.py -v
 DEBUG=true uv run pytest apps/api/tests/test_sources.py apps/api/tests/test_twin_views.py -v
 ```
 
+For dependency and container changes, run the larger model-free system gate:
+
+```bash
+./scripts/smoke/model-free-system.sh
+```
+
+It requires Docker and network access to fetch an exact, pinned public fixture
+commit. It starts no host-facing ports and does not require model API keys. A
+pinned Chromium/Playwright runner checks the live web container, its static
+assets, and the web-to-API proxy before the repository sync starts. See the
+[dependency and upgrade inventory](diataxis/reference/dependency_inventory.md)
+for the full gate contract and upgrade grouping rules.
+
 ## Code Quality
 
 ```bash
