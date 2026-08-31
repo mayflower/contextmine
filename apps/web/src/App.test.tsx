@@ -9,7 +9,7 @@
  *
  * Since these are not exported, we replicate the logic to test it thoroughly.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 // --- Replicated from App.tsx ---
 

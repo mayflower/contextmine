@@ -1109,7 +1109,8 @@ export function useCockpitData({
   }, [parseApiErrorMessage, refreshActiveView, selection.collectionId])
 
   const regenerateArc42 = useCallback(async () => {
-    const { collectionId, scenarioId } = selection
+    const collectionId = selection.collectionId
+    const scenarioId = selection.scenarioId
     if (!collectionId || !scenarioId) {
       setArchitectureActions((prev) => ({
         ...prev,
