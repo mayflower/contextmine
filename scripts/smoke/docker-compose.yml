@@ -37,6 +37,11 @@ services:
       retries: 30
       start_period: 15s
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    volumes:
+      - ../../scripts/docker/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+
   api:
     build:
       context: ../..
@@ -45,7 +50,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
       PREFECT_API_URL: http://prefect-server:4200/api
       MODEL_CALLS_ENABLED: "false"
-      OTEL_ENABLED: "false"
+      OTEL_ENABLED: ${CONTEXTMINE_SMOKE_OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_TRACES_SAMPLER: always_on
       GITHUB_CLIENT_ID: contextmine-smoke
       GITHUB_CLIENT_SECRET: contextmine-smoke-not-a-real-secret
       PUBLIC_BASE_URL: https://contextmine-smoke.invalid
@@ -100,7 +107,9 @@ services:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
       MODEL_CALLS_ENABLED: "false"
-      OTEL_ENABLED: "false"
+      OTEL_ENABLED: ${CONTEXTMINE_SMOKE_OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_TRACES_SAMPLER: always_on
       SCIP_LANGUAGES: python,typescript,javascript
       SCIP_INSTALL_DEPS_MODE: never
       SCIP_BEST_EFFORT: "false"

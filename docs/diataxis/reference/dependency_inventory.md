@@ -120,6 +120,7 @@ Dependency changes additionally run:
 
 ```bash
 ./scripts/smoke/model-free-system.sh
+./scripts/smoke/otel-enabled.sh
 ```
 
 The system gate deliberately takes longer than a unit smoke test. It:
@@ -153,6 +154,13 @@ The system gate deliberately takes longer than a unit smoke test. It:
 Joern is advisory in this gate, so this test does not qualify Joern/CPG changes.
 Authenticated browser workflows, web crawling, and model-provider behavior also
 need their own targeted checks when those surfaces change.
+
+The OpenTelemetry gate keeps the default-disabled path above intact and starts
+the pinned collector separately with telemetry enabled. It requires exported
+FastAPI route spans, distinct API and worker service resources, a real Prefect
+flow with its semantic attributes, SQLAlchemy telemetry, and a flushed result
+metric. This verifies useful OTLP data rather than startup or exporter calls
+alone.
 
 ## Refresh Commands
 
