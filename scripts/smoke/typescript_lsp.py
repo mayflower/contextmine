@@ -19,7 +19,7 @@ class LspProcess:
         self._workspace = workspace
         self._buffer = bytearray()
         self._process = subprocess.Popen(  # noqa: S603
-            ["typescript-language-server", "--stdio", "--log-level", "1"],
+            ["tsc", "--lsp", "--stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -45,14 +45,14 @@ class LspProcess:
         timeout_seconds: float = 30,
     ) -> Any:
         """Send a request and wait for its response."""
-        self.send(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params,
-            }
-        )
+        message: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            message["params"] = params
+        self.send(message)
         deadline = time.monotonic() + timeout_seconds
 
         while True:
@@ -68,7 +68,10 @@ class LspProcess:
 
     def notify(self, method: str, params: dict[str, Any] | None) -> None:
         """Send a JSON-RPC notification."""
-        self.send({"jsonrpc": "2.0", "method": method, "params": params})
+        message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self.send(message)
 
     def close(self) -> None:
         """Stop the process even when a protocol assertion failed."""
@@ -167,12 +170,6 @@ console.log(message)
     with tempfile.TemporaryDirectory(prefix="contextmine-typescript-lsp-") as directory:
         workspace = Path(directory)
         source_path = workspace / "index.ts"
-        tsserver_path = (
-            Path(command_output("npm", "root", "--global")) / "typescript" / "lib" / "tsserver.js"
-        )
-        if not tsserver_path.is_file():
-            raise RuntimeError(f"global TypeScript server not found at {tsserver_path}")
-
         source_path.write_text(source)
         (workspace / "tsconfig.json").write_text(
             json.dumps(
@@ -204,9 +201,6 @@ console.log(message)
                             "definition": {"linkSupport": True},
                             "hover": {"contentFormat": ["plaintext"]},
                         },
-                    },
-                    "initializationOptions": {
-                        "tsserver": {"path": str(tsserver_path)},
                     },
                     "trace": "off",
                 },
@@ -252,9 +246,14 @@ console.log(message)
 
             client.request(4, "shutdown", None)
             client.notify("exit", None)
-            if client._process.wait(timeout=5) != 0:
+            exit_code = client._process.wait(timeout=5)
+            shutdown_stderr = client.stderr().strip()
+            # TypeScript 7.0.2 currently reports its clean LSP context cancellation
+            # as process exit 1. Keep this exception exact so other failures stay red.
+            if exit_code != 0 and not (exit_code == 1 and shutdown_stderr == "context canceled"):
                 raise RuntimeError(
-                    f"TypeScript LSP exited unsuccessfully (stderr={client.stderr()!r})"
+                    "TypeScript LSP exited unsuccessfully "
+                    f"(exit={exit_code}, stderr={shutdown_stderr!r})"
                 )
         finally:
             client.close()
@@ -266,10 +265,9 @@ console.log(message)
                 "hover": "pass",
                 "initialize": "pass",
                 "node": command_output("node", "--version"),
+                "shutdown": ("clean" if exit_code == 0 else "typescript-7.0.2-context-canceled"),
                 "typescript": command_output("tsc", "--version"),
-                "typescript_language_server": command_output(
-                    "typescript-language-server", "--version"
-                ),
+                "typescript_lsp": "native",
             },
             sort_keys=True,
         )

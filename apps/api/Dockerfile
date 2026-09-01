@@ -14,12 +14,8 @@ RUN npm run build
 FROM node:24.20.0-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS lsp-tools
 
 ARG TYPESCRIPT_VERSION=7.0.2
-ARG TYPESCRIPT_LANGUAGE_SERVER_VERSION=6.0.0
-RUN npm install -g \
-      typescript@${TYPESCRIPT_VERSION} \
-      typescript-language-server@${TYPESCRIPT_LANGUAGE_SERVER_VERSION} \
-    && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}" \
-    && test "$(typescript-language-server --version)" = "${TYPESCRIPT_LANGUAGE_SERVER_VERSION}"
+RUN npm install -g typescript@${TYPESCRIPT_VERSION} \
+    && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}"
 
 # Stage 2: Python API with frontend
 FROM python:3.14.7-slim@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9

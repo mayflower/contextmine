@@ -38,7 +38,13 @@ try {
 
   page.on('pageerror', (error) => pageErrors.push(error.message))
   page.on('requestfailed', (request) => {
-    failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`)
+    const failure = request.failure()?.errorText
+    const requestPath = new URL(request.url()).pathname
+    // React StrictMode intentionally cancels the first query observer in the
+    // development server. A succeeding explicit auth probe below still proves
+    // that the proxy and unauthenticated response contract are healthy.
+    if (requestPath === '/api/auth/me' && failure === 'net::ERR_ABORTED') return
+    failedRequests.push(`${request.method()} ${request.url()}: ${failure}`)
   })
 
   const response = await page.goto(webUrl, { waitUntil: 'networkidle' })
@@ -46,6 +52,9 @@ try {
 
   await page.getByRole('heading', { name: 'ContextMine', exact: true }).waitFor()
   await page.getByRole('button', { name: 'Sign in with GitHub' }).waitFor()
+
+  const authResponse = await page.request.get(`${webUrl}/api/auth/me`)
+  assert.equal(authResponse.status(), 401, 'web auth proxy must preserve the unauthenticated response')
 
   const logo = page.getByRole('img', { name: 'ContextMine' })
   await logo.waitFor()

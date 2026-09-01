@@ -33,7 +33,7 @@ async function mockApi(page: Page, options: MockOptions = {}) {
   const collections = options.collections ?? DEFAULT_COLLECTIONS
   const scenariosByCollection = options.scenariosByCollection ?? { 'col-1': DEFAULT_SCENARIOS }
 
-  await page.route('**/api/**', async (route) => {
+  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
@@ -840,7 +840,7 @@ test('discoverability: sidebar and dashboard CTA open Architecture Cockpit', asy
   await expect(page.locator('.sidebar li', { hasText: 'Architecture Cockpit' })).toBeVisible()
   await page.getByRole('button', { name: 'Open Cockpit' }).click()
 
-  await expect(page).toHaveURL(/page=cockpit/)
+  await expect(page).toHaveURL(/\/cockpit\?/)
   await expect(page.getByRole('heading', { name: 'Architecture Cockpit' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Architecture' })).toBeVisible()

@@ -230,6 +230,22 @@ describe('useCockpitState', () => {
     expect(result.current.selection.layer).toBe('code_controlflow')
   })
 
+  it('opens a topology node with one atomic URL update', () => {
+    globalThis.history.replaceState({}, '', '/?collection=c1&scenario=s1&view=overview&layer=domain_container&pageIndex=2')
+
+    const { result } = renderCockpitState()
+
+    act(() => {
+      result.current.openTopologyForNode('billing.service.InvoiceService')
+    })
+
+    expect(result.current.selection.view).toBe('topology')
+    expect(result.current.selection.layer).toBe('code_controlflow')
+    expect(result.current.selectedNodeId).toBe('billing.service.InvoiceService')
+    expect(result.current.graphQuery).toBe('billing.service.InvoiceService')
+    expect(result.current.graphPage).toBe(0)
+  })
+
   it('returns setter functions for all state', () => {
     const { result } = renderCockpitState()
 
@@ -243,5 +259,6 @@ describe('useCockpitState', () => {
     expect(typeof result.current.setHideIsolated).toBe('function')
     expect(typeof result.current.setOverlayMode).toBe('function')
     expect(typeof result.current.setHotspotFilter).toBe('function')
+    expect(typeof result.current.openTopologyForNode).toBe('function')
   })
 })

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "generate:api": "cd ../.. && uv run --project apps/api python scripts/export_openapi.py && cd apps/web && openapi-typescript openapi.json -o src/api/schema.d.ts",
-    "build": "npm run generate:api && tsc -b && vite build",
+    "check:api": "npm run generate:api && git diff --exit-code -- openapi.json src/api/schema.d.ts",
+    "build": "tsc -b && vite build",
     "lint": "eslint src --max-warnings=0",
     "preview": "vite preview",
     "test": "vitest run",

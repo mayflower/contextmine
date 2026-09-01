@@ -22,14 +22,13 @@ FROM node:24.20.0-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af0
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 ARG SCIP_PYTHON_VERSION=0.6.6
 ARG TYPESCRIPT_VERSION=7.0.2
-ARG TYPESCRIPT_LANGUAGE_SERVER_VERSION=6.0.0
 RUN npm install -g \
       @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \
       @sourcegraph/scip-python@${SCIP_PYTHON_VERSION} \
       typescript@${TYPESCRIPT_VERSION} \
-      typescript-language-server@${TYPESCRIPT_LANGUAGE_SERVER_VERSION} \
     && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}" \
-    && test "$(typescript-language-server --version)" = "${TYPESCRIPT_LANGUAGE_SERVER_VERSION}"
+    && scip-typescript --version \
+    && scip-python --version
 
 FROM composer:2.10.2@sha256:d020706319701a44468968321dccd0fce6620190159a7a9ec195d78e6e971c71 AS composer-tools
 
@@ -135,6 +134,21 @@ CMD ["/app/.venv/bin/python", "-m", "contextmine_worker.sandbox_analyzer"]
 FROM python:3.14.7-slim@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS worker
 
 WORKDIR /app
+
+# The development fallback performs repository clone/pull operations in this
+# process. Production delegates analysis to the sandbox, but GitPython still
+# imports as part of the shared orchestration flow.
+# hadolint ignore=DL3008
+RUN sed -i \
+      -e 's|^URIs: http://deb.debian.org/debian$|URIs: https://snapshot.debian.org/archive/debian/20260824T000000Z|' \
+      -e 's|^URIs: http://deb.debian.org/debian-security$|URIs: https://snapshot.debian.org/archive/debian-security/20260824T000000Z|' \
+      /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git --version
 
 COPY --from=rust-builder /build/target/release/spider_md /usr/local/bin/spider_md
 COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 /uv /usr/local/bin/uv

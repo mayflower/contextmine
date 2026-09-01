@@ -12,7 +12,7 @@ from contextmine_core.research.checkpoints import (
     init_research_checkpointer,
 )
 from contextmine_core.telemetry import init_telemetry, shutdown_telemetry
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -146,9 +146,7 @@ def create_app() -> FastAPI:
 
     @app.get("/.well-known/{well_known_type}")
     @app.get("/.well-known/{well_known_type}/{path:path}")
-    async def forward_well_known(
-        request: Request, well_known_type: str, path: str = ""
-    ) -> JSONResponse:
+    async def forward_well_known(well_known_type: str, path: str = "") -> Response:
         """Forward .well-known requests to MCP sub-app for OAuth discovery."""
         import httpx
 
@@ -161,9 +159,14 @@ def create_app() -> FastAPI:
                 base_url="http://embedded-mcp",
             ) as client:
                 resp = await client.get(mcp_url, timeout=5.0)
-                if resp.status_code == 200:
-                    return JSONResponse(content=resp.json())
-                return JSONResponse(content={"error": "not_found"}, status_code=resp.status_code)
+                headers = {}
+                if content_type := resp.headers.get("content-type"):
+                    headers["content-type"] = content_type
+                return Response(
+                    content=resp.content,
+                    status_code=resp.status_code,
+                    headers=headers,
+                )
         except Exception:
             return JSONResponse(content={"error": "mcp_unavailable"}, status_code=503)
 

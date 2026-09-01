@@ -17,6 +17,7 @@ from langsmith.sandbox import AsyncSandboxClient, opaque_secret, proxy_config
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 _RESULT_MANIFEST = "/workspace/result/manifest.json"
+_MAX_REQUEST_BYTES = 16 * 1024
 _ANALYZER_COMMAND = (
     "/app/.venv/bin/python -m contextmine_worker.sandbox_analyzer "
     "/workspace/request.json /workspace/result"
@@ -267,6 +268,14 @@ def _decompress_bounded(payload: bytes, max_bytes: int) -> bytes:
     return result
 
 
+def _serialize_bounded_request(request: SandboxAnalysisRequest) -> str:
+    """Serialize the validated analyzer request within a defensive byte limit."""
+    payload = request.model_dump_json()
+    if len(payload.encode("utf-8")) > _MAX_REQUEST_BYTES:
+        raise ValueError("sandbox analysis request exceeds configured size limit")
+    return payload
+
+
 async def run_sandbox_analysis(
     request: SandboxAnalysisRequest,
     *,
@@ -302,7 +311,11 @@ async def run_sandbox_analysis(
                 fs_capacity_bytes=fs_capacity_bytes,
                 proxy_config=github_proxy_config(github_token),
             )
-            await sandbox.write("/workspace/request.json", request.model_dump_json())
+            request_payload = _serialize_bounded_request(request)
+            # The destination is fixed and the validated payload is bounded above.
+            await sandbox.write(  # nosemgrep: python.django.security.injection.request-data-write.request-data-write
+                "/workspace/request.json", request_payload
+            )
             handle = await sandbox.run(
                 _ANALYZER_COMMAND,
                 cwd="/workspace",

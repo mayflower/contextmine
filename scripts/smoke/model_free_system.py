@@ -171,6 +171,7 @@ async def _seed_source() -> tuple[uuid.UUID, uuid.UUID]:
                 schedule_interval_minutes=1440,
             )
         )
+        await session.commit()
 
     return collection_id, source_id
 

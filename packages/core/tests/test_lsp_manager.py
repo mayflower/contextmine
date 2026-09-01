@@ -218,14 +218,11 @@ class TestStartServer:
     def test_preinstalled_typescript_server_is_discovered(self) -> None:
         with patch(
             "contextmine_core.lsp.manager.shutil.which",
-            return_value="/usr/local/bin/typescript-language-server",
+            return_value="/usr/local/bin/tsc",
         ) as which:
-            assert (
-                _find_server_binary(SupportedLanguage.TYPESCRIPT)
-                == "/usr/local/bin/typescript-language-server"
-            )
+            assert _find_server_binary(SupportedLanguage.TYPESCRIPT) == "/usr/local/bin/tsc"
 
-        which.assert_called_once_with("typescript-language-server")
+        which.assert_called_once_with("tsc")
 
     def test_unmanaged_language_does_not_probe_for_server(self) -> None:
         with patch("contextmine_core.lsp.manager.shutil.which") as which:

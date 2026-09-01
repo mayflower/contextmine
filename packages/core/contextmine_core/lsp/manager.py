@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def _find_server_binary(language: SupportedLanguage) -> str | None:
     """Find a pre-installed language server supported by the runtime image."""
     if language in {SupportedLanguage.JAVASCRIPT, SupportedLanguage.TYPESCRIPT}:
-        return shutil.which("typescript-language-server")
+        return shutil.which("tsc")
     return None
 
 
@@ -217,7 +217,19 @@ class LspManager:
             config = MultilspyConfig.from_dict(config_values)
             lsp_logger = MultilspyLogger()
 
-            server = LanguageServer.create(config, lsp_logger, str(project_root))
+            if language in {SupportedLanguage.JAVASCRIPT, SupportedLanguage.TYPESCRIPT}:
+                from contextmine_core.lsp.native_typescript import (
+                    NativeTypeScriptLanguageServer,
+                )
+
+                server = NativeTypeScriptLanguageServer(
+                    config,
+                    lsp_logger,
+                    str(project_root),
+                    language.value,
+                )
+            else:
+                server = LanguageServer.create(config, lsp_logger, str(project_root))
             _register_client_request_handlers(server, project_root)
 
             client = LspClient(server, project_root)

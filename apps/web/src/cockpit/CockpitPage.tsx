@@ -167,6 +167,7 @@ export default function CockpitPage({
     setScenarioId,
     setLayer,
     setView,
+    openTopologyForNode,
   } = useCockpitState()
 
   const [topologyDensity, setTopologyDensity] = useState(1200)
@@ -652,10 +653,7 @@ export default function CockpitPage({
   }
 
   const handleSelectHotspot = (nodeNaturalKey: string) => {
-    setLayer('code_controlflow')
-    setView('topology')
-    setSelectedNodeId(nodeNaturalKey)
-    setGraphQuery(nodeNaturalKey)
+    openTopologyForNode(nodeNaturalKey)
   }
 
   const handleGenerateExport = async () => {

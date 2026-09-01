@@ -14,6 +14,7 @@ from contextmine_core.lsp import (
     detect_language,
     find_project_root,
 )
+from contextmine_core.lsp import languages as lsp_languages
 
 
 class TestLanguageDetection:
@@ -93,8 +94,12 @@ class TestProjectRootDetection:
         root = find_project_root(test_file)
         assert root == project_dir
 
-    def test_find_project_root_fallback(self, tmp_path: Path) -> None:
+    def test_find_project_root_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test fallback to file's directory when no markers found."""
+        monkeypatch.setattr(lsp_languages, "PROJECT_ROOT_MARKERS", [])
+
         # Create a file without any project markers
         test_file = tmp_path / "orphan.py"
         test_file.touch()
