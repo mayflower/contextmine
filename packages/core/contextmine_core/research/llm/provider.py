@@ -169,6 +169,14 @@ class LangChainProvider(LLMProvider):
 
         return result
 
+    def _generation_parameters(self, *, max_tokens: int, temperature: float) -> dict[str, object]:
+        """Build supported generation parameters from the model capability profile."""
+        parameters: dict[str, object] = {"max_tokens": max_tokens}
+        profile = getattr(self._model, "profile", None)
+        if not (isinstance(profile, dict) and profile.get("temperature") is False):
+            parameters["temperature"] = temperature
+        return parameters
+
     @retry(
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         wait=wait_exponential_jitter(initial=1, max=10, jitter=2),
@@ -190,24 +198,27 @@ class LangChainProvider(LLMProvider):
 
         tracer = trace.get_tracer(__name__)
 
+        generation_parameters = self._generation_parameters(
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        span_attributes: dict[str, object] = {
+            "gen_ai.system": self._provider_name,
+            "gen_ai.request.model": self._model_name,
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.max_tokens": max_tokens,
+        }
+        if "temperature" in generation_parameters:
+            span_attributes["gen_ai.request.temperature"] = temperature
         with tracer.start_as_current_span(
             "llm.generate_text",
-            attributes={
-                "gen_ai.system": self._provider_name,
-                "gen_ai.request.model": self._model_name,
-                "gen_ai.operation.name": "chat",
-                "gen_ai.request.max_tokens": max_tokens,
-                "gen_ai.request.temperature": temperature,
-            },
+            attributes=span_attributes,
         ) as span:
             try:
                 lc_messages = self._build_messages(system, messages)
 
                 # Configure model with parameters
-                configured_model = self._model.bind(
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
+                configured_model = self._model.bind(**generation_parameters)
 
                 response = await configured_model.ainvoke(lc_messages)
 
@@ -249,8 +260,10 @@ class LangChainProvider(LLMProvider):
             # Use default method - Anthropic uses tool calling, OpenAI uses json_schema
             structured_model = self._model.with_structured_output(output_schema)
             configured_model = structured_model.bind(
-                max_tokens=max_tokens,
-                temperature=temperature,
+                **self._generation_parameters(
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
             )
             result = await configured_model.ainvoke(lc_messages)
 

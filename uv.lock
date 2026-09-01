@@ -495,6 +495,7 @@ version = "0.1.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "alembic" },
+    { name = "anthropic" },
     { name = "asyncpg" },
     { name = "claude-agent-sdk" },
     { name = "cryptography" },
@@ -536,6 +537,7 @@ lsp = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.19.1" },
+    { name = "anthropic", specifier = "==1.2.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "claude-agent-sdk", specifier = "==0.2.149" },
     { name = "cryptography", specifier = ">=49.0.0" },
@@ -543,8 +545,8 @@ requires-dist = [
     { name = "google-genai", specifier = ">=2.21.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "igraph", specifier = ">=1.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.4.7" },
-    { name = "langchain-core", specifier = ">=1.4.8" },
+    { name = "langchain-anthropic", specifier = ">=1.7.0" },
+    { name = "langchain-core", specifier = ">=1.6.1" },
     { name = "langchain-openai", specifier = ">=1.6.0" },
     { name = "langgraph", specifier = ">=1.2.11" },
     { name = "langgraph-checkpoint-postgres", specifier = "==3.1.2" },

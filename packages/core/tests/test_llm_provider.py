@@ -338,6 +338,39 @@ class TestBuildMessages:
         assert provider.model_name == "test-model"
 
 
+class TestGenerationParameters:
+    """Model capability profiles control which optional parameters are sent."""
+
+    def test_omits_unsupported_temperature(self) -> None:
+        model = MagicMock()
+        model.profile = {"temperature": False}
+        provider = LangChainProvider(model=model, model_name="gpt-5-mini")
+
+        assert provider._generation_parameters(max_tokens=512, temperature=0.0) == {
+            "max_tokens": 512
+        }
+
+    def test_keeps_temperature_when_supported(self) -> None:
+        model = MagicMock()
+        model.profile = {"temperature": True}
+        provider = LangChainProvider(model=model, model_name="claude-test")
+
+        assert provider._generation_parameters(max_tokens=512, temperature=0.25) == {
+            "max_tokens": 512,
+            "temperature": 0.25,
+        }
+
+    def test_keeps_temperature_without_a_capability_profile(self) -> None:
+        model = MagicMock()
+        model.profile = None
+        provider = LangChainProvider(model=model, model_name="legacy-model")
+
+        assert provider._generation_parameters(max_tokens=512, temperature=0.0) == {
+            "max_tokens": 512,
+            "temperature": 0.0,
+        }
+
+
 # ===========================================================================
 # Prompt building
 # ===========================================================================
