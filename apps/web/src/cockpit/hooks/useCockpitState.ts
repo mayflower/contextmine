@@ -115,6 +115,17 @@ export function useCockpitState() {
     })
   }, [resetGraphSelection, updateParams])
 
+  const openTopologyForNode = useCallback((nodeNaturalKey: string) => {
+    const normalizedNodeKey = nodeNaturalKey.trim()
+    updateParams((next) => {
+      setOrDelete(next, 'view', 'topology')
+      next.delete('layer')
+      next.delete('pageIndex')
+      setOrDelete(next, 'node', normalizedNodeKey || false)
+      setOrDelete(next, 'query', normalizedNodeKey || false)
+    })
+  }, [updateParams])
+
   const setStringParam = useCallback((key: string, value: string) => {
     updateParams((next) => setOrDelete(next, key, value.trim() || false))
   }, [updateParams])
@@ -145,6 +156,7 @@ export function useCockpitState() {
     setScenarioId,
     setLayer,
     setView,
+    openTopologyForNode,
     updateSelection,
   }
 }

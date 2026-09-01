@@ -64,6 +64,7 @@ const mockSetExcludeKinds = vi.fn()
 const mockSetEdgeKinds = vi.fn()
 const mockSetHideIsolated = vi.fn()
 const mockSetOverlayMode = vi.fn()
+const mockOpenTopologyForNode = vi.fn()
 
 const defaultSelection = {
   collectionId: 'c1',
@@ -99,6 +100,7 @@ vi.mock('./hooks/useCockpitState', () => ({
     setScenarioId: mockSetScenarioId,
     setLayer: mockSetLayer,
     setView: mockSetView,
+    openTopologyForNode: mockOpenTopologyForNode,
   }),
 }))
 
