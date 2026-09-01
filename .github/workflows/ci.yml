@@ -4,11 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+    inputs:
+      cold_cache:
+        description: Ignore existing BuildKit caches while refreshing them
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Exercise the full cold-cache path weekly, away from the top of the hour.
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PYTHON_VERSION: "3.14"
   NODE_VERSION: "24"
   UV_CACHE_DIR: /tmp/.uv-cache
+  CONTEXTMINE_SMOKE_COLD_BUILD: ${{ github.event_name == 'schedule' || inputs.cold_cache }}
 
 jobs:
   lint:
@@ -25,6 +41,9 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Test system smoke change classifier
+        run: ./scripts/ci/test-classify-system-smoke-changes.sh
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -178,8 +197,46 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
 
+  smoke-changes:
+    name: Classify System Smoke Changes
+    runs-on: ubuntu-latest
+    outputs:
+      model_free: ${{ steps.classify.outputs.model_free }}
+      otel: ${{ steps.classify.outputs.otel }}
+    steps:
+      - name: Check out pull request history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            printf 'model_free=false\notel=false\n' >>"${GITHUB_OUTPUT}"
+            echo "System smokes are selected by the ${GITHUB_EVENT_NAME} schedule, not changed files."
+            exit 0
+          fi
+
+          if [[ -z "${BASE_SHA}" || -z "${HEAD_SHA}" ]]; then
+            echo "Pull request base/head SHA is unavailable" >&2
+            exit 1
+          fi
+
+          changed_files="${RUNNER_TEMP}/contextmine-smoke-changed-files.txt"
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" >"${changed_files}"
+          classification="$(./scripts/ci/classify-system-smoke-changes.sh <"${changed_files}")"
+          printf '%s\n' "${classification}"
+          printf '%s\n' "${classification}" >>"${GITHUB_OUTPUT}"
+
   model-free-system-smoke:
     name: Model-free System & Live Web Smoke
+    needs: [smoke-changes]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -187,33 +244,51 @@ jobs:
       CONTEXTMINE_SMOKE_WEB_IMAGE: contextmine-smoke-web:${{ github.sha }}
       CONTEXTMINE_SMOKE_WORKER_IMAGE: contextmine-smoke-analyzer:${{ github.sha }}
       CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES: "true"
+      RUN_SYSTEM_SMOKE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft && needs.smoke-changes.outputs.model_free == 'true') }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require successful change classification
+        if: needs.smoke-changes.result != 'success'
+        run: |
+          echo "System smoke change classification did not succeed" >&2
+          exit 1
+
+      - name: Record intentional skip
+        if: env.RUN_SYSTEM_SMOKE != 'true'
+        run: echo "Model-free system smoke is not required for this event and change set."
+
+      - if: env.RUN_SYSTEM_SMOKE == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build cached API smoke image
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/api/Dockerfile
           load: true
           tags: ${{ env.CONTEXTMINE_SMOKE_API_IMAGE }}
-          cache-from: type=gha,scope=contextmine-api
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-api' }}
           cache-to: type=gha,scope=contextmine-api,mode=max
 
       - name: Build cached web smoke image
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./apps/web
           file: apps/web/Dockerfile
           load: true
           tags: ${{ env.CONTEXTMINE_SMOKE_WEB_IMAGE }}
-          cache-from: type=gha,scope=contextmine-web
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-web' }}
           cache-to: type=gha,scope=contextmine-web,mode=max
 
       - name: Build cached analyzer smoke image
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -221,37 +296,57 @@ jobs:
           target: analyzer
           load: true
           tags: ${{ env.CONTEXTMINE_SMOKE_WORKER_IMAGE }}
-          cache-from: type=gha,scope=contextmine-analyzer
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-analyzer' }}
           cache-to: type=gha,scope=contextmine-analyzer,mode=max
 
       - name: Run pinned repository sync gate
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         run: ./scripts/smoke/model-free-system.sh
 
   otel-enabled-smoke:
     name: OpenTelemetry Enabled Smoke
+    needs: [smoke-changes]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       CONTEXTMINE_SMOKE_API_IMAGE: contextmine-smoke-api:${{ github.sha }}
       CONTEXTMINE_SMOKE_WORKER_IMAGE: contextmine-smoke-worker:${{ github.sha }}
       CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES: "true"
+      RUN_SYSTEM_SMOKE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft && needs.smoke-changes.outputs.otel == 'true') }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require successful change classification
+        if: needs.smoke-changes.result != 'success'
+        run: |
+          echo "System smoke change classification did not succeed" >&2
+          exit 1
+
+      - name: Record intentional skip
+        if: env.RUN_SYSTEM_SMOKE != 'true'
+        run: echo "OpenTelemetry system smoke is not required for this event and change set."
+
+      - if: env.RUN_SYSTEM_SMOKE == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build cached API smoke image
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/api/Dockerfile
           load: true
           tags: ${{ env.CONTEXTMINE_SMOKE_API_IMAGE }}
-          cache-from: type=gha,scope=contextmine-api
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-api' }}
           cache-to: type=gha,scope=contextmine-api,mode=max
 
       - name: Build cached worker smoke image
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -259,16 +354,18 @@ jobs:
           target: worker
           load: true
           tags: ${{ env.CONTEXTMINE_SMOKE_WORKER_IMAGE }}
-          cache-from: type=gha,scope=contextmine-worker
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-worker' }}
           cache-to: type=gha,scope=contextmine-worker,mode=max
 
       - name: Verify exported application telemetry
+        if: env.RUN_SYSTEM_SMOKE == 'true'
         run: ./scripts/smoke/otel-enabled.sh
 
   build:
     name: Build & Push Containers
     runs-on: ubuntu-latest
-    needs: [lint, test, web, web-e2e, rust, model-free-system-smoke, otel-enabled-smoke]
+    needs: [lint, test, web, web-e2e, rust]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
