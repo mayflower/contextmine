@@ -193,6 +193,11 @@ No Dependabot pull request is merged automatically: the normal branch
 protection and change-classified CI gates still decide whether a proposal is
 mergeable.
 
+Docker Compose version proposals for `prefecthq/prefect` are disabled. Docker
+ignore rules cannot express a stable-only tag policy, and Prefect pre-releases
+are not production upgrade candidates. A stable uv Prefect proposal remains
+the signal for a manually synchronized client, Compose, and Helm update.
+
 The Prefect Python client and Prefect server images are grouped within their
 respective ecosystems, but Dependabot cannot combine a selective
 multi-ecosystem Prefect group with normal updates for the same uv and Compose
