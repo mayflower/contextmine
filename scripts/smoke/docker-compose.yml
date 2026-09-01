@@ -43,6 +43,7 @@ services:
       - ../../scripts/docker/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
 
   api:
+    image: ${CONTEXTMINE_SMOKE_API_IMAGE:-contextmine-smoke-api:local}
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
@@ -74,6 +75,7 @@ services:
       start_period: 15s
 
   web:
+    image: ${CONTEXTMINE_SMOKE_WEB_IMAGE:-contextmine-smoke-web:local}
     build:
       context: ../../apps/web
       dockerfile: Dockerfile
@@ -99,6 +101,7 @@ services:
     shm_size: 1gb
 
   smoke:
+    image: ${CONTEXTMINE_SMOKE_WORKER_IMAGE:-contextmine-smoke-worker:local}
     build:
       context: ../..
       dockerfile: apps/worker/Dockerfile

@@ -7,6 +7,22 @@ smoke_root="$(mktemp -d -t contextmine-otel-smoke.XXXXXX)"
 fixture_placeholder="${smoke_root}/fixture-placeholder"
 compose_file="${repository_root}/scripts/smoke/docker-compose.yml"
 compose_project="contextmine-otel-smoke-${BASHPID}"
+compose_up_build_args=(--build)
+compose_run_build_args=(--build)
+
+if [[ "${CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES:-false}" == "true" ]]; then
+  compose_up_build_args=(--no-build)
+  compose_run_build_args=()
+
+  for image in \
+    "${CONTEXTMINE_SMOKE_API_IMAGE:?prebuilt API image is required}" \
+    "${CONTEXTMINE_SMOKE_WORKER_IMAGE:?prebuilt worker image is required}"; do
+    if ! docker image inspect "${image}" >/dev/null; then
+      echo "Required prebuilt smoke image is unavailable: ${image}" >&2
+      exit 1
+    fi
+  done
+fi
 
 cleanup() {
   docker compose \
@@ -26,7 +42,7 @@ export CONTEXTMINE_SMOKE_WORKER_TARGET="worker"
 docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
-  up --build --detach --wait --wait-timeout 300 \
+  up "${compose_up_build_args[@]}" --detach --wait --wait-timeout 300 \
   postgres prefect-server otel-collector api
 
 # Exercise the production FastAPI instrumentation with application routes.
@@ -41,7 +57,7 @@ docker compose \
 docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
-  run --build --rm --no-deps smoke /bin/bash -c \
+  run "${compose_run_build_args[@]}" --rm --no-deps smoke /bin/bash -c \
   "cd /app/packages/core && /app/.venv/bin/alembic upgrade head && cd /app && /app/.venv/bin/python /smoke/otel_enabled.py"
 
 verified="false"
