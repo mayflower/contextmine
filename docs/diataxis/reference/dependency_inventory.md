@@ -193,6 +193,10 @@ No Dependabot pull request is merged automatically: the normal branch
 protection and change-classified CI gates still decide whether a proposal is
 mergeable.
 
+Docker Compose proposals for `prefecthq/prefect` exclude `.dev` image tags.
+Prefect pre-releases are not production upgrade candidates even after the
+general release cooldown has elapsed.
+
 The Prefect Python client and Prefect server images are grouped within their
 respective ecosystems, but Dependabot cannot combine a selective
 multi-ecosystem Prefect group with normal updates for the same uv and Compose
