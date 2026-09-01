@@ -98,6 +98,7 @@ await build_erm_graph(session, collection_id, schema)
 
 # Generate Mermaid ERD
 from contextmine_core.analyzer.extractors.erm import generate_mermaid_erd
+
 erd = generate_mermaid_erd(schema)
 ```
 
@@ -173,7 +174,12 @@ To disable LLM labeling, simply don't call `label_rule_candidates()`.
 Graph-augmented retrieval combines semantic search with knowledge graph:
 
 ```python
-from contextmine_core.graphrag import graph_rag_context, graph_rag_query, graph_neighborhood, trace_path
+from contextmine_core.graphrag import (
+    graph_rag_context,
+    graph_rag_query,
+    graph_neighborhood,
+    trace_path,
+)
 
 # Context retrieval (for building prompts)
 context = await graph_rag_context(
@@ -185,7 +191,7 @@ context = await graph_rag_context(
 )
 
 print(context.to_markdown())  # Human-readable with citations
-print(context.to_dict())      # JSON-serializable
+print(context.to_dict())  # JSON-serializable
 
 # Full answered query (with LLM)
 answer = await graph_rag_query(

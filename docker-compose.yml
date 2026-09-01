@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ghcr.io/mayflower/pg4ai:latest
+    image: ghcr.io/mayflower/pg4ai:latest@sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802
     platform: ${POSTGRES_PLATFORM:-linux/amd64}
     ports:
       - "5433:5432"
@@ -43,7 +43,7 @@ services:
       start_period: 10s
 
   codecharta:
-    image: codecharta/codecharta-visualization:latest
+    image: codecharta/codecharta-visualization:latest@sha256:c72f6ed979dcbaaf4e08289a5c3e34d9c872f564a70ceb4b5252318209f10d35
     ports:
       - "${CODECHARTA_PORT:-9001}:80"
     healthcheck:
@@ -54,7 +54,7 @@ services:
 
   # Prefect stack
   prefect-server:
-    image: prefecthq/prefect:3-python3.12
+    image: prefecthq/prefect:3-python3.12@sha256:6c0dc14195cae814eddeb66104a8333810a0a9886a5d7f0c45443136f167b3e0
     command: prefect server start --host 0.0.0.0
     ports:
       - "4200:4200"
@@ -105,7 +105,7 @@ services:
   # Optional: OpenTelemetry Collector for local development
   # Start with: docker compose --profile otel up
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:latest@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
     profiles: ["otel"]
     ports:
       - "4317:4317"   # OTLP gRPC
