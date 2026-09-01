@@ -12,11 +12,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from contextmine_core.lsp.client import LspClient, MockLspClient
 from contextmine_core.lsp.exceptions import LspNotAvailableError, LspTimeoutError
@@ -30,6 +31,27 @@ if TYPE_CHECKING:
     pass  # Reserved for future type-only imports
 
 logger = logging.getLogger(__name__)
+
+
+def _find_server_binary(language: SupportedLanguage) -> str | None:
+    """Find a pre-installed language server supported by the runtime image."""
+    if language in {SupportedLanguage.JAVASCRIPT, SupportedLanguage.TYPESCRIPT}:
+        return shutil.which("typescript-language-server")
+    return None
+
+
+def _register_client_request_handlers(server: Any, project_root: Path) -> None:
+    """Register client capabilities required by current TypeScript servers."""
+
+    async def workspace_configuration(params: dict[str, Any]) -> list[None]:
+        items = params.get("items", [])
+        return [None for _ in items] if isinstance(items, list) else []
+
+    async def workspace_folders(_params: dict[str, Any]) -> list[dict[str, str]]:
+        return [{"uri": project_root.as_uri(), "name": project_root.name}]
+
+    server.server.on_request("workspace/configuration", workspace_configuration)
+    server.server.on_request("workspace/workspaceFolders", workspace_folders)
 
 
 @dataclass
@@ -183,13 +205,20 @@ class LspManager:
             from multilspy.multilspy_config import MultilspyConfig
             from multilspy.multilspy_logger import MultilspyLogger
         except ImportError as e:
-            raise LspNotAvailableError("multilspy not installed. Run: pip install multilspy") from e
+            raise LspNotAvailableError(
+                "multilspy not installed. Install the ContextMine 'lsp' extra."
+            ) from e
 
         try:
-            config = MultilspyConfig.from_dict({"code_language": language.value})
+            config_values = {"code_language": language.value}
+            if server_binary := _find_server_binary(language):
+                config_values["server_binary"] = server_binary
+
+            config = MultilspyConfig.from_dict(config_values)
             lsp_logger = MultilspyLogger()
 
             server = LanguageServer.create(config, lsp_logger, str(project_root))
+            _register_client_request_handlers(server, project_root)
 
             client = LspClient(server, project_root)
             await asyncio.wait_for(
@@ -280,3 +309,17 @@ def get_lsp_manager() -> LspManager:
         The singleton LspManager
     """
     return LspManager.get_instance()
+
+
+async def shutdown_lsp_manager() -> None:
+    """Shutdown and clear the global manager without creating one."""
+    manager = LspManager._instance
+    if manager is None:
+        return
+
+    try:
+        await manager.shutdown()
+    finally:
+        with LspManager._lock:
+            if LspManager._instance is manager:
+                LspManager._instance = None

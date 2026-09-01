@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from contextmine_core import close_engine
+from contextmine_core.lsp import shutdown_lsp_manager
 from contextmine_core.telemetry import init_telemetry, shutdown_telemetry
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Startup
         yield
     # Shutdown
+    await shutdown_lsp_manager()
     await close_engine()
     await shutdown_telemetry()
 

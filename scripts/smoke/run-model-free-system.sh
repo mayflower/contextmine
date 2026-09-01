@@ -6,6 +6,8 @@ set -euo pipefail
 git config --global --add safe.directory /fixtures/repository
 git config --global --add safe.directory /fixtures/repository/.git
 
+/app/.venv/bin/python /smoke/contextmine_lsp.py
+
 cd /app/packages/core
 /app/.venv/bin/alembic upgrade head
 

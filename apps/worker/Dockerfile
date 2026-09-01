@@ -22,6 +22,8 @@ ARG SCIP_JAVA_VERSION=0.10.3
 ARG SCIP_PHP_VERSION=dev-main
 ARG SCIP_PHP_REPO_URL=https://github.com/mayflower/scip-php.git
 ARG NODE_VERSION=24
+ARG TYPESCRIPT_VERSION=6.0.3
+ARG TYPESCRIPT_LANGUAGE_SERVER_VERSION=6.0.0
 
 # Install system dependencies
 # - git: for cloning repos
@@ -48,7 +50,11 @@ RUN apt-get update && apt-get install -y \
     && corepack enable \
     && npm install -g \
        @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \
-       @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}
+       @sourcegraph/scip-python@${SCIP_PYTHON_VERSION} \
+       typescript@${TYPESCRIPT_VERSION} \
+       typescript-language-server@${TYPESCRIPT_LANGUAGE_SERVER_VERSION} \
+    && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}" \
+    && test "$(typescript-language-server --version)" = "${TYPESCRIPT_LANGUAGE_SERVER_VERSION}"
 
 # Install Coursier/scip-java, Composer/scip-php, and verify SCIP tools
 ENV COMPOSER_HOME=/opt/composer

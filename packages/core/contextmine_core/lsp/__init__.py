@@ -24,7 +24,7 @@ from contextmine_core.lsp.languages import (
     detect_language,
     find_project_root,
 )
-from contextmine_core.lsp.manager import LspManager, get_lsp_manager
+from contextmine_core.lsp.manager import LspManager, get_lsp_manager, shutdown_lsp_manager
 
 __all__ = [
     # Client
@@ -47,4 +47,5 @@ __all__ = [
     # Manager
     "LspManager",
     "get_lsp_manager",
+    "shutdown_lsp_manager",
 ]

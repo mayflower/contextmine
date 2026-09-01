@@ -40,9 +40,17 @@ dependencies = [
     "defusedxml>=0.7.1",
 ]
 
+[project.optional-dependencies]
+lsp = [
+    "multilspy @ git+https://github.com/microsoft/multilspy@6f4c0b7c287f2ff6917fc4008ba0d98a26d6aa24",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["contextmine_core"]
