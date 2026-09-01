@@ -116,6 +116,17 @@ updates:
       default-days: 7
     commit-message:
       prefix: "chore(deps/web)"
+    ignore:
+      # The web compiler remains on TypeScript 5 until openapi-typescript and
+      # typescript-eslint publish a compatible upgrade path.
+      - dependency-name: "typescript"
+        versions:
+          - ">=6.0.0"
+      # Keep the ambient Node API aligned with the Node 24 runtime images and
+      # CI toolchain. Remove this boundary as part of a coordinated Node bump.
+      - dependency-name: "@types/node"
+        versions:
+          - ">=25.0.0"
     groups:
       grafana-faro:
         applies-to: "version-updates"

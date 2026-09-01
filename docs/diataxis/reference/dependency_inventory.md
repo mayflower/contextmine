@@ -60,9 +60,11 @@ The snapshot-date modernization is applied:
   SQLAlchemy 2.0.52, and the OpenTelemetry 1.44/0.65 family.
 - Web runtime and tooling dependencies are current except where the active
   runtime or peer contract requires a lower major. TypeScript stays on 5.9
-  because openapi-typescript 7 and typescript-eslint 8 reject TypeScript 7;
-  `@types/node` stays on 24 to match the Node 24 production runtime. The current
-  lock reports zero `npm audit` vulnerabilities.
+  because openapi-typescript 7 requires TypeScript 5 and typescript-eslint 8
+  requires a TypeScript version below 6.1; `@types/node` stays on 24 to match the
+  Node 24 production runtime. Dependabot preserves these compatibility
+  boundaries while continuing to propose updates within the supported majors.
+  The current lock reports zero `npm audit` vulnerabilities.
 - Shipped code intelligence uses the native TypeScript 7 LSP because TypeScript
   7 removed the JavaScript `tsserver` wrapped by `typescript-language-server`.
   The model-free fixture exercises this native server end to end.
