@@ -10,7 +10,8 @@ async def test_root_well_known_matches_mounted_mcp_metadata(client: AsyncClient)
     root = await client.get("/.well-known/oauth-authorization-server")
 
     assert root.status_code == mounted.status_code
-    assert root.json() == mounted.json()
+    assert root.content == mounted.content
+    assert root.headers["content-type"] == mounted.headers["content-type"]
 
 
 @pytest.mark.anyio
@@ -19,4 +20,5 @@ async def test_root_well_known_preserves_resource_suffix(client: AsyncClient) ->
     root = await client.get("/.well-known/oauth-protected-resource/mcp/")
 
     assert root.status_code == mounted.status_code
-    assert root.json() == mounted.json()
+    assert root.content == mounted.content
+    assert root.headers["content-type"] == mounted.headers["content-type"]

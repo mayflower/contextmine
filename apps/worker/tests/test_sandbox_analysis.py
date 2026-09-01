@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import contextmine_worker.sandbox_analysis as sandbox_analysis
 import pytest
 from contextmine_worker.sandbox_analysis import (
     AnalyzedFile,
@@ -18,6 +19,7 @@ from contextmine_worker.sandbox_analysis import (
     SandboxArtifactManifest,
     SandboxResultManifest,
     _decompress_bounded,
+    _serialize_bounded_request,
     github_proxy_config,
     run_sandbox_analysis,
 )
@@ -61,6 +63,17 @@ def test_request_rejects_command_injection_and_invalid_sha() -> None:
         )
     with pytest.raises(ValidationError):
         SandboxAnalysisRequest.model_validate(_request().model_dump() | {"previous_commit": "HEAD"})
+
+
+def test_request_serialization_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request()
+    payload = _serialize_bounded_request(request)
+
+    assert SandboxAnalysisRequest.model_validate_json(payload) == request
+
+    monkeypatch.setattr(sandbox_analysis, "_MAX_REQUEST_BYTES", len(payload.encode("utf-8")) - 1)
+    with pytest.raises(ValueError, match="request exceeds configured size limit"):
+        _serialize_bounded_request(request)
 
 
 @pytest.mark.parametrize("path", ["../secret", "/etc/passwd", "a\\b.py", "a//b.py"])

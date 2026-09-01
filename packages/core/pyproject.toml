@@ -21,6 +21,7 @@ dependencies = [
     "langchain-openai>=1.6.0",
     "langgraph>=1.2.11",
     "langgraph-checkpoint-postgres==3.1.2",
+    "psycopg[binary]>=3.3.5",
     "claude-agent-sdk==0.2.149",
     # SCIP protobuf parsing for code intelligence
     "protobuf>=7.36.1",
@@ -28,6 +29,7 @@ dependencies = [
     # Tree-sitter for AST-based analysis (rule extraction, outline)
     "tree-sitter-language-pack>=1.15.8",
     # Deterministic community detection for the knowledge graph
+    "numpy>=2.5.2",
     "igraph>=1.0.0",
     "leidenalg>=0.12.0",
     # OpenTelemetry (optional - only imports when OTEL_ENABLED=true)

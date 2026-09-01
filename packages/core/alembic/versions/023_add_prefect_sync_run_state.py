@@ -17,8 +17,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    for value in ("scheduled", "cancelled", "timed_out"):
-        op.execute(f"ALTER TYPE sync_run_status ADD VALUE IF NOT EXISTS '{value}'")
+    op.execute(sa.text("ALTER TYPE sync_run_status ADD VALUE IF NOT EXISTS 'scheduled'"))
+    op.execute(sa.text("ALTER TYPE sync_run_status ADD VALUE IF NOT EXISTS 'cancelled'"))
+    op.execute(sa.text("ALTER TYPE sync_run_status ADD VALUE IF NOT EXISTS 'timed_out'"))
     op.add_column("sync_runs", sa.Column("flow_run_id", sa.String(length=255), nullable=True))
     op.create_index(
         "uq_sync_runs_flow_run_id",
