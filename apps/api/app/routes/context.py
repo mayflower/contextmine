@@ -234,6 +234,7 @@ class ResearchRequest(BaseModel):
     question: str
     scope: str | None = None  # Path pattern like 'src/api/**'
     budget: int = 10  # Max investigation steps
+    run_id: str | None = None  # Existing run to resume
 
 
 class ResearchStepInfo(BaseModel):
@@ -250,6 +251,13 @@ class ResearchResponse(BaseModel):
     citations: list[str]
     steps_used: int
     run_id: str | None = None
+
+
+class ResearchRunStatus(BaseModel):
+    """Persisted status of a research run."""
+
+    run_id: str
+    status: str
 
 
 @router.post("/research/stream")
@@ -272,6 +280,7 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
     """
     # Validate budget
     budget = max(1, min(20, body.budget))
+    run_id = body.run_id or str(uuid.uuid4())
 
     async def event_generator() -> AsyncIterator[str]:
         """Generate SSE events for research progress."""
@@ -279,13 +288,14 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
             from contextmine_core.research import run_research
 
             # Send start event
-            yield f"event: step\ndata: {json.dumps({'action': 'starting', 'description': 'Initializing research agent...', 'step': 0})}\n\n"
+            yield f"event: step\ndata: {json.dumps({'action': 'starting', 'description': 'Initializing research agent...', 'step': 0, 'run_id': run_id})}\n\n"
 
             # Run research (this executes the full agent)
             result = await run_research(
                 question=body.question,
                 scope=body.scope,
                 max_steps=budget,
+                run_id=run_id,
             )
 
             # Use budget_used for step count (steps list is not populated by LangGraph agent)
@@ -310,7 +320,7 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
                 yield f"event: answer\ndata: {json.dumps({'text': error_msg})}\n\n"
                 yield f"event: citations\ndata: {json.dumps({'citations': [], 'steps_used': steps_used, 'run_id': result.run_id})}\n\n"
 
-            yield "event: done\ndata: {}\n\n"
+            yield f"event: done\ndata: {json.dumps({'run_id': result.run_id, 'status': result.status.value})}\n\n"
 
         except ImportError as e:
             logger.error("Research agent not available: %s", e)
@@ -328,3 +338,16 @@ async def research_stream(request: Request, body: ResearchRequest) -> StreamingR
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/research/{run_id}/cancel")
+@limiter.limit(RATE_LIMIT_RESEARCH)
+async def cancel_research_run(request: Request, run_id: str) -> ResearchRunStatus:
+    """Cancel a persisted research run so it cannot resume."""
+    from contextmine_core.research import cancel_research
+
+    try:
+        result = await cancel_research(run_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="Research run not found") from e
+    return ResearchRunStatus(run_id=result.run_id, status=result.status.value)

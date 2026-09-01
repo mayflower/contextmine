@@ -17,11 +17,11 @@ import contextmine_core.database as db_module
 import contextmine_core.telemetry.setup as telemetry_setup
 import pytest
 from contextmine_core.architecture.agent_sdk import (
-    ClaudeAgentSdkUnavailableError,
-    ClaudeSDKSessionManager,
+    ClaudeAgentRunner,
     _arc42_prompt,
     _extract_json_blob,
     _render_markdown,
+    _repo_read_permission,
 )
 from contextmine_core.embeddings import (
     FakeEmbedder,
@@ -121,19 +121,144 @@ class TestArc42Prompt:
         assert "Focus section: 5_building_block_view" in prompt
 
 
-class TestClaudeSDKSessionManager:
-    async def test_unavailable_sdk_raises(self) -> None:
-        manager = ClaudeSDKSessionManager()
-        with (
-            patch.dict("sys.modules", {"claude_code_sdk": None}),
-            pytest.raises((ClaudeAgentSdkUnavailableError, ImportError)),
-        ):
-            await manager._get_entry(
-                repo_path=Path("/tmp/nonexistent"),
-                model="claude-sonnet-4-5-20250929",
-                max_turns=5,
-                permission_mode="bypassPermissions",
+class TestClaudeAgentPermissions:
+    async def test_read_inside_repository_is_allowed(self, tmp_path: Path) -> None:
+        from claude_agent_sdk import PermissionResultAllow
+
+        source = tmp_path / "source.py"
+        source.write_text("pass\n")
+
+        result = await _repo_read_permission(tmp_path.resolve())(
+            "Read", {"file_path": "source.py"}, MagicMock()
+        )
+
+        assert isinstance(result, PermissionResultAllow)
+        assert result.updated_input == {"file_path": str(source.resolve())}
+
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input"),
+        [
+            ("Read", {"file_path": "../secret"}),
+            ("Glob", {"path": ".", "pattern": "../*.py"}),
+            ("Bash", {"command": "pwd"}),
+        ],
+    )
+    async def test_escape_and_non_read_tools_are_denied(
+        self, tmp_path: Path, tool_name: str, tool_input: dict[str, str]
+    ) -> None:
+        from claude_agent_sdk import PermissionResultDeny
+
+        result = await _repo_read_permission(tmp_path.resolve())(tool_name, tool_input, MagicMock())
+
+        assert isinstance(result, PermissionResultDeny)
+
+    async def test_symlink_escape_is_denied(self, tmp_path: Path) -> None:
+        from claude_agent_sdk import PermissionResultDeny
+
+        outside = tmp_path.parent / f"{tmp_path.name}-outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        (tmp_path / "escape").symlink_to(outside, target_is_directory=True)
+
+        result = await _repo_read_permission(tmp_path.resolve())(
+            "Read", {"file_path": "escape/secret.txt"}, MagicMock()
+        )
+
+        assert isinstance(result, PermissionResultDeny)
+
+
+class TestClaudeAgentRunner:
+    async def test_stream_lifecycle_and_usage_metadata(self, tmp_path: Path) -> None:
+        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+        events: list[object] = []
+
+        class FakeClient:
+            def __init__(self, options: object) -> None:
+                events.append(options)
+
+            async def __aenter__(self) -> FakeClient:
+                events.append("entered")
+                return self
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                events.append("closed")
+
+            async def query(self, prompt: str) -> None:
+                events.append(("query", prompt))
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield AssistantMessage(
+                    content=[TextBlock(text="fallback")],
+                    model="claude-current",
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=10,
+                    duration_api_ms=8,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session-1",
+                    total_cost_usd=0.01,
+                    usage={"input_tokens": 7, "output_tokens": 11},
+                    structured_output={"title": "result"},
+                    model_usage={},
+                )
+
+        with patch("claude_agent_sdk.ClaudeSDKClient", FakeClient):
+            output, metadata = await ClaudeAgentRunner().run_prompt(
+                repo_path=tmp_path,
+                prompt="analyze",
+                model="claude-configured",
+                max_turns=3,
             )
+
+        options = events[0]
+        assert output == {"title": "result"}
+        assert metadata["model"] == "claude-current"
+        assert metadata["usage"] == {"input_tokens": 7, "output_tokens": 11}
+        assert metadata["session_id"] == "session-1"
+        assert metadata["total_cost_usd"] == 0.01
+        assert events[-1] == "closed"
+        assert options.tools == ["Read", "Glob", "Grep"]
+        assert "Bash" in options.disallowed_tools
+        assert options.permission_mode == "default"
+        assert options.setting_sources == []
+
+    async def test_client_closes_when_stream_fails(self, tmp_path: Path) -> None:
+        events: list[str] = []
+
+        class FailingClient:
+            def __init__(self, options: object) -> None:
+                pass
+
+            async def __aenter__(self) -> FailingClient:
+                events.append("entered")
+                return self
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                events.append("closed")
+
+            async def query(self, prompt: str) -> None:
+                pass
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                if events:
+                    raise RuntimeError("stream failed")
+                yield
+
+        with (
+            patch("claude_agent_sdk.ClaudeSDKClient", FailingClient),
+            pytest.raises(RuntimeError, match="stream failed"),
+        ):
+            await ClaudeAgentRunner().run_prompt(
+                repo_path=tmp_path,
+                prompt="analyze",
+                model="claude-current",
+                max_turns=1,
+            )
+
+        assert events == ["entered", "closed"]
 
 
 # ============================================================================
@@ -533,9 +658,6 @@ class TestDatabaseModule:
         finally:
             db_module._engine = orig_engine
             db_module._session_factory = orig_factory
-
-    def test_get_async_session_alias(self) -> None:
-        assert db_module.get_async_session is db_module.get_session
 
 
 # ============================================================================

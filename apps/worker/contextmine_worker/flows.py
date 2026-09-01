@@ -55,6 +55,11 @@ from contextmine_worker.github_sync import (
     is_eligible_file,
     read_file_content,
 )
+from contextmine_worker.sandbox_analysis import (
+    SandboxAnalysisRequest,
+    SandboxAnalysisResult,
+    run_sandbox_analysis,
+)
 from contextmine_worker.symbol_indexing import maintain_symbols_for_document
 from contextmine_worker.telemetry import traced_flow, traced_task
 from contextmine_worker.web_sync import (
@@ -953,17 +958,22 @@ async def _kg_extract_erm(
         )
         docs = result.all()
 
-        for uri, content in docs:
-            if not content:
-                continue
-            file_path = _uri_to_file_path(uri)
-            if _is_ignored_repo_path(file_path):
-                continue
-            if _is_schema_candidate(file_path):
-                schema_candidates.append((file_path, content))
-                cleanup_paths.add(file_path)
-            _try_alembic_extraction(file_path, content, erm_extractor, extract_from_alembic)
+    for uri, content in docs:
+        if not content:
+            continue
+        file_path = _uri_to_file_path(uri)
+        if _is_ignored_repo_path(file_path):
+            continue
+        if _is_schema_candidate(file_path):
+            schema_candidates.append((file_path, content))
+            cleanup_paths.add(file_path)
+        _try_alembic_extraction(file_path, content, erm_extractor, extract_from_alembic)
 
+    aggregated = None
+    if not erm_extractor.schema.tables and schema_candidates and research_llm is not None:
+        aggregated = await _extract_schema_fallback(schema_candidates, research_llm)
+
+    async with get_session() as session:
         cleanup_stats = await cleanup_scoped_knowledge_nodes(
             session,
             collection_uuid,
@@ -987,25 +997,6 @@ async def _kg_extract_erm(
                 "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
             }
 
-        if not schema_candidates:
-            if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
-                await session.commit()
-            return {
-                "tables_found": 0,
-                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
-                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
-            }
-
-        if research_llm is None:
-            if cleanup_stats.get("nodes_deleted", 0) or cleanup_stats.get("evidence_deleted", 0):
-                await session.commit()
-            return {
-                "tables_found": 0,
-                "nodes_deleted": cleanup_stats.get("nodes_deleted", 0),
-                "evidence_deleted": cleanup_stats.get("evidence_deleted", 0),
-            }
-
-        aggregated = await _extract_schema_fallback(schema_candidates, research_llm)
         if aggregated and aggregated.tables:
             schema_stats = await build_schema_graph(session, collection_uuid, aggregated)
             await save_generic_erd_artifact(session, collection_uuid, aggregated)
@@ -1136,24 +1127,26 @@ async def _kg_extract_business_rules(
 
     async with get_session() as session:
         docs = await _kg_load_rule_candidate_docs(session, source_uuid, changed_doc_ids)
-        logger.info("Extracting business rules from %d documents", len(docs))
-        cleanup_paths = set(deleted_paths)
-        for _doc_id, uri, content in docs:
-            if not content:
-                continue
-            file_path = _uri_to_file_path(uri)
-            if _is_ignored_repo_path(file_path):
-                continue
-            cleanup_paths.add(file_path)
 
+    logger.info("Extracting business rules from %d documents", len(docs))
+    cleanup_paths = set(deleted_paths)
+    for _doc_id, uri, content in docs:
+        if not content:
+            continue
+        file_path = _uri_to_file_path(uri)
+        if _is_ignored_repo_path(file_path):
+            continue
+        cleanup_paths.add(file_path)
+
+    all_extractions = await _kg_extract_rules_from_docs(docs, research_llm)
+
+    async with get_session() as session:
         cleanup_stats = await cleanup_scoped_knowledge_nodes(
             session,
             collection_uuid,
             kinds={KnowledgeNodeKind.BUSINESS_RULE},
             target_file_paths=cleanup_paths,
         )
-
-        all_extractions = await _kg_extract_rules_from_docs(docs, research_llm)
 
         if all_extractions:
             rule_stats = await build_rules_graph(session, collection_uuid, all_extractions)
@@ -1313,14 +1306,14 @@ async def _kg_step_semantic_entities(
             logger.info(
                 "No changed documents but no semantic entities found - running initial extraction"
             )
+        extraction_batch = await extract_from_documents(
+            collection_id=collection_uuid,
+            llm_provider=llm_provider,
+            embedder=embedder,
+            max_chunks=_semantic_extraction_max_chunks(),
+            changed_doc_ids=changed_doc_ids,
+        )
         async with get_session() as session:
-            extraction_batch = await extract_from_documents(
-                collection_id=collection_uuid,
-                llm_provider=llm_provider,
-                embedder=embedder,
-                max_chunks=_semantic_extraction_max_chunks(),
-                changed_doc_ids=changed_doc_ids,
-            )
             extraction_stats = await persist_semantic_entities(
                 session=session,
                 collection_id=collection_uuid,
@@ -1415,7 +1408,6 @@ async def _kg_step_summaries(
         stats["kg_errors"].append(f"summaries: {e}")
 
 
-@traced_task()
 @task(
     retries=DEFAULT_RETRIES,
     retry_delay_seconds=1,
@@ -2163,11 +2155,11 @@ async def _materialize_behavioral_layers_impl(
         }
 
 
-@traced_task()
 @task(
     retries=0,
     tags=[TAG_DB_HEAVY],
 )
+@traced_task()
 async def materialize_behavioral_layers(
     source_id: str,
     collection_id: str,
@@ -2238,7 +2230,7 @@ async def _run_behavioral_materialization(
 ) -> dict[str, object]:
     """Await advisory behavioral extraction before the parent sync can finish."""
     try:
-        return await materialize_behavioral_layers.fn(
+        return await materialize_behavioral_layers(
             source_id=source_id,
             collection_id=collection_id,
             scenario_id=scenario_id,
@@ -2298,18 +2290,8 @@ def _build_scip_index_config():
     )
 
 
-@task(
-    retries=0,  # Don't retry - indexing is expensive
-    tags=[TAG_SCIP_INDEX],
-)
-async def task_detect_scip_projects(repo_path: Path) -> dict:
-    """Detect projects suitable for SCIP indexing in a repository.
-
-    Returns:
-        Dict with:
-        - projects: list of ProjectTarget dicts
-        - diagnostics: census and detection diagnostics
-    """
+async def _detect_scip_projects_impl(repo_path: Path) -> dict:
+    """Detect projects suitable for SCIP indexing."""
     from contextmine_core.semantic_snapshot.indexers.detection import (
         detect_projects_with_diagnostics,
     )
@@ -2323,19 +2305,15 @@ async def task_detect_scip_projects(repo_path: Path) -> dict:
 
 @task(
     retries=0,  # Don't retry - indexing is expensive
-    timeout_seconds=900,  # 15 minute max
     tags=[TAG_SCIP_INDEX],
 )
-async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict | None:
-    """Run SCIP indexer on a single project.
+async def task_detect_scip_projects(repo_path: Path) -> dict:
+    """Run project detection as a Prefect task."""
+    return await _detect_scip_projects_impl(repo_path)
 
-    Args:
-        project_dict: ProjectTarget as dict
-        output_dir: Directory for SCIP output files
 
-    Returns:
-        IndexArtifact as dict, or None if indexing failed
-    """
+async def _index_scip_project_impl(project_dict: dict, output_dir: Path) -> dict | None:
+    """Run the existing SCIP backend for one detected project."""
     from contextmine_core.semantic_snapshot.indexers import BACKENDS
     from contextmine_core.semantic_snapshot.models import ProjectTarget
 
@@ -2370,18 +2348,17 @@ async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict 
 
 
 @task(
-    retries=0,
+    retries=0,  # Don't retry - indexing is expensive
+    timeout_seconds=900,  # 15 minute max
     tags=[TAG_SCIP_INDEX],
 )
-async def task_parse_scip_snapshot(scip_path: str) -> dict | None:
-    """Parse a SCIP file into a Snapshot.
+async def task_index_scip_project(project_dict: dict, output_dir: Path) -> dict | None:
+    """Run SCIP indexing as a Prefect task."""
+    return await _index_scip_project_impl(project_dict, output_dir)
 
-    Args:
-        scip_path: Path to the .scip file
 
-    Returns:
-        Snapshot as dict, or None if parsing failed
-    """
+async def _parse_scip_snapshot_impl(scip_path: str) -> dict | None:
+    """Parse one SCIP artifact into the shared semantic snapshot format."""
     from contextmine_core.semantic_snapshot import build_snapshot
 
     try:
@@ -2395,6 +2372,15 @@ async def task_parse_scip_snapshot(scip_path: str) -> dict | None:
     except Exception as e:
         logger.warning("Failed to parse SCIP file %s: %s", scip_path, e)
         return None
+
+
+@task(
+    retries=0,
+    tags=[TAG_SCIP_INDEX],
+)
+async def task_parse_scip_snapshot(scip_path: str) -> dict | None:
+    """Parse a SCIP artifact as a Prefect task."""
+    return await _parse_scip_snapshot_impl(scip_path)
 
 
 @task(
@@ -2613,6 +2599,7 @@ class _SyncGitHubCtx:
     new_sha: str = ""
     old_sha: str | None = None
     source_version_id: object = None
+    sandbox_result: SandboxAnalysisResult | None = None
 
     # Joern
     joern_ok: bool = False
@@ -2693,9 +2680,65 @@ async def _gh_phase_auth_and_clone(ctx: _SyncGitHubCtx) -> None:
     )
 
     deploy_key = await get_deploy_key_for_source(str(ctx.source.id))
-    token = None
-    if not deploy_key:
-        token = await get_github_token_for_source(str(ctx.source.id), str(ctx.source.collection_id))
+    token = await get_github_token_for_source(str(ctx.source.id), str(ctx.source.collection_id))
+
+    settings = get_settings()
+    sandbox_api_url = getattr(settings, "sandbox_api_url", None)
+    if sandbox_api_url:
+        from contextmine_core.settings import secret_value
+
+        if not settings.sandbox_api_key or not settings.sandbox_analyzer_snapshot:
+            raise RuntimeError(
+                "SANDBOX_CONFIGURATION_ERROR: API key and analyzer snapshot are required"
+            )
+        if deploy_key and not token:
+            raise RuntimeError(
+                "SANDBOX_GITHUB_AUTH_ERROR: deploy-key-only sources require a GitHub OAuth token "
+                "because private keys are never copied into analyzer sandboxes"
+            )
+        ctx.old_sha = ctx.source.cursor
+        ctx.sandbox_result = await run_sandbox_analysis(
+            SandboxAnalysisRequest(
+                source_id=ctx.source.id,
+                owner=ctx.owner,
+                repository=ctx.repo,
+                branch=ctx.branch,
+                previous_commit=ctx.old_sha,
+                scip_languages=settings.scip_languages,
+                scip_timeout_python=settings.scip_timeout_python,
+                scip_timeout_typescript=settings.scip_timeout_typescript,
+                scip_timeout_java=settings.scip_timeout_java,
+                scip_timeout_php=settings.scip_timeout_php,
+                scip_node_memory_mb=settings.scip_node_memory_mb,
+                scip_best_effort=settings.scip_best_effort,
+                metrics_strict_mode=settings.metrics_strict_mode,
+                metrics_languages=settings.metrics_languages,
+                evolution_window_days=settings.twin_evolution_window_days,
+                temporal_coupling_max_files_per_commit=(
+                    settings.sync_temporal_coupling_max_files_per_commit
+                ),
+                lsp_request_timeout_seconds=settings.lsp_request_timeout_seconds,
+                joern_parse_timeout_seconds=settings.joern_parse_timeout_seconds,
+                joern_required=settings.joern_required_for_sync,
+            ),
+            api_endpoint=sandbox_api_url,
+            api_key=settings.sandbox_api_key,
+            snapshot_name=settings.sandbox_analyzer_snapshot,
+            github_token=secret_value(token),
+            timeout_seconds=settings.sandbox_analysis_timeout_seconds,
+            max_result_bytes=settings.sandbox_result_max_bytes,
+            max_artifact_bytes=settings.sandbox_artifact_max_bytes,
+            joern_cpg_root=Path(settings.joern_cpg_root),
+            vcpus=settings.sandbox_analyzer_vcpus,
+            mem_bytes=settings.sandbox_analyzer_mem_bytes,
+            fs_capacity_bytes=settings.sandbox_analyzer_fs_bytes,
+        )
+        ctx.new_sha = ctx.sandbox_result.commit
+        ctx.cpg_path = Path(settings.joern_cpg_root) / str(ctx.source.id) / f"{ctx.new_sha}.cpg.bin"
+        return
+
+    if getattr(settings, "app_mode", "development") == "production":
+        raise RuntimeError("SANDBOX_CONFIGURATION_ERROR: production has no local analyzer fallback")
 
     ensure_repos_dir()
     ctx.repo_path = get_repo_path(str(ctx.source.id))
@@ -2769,49 +2812,55 @@ async def _gh_phase_joern_cpg(ctx: _SyncGitHubCtx) -> None:
     from contextmine_core.twin import record_twin_event
 
     settings = get_settings()
-    ctx.cpg_path = Path(settings.joern_cpg_root) / str(ctx.source.id) / f"{ctx.new_sha}.cpg.bin"
-    ctx.cpg_path.parent.mkdir(parents=True, exist_ok=True)
+    if ctx.sandbox_result is not None:
+        ctx.joern_ok = ctx.sandbox_result.joern_status == "ready"
+        ctx.joern_error = ctx.sandbox_result.joern_error
+        if settings.joern_required_for_sync and not ctx.joern_ok:
+            raise RuntimeError(f"JOERN_PARSE_FAILED: {ctx.joern_error or 'no CPG returned'}")
+    else:
+        ctx.cpg_path = Path(settings.joern_cpg_root) / str(ctx.source.id) / f"{ctx.new_sha}.cpg.bin"
+        ctx.cpg_path.parent.mkdir(parents=True, exist_ok=True)
 
-    parse_command = [
-        settings.joern_parse_binary,
-        str(ctx.repo_path),
-        "--output",
-        str(ctx.cpg_path),
-    ]
-    joern_parse_timeout = _joern_parse_timeout_seconds()
-    try:
-        parse_result = await _run_blocking_with_timeout(
-            "joern_parse",
-            joern_parse_timeout,
-            subprocess.run,
-            parse_command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=joern_parse_timeout,
-        )
-        if parse_result.returncode != 0:
-            raise RuntimeError(
-                "JOERN_PARSE_FAILED: "
-                f"binary={settings.joern_parse_binary} "
-                f"code={parse_result.returncode} "
-                f"stderr={parse_result.stderr.strip()}"
+        parse_command = [
+            settings.joern_parse_binary,
+            str(ctx.repo_path),
+            "--output",
+            str(ctx.cpg_path),
+        ]
+        joern_parse_timeout = _joern_parse_timeout_seconds()
+        try:
+            parse_result = await _run_blocking_with_timeout(
+                "joern_parse",
+                joern_parse_timeout,
+                subprocess.run,
+                parse_command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=joern_parse_timeout,
             )
-        if not ctx.cpg_path.exists():
-            raise RuntimeError(
-                f"JOERN_PARSE_FAILED: expected CPG artifact missing at {ctx.cpg_path}"
+            if parse_result.returncode != 0:
+                raise RuntimeError(
+                    "JOERN_PARSE_FAILED: "
+                    f"binary={settings.joern_parse_binary} "
+                    f"code={parse_result.returncode} "
+                    f"stderr={parse_result.stderr.strip()}"
+                )
+            if not ctx.cpg_path.exists():
+                raise RuntimeError(
+                    f"JOERN_PARSE_FAILED: expected CPG artifact missing at {ctx.cpg_path}"
+                )
+            ctx.joern_ok = True
+        except Exception as exc:  # noqa: BLE001
+            ctx.joern_error = str(exc)
+            if settings.joern_required_for_sync:
+                raise RuntimeError(f"JOERN_PARSE_FAILED: {ctx.joern_error}") from exc
+            logger.warning(
+                "Joern CPG generation failed for %s/%s in advisory mode: %s",
+                ctx.owner,
+                ctx.repo,
+                ctx.joern_error,
             )
-        ctx.joern_ok = True
-    except Exception as exc:  # noqa: BLE001
-        ctx.joern_error = str(exc)
-        if settings.joern_required_for_sync:
-            raise RuntimeError(f"JOERN_PARSE_FAILED: {ctx.joern_error}") from exc
-        logger.warning(
-            "Joern CPG generation failed for %s/%s in advisory mode: %s",
-            ctx.owner,
-            ctx.repo,
-            ctx.joern_error,
-        )
 
     async with get_session() as session:
         from contextmine_core.models import TwinSourceVersion
@@ -3232,6 +3281,11 @@ def _scip_finalize_after_recovery(
 
 async def _gh_phase_scip_indexing(ctx: _SyncGitHubCtx) -> None:
     """Detect SCIP projects, index them, run recovery, and finalize coverage."""
+    if ctx.sandbox_result is not None:
+        ctx.scip_stats = dict(ctx.sandbox_result.scip_stats)
+        ctx.project_dicts = list(ctx.sandbox_result.projects)
+        ctx.snapshot_dicts = list(ctx.sandbox_result.snapshots)
+        return
     ctx.scip_stats = _default_scip_stats()
     await update_progress_artifact(
         ctx.progress_id, progress=10, description="Running SCIP polyglot indexing..."
@@ -3343,6 +3397,10 @@ async def _gh_phase_structural_metrics(ctx: _SyncGitHubCtx) -> None:
     await update_progress_artifact(
         ctx.progress_id, progress=14, description="Extracting structural code metrics..."
     )  # type: ignore[misc]
+    if ctx.sandbox_result is not None:
+        ctx.file_metric_dicts = list(ctx.sandbox_result.file_metrics)
+        ctx.evolution_payload = ctx.sandbox_result.evolution
+        return
     if not (ctx.snapshot_dicts and ctx.project_dicts):
         return
 
@@ -3480,7 +3538,13 @@ async def _gh_phase_diff_and_index_documents(ctx: _SyncGitHubCtx) -> None:
         ctx.progress_id, progress=15, description="Detecting changed files..."
     )  # type: ignore[misc]
 
-    changed_files, deleted_files = get_changed_files(ctx.git_repo, ctx.old_sha, ctx.new_sha)
+    sandbox_files: dict[str, str] | None = None
+    if ctx.sandbox_result is not None:
+        sandbox_files = {item.path: item.content for item in ctx.sandbox_result.files}
+        changed_files = list(sandbox_files)
+        deleted_files = list(ctx.sandbox_result.deleted_paths)
+    else:
+        changed_files, deleted_files = get_changed_files(ctx.git_repo, ctx.old_sha, ctx.new_sha)
     ctx.deleted_file_paths = list(deleted_files)
 
     total_files = len(changed_files) + len(deleted_files)
@@ -3503,10 +3567,13 @@ async def _gh_phase_diff_and_index_documents(ctx: _SyncGitHubCtx) -> None:
 
         for file_path in changed_files:
             ctx.stats.files_scanned += 1
-            if not is_eligible_file(Path(file_path), ctx.repo_path):
-                ctx.stats.files_skipped += 1
-                continue
-            content = read_file_content(ctx.repo_path, file_path)
+            if sandbox_files is not None:
+                content = sandbox_files[file_path]
+            else:
+                if not is_eligible_file(Path(file_path), ctx.repo_path):
+                    ctx.stats.files_skipped += 1
+                    continue
+                content = read_file_content(ctx.repo_path, file_path)
             if content is None:
                 ctx.stats.files_skipped += 1
                 continue
@@ -3759,6 +3826,11 @@ def _build_source_version_stats(
         "embedding_documents_skipped": int(doc_acc.embedding_documents_skipped),  # type: ignore[union-attr]
         "joern_status": "ready" if ctx.joern_ok else "failed",
         "joern_error": ctx.joern_error if not ctx.joern_ok else "",
+        "lsp": (
+            ctx.sandbox_result.lsp.model_dump(mode="json")
+            if ctx.sandbox_result is not None and ctx.sandbox_result.lsp is not None
+            else None
+        ),
         **scip_sub,
         "evolution_window_days": int(ctx.scip_stats.get("evolution_window_days", 0)),
         "evolution_commits_scanned": int(ctx.scip_stats.get("evolution_commits_scanned", 0)),
@@ -4090,7 +4162,6 @@ async def _process_web_page(
     return (str(new_doc.id), page.markdown, None)
 
 
-@traced_task()
 @task(
     retries=DEFAULT_RETRIES,
     retry_delay_seconds=exponential_backoff(backoff_factor=3),
@@ -4439,7 +4510,12 @@ async def _handle_sync_failure(source: Source, sync_run: SyncRun, exc: Exception
     retry_jitter_factor=0.5,
     tags=[TAG_DB_HEAVY],
 )
-async def sync_source(source: Source) -> SyncRun | None:
+@traced_task()
+async def sync_source(
+    source: Source,
+    sync_run_id: str | None = None,
+    flow_run_id: str | None = None,
+) -> SyncRun | None:
     """Sync a single source.
 
     Creates a sync run record and executes the appropriate sync logic.
@@ -4450,6 +4526,8 @@ async def sync_source(source: Source) -> SyncRun | None:
     run_started_at = datetime.now(UTC)
 
     async with get_session() as session:
+        import uuid as uuid_module
+
         # Lock the source row to prevent race conditions
         # Use FOR UPDATE SKIP LOCKED so concurrent attempts just skip
         source_lock = await session.execute(
@@ -4459,6 +4537,23 @@ async def sync_source(source: Source) -> SyncRun | None:
         if not locked_source:
             # Another sync already has the lock
             return None
+
+        requested_run = None
+        if sync_run_id:
+            requested_run = (
+                await session.execute(
+                    select(SyncRun)
+                    .where(
+                        SyncRun.id == uuid_module.UUID(sync_run_id),
+                        SyncRun.source_id == source.id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if requested_run is None:
+                raise ValueError(f"Sync run {sync_run_id} not found for source {source.id}")
+            if requested_run.status != SyncRunStatus.SCHEDULED:
+                return None
 
         # Recover stale running rows so new syncs are not blocked indefinitely.
         running_runs = select(SyncRun).where(
@@ -4485,22 +4580,30 @@ async def sync_source(source: Source) -> SyncRun | None:
             await session.commit()
 
         # Check if there's still a fresh running sync for this source.
-        existing_run = await session.execute(
-            select(SyncRun).where(
-                SyncRun.source_id == source.id,
-                SyncRun.status == SyncRunStatus.RUNNING,
-            )
+        existing_query = select(SyncRun).where(
+            SyncRun.source_id == source.id,
+            SyncRun.status == SyncRunStatus.RUNNING,
         )
+        if requested_run is not None:
+            existing_query = existing_query.where(SyncRun.id != requested_run.id)
+        existing_run = await session.execute(existing_query)
         if existing_run.scalar_one_or_none():
             # Another sync is already running for this source
             return None
 
         # Create sync run record
-        sync_run = SyncRun(
-            source_id=source.id,
-            status=SyncRunStatus.RUNNING,
-        )
-        session.add(sync_run)
+        if requested_run is not None:
+            requested_run.status = SyncRunStatus.RUNNING
+            requested_run.error = None
+            requested_run.flow_run_id = requested_run.flow_run_id or flow_run_id
+            sync_run = requested_run
+        else:
+            sync_run = SyncRun(
+                source_id=source.id,
+                status=SyncRunStatus.RUNNING,
+                flow_run_id=flow_run_id,
+            )
+            session.add(sync_run)
         await session.commit()
         await session.refresh(sync_run)
 
@@ -4520,7 +4623,11 @@ async def sync_source(source: Source) -> SyncRun | None:
         return result.scalar_one()
 
 
-async def _fail_running_sync_runs_for_source(source_id: str, reason: str) -> int:
+async def _fail_running_sync_runs_for_source(
+    source_id: str,
+    reason: str,
+    status: SyncRunStatus = SyncRunStatus.FAILED,
+) -> int:
     """Mark currently running sync rows for a source as failed."""
     import uuid as uuid_module
 
@@ -4540,7 +4647,7 @@ async def _fail_running_sync_runs_for_source(source_id: str, reason: str) -> int
             .all()
         )
         for row in running_rows:
-            row.status = SyncRunStatus.FAILED
+            row.status = status
             row.finished_at = now
             row.error = reason
         if running_rows:
@@ -4861,8 +4968,106 @@ async def ingest_coverage_metrics(job_id: str) -> dict:
         }
 
 
-@traced_flow()
+@task(retries=DEFAULT_RETRIES, retry_delay_seconds=exponential_backoff(backoff_factor=2))
+async def claim_due_source_runs() -> list[dict[str, str]]:
+    """Claim due sources and create scheduled business runs atomically."""
+    now = datetime.now(UTC)
+    claimed: list[dict[str, str]] = []
+    async with get_session() as session:
+        sources = (
+            (
+                await session.execute(
+                    select(Source)
+                    .where(
+                        Source.enabled == True,  # noqa: E712
+                        Source.next_run_at <= now,
+                    )
+                    .order_by(Source.next_run_at)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for source in sources:
+            source.next_run_at = now + timedelta(minutes=source.schedule_interval_minutes)
+            active = (
+                await session.execute(
+                    select(SyncRun).where(
+                        SyncRun.source_id == source.id,
+                        SyncRun.status.in_([SyncRunStatus.SCHEDULED, SyncRunStatus.RUNNING]),
+                    )
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                continue
+            sync_run = SyncRun(source_id=source.id, status=SyncRunStatus.SCHEDULED)
+            session.add(sync_run)
+            await session.flush()
+            claimed.append(
+                {
+                    "source_id": str(source.id),
+                    "source_url": source.url,
+                    "sync_run_id": str(sync_run.id),
+                }
+            )
+        await session.commit()
+    return claimed
+
+
+async def _record_prefect_flow_run(sync_run_id: str, flow_run_id: str) -> None:
+    import uuid as uuid_module
+
+    async with get_session() as session:
+        sync_run = (
+            await session.execute(
+                select(SyncRun).where(SyncRun.id == uuid_module.UUID(sync_run_id))
+            )
+        ).scalar_one()
+        sync_run.flow_run_id = flow_run_id
+        await session.commit()
+
+
+async def _mark_scheduled_sync_failed(sync_run_id: str, error: str) -> None:
+    import uuid as uuid_module
+
+    async with get_session() as session:
+        sync_run = (
+            await session.execute(
+                select(SyncRun).where(SyncRun.id == uuid_module.UUID(sync_run_id))
+            )
+        ).scalar_one_or_none()
+        if sync_run is not None and sync_run.status == SyncRunStatus.SCHEDULED:
+            sync_run.status = SyncRunStatus.FAILED
+            sync_run.finished_at = datetime.now(UTC)
+            sync_run.error = error
+            await session.commit()
+
+
+async def _cancel_sync_run(_flow: Any, flow_run: Any, _state: Any) -> None:
+    sync_run_id = (flow_run.parameters or {}).get("sync_run_id")
+    if not sync_run_id:
+        return
+    import uuid as uuid_module
+
+    async with get_session() as session:
+        sync_run = (
+            await session.execute(
+                select(SyncRun).where(SyncRun.id == uuid_module.UUID(sync_run_id))
+            )
+        ).scalar_one_or_none()
+        if sync_run is not None and sync_run.status in {
+            SyncRunStatus.SCHEDULED,
+            SyncRunStatus.RUNNING,
+        }:
+            sync_run.status = SyncRunStatus.CANCELLED
+            sync_run.finished_at = datetime.now(UTC)
+            sync_run.error = "Cancelled by Prefect"
+            await session.commit()
+
+
 @flow(name="sync_due_sources")
+@traced_flow()
 async def sync_due_sources() -> dict:
     """Flow to sync all sources that are due.
 
@@ -4872,54 +5077,48 @@ async def sync_due_sources() -> dict:
     3. Updates source timestamps after completion
     4. Uses advisory locks to prevent concurrent syncs for the same source
     """
-    sources = await get_due_sources()
+    from prefect.deployments import run_deployment
 
-    if not sources:
-        return {"synced": 0, "skipped": 0, "sources": []}
+    claims = await claim_due_source_runs()
+    if not claims:
+        return {"scheduled": 0, "sources": []}
 
-    results = []
-    skipped = 0
-    timeout_seconds = _sync_source_timeout_seconds()
-    for source in sources:
+    deployment = get_settings().prefect_sync_deployment
+    results: list[dict[str, str]] = []
+    for claim in claims:
         try:
-            if timeout_seconds > 0:
-                sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
-            else:
-                sync_run = await sync_source(source)
-            if sync_run is None:
-                skipped += 1
-                continue
-            results.append(
-                {
-                    "source_id": str(source.id),
-                    "sync_run_id": str(sync_run.id),
-                    "status": sync_run.status.value,
-                }
+            flow_run = await run_deployment(
+                deployment,
+                parameters={
+                    "source_id": claim["source_id"],
+                    "source_url": claim["source_url"],
+                    "sync_run_id": claim["sync_run_id"],
+                },
+                timeout=0,
+                as_subflow=False,
+                idempotency_key=claim["sync_run_id"],
             )
-        except TimeoutError:
-            reason = f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {timeout_seconds}s in scheduler"
-            recovered = await _fail_running_sync_runs_for_source(str(source.id), reason)
+            await _record_prefect_flow_run(claim["sync_run_id"], str(flow_run.id))
             results.append(
                 {
-                    "source_id": str(source.id),
-                    "error": reason,
-                    "recovered_running_rows": recovered,
+                    **claim,
+                    "flow_run_id": str(flow_run.id),
                 }
             )
         except Exception as e:
-            results.append(
-                {
-                    "source_id": str(source.id),
-                    "error": str(e),
-                }
-            )
+            await _mark_scheduled_sync_failed(claim["sync_run_id"], str(e))
+            results.append({**claim, "error": str(e)})
 
-    return {"synced": len(results), "skipped": skipped, "sources": results}
+    return {"scheduled": len(claims), "sources": results}
 
 
+@flow(name="sync_single_source", on_cancellation=[_cancel_sync_run])
 @traced_flow()
-@flow(name="sync_single_source")
-async def sync_single_source(source_id: str, source_url: str | None = None) -> dict:
+async def sync_single_source(
+    source_id: str,
+    source_url: str | None = None,
+    sync_run_id: str | None = None,
+) -> dict:
     """Flow to sync a single source by ID.
 
     This is the preferred flow for on-demand syncing, triggered by:
@@ -4949,14 +5148,22 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
     if not source.enabled:
         return {"error": f"Source {source_id} is disabled", "skipped": True}
 
+    from prefect.context import get_run_context
+
+    flow_run_id = str(get_run_context().flow_run.id)
     timeout_seconds = _sync_source_timeout_seconds()
     try:
         if timeout_seconds > 0:
-            sync_run = await asyncio.wait_for(sync_source(source), timeout=timeout_seconds)
+            sync_run = await asyncio.wait_for(
+                sync_source(source, sync_run_id, flow_run_id),
+                timeout=timeout_seconds,
+            )
         else:
-            sync_run = await sync_source(source)
+            sync_run = await sync_source(source, sync_run_id, flow_run_id)
         if sync_run is None:
             return {"source_id": source_id, "skipped": True, "reason": "lock_not_acquired"}
+        if sync_run.status == SyncRunStatus.FAILED:
+            raise RuntimeError(sync_run.error or f"Source sync {sync_run.id} failed")
 
         return {
             "source_id": source_id,
@@ -4966,10 +5173,12 @@ async def sync_single_source(source_id: str, source_url: str | None = None) -> d
         }
     except TimeoutError:
         reason = f"AUTO_TIMEOUT_SYNC_SOURCE: exceeded {timeout_seconds}s in sync_single_source"
-        recovered = await _fail_running_sync_runs_for_source(source_id, reason)
-        return {"source_id": source_id, "error": reason, "recovered_running_rows": recovered}
-    except Exception as e:
-        return {"source_id": source_id, "error": str(e)}
+        await _fail_running_sync_runs_for_source(
+            source_id,
+            reason,
+            status=SyncRunStatus.TIMED_OUT,
+        )
+        raise RuntimeError(reason) from None
 
 
 @traced_task()

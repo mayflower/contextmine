@@ -1,5 +1,7 @@
 """Tests for context assembly functionality."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from contextmine_core.context import (
     FakeLLM,
@@ -7,6 +9,7 @@ from contextmine_core.context import (
     extract_sources,
 )
 from contextmine_core.search import SearchResult
+from httpx import AsyncClient
 
 
 def make_search_result(
@@ -328,3 +331,51 @@ class TestContextEndpoint:
 
         assert response.status_code == 400
         assert "Invalid collection_id" in response.json()["detail"]
+
+    @pytest.mark.anyio
+    async def test_research_stream_exposes_stable_run_id(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        from contextmine_core.research.run import ResearchRun
+
+        run = ResearchRun.create("How does auth work?")
+        run.run_id = "run-123"
+        run.complete("Signed sessions are used.")
+        with patch(
+            "contextmine_core.research.run_research",
+            new=AsyncMock(return_value=run),
+        ) as research:
+            response = await client.post(
+                "/api/context/research/stream",
+                json={"question": run.question, "run_id": run.run_id},
+            )
+
+        assert response.status_code == 200
+        assert '"run_id": "run-123"' in response.text
+        assert '"status": "done"' in response.text
+        research.assert_awaited_once_with(
+            question=run.question,
+            scope=None,
+            max_steps=10,
+            run_id=run.run_id,
+        )
+
+    @pytest.mark.anyio
+    async def test_research_cancel_returns_persisted_status(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        from contextmine_core.research.run import ResearchRun
+
+        run = ResearchRun.create("How does auth work?")
+        run.run_id = "run-123"
+        run.cancel()
+        with patch(
+            "contextmine_core.research.cancel_research",
+            new=AsyncMock(return_value=run),
+        ):
+            response = await client.post("/api/context/research/run-123/cancel")
+
+        assert response.status_code == 200
+        assert response.json() == {"run_id": "run-123", "status": "cancelled"}

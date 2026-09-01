@@ -11,7 +11,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from contextmine_core import Collection, CollectionMember, get_settings
+from contextmine_core import (
+    Collection,
+    get_settings,
+    user_can_access_collection,
+)
 from contextmine_core import get_session as get_db_session
 from contextmine_core.architecture import (
     SECTION_TITLES,
@@ -111,6 +115,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, literal_column, select
 
 from app.middleware import get_session
+from app.routes import twin_responses as tr
 
 router = APIRouter(prefix="/twin", tags=["twin"])
 
@@ -237,17 +242,7 @@ async def _ensure_member(db, collection_id: uuid.UUID, user_id: uuid.UUID) -> No
     ).scalar_one_or_none()
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    if collection.owner_user_id == user_id:
-        return
-    membership = (
-        await db.execute(
-            select(CollectionMember).where(
-                CollectionMember.collection_id == collection_id,
-                CollectionMember.user_id == user_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not membership:
+    if not await user_can_access_collection(db, collection, user_id, allow_global=False):
         raise HTTPException(status_code=403, detail="Access denied")
 
 
@@ -292,17 +287,7 @@ async def _can_access_collection(db, collection_id: uuid.UUID, user_id: uuid.UUI
     ).scalar_one_or_none()
     if not collection:
         return False
-    if collection.owner_user_id == user_id:
-        return True
-    membership = (
-        await db.execute(
-            select(CollectionMember).where(
-                CollectionMember.collection_id == collection_id,
-                CollectionMember.user_id == user_id,
-            )
-        )
-    ).scalar_one_or_none()
-    return membership is not None
+    return await user_can_access_collection(db, collection, user_id, allow_global=False)
 
 
 async def _resolve_view_scenario(
@@ -2193,6 +2178,7 @@ async def create_scenario(request: Request, body: CreateScenarioRequest) -> dict
 
 @router.get(
     "/scenarios",
+    response_model=tr.ScenarioListResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -2416,6 +2402,7 @@ async def graph_view(
 
 @router.get(
     "/scenarios/{scenario_id}/graph/neighborhood",
+    response_model=tr.GraphNeighborhoodResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -2569,6 +2556,7 @@ async def twin_timeline_view(
 
 @router.post(
     "/collections/{collection_id}/refresh",
+    response_model=tr.RefreshResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3104,6 +3092,7 @@ def _build_cached_arc42_response(
 
 @router.get(
     "/collections/{collection_id}/views/arc42",
+    response_model=tr.Arc42ViewResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3171,7 +3160,6 @@ async def arc42_view(
                 section=section_key,
                 model=settings.arch_docs_agent_sdk_model,
                 max_turns=int(settings.arch_docs_agent_sdk_max_turns),
-                permission_mode=settings.arch_docs_agent_sdk_permission_mode,
             )
         except (ClaudeAgentSdkUnavailableError, ModelCallsDisabledError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -3225,6 +3213,7 @@ async def arc42_view(
 
 @router.get(
     "/collections/{collection_id}/views/arc42/drift",
+    response_model=tr.Arc42DriftResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3299,6 +3288,7 @@ async def arc42_drift_view(
 
 @router.get(
     "/collections/{collection_id}/views/ports-adapters",
+    response_model=tr.PortsAdaptersResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3528,6 +3518,7 @@ async def _load_mermaid_erd(db, collection_uuid: uuid.UUID) -> dict[str, Any] | 
 
 @router.get(
     "/collections/{collection_id}/views/erm",
+    response_model=tr.ErmResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3583,6 +3574,7 @@ async def erm_view(
 
 @router.get(
     "/collections/{collection_id}/views/topology",
+    response_model=tr.GraphViewResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3711,6 +3703,7 @@ async def _build_callgraph_page(
 
 @router.get(
     "/collections/{collection_id}/views/deep-dive",
+    response_model=tr.GraphViewResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3799,6 +3792,7 @@ async def deep_dive_view(
 
 @router.get(
     "/collections/{collection_id}/views/ui-map",
+    response_model=tr.UIMapResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3881,6 +3875,7 @@ async def ui_map_view(
 
 @router.get(
     "/collections/{collection_id}/views/test-matrix",
+    response_model=tr.TestMatrixResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -3942,6 +3937,7 @@ async def test_matrix_view(
 
 @router.get(
     "/collections/{collection_id}/views/user-flows",
+    response_model=tr.UserFlowsResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4034,6 +4030,7 @@ def _collect_evidence_handles(critical_items: list[dict]) -> list[dict[str, Any]
 
 @router.get(
     "/collections/{collection_id}/views/rebuild-readiness",
+    response_model=tr.RebuildReadinessResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4199,6 +4196,7 @@ def _empty_graphrag_response(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag",
+    response_model=tr.GraphRagResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4340,6 +4338,7 @@ async def graphrag_view(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag/communities",
+    response_model=tr.GraphRagCommunitiesResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4604,6 +4603,7 @@ class SemanticMapThresholdParams:
 
 @router.get(
     "/collections/{collection_id}/views/semantic-map",
+    response_model=tr.SemanticMapResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4750,6 +4750,7 @@ async def semantic_map_view(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag/path",
+    response_model=tr.GraphRagPathResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4851,6 +4852,7 @@ async def graphrag_path_view(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag/processes",
+    response_model=tr.GraphRagProcessesResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -4897,6 +4899,7 @@ async def graphrag_processes_view(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag/processes/{process_id}",
+    response_model=tr.GraphRagProcessDetailResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5028,6 +5031,7 @@ async def _lookup_document_by_path(
 
 @router.get(
     "/collections/{collection_id}/views/graphrag/evidence",
+    response_model=tr.GraphRagEvidenceResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5245,6 +5249,7 @@ def _compute_metric_averages(metrics: list, metrics_ready: bool) -> dict[str, fl
 
 @router.get(
     "/collections/{collection_id}/views/city",
+    response_model=tr.CityResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5277,6 +5282,7 @@ async def city_view(
         if not metrics:
             await refresh_metric_snapshots(db, scenario.id)
             await db.flush()
+            await db.commit()
             metrics = (
                 (
                     await db.execute(
@@ -5355,6 +5361,7 @@ async def city_view(
 
 @router.get(
     "/collections/{collection_id}/views/evolution/investment-utilization",
+    response_model=tr.InvestmentUtilizationResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5396,6 +5403,7 @@ async def evolution_investment_utilization_view(
 
 @router.get(
     "/collections/{collection_id}/views/evolution/knowledge-islands",
+    response_model=tr.KnowledgeIslandsResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5440,6 +5448,7 @@ async def evolution_knowledge_islands_view(
 
 @router.get(
     "/collections/{collection_id}/views/evolution/temporal-coupling",
+    response_model=tr.TemporalCouplingResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5487,6 +5496,7 @@ async def evolution_temporal_coupling_view(
 
 @router.get(
     "/collections/{collection_id}/views/evolution/fitness-functions",
+    response_model=tr.FitnessFunctionsResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5524,6 +5534,7 @@ async def evolution_fitness_functions_view(
 
 @router.get(
     "/collections/{collection_id}/views/mermaid",
+    response_model=tr.MermaidResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5778,6 +5789,7 @@ async def _generate_export_content(
 
 @router.post(
     "/scenarios/{scenario_id}/exports",
+    response_model=tr.CreateExportResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},
@@ -5831,6 +5843,7 @@ async def create_export(request: Request, scenario_id: str, body: ExportRequest)
 
 @router.get(
     "/scenarios/{scenario_id}/exports/{export_id}",
+    response_model=tr.ExportArtifactResponse,
     responses={
         400: {"description": "Bad request"},
         401: {"description": "Not authenticated"},

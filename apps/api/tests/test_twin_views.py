@@ -355,7 +355,14 @@ class TestTwinViewRoutes:
     ) -> None:
         collection_id = str(uuid.uuid4())
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
-        mock_resolve_view_scenario.return_value = MagicMock()
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "As-Is"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
 
         from_node = MagicMock()
         from_node.id = uuid.uuid4()
@@ -440,7 +447,14 @@ class TestTwinViewRoutes:
     ) -> None:
         collection_id = str(uuid.uuid4())
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
-        mock_resolve_view_scenario.return_value = MagicMock()
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = uuid.UUID(collection_id)
+        scenario.name = "As-Is"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
         mock_compute_communities.return_value = ({}, {})
         mock_detect_processes.return_value = [
             {
@@ -932,6 +946,7 @@ class TestTwinViewRoutes:
             ]
         )
         fake_db.flush = AsyncMock()
+        fake_db.commit = AsyncMock()
 
         class SessionContext:
             async def __aenter__(self):  # noqa: ANN001
@@ -965,9 +980,15 @@ class TestTwinViewRoutes:
         client: AsyncClient,
     ) -> None:
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
-        mock_resolve_view_scenario.return_value = MagicMock()
-
         collection_id = uuid.uuid4()
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = collection_id
+        scenario.name = "As-Is"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
         node_id = uuid.uuid4()
         evidence_id = uuid.uuid4()
 
@@ -1028,9 +1049,15 @@ class TestTwinViewRoutes:
         client: AsyncClient,
     ) -> None:
         mock_get_session.return_value = {"user_id": str(uuid.uuid4())}
-        mock_resolve_view_scenario.return_value = MagicMock()
-
         collection_id = uuid.uuid4()
+        scenario = MagicMock()
+        scenario.id = uuid.uuid4()
+        scenario.collection_id = collection_id
+        scenario.name = "As-Is"
+        scenario.version = 1
+        scenario.is_as_is = True
+        scenario.base_scenario_id = None
+        mock_resolve_view_scenario.return_value = scenario
         node_id = uuid.uuid4()
         document_id = uuid.uuid4()
 

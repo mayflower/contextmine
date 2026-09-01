@@ -396,7 +396,7 @@ def _composer_vendor_dir(project_root: Path) -> Path | None:
         return None
     try:
         data = json.loads(composer_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return Path("vendor")
     config = data.get("config")
     if not isinstance(config, dict):

@@ -5,6 +5,7 @@ from typing import Any
 from contextmine_core.research.agent import (
     AgentConfig,
     ResearchAgent,
+    cancel_research,
     run_research,
 )
 from contextmine_core.research.artifacts import (
@@ -73,6 +74,7 @@ __all__ = [
     # Agent
     "AgentConfig",
     "ResearchAgent",
+    "cancel_research",
     "run_research",
     "format_answer_with_citations",
     # Artifacts

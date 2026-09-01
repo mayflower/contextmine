@@ -1215,93 +1215,15 @@ class TestSyncSingleSourceFlow:
         # Mock sync_source to return None (lock not acquired)
         monkeypatch.setattr(flows, "sync_source", AsyncMock(return_value=None))
         monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
+        monkeypatch.setattr(
+            "prefect.context.get_run_context",
+            lambda: SimpleNamespace(flow_run=SimpleNamespace(id=uuid.uuid4())),
+        )
 
         source_id = str(mock_source.id)
         result = await flows.sync_single_source.fn(source_id)
         assert result.get("skipped") is True
         assert result.get("reason") == "lock_not_acquired"
-
-
-# ---------------------------------------------------------------------------
-# sync_due_sources flow
-# ---------------------------------------------------------------------------
-
-
-class TestSyncDueSourcesFlow:
-    async def test_no_sources_due(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(flows, "get_due_sources", AsyncMock(return_value=[]))
-
-        result = await flows.sync_due_sources.fn()
-        assert result["synced"] == 0
-        assert result["skipped"] == 0
-        assert result["sources"] == []
-
-    async def test_source_sync_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_source = MagicMock()
-        mock_source.id = uuid.uuid4()
-
-        mock_sync_run = MagicMock()
-        mock_sync_run.id = uuid.uuid4()
-        mock_sync_run.status.value = "success"
-
-        monkeypatch.setattr(flows, "get_due_sources", AsyncMock(return_value=[mock_source]))
-        monkeypatch.setattr(flows, "sync_source", AsyncMock(return_value=mock_sync_run))
-        monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
-
-        result = await flows.sync_due_sources.fn()
-        assert result["synced"] == 1
-        assert result["skipped"] == 0
-        assert result["sources"][0]["status"] == "success"
-
-    async def test_source_sync_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_source = MagicMock()
-        mock_source.id = uuid.uuid4()
-
-        monkeypatch.setattr(flows, "get_due_sources", AsyncMock(return_value=[mock_source]))
-        monkeypatch.setattr(flows, "sync_source", AsyncMock(return_value=None))
-        monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
-
-        result = await flows.sync_due_sources.fn()
-        assert result["synced"] == 0
-        assert result["skipped"] == 1
-
-    async def test_source_sync_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_source = MagicMock()
-        mock_source.id = uuid.uuid4()
-
-        async def timeout_sync(source):
-            raise TimeoutError("timeout")
-
-        monkeypatch.setattr(flows, "get_due_sources", AsyncMock(return_value=[mock_source]))
-        monkeypatch.setattr(flows, "sync_source", timeout_sync)
-        monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 1)
-        monkeypatch.setattr(flows, "_fail_running_sync_runs_for_source", AsyncMock(return_value=1))
-
-        # Need to mock asyncio.wait_for to raise TimeoutError
-        original_wait_for = asyncio.wait_for
-
-        async def mock_wait_for(coro, *, timeout=None):
-            raise TimeoutError("test timeout")
-
-        monkeypatch.setattr(asyncio, "wait_for", mock_wait_for)
-
-        result = await flows.sync_due_sources.fn()
-        assert result["synced"] == 1
-        assert "error" in result["sources"][0]
-
-        monkeypatch.setattr(asyncio, "wait_for", original_wait_for)
-
-    async def test_source_sync_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_source = MagicMock()
-        mock_source.id = uuid.uuid4()
-
-        monkeypatch.setattr(flows, "get_due_sources", AsyncMock(return_value=[mock_source]))
-        monkeypatch.setattr(flows, "sync_source", AsyncMock(side_effect=RuntimeError("test error")))
-        monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
-
-        result = await flows.sync_due_sources.fn()
-        assert result["synced"] == 1
-        assert "test error" in result["sources"][0]["error"]
 
 
 # ---------------------------------------------------------------------------

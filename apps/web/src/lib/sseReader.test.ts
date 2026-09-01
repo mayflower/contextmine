@@ -37,7 +37,7 @@ describe('readSSEStream', () => {
 
   it('parses multiple events in a single chunk', async () => {
     const response = makeSSEResponse([
-      'event: a\ndata: first\nevent: b\ndata: second\n',
+      'event: a\ndata: first\n\nevent: b\ndata: second\n\n',
     ])
     const events: Array<{ type: string; data: string }> = []
     await readSSEStream(response, (type, data) => {
@@ -50,18 +50,15 @@ describe('readSSEStream', () => {
   })
 
   it('handles events split across chunks', async () => {
-    // When event and data come in separate chunks, the eventType variable
-    // is reset per while-loop iteration, so the data arrives with empty type.
     const response = makeSSEResponse([
       'event: step\n',
-      'data: split\n',
+      'data: split\n\n',
     ])
     const events: Array<{ type: string; data: string }> = []
     await readSSEStream(response, (type, data) => {
       events.push({ type, data })
     })
-    // eventType resets each iteration, so data gets empty event type
-    expect(events).toEqual([{ type: '', data: 'split' }])
+    expect(events).toEqual([{ type: 'step', data: 'split' }])
   })
 
   it('handles event and data in same chunk but split by newline', async () => {
@@ -95,5 +92,13 @@ describe('readSSEStream', () => {
       events.push({ type, data })
     })
     expect(events).toEqual([{ type: 'real', data: 'value' }])
+  })
+
+  it('does not emit an event id twice when a reconnect reuses the seen-id set', async () => {
+    const seen = new Set<string>()
+    const events: string[] = []
+    await readSSEStream(makeSSEResponse(['id: 42\nevent: content\ndata: first\n\n']), (_type, data) => events.push(data), seen)
+    await readSSEStream(makeSSEResponse(['id: 42\nevent: content\ndata: duplicate\n\nid: 43\nevent: done\ndata: {}\n\n']), (_type, data) => events.push(data), seen)
+    expect(events).toEqual(['first', '{}'])
   })
 })

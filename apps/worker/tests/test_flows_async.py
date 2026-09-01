@@ -693,11 +693,17 @@ class TestSyncSingleSourceHappyPath:
 
         monkeypatch.setattr(flows, "sync_source", AsyncMock(return_value=mock_run))
         monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
+        flow_run_id = uuid.uuid4()
+        monkeypatch.setattr(
+            "prefect.context.get_run_context",
+            lambda: SimpleNamespace(flow_run=SimpleNamespace(id=flow_run_id)),
+        )
 
         result = await flows.sync_single_source.fn(str(source.id))
 
         assert result["status"] == "success"
         assert result["stats"]["files_scanned"] == 42
+        flows.sync_source.assert_awaited_once_with(source, None, str(flow_run_id))
 
     async def test_timeout_recovers_and_reports(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Timeout in sync_single_source recovers running rows."""
@@ -714,16 +720,20 @@ class TestSyncSingleSourceHappyPath:
         original_wait_for = asyncio.wait_for
 
         async def mock_wait_for(coro, *, timeout=None):
+            coro.close()
             raise TimeoutError("timed out")
 
         monkeypatch.setattr(asyncio, "wait_for", mock_wait_for)
-        monkeypatch.setattr(flows, "_fail_running_sync_runs_for_source", AsyncMock(return_value=2))
+        recover = AsyncMock(return_value=2)
+        monkeypatch.setattr(flows, "_fail_running_sync_runs_for_source", recover)
+        monkeypatch.setattr(
+            "prefect.context.get_run_context",
+            lambda: SimpleNamespace(flow_run=SimpleNamespace(id=uuid.uuid4())),
+        )
 
-        result = await flows.sync_single_source.fn(str(source.id))
-
-        assert "error" in result
-        assert "AUTO_TIMEOUT" in result["error"]
-        assert result["recovered_running_rows"] == 2
+        with pytest.raises(RuntimeError, match="AUTO_TIMEOUT_SYNC_SOURCE"):
+            await flows.sync_single_source.fn(str(source.id))
+        assert recover.await_args.kwargs["status"] == flows.SyncRunStatus.TIMED_OUT
 
         monkeypatch.setattr(asyncio, "wait_for", original_wait_for)
 
@@ -743,10 +753,13 @@ class TestSyncSingleSourceHappyPath:
             "sync_source",
             AsyncMock(side_effect=RuntimeError("unexpected")),
         )
+        monkeypatch.setattr(
+            "prefect.context.get_run_context",
+            lambda: SimpleNamespace(flow_run=SimpleNamespace(id=uuid.uuid4())),
+        )
 
-        result = await flows.sync_single_source.fn(str(source.id))
-
-        assert result["error"] == "unexpected"
+        with pytest.raises(RuntimeError, match="unexpected"):
+            await flows.sync_single_source.fn(str(source.id))
 
 
 # ---------------------------------------------------------------------------
@@ -1394,11 +1407,7 @@ class TestRunBehavioralMaterialization:
             "last_behavioral_materialized_at": "2026-01-01T00:00:00+00:00",
         }
         materialize = AsyncMock(return_value=expected)
-        monkeypatch.setattr(
-            flows,
-            "materialize_behavioral_layers",
-            SimpleNamespace(fn=materialize),
-        )
+        monkeypatch.setattr(flows, "materialize_behavioral_layers", materialize)
 
         result = await flows._run_behavioral_materialization(
             source_id=str(uuid.uuid4()),
@@ -1413,11 +1422,7 @@ class TestRunBehavioralMaterialization:
 
     async def test_returns_advisory_failure_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
         materialize = AsyncMock(side_effect=RuntimeError("behavioral failed"))
-        monkeypatch.setattr(
-            flows,
-            "materialize_behavioral_layers",
-            SimpleNamespace(fn=materialize),
-        )
+        monkeypatch.setattr(flows, "materialize_behavioral_layers", materialize)
 
         result = await flows._run_behavioral_materialization(
             source_id=str(uuid.uuid4()),
@@ -1605,41 +1610,41 @@ class TestTaskRepairTwinFilePathCanonicalization:
 
 class TestSyncDueSourcesMultiple:
     async def test_multiple_sources_mixed_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Sync multiple sources with success, skip, and error."""
-        source1 = MagicMock()
-        source1.id = uuid.uuid4()
-        source2 = MagicMock()
-        source2.id = uuid.uuid4()
-        source3 = MagicMock()
-        source3.id = uuid.uuid4()
+        """Each claimed source becomes an independent Prefect flow run."""
+        claims = [
+            {
+                "source_id": str(uuid.uuid4()),
+                "source_url": "https://example.test/one",
+                "sync_run_id": str(uuid.uuid4()),
+            },
+            {
+                "source_id": str(uuid.uuid4()),
+                "source_url": "https://example.test/two",
+                "sync_run_id": str(uuid.uuid4()),
+            },
+        ]
+        flow_run = SimpleNamespace(id=uuid.uuid4())
+        run_deployment = AsyncMock(side_effect=[flow_run, RuntimeError("prefect unavailable")])
+        record = AsyncMock()
+        mark_failed = AsyncMock()
 
-        run1 = MagicMock()
-        run1.id = uuid.uuid4()
-        run1.status = MagicMock()
-        run1.status.value = "success"
-
-        call_count = 0
-
-        async def mock_sync_source(source):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return run1
-            elif call_count == 2:
-                return None  # Skipped
-            else:
-                raise RuntimeError("source3_error")
-
+        monkeypatch.setattr(flows, "claim_due_source_runs", AsyncMock(return_value=claims))
+        monkeypatch.setattr("prefect.deployments.run_deployment", run_deployment)
+        monkeypatch.setattr(flows, "_record_prefect_flow_run", record)
+        monkeypatch.setattr(flows, "_mark_scheduled_sync_failed", mark_failed)
         monkeypatch.setattr(
-            flows, "get_due_sources", AsyncMock(return_value=[source1, source2, source3])
+            flows,
+            "get_settings",
+            lambda: SimpleNamespace(prefect_sync_deployment="sync_single_source/default"),
         )
-        monkeypatch.setattr(flows, "sync_source", mock_sync_source)
-        monkeypatch.setattr(flows, "_sync_source_timeout_seconds", lambda: 0)
 
         result = await flows.sync_due_sources.fn()
 
-        assert result["synced"] == 2  # success + error
-        assert result["skipped"] == 1
+        assert result["scheduled"] == 2
+        assert result["sources"][0]["flow_run_id"] == str(flow_run.id)
+        assert result["sources"][1]["error"] == "prefect unavailable"
+        record.assert_awaited_once_with(claims[0]["sync_run_id"], str(flow_run.id))
+        mark_failed.assert_awaited_once_with(claims[1]["sync_run_id"], "prefect unavailable")
 
 
 # ---------------------------------------------------------------------------

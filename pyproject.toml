@@ -3,7 +3,7 @@ name = "contextmine"
 version = "0.1.0"
 description = "Open-source local Context7 alternative with MCP retrieval"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = []
 
 [dependency-groups]
@@ -12,11 +12,10 @@ dev = [
     "ty>=0.0.77",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
-    "anyio[trio]>=4.14.1",
-    "pytest-anyio>=0.0.0",
+    "anyio[trio]>=4.14.2",
     "httpx>=0.28.1",
     "pre-commit>=4.6.2",
-    "grpcio-tools>=1.81.1",
+    "grpcio-tools>=1.83.1",
 ]
 
 [tool.uv.workspace]
@@ -37,15 +36,18 @@ override-dependencies = ["requests>=2.34.2"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 exclude = ["*_pb2.py", "*_pb2.pyi"]
+# Ruff 0.16 added Markdown code-block formatting. Keep the repository's existing
+# Python scope instead of rewriting unrelated documentation during this upgrade.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.14"
 python = ".venv"
 extra-paths = []
 

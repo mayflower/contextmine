@@ -6,7 +6,7 @@ import secrets
 from typing import Any
 
 import httpx
-from contextmine_core.settings import get_settings
+from contextmine_core.settings import get_settings, secret_value
 from cryptography.fernet import Fernet
 
 # GitHub OAuth endpoints
@@ -19,7 +19,9 @@ def get_fernet() -> Fernet:
     """Get Fernet instance for token encryption."""
     settings = get_settings()
     # Derive a 32-byte key from the encryption key using SHA256
-    key_bytes = hashlib.sha256(settings.token_encryption_key.encode()).digest()
+    key_bytes = hashlib.sha256(
+        (secret_value(settings.token_encryption_key) or "").encode()
+    ).digest()
     fernet_key = base64.urlsafe_b64encode(key_bytes)
     return Fernet(fernet_key)
 
@@ -69,7 +71,7 @@ async def exchange_code_for_token(code: str) -> str:
             GITHUB_TOKEN_URL,
             data={
                 "client_id": settings.github_client_id,
-                "client_secret": settings.github_client_secret,
+                "client_secret": secret_value(settings.github_client_secret),
                 "code": code,
             },
             headers={"Accept": "application/json"},

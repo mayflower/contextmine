@@ -9,13 +9,15 @@ from contextmine_core import (
     CollectionMember,
     CollectionVisibility,
     User,
+    accessible_collections_clause,
+    user_can_access_collection,
 )
 from contextmine_core import (
     get_session as get_db_session,
 )
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select
 
 from app.middleware import get_session
 
@@ -123,6 +125,7 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
         )
         db.add(collection)
         await db.flush()
+        await db.commit()
 
         return CollectionResponse(
             id=str(collection.id),
@@ -153,17 +156,7 @@ async def list_collections(request: Request) -> list[CollectionResponse]:
         result = await db.execute(
             select(Collection, User)
             .join(User, Collection.owner_user_id == User.id)
-            .where(
-                or_(
-                    Collection.visibility == CollectionVisibility.GLOBAL,
-                    Collection.owner_user_id == user_id,
-                    Collection.id.in_(
-                        select(CollectionMember.collection_id).where(
-                            CollectionMember.user_id == user_id
-                        )
-                    ),
-                )
-            )
+            .where(accessible_collections_clause(user_id))
             .order_by(Collection.created_at.desc())
         )
         rows = result.all()
@@ -244,6 +237,7 @@ async def update_collection(
             .where(CollectionMember.collection_id == collection.id)
         )
         member_count = member_result.scalar() or 0
+        await db.commit()
 
         return CollectionResponse(
             id=str(collection.id),
@@ -393,6 +387,7 @@ async def share_collection(
             )
             db.add(member)
             await db.flush()
+            await db.commit()
 
             return {"status": "member_added", "github_login": body.github_login}
         else:
@@ -413,6 +408,7 @@ async def share_collection(
             )
             db.add(invite)
             await db.flush()
+            await db.commit()
 
             return {"status": "invite_created", "github_login": body.github_login}
 
@@ -473,6 +469,7 @@ async def delete_collection(request: Request, collection_id: str) -> dict[str, s
         # Delete collection
         await db.delete(collection)
         await db.flush()
+        await db.commit()
 
         return {"status": "deleted", "collection_id": collection_id}
 
@@ -514,6 +511,7 @@ async def unshare_collection(
             if member:
                 await db.delete(member)
                 await db.flush()
+                await db.commit()
                 return {"status": "member_removed"}
         except ValueError:
             pass
@@ -530,6 +528,7 @@ async def unshare_collection(
             member, _ = row
             await db.delete(member)
             await db.flush()
+            await db.commit()
             return {"status": "member_removed"}
 
         # Check invites
@@ -542,6 +541,7 @@ async def unshare_collection(
         if invite:
             await db.delete(invite)
             await db.flush()
+            await db.commit()
             return {"status": "invite_removed"}
 
         raise HTTPException(status_code=404, detail="Member or invite not found")
@@ -565,18 +565,7 @@ async def _get_collection_with_access(
     if require_owner:
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can perform this action")
-    else:
-        # Check access: global, owner, or member
-        if (
-            collection.visibility == CollectionVisibility.PRIVATE
-            and collection.owner_user_id != user_id
-        ):
-            result = await db.execute(
-                select(CollectionMember)
-                .where(CollectionMember.collection_id == collection.id)
-                .where(CollectionMember.user_id == user_id)
-            )
-            if not result.scalar_one_or_none():
-                raise HTTPException(status_code=403, detail="Access denied to this collection")
+    elif not await user_can_access_collection(db, collection, user_id):
+        raise HTTPException(status_code=403, detail="Access denied to this collection")
 
     return collection

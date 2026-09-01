@@ -77,20 +77,15 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get an async database session."""
+async def get_session() -> AsyncGenerator[AsyncSession]:
+    """Yield an async session without choosing a transaction outcome."""
     factory = get_session_factory()
     async with factory() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
-
-
-# Alias for backward compatibility (research/agent.py uses this name)
-get_async_session = get_session
 
 
 async def close_engine() -> None:

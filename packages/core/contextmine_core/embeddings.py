@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from contextmine_core.model_policy import ModelCallsDisabledError, ensure_model_calls_enabled
 from contextmine_core.models import EmbeddingProvider
-from contextmine_core.settings import get_settings
+from contextmine_core.settings import get_settings, secret_value
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 
@@ -145,7 +145,7 @@ class OpenAIEmbedder(Embedder):
         api_key: str | None = None,
     ):
         self._model_name = model_name
-        self._api_key = api_key or get_settings().openai_api_key
+        self._api_key = api_key or secret_value(get_settings().openai_api_key)
 
         # Model dimensions
         self._dimensions = {
@@ -214,7 +214,7 @@ class GeminiEmbedder(Embedder):
         api_key: str | None = None,
     ):
         self._model_name = model_name
-        self._api_key = api_key or get_settings().gemini_api_key
+        self._api_key = api_key or secret_value(get_settings().gemini_api_key)
 
         # Model dimensions
         self._dimensions = {

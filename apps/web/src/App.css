@@ -61,11 +61,16 @@
 }
 
 .sidebar li {
-  padding: 12px 24px;
   color: #cbd5e1;
-  cursor: pointer;
   transition: all 0.2s;
   font-size: 0.9rem;
+}
+
+.sidebar a {
+  display: block;
+  padding: 12px 24px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .sidebar li:hover {
@@ -73,7 +78,7 @@
   color: white;
 }
 
-.sidebar li.active {
+.sidebar li:has(a.active) {
   background: #1e2650;
   color: #ffffff;
   border-left: 3px solid #818cf8;
@@ -209,12 +214,15 @@
   }
 
   .sidebar li {
-    padding: 8px 16px;
     border-radius: 20px;
     background: rgba(255, 255, 255, 0.1);
   }
 
-  .sidebar li.active {
+  .sidebar a {
+    padding: 8px 16px;
+  }
+
+  .sidebar li:has(a.active) {
     border-left: none;
     background: rgba(99, 102, 241, 0.3);
   }

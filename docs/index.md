@@ -77,20 +77,17 @@ cat > my-values.yaml << EOF
 api:
   image:
     repository: ghcr.io/mayflower/contextmine-api
-    tag: latest
+    tag: sha-<git-sha>
+    digest: sha256:<registry-digest>
 worker:
   image:
     repository: ghcr.io/mayflower/contextmine-worker
-    tag: latest
+    tag: sha-<git-sha>
+    digest: sha256:<registry-digest>
 config:
   publicBaseUrl: "https://contextmine.example.com"
 secrets:
-  github:
-    clientId: "your-github-client-id"
-    clientSecret: "your-github-client-secret"
-  sessionSecret: "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-  tokenEncryptionKey: "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-  openaiApiKey: "sk-..."
+  existingSecret: contextmine-secrets
 EOF
 
 # Install from OCI registry

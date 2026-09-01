@@ -4,18 +4,19 @@ import hashlib
 import re
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from contextmine_core import (
     Collection,
-    CollectionMember,
-    CollectionVisibility,
     Document,
     Source,
     SourceIngestToken,
     SourceType,
+    SyncRun,
+    SyncRunStatus,
     compute_ssh_key_fingerprint,
     encrypt_token,
+    user_can_access_collection,
     validate_ssh_private_key,
 )
 from contextmine_core import (
@@ -196,17 +197,8 @@ async def _get_collection_with_access(
     if require_owner:
         if collection.owner_user_id != user_id:
             raise HTTPException(status_code=403, detail="Only the owner can perform this action")
-    elif (
-        collection.visibility == CollectionVisibility.PRIVATE
-        and collection.owner_user_id != user_id
-    ):
-        result = await db.execute(
-            select(CollectionMember)
-            .where(CollectionMember.collection_id == collection.id)
-            .where(CollectionMember.user_id == user_id)
-        )
-        if not result.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Access denied to this collection")
+    elif not await user_can_access_collection(db, collection, user_id):
+        raise HTTPException(status_code=403, detail="Access denied to this collection")
 
     return collection
 
@@ -257,6 +249,7 @@ async def create_source(
         )
         db.add(source)
         await db.flush()
+        await db.commit()
 
         return SourceResponse(
             id=str(source.id),
@@ -352,6 +345,7 @@ async def delete_source(request: Request, source_id: str) -> dict[str, str]:
 
         await db.delete(source)
         await db.flush()
+        await db.commit()
         return {"status": "deleted"}
 
 
@@ -422,6 +416,7 @@ async def update_source(
             select(func.count(Document.id)).where(Document.source_id == source.id)
         )
         doc_count = doc_count_result.scalar() or 0
+        await db.commit()
 
         return SourceResponse(
             id=str(source.id),
@@ -449,7 +444,7 @@ async def update_source(
     },
 )
 async def sync_now(request: Request, source_id: str) -> dict[str, str]:
-    """Trigger a sync for a source (sets next_run_at to now)."""
+    """Start the single-source Prefect deployment idempotently."""
     user_id = get_current_user_id(request)
 
     try:
@@ -458,16 +453,70 @@ async def sync_now(request: Request, source_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail=_ERR_INVALID_SOURCE_ID) from e
 
     async with get_db_session() as db:
-        result = await db.execute(select(Source).where(Source.id == src_uuid))
+        result = await db.execute(select(Source).where(Source.id == src_uuid).with_for_update())
         source = result.scalar_one_or_none()
         if not source:
             raise HTTPException(status_code=404, detail=_ERR_SOURCE_NOT_FOUND)
 
         await _get_collection_with_access(db, str(source.collection_id), user_id)
-        next_run = datetime.now(UTC)
-        source.next_run_at = next_run
-        await db.flush()
-        return {"status": "sync_scheduled", "next_run_at": next_run.isoformat()}
+        active_run = (
+            await db.execute(
+                select(SyncRun)
+                .where(
+                    SyncRun.source_id == source.id,
+                    SyncRun.status.in_([SyncRunStatus.SCHEDULED, SyncRunStatus.RUNNING]),
+                )
+                .order_by(SyncRun.started_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        created = active_run is None
+        if active_run is None:
+            active_run = SyncRun(source_id=source.id, status=SyncRunStatus.SCHEDULED)
+            db.add(active_run)
+            source.next_run_at = datetime.now(UTC) + timedelta(
+                minutes=source.schedule_interval_minutes
+            )
+            await db.flush()
+        sync_run_id = str(active_run.id)
+        sync_run_uuid = active_run.id
+        existing_flow_run_id = active_run.flow_run_id
+        source_url = source.url
+        await db.commit()
+
+    if existing_flow_run_id:
+        return {
+            "status": "already_scheduled",
+            "sync_run_id": sync_run_id,
+            "flow_run_id": existing_flow_run_id,
+        }
+
+    from app.routes.prefect import start_source_sync
+
+    try:
+        flow_run_id = await start_source_sync(source_id, source_url, sync_run_id)
+    except Exception as e:
+        async with get_db_session() as db:
+            failed_run = (
+                await db.execute(select(SyncRun).where(SyncRun.id == sync_run_uuid))
+            ).scalar_one()
+            failed_run.status = SyncRunStatus.FAILED
+            failed_run.finished_at = datetime.now(UTC)
+            failed_run.error = f"Prefect scheduling failed: {e}"
+            await db.commit()
+        raise HTTPException(status_code=502, detail="Prefect scheduling failed") from e
+
+    async with get_db_session() as db:
+        scheduled_run = (
+            await db.execute(select(SyncRun).where(SyncRun.id == sync_run_uuid))
+        ).scalar_one()
+        scheduled_run.flow_run_id = flow_run_id
+        await db.commit()
+    return {
+        "status": "sync_scheduled" if created else "already_scheduled",
+        "sync_run_id": sync_run_id,
+        "flow_run_id": flow_run_id,
+    }
 
 
 @router.post(
@@ -529,6 +578,7 @@ async def rotate_coverage_ingest_token(
             db.add(token_row)
 
         await db.flush()
+        await db.commit()
         return RotateCoverageIngestTokenResponse(
             token=raw_token,
             token_preview=token_row.token_preview,
@@ -679,6 +729,7 @@ async def set_deploy_key(
         source.deploy_key_encrypted = encrypt_token(private_key)
         source.deploy_key_fingerprint = compute_ssh_key_fingerprint(private_key)
         await db.flush()
+        await db.commit()
 
         return DeployKeyResponse(fingerprint=source.deploy_key_fingerprint, has_key=True)
 
@@ -717,4 +768,5 @@ async def delete_deploy_key(request: Request, source_id: str) -> dict[str, str]:
         source.deploy_key_encrypted = None
         source.deploy_key_fingerprint = None
         await db.flush()
+        await db.commit()
         return {"status": "deleted"}

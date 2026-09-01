@@ -115,7 +115,7 @@ def _process_segment(
     is_code_block: bool,
     current_chunk: str,
     chunks: list[str],
-    text_splitter: "RecursiveCharacterTextSplitter",
+    text_splitter: RecursiveCharacterTextSplitter,
     chunk_size: int,
 ) -> str:
     """Process a single segment (code block or text) into the chunk list."""

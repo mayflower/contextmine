@@ -14,6 +14,7 @@ from contextmine_core import (
     get_github_authorize_url,
     get_github_user,
     get_settings,
+    upsert_github_user,
 )
 from contextmine_core import (
     get_session as get_db_session,
@@ -118,27 +119,9 @@ async def callback(
         # Fetch user profile from GitHub
         github_user = await get_github_user(access_token)
 
-        # Upsert user in database
+        # Map the verified GitHub profile to the shared local identity.
         async with get_db_session() as db:
-            # Check if user exists
-            result = await db.execute(select(User).where(User.github_user_id == github_user["id"]))
-            user = result.scalar_one_or_none()
-
-            if user:
-                # Update existing user
-                user.github_login = github_user["login"]
-                user.name = github_user.get("name")
-                user.avatar_url = github_user.get("avatar_url")
-            else:
-                # Create new user
-                user = User(
-                    id=uuid.uuid4(),
-                    github_user_id=github_user["id"],
-                    github_login=github_user["login"],
-                    name=github_user.get("name"),
-                    avatar_url=github_user.get("avatar_url"),
-                )
-                db.add(user)
+            user = await upsert_github_user(db, github_user)
 
             # Store encrypted OAuth token
             encrypted_token = encrypt_token(access_token)
@@ -165,8 +148,6 @@ async def callback(
             )
             db.add(oauth_token)
 
-            await db.flush()
-
             # Auto-accept pending invites for this user's github_login
             invite_result = await db.execute(
                 select(CollectionInvite).where(CollectionInvite.github_login == user.github_login)
@@ -191,7 +172,7 @@ async def callback(
                 # Delete the invite
                 await db.delete(invite)
 
-            await db.flush()
+            await db.commit()
 
             # Store user ID in session
             session["user_id"] = str(user.id)

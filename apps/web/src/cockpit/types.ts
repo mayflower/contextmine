@@ -1,3 +1,7 @@
+import type { components } from '../api/schema'
+
+type ApiSchemas = components['schemas']
+
 export type CockpitLayer =
   | 'portfolio_system'
   | 'domain_container'
@@ -21,15 +25,9 @@ export type CockpitView =
   | 'exports'
 
 export type CockpitLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
-
-export type ExportFormat =
-  | 'lpg_jsonl'
-  | 'cc_json'
-  | 'cx2'
-  | 'jgf'
-  | 'mermaid_c4'
-  | 'twin_manifest'
+export type ExportFormat = 'lpg_jsonl' | 'cc_json' | 'cx2' | 'jgf' | 'mermaid_c4' | 'twin_manifest'
 export type CockpitProjection = 'architecture' | 'code_file' | 'code_symbol' | 'graphrag'
+export type ExportProjection = Exclude<CockpitProjection, 'graphrag'>
 export type CityProjection = 'architecture' | 'code_file'
 export type CityEntityLevel = 'domain' | 'container' | 'component'
 export type TopologyEntityLevel = 'domain' | 'container' | 'component'
@@ -70,774 +68,70 @@ export interface CollectionLite {
   name: string
 }
 
-export interface ScenarioLite {
-  id: string
-  name: string
-  version: number
-  is_as_is: boolean
-}
-
-export interface ViewScenario {
-  id: string
-  collection_id: string
-  name: string
-  version: number
-  is_as_is: boolean
-  base_scenario_id: string | null
-}
-
-export interface TwinGraphNode {
-  id: string
-  natural_key: string
-  kind: string
-  name: string
-  meta: Record<string, unknown>
-}
-
-export interface TwinGraphEdge {
-  id: string
-  source_node_id: string
-  target_node_id: string
-  kind: string
-  meta: Record<string, unknown>
-}
-
-export interface TwinGraphResponse {
-  nodes: TwinGraphNode[]
-  edges: TwinGraphEdge[]
-  page: number
-  limit: number
-  total_nodes: number
-  projection?: CockpitProjection
-  entity_level?: string
-  grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
-  excluded_kinds?: string[]
-  slice_strategy?: string
-  sorted_by?: string
-  candidate_nodes?: number
-  visible_nodes?: number
-  visible_edges?: number
-  dropped_cross_page_edges?: number
-  warnings?: string[]
-  provenance?: Record<string, unknown>
-}
-
-export interface GraphNeighborhoodResponse {
-  scenario_id: string
-  node_id: string
-  hops: number
-  projection: CockpitProjection
-  graph: TwinGraphResponse
-}
-
-export interface GraphViewPayload {
-  collection_id: string
-  scenario: ViewScenario
-  layer: CockpitLayer | null
-  projection?: CockpitProjection
-  entity_level?: string
-  grouping_strategy?: 'explicit' | 'heuristic' | 'mixed'
-  excluded_kinds?: string[]
-  warnings?: string[]
-  provenance?: Record<string, unknown>
-  graph: TwinGraphResponse
-}
-
-export interface UIMapPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'ui_map'
-  entity_level: 'ui'
-  summary: {
-    routes: number
-    views: number
-    components: number
-    contracts: number
-    trace_edges: number
-  }
-  warnings: string[]
-  graph: TwinGraphResponse
-}
-
-export interface TestMatrixRow {
-  test_case_id: string
-  test_case_key: string
-  test_case_name: string
-  covers_symbols: string[]
-  validates_rules: string[]
-  fixtures: string[]
-  verifies_flows: string[]
-  evidence_ids: string[]
-}
-
-export interface TestMatrixPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'test_matrix'
-  entity_level: 'test_case'
-  summary: {
-    test_cases: number
-    test_suites: number
-    test_fixtures: number
-    matrix_rows: number
-  }
-  matrix: TestMatrixRow[]
-  warnings: string[]
-  graph: TwinGraphResponse
-}
-
-export interface UserFlowStep {
-  step_id: string
-  name: string
-  order: number
-  endpoint_hints: string[]
-  calls_endpoints: string[]
-  evidence_ids: string[]
-}
-
-export interface UserFlowItem {
-  flow_id: string
-  flow_key: string
-  flow_name: string
-  route_path: string
-  steps: UserFlowStep[]
-  verified_by_tests: string[]
-  evidence_ids: string[]
-}
-
-export interface UserFlowsPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'user_flows'
-  entity_level: 'user_flow'
-  summary: {
-    user_flows: number
-    flow_steps: number
-    flow_edges: number
-  }
-  flows: UserFlowItem[]
-  warnings: string[]
-  graph: TwinGraphResponse
-}
-
-export interface RebuildReadinessCriticalNode {
-  node_id: string
-  kind: string
-  name: string
-  confidence: number
-  evidence_ids: string[]
-}
-
-export interface RebuildReadinessPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'rebuild_readiness'
-  score: number
-  summary: {
-    interface_test_coverage: number
-    flow_evidence_density: number
-    ui_to_endpoint_traceability: number
-    critical_inferred_only_count: number
-    total_nodes: number
-    total_edges: number
-  }
-  known_gaps: string[]
-  critical_inferred_only: RebuildReadinessCriticalNode[]
-  evidence_handles: Array<{
-    kind: string
-    ref: string
-    node_id?: string
-  }>
-  behavioral_layers_status: string | null
-  last_behavioral_materialized_at: string | null
-  deep_warnings: string[]
-  scip_status?: 'ready' | 'degraded' | 'failed' | null
-  scip_projects_by_language?: Record<string, number>
-  scip_failed_projects?: Array<{
-    language?: string
-    project_root?: string
-    error?: string
-  }>
-  metrics_gate?: {
-    status?: 'pass' | 'fail'
-    requested_files?: number
-    mapped_files?: number
-    unmapped_sample?: string[]
-  }
-}
-
-export type GraphRagStatusReason =
-  | 'ok'
-  | 'no_knowledge_graph'
-  | 'no_graphrag_semantic_graph'
-  | 'degraded_no_edges'
-
-export interface GraphRagStatus {
-  status: 'ready' | 'unavailable'
-  reason: GraphRagStatusReason
-}
-
-export interface GraphRagPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'graphrag'
-  entity_level: 'knowledge_node'
-  community_mode?: GraphRagCommunityMode
-  community_id?: string | null
-  status: GraphRagStatus
-  graph: TwinGraphResponse
-}
-
-export interface SemanticMapStatus {
-  status: 'ready' | 'unavailable'
-  reason: 'ok' | 'no_symbol_communities' | 'no_semantic_communities' | 'no_community_embeddings'
-}
-
-export interface SemanticMapPoint {
-  id: string
-  label: string
-  x: number
-  y: number
-  member_count: number
-  cohesion: number
-  top_kinds: Array<{ kind: string; count: number }>
-  domain_counts: Array<{ domain: string; count: number }>
-  dominant_domain: string | null
-  dominant_ratio: number
-  summary: string | null
-  anchor_node_id: string
-  sample_nodes: Array<{
-    id: string
-    name: string
-    kind: string
-    natural_key: string
-  }>
-  member_node_ids: string[]
-}
-
-export interface SemanticMapSignal {
-  community_id?: string
-  left_community_id?: string
-  right_community_id?: string
-  left_label?: string
-  right_label?: string
-  label?: string
-  score: number
-  anchor_node_id: string
-  reason: string
-  sample_nodes?: Array<{
-    id: string
-    name: string
-    kind: string
-    domain: string
-  }>
-}
-
-export interface SemanticMapPayload {
-  collection_id: string
-  scenario: ViewScenario
-  projection: 'semantic_map'
-  map_mode: SemanticMapMode
-  status: SemanticMapStatus
-  thresholds: SemanticMapThresholds
-  summary: {
-    points: number
-    mixed_clusters: number
-    isolated_points: number
-    semantic_duplication: number
-    misplaced_code: number
-  }
-  warnings: string[]
-  signals: {
-    mixed_clusters: SemanticMapSignal[]
-    isolated_points: SemanticMapSignal[]
-    semantic_duplication: SemanticMapSignal[]
-    misplaced_code: SemanticMapSignal[]
-  }
-  points: SemanticMapPoint[]
-}
-
-export interface SemanticMapThresholds {
-  mixed_cluster_max_dominant_ratio: number
-  isolated_distance_multiplier: number
-  semantic_duplication_min_similarity: number
-  semantic_duplication_max_source_overlap: number
-  misplaced_min_dominant_ratio: number
-}
-
-export interface GraphRagCommunityKindCount {
-  kind: string
-  count: number
-}
-
-export interface GraphRagCommunityNodePreview {
-  id: string
-  name: string
-  kind: string
-  natural_key: string
-}
-
-export interface GraphRagCommunity {
-  id: string
-  label: string
-  size: number
-  cohesion: number
-  top_kinds: GraphRagCommunityKindCount[]
-  sample_nodes: GraphRagCommunityNodePreview[]
-}
-
-export interface GraphRagCommunitiesPayload {
-  collection_id: string
-  scenario: ViewScenario
-  items: GraphRagCommunity[]
-  page: number
-  limit: number
-  total: number
-}
-
-export interface GraphRagPathNode {
-  id: string
-  natural_key: string
-  kind: string
-  name: string
-  meta: Record<string, unknown>
-}
-
-export interface GraphRagPathEdge {
-  id: string
-  source_node_id: string
-  target_node_id: string
-  kind: string
-  meta: Record<string, unknown>
-}
-
-export interface GraphRagPathPayload {
-  collection_id: string
-  scenario: ViewScenario
-  status: 'found' | 'not_found' | 'truncated'
-  from_node_id: string
-  to_node_id: string
-  max_hops: number
-  path: {
-    nodes: GraphRagPathNode[]
-    edges: GraphRagPathEdge[]
-    hops: number
-  }
-}
-
-export interface GraphRagProcessSummary {
-  id: string
-  label: string
-  process_type: 'intra_community' | 'cross_community'
-  step_count: number
-  community_ids: string[]
-  entry_node_id: string
-  terminal_node_id: string
-}
-
-export interface GraphRagProcessesPayload {
-  collection_id: string
-  scenario: ViewScenario
-  items: GraphRagProcessSummary[]
-  total: number
-}
-
-export interface GraphRagProcessStep {
-  step: number
-  node_id: string
-  node_name: string
-  node_kind: string
-  node_natural_key: string
-}
-
-export interface GraphRagProcessEdge {
-  id: string
-  source_node_id: string
-  target_node_id: string
-  kind: string
-  meta: Record<string, unknown>
-}
-
-export interface GraphRagProcessDetailPayload {
-  collection_id: string
-  scenario: ViewScenario
-  process: GraphRagProcessSummary
-  steps: GraphRagProcessStep[]
-  edges: GraphRagProcessEdge[]
-}
-
-export interface GraphRagEvidenceItem {
-  evidence_id: string
-  file_path: string
-  start_line: number
-  end_line: number
-  text: string
-  text_source: 'snippet' | 'document_lines' | 'unavailable'
-}
-
-export interface GraphRagEvidencePayload {
-  collection_id: string
-  node_id: string
-  node_name: string
-  node_kind: string
-  items: GraphRagEvidenceItem[]
-  total: number
-}
-
-export interface CityHotspot {
-  node_natural_key: string
-  loc: number
-  symbol_count: number
-  coverage: number
-  complexity: number
-  coupling: number
-  change_frequency: number
-  churn: number
-}
-
-export interface MetricsStatus {
-  status: 'ready' | 'unavailable'
-  reason: 'ok' | 'no_real_metrics' | 'awaiting_ci_coverage' | 'coverage_ingest_failed'
-  strict_mode: boolean
-}
-
-export interface CityPayload {
-  collection_id: string
-  scenario: ViewScenario
-  summary: {
-    metric_nodes: number
-    coverage_avg: number | null
-    complexity_avg: number | null
-    coupling_avg: number | null
-    change_frequency_avg: number | null
-    churn_avg: number | null
-  }
-  metrics_status: MetricsStatus
-  hotspots: CityHotspot[]
-  cc_json: Record<string, unknown>
-}
-
-export interface InvestmentUtilizationItem {
-  entity_key: string
-  label: string
-  size: number
-  investment_score: number
-  utilization_score: number | null
-  coverage_avg: number | null
-  change_frequency_avg: number
-  churn_avg: number
-  quadrant: 'strength' | 'overinvestment' | 'efficient_core' | 'opportunity_or_retire' | 'unknown'
-}
-
-export interface InvestmentUtilizationPayload {
-  collection_id: string
-  scenario: ViewScenario
-  status: 'ready' | 'unavailable'
-  reason: string
-  entity_level: 'container' | 'component'
-  window_days: number
-  summary: {
-    total_entities: number
-    coverage_entity_ratio: number
-    utilization_available: boolean
-    quadrants: Record<string, number>
-  }
-  items: InvestmentUtilizationItem[]
-  warnings: string[]
-}
-
-export interface KnowledgeIslandEntity {
-  entity_key: string
-  label: string
-  files: number
-  bus_factor: number
-  dominant_owner: string | null
-  dominant_share: number
-  single_owner_ratio: number
-}
-
-export interface KnowledgeIslandFileRisk {
-  node_natural_key: string
-  path: string | null
-  entity_key: string
-  dominant_owner: string
-  dominant_share: number
-  additions_total: number
-  touches: number
-  single_owner: boolean
-  churn: number
-  coverage: number | null
-  last_touched_at: string | null
-}
-
-export interface KnowledgeIslandsPayload {
-  collection_id: string
-  scenario: ViewScenario
-  status: 'ready' | 'unavailable'
-  reason: string
-  entity_level: 'container' | 'component'
-  ownership_threshold: number
-  window_days: number
-  summary: {
-    files: number
-    entities: number
-    bus_factor_global: number
-    single_owner_files: number
-    churn_p75: number
-  }
-  entities: KnowledgeIslandEntity[]
-  at_risk_files: KnowledgeIslandFileRisk[]
-  warnings: string[]
-}
-
-export interface TemporalCouplingNode {
-  id: string
-  key: string
-  label: string
-  entity_level: 'file' | 'container' | 'component'
-}
-
-export interface TemporalCouplingEdge {
-  id: string
-  source: string
-  target: string
-  co_change_count: number
-  source_change_count: number
-  target_change_count: number
-  ratio_source_to_target: number
-  ratio_target_to_source: number
-  jaccard: number
-  cross_boundary: boolean
-}
-
-export interface TemporalCouplingPayload {
-  collection_id: string
-  scenario: ViewScenario
-  status: 'ready' | 'unavailable'
-  reason: string
-  entity_level: 'file' | 'container' | 'component'
-  window_days: number
-  min_jaccard: number
-  max_edges: number
-  summary: {
-    nodes: number
-    edges: number
-    cross_boundary_edges: number
-    avg_jaccard: number
-  }
-  graph: {
-    nodes: TemporalCouplingNode[]
-    edges: TemporalCouplingEdge[]
-  }
-  warnings: string[]
-}
-
-export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low'
-
-export interface FitnessRuleSummary {
-  rule_id: string
-  finding_type: string
-  count: number
-  open: number
-  resolved: number
-  highest_severity: SeverityLevel
-}
-
-export interface FitnessViolationItem {
-  id: string
-  rule_id: string
-  finding_type: string
-  severity: SeverityLevel
-  confidence: string
-  status: string
-  subject: string | null
-  message: string
-  filename: string
-  line_number: number
-  created_at: string
-  updated_at: string
-  meta: Record<string, unknown>
-}
-
-export interface FitnessFunctionsPayload {
-  collection_id: string
-  scenario: ViewScenario
-  status: 'ready' | 'unavailable'
-  reason: string
-  include_resolved: boolean
-  window_days: number
-  summary: {
-    rules: number
-    violations: number
-    open: number
-    resolved: number
-    highest_severity: SeverityLevel
-  }
-  rules: FitnessRuleSummary[]
-  violations: FitnessViolationItem[]
-  warnings: string[]
-}
-
-export interface MermaidPayload {
-  collection_id: string
-  scenario: ViewScenario
-  mode: 'single' | 'compare'
-  c4_view?: C4ViewMode
-  c4_scope?: string | null
-  max_nodes?: number
-  warnings?: string[]
-  as_is_warnings?: string[]
-  to_be_warnings?: string[]
-  content?: string
-  as_is?: string
-  to_be?: string
-  as_is_scenario_id?: string
-}
-
-export interface Arc42Payload {
-  title: string
-  generated_at: string
-  sections: Record<string, string>
-  markdown: string
-  warnings: string[]
-  confidence_summary: {
-    total: number
-    avg: number | null
-    by_source: Record<string, { count: number; avg: number | null }>
-  }
-  section_coverage: Record<string, boolean>
-}
-
-export interface Arc42ViewPayload {
-  collection_id: string
-  scenario: ViewScenario
-  artifact: {
-    id: string
-    name: string
-    kind: string
-    cached: boolean
-  }
-  section: string | null
-  arc42: Arc42Payload
-  facts_hash: string
-  facts_count: number
-  ports_adapters_count: number
-  warnings: string[]
-}
-
-export interface PortAdapterEvidenceRef {
-  kind: 'file' | 'node' | 'edge' | 'artifact'
-  ref: string
-  start_line?: number | null
-  end_line?: number | null
-}
-
-export interface PortAdapterItem {
-  fact_id: string
-  direction: 'inbound' | 'outbound'
-  port_name: string
-  adapter_name: string | null
-  container: string | null
-  component: string | null
-  protocol: string | null
-  source: 'deterministic' | 'hybrid' | 'llm'
-  confidence: number
-  attributes: Record<string, unknown>
-  evidence: PortAdapterEvidenceRef[]
-}
-
-export interface PortsAdaptersPayload {
-  collection_id: string
-  scenario: ViewScenario
-  summary: {
-    total: number
-    inbound: number
-    outbound: number
-  }
-  filters: {
-    direction: string | null
-    container: string | null
-  }
-  items: PortAdapterItem[]
-  warnings: string[]
-}
-
-export interface Arc42DriftDelta {
-  delta_type: 'added' | 'removed' | 'changed_confidence' | 'moved_component' | 'new_port' | 'removed_adapter'
-  subject: string
-  detail: string
-  before?: Record<string, unknown> | null
-  after?: Record<string, unknown> | null
-  confidence: number
-}
-
-export interface Arc42DriftPayload {
-  collection_id: string
-  scenario: ViewScenario
-  baseline_scenario: ViewScenario | null
-  generated_at: string
-  current_hash: string
-  baseline_hash: string | null
-  summary: {
-    total: number
-    by_type: Record<string, number>
-    severity: 'low' | 'medium'
-  }
-  deltas: Arc42DriftDelta[]
-  warnings: string[]
-}
-
-export interface ErmColumnItem {
-  id: string
-  natural_key: string
-  name: string
-  table: string | null
-  type: string | null
-  nullable: boolean
-  primary_key: boolean
-  foreign_key: string | null
-}
-
-export interface ErmTableItem {
-  id: string
-  natural_key: string
-  name: string
-  description: string | null
-  column_count: number
-  primary_keys: string[]
-  columns: ErmColumnItem[]
-}
-
-export interface ErmForeignKeyItem {
-  id: string
-  fk_name: string | null
-  source_table: string
-  source_column: string
-  target_table: string
-  target_column: string
-  source_column_node_id: string
-  target_column_node_id: string
-}
-
-export interface ErmViewPayload {
-  collection_id: string
-  scenario: ViewScenario
-  summary: {
-    tables: number
-    columns: number
-    foreign_keys: number
-    has_mermaid: boolean
-  }
-  tables: ErmTableItem[]
-  foreign_keys: ErmForeignKeyItem[]
-  mermaid: {
-    artifact_id: string
-    name: string
-    content: string
-    meta: Record<string, unknown>
-  } | null
-  warnings: string[]
-}
+export type ViewScenario = ApiSchemas['ViewScenario']
+export type ScenarioLite = Pick<ViewScenario, 'id' | 'name' | 'version' | 'is_as_is'>
+export type TwinGraphNode = ApiSchemas['TwinGraphNode']
+export type TwinGraphEdge = ApiSchemas['TwinGraphEdge']
+export type TwinGraphResponse = ApiSchemas['TwinGraphResponse']
+export type GraphNeighborhoodResponse = ApiSchemas['GraphNeighborhoodResponse']
+export type GraphViewPayload = ApiSchemas['GraphViewResponse']
+export type UIMapPayload = ApiSchemas['UIMapResponse']
+export type TestMatrixRow = ApiSchemas['TestMatrixRow']
+export type TestMatrixPayload = ApiSchemas['TestMatrixResponse']
+export type UserFlowStep = ApiSchemas['UserFlowStep']
+export type UserFlowItem = ApiSchemas['UserFlowItem']
+export type UserFlowsPayload = ApiSchemas['UserFlowsResponse']
+export type RebuildReadinessCriticalNode = ApiSchemas['RebuildReadinessCriticalNode']
+export type RebuildReadinessPayload = ApiSchemas['RebuildReadinessResponse']
+export type GraphRagStatusReason = ApiSchemas['GraphRagStatus']['reason']
+export type GraphRagStatus = ApiSchemas['GraphRagStatus']
+export type GraphRagPayload = ApiSchemas['GraphRagResponse']
+export type SemanticMapStatus = ApiSchemas['SemanticMapStatus']
+export type SemanticMapPoint = ApiSchemas['SemanticMapPoint']
+export type SemanticMapSignal = ApiSchemas['SemanticMapSignal']
+export type SemanticMapPayload = ApiSchemas['SemanticMapResponse']
+export type SemanticMapThresholds = ApiSchemas['SemanticMapThresholds']
+export type GraphRagCommunityKindCount = ApiSchemas['KindCount']
+export type GraphRagCommunityNodePreview = ApiSchemas['GraphRagCommunityNodePreview']
+export type GraphRagCommunity = ApiSchemas['GraphRagCommunity']
+export type GraphRagCommunitiesPayload = ApiSchemas['GraphRagCommunitiesResponse']
+export type GraphRagPathNode = TwinGraphNode
+export type GraphRagPathEdge = TwinGraphEdge
+export type GraphRagPathPayload = ApiSchemas['GraphRagPathResponse']
+export type GraphRagProcessSummary = ApiSchemas['GraphRagProcessSummary']
+export type GraphRagProcessesPayload = ApiSchemas['GraphRagProcessesResponse']
+export type GraphRagProcessStep = ApiSchemas['GraphRagProcessStep']
+export type GraphRagProcessEdge = TwinGraphEdge
+export type GraphRagProcessDetailPayload = ApiSchemas['GraphRagProcessDetailResponse']
+export type GraphRagEvidenceItem = ApiSchemas['GraphRagEvidenceItem']
+export type GraphRagEvidencePayload = ApiSchemas['GraphRagEvidenceResponse']
+export type CityHotspot = ApiSchemas['CityHotspot']
+export type MetricsStatus = ApiSchemas['MetricsStatus']
+export type CityPayload = ApiSchemas['CityResponse']
+export type InvestmentUtilizationItem = ApiSchemas['InvestmentUtilizationItem']
+export type InvestmentUtilizationPayload = ApiSchemas['InvestmentUtilizationResponse']
+export type KnowledgeIslandEntity = ApiSchemas['KnowledgeIslandEntity']
+export type KnowledgeIslandFileRisk = ApiSchemas['KnowledgeIslandFileRisk']
+export type KnowledgeIslandsPayload = ApiSchemas['KnowledgeIslandsResponse']
+export type TemporalCouplingNode = ApiSchemas['TemporalCouplingNode']
+export type TemporalCouplingEdge = ApiSchemas['TemporalCouplingEdge']
+export type TemporalCouplingPayload = ApiSchemas['TemporalCouplingResponse']
+export type SeverityLevel = ApiSchemas['FitnessViolationItem']['severity']
+export type FitnessRuleSummary = ApiSchemas['FitnessRuleSummary']
+export type FitnessViolationItem = ApiSchemas['FitnessViolationItem']
+export type FitnessFunctionsPayload = ApiSchemas['FitnessFunctionsResponse']
+export type MermaidPayload = ApiSchemas['MermaidResponse']
+export type Arc42Payload = ApiSchemas['Arc42Payload']
+export type Arc42ViewPayload = ApiSchemas['Arc42ViewResponse']
+export type PortAdapterEvidenceRef = ApiSchemas['PortAdapterEvidenceRef']
+export type PortAdapterItem = ApiSchemas['PortAdapterItem']
+export type PortsAdaptersPayload = ApiSchemas['PortsAdaptersResponse']
+export type Arc42DriftDelta = ApiSchemas['Arc42DriftDelta']
+export type Arc42DriftPayload = ApiSchemas['Arc42DriftResponse']
+export type ErmColumnItem = ApiSchemas['ErmColumnItem']
+export type ErmTableItem = ApiSchemas['ErmTableItem']
+export type ErmForeignKeyItem = ApiSchemas['ErmForeignKeyItem']
+export type ErmViewPayload = ApiSchemas['ErmResponse']
 
 export interface RuntimeOverlayMetric {
   service: string
@@ -868,18 +162,12 @@ export const DEFAULT_LAYER: CockpitLayer = 'code_controlflow'
 export const DEFAULT_VIEW: CockpitView = 'overview'
 
 export const COCKPIT_VIEWS: Array<{ key: CockpitView; label: string }> = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'topology', label: 'Topology' },
-  { key: 'deep_dive', label: 'Deep Dive' },
-  { key: 'c4_diff', label: 'C4 Diff' },
-  { key: 'architecture', label: 'Architecture' },
-  { key: 'city', label: 'City' },
-  { key: 'evolution', label: 'Evolution' },
-  { key: 'graphrag', label: 'GraphRAG' },
-  { key: 'semantic_map', label: 'Semantic Map' },
-  { key: 'ui_map', label: 'UI & Flows' },
-  { key: 'test_matrix', label: 'Test Matrix' },
-  { key: 'rebuild_readiness', label: 'Rebuild Readiness' },
+  { key: 'overview', label: 'Overview' }, { key: 'topology', label: 'Topology' },
+  { key: 'deep_dive', label: 'Deep Dive' }, { key: 'c4_diff', label: 'C4 Diff' },
+  { key: 'architecture', label: 'Architecture' }, { key: 'city', label: 'City' },
+  { key: 'evolution', label: 'Evolution' }, { key: 'graphrag', label: 'GraphRAG' },
+  { key: 'semantic_map', label: 'Semantic Map' }, { key: 'ui_map', label: 'UI & Flows' },
+  { key: 'test_matrix', label: 'Test Matrix' }, { key: 'rebuild_readiness', label: 'Rebuild Readiness' },
   { key: 'exports', label: 'Exports' },
 ]
 
@@ -890,8 +178,8 @@ export const COCKPIT_LAYERS: Array<{ key: CockpitLayer; label: string }> = [
   { key: 'component_interface', label: 'Component / Interface' },
 ]
 
-const LAYER_LABEL_MAP: Record<CockpitLayer, string> = Object.fromEntries(
-  COCKPIT_LAYERS.map((l) => [l.key, l.label]),
+const LAYER_LABEL_MAP = Object.fromEntries(
+  COCKPIT_LAYERS.map((layer) => [layer.key, layer.label]),
 ) as Record<CockpitLayer, string>
 
 export function layerLabel(layer: CockpitLayer): string {

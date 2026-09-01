@@ -229,7 +229,7 @@ class PhpIndexerBackend(BaseIndexerBackend):
         composer_json = project_root / "composer.json"
         try:
             content = json.loads(composer_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             return Path("vendor")
 
         config = content.get("config")

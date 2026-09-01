@@ -6,7 +6,11 @@ Run this once at startup to configure Prefect infrastructure.
 import asyncio
 import logging
 
+from contextmine_core import get_settings
 from prefect.client.orchestration import get_client
+from prefect.client.schemas.actions import WorkPoolCreate
+from prefect.exceptions import ObjectNotFound
+from prefect.workers.process import ProcessWorker
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,19 @@ async def init_prefect() -> None:
     """Initialize all Prefect infrastructure."""
     logger.info("Initializing Prefect infrastructure...")
     await init_concurrency_limits()
+    settings = get_settings()
+    async with get_client() as client:
+        try:
+            await client.read_work_pool(settings.prefect_work_pool_name)
+        except ObjectNotFound:
+            await client.create_work_pool(
+                WorkPoolCreate(
+                    name=settings.prefect_work_pool_name,
+                    type=ProcessWorker.type,
+                    base_job_template=ProcessWorker.get_default_base_job_template(),
+                )
+            )
+            logger.info("Created Prefect process work pool %s", settings.prefect_work_pool_name)
     logger.info("Prefect initialization complete")
 
 

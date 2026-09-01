@@ -15,14 +15,13 @@ from typing import Annotated, Any
 import httpx
 from contextmine_core import (
     Collection,
-    CollectionMember,
-    CollectionVisibility,
     CoverageIngestJob,
     CoverageIngestReport,
     Source,
     SourceIngestToken,
     SourceType,
     get_settings,
+    user_can_access_collection,
 )
 from contextmine_core import get_session as get_db_session
 from contextmine_core.metrics import detect_coverage_protocol
@@ -82,20 +81,7 @@ async def _ensure_collection_member(db, collection_id: uuid.UUID, user_id: uuid.
     ).scalar_one_or_none()
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    if collection.visibility == CollectionVisibility.GLOBAL:
-        return
-    if collection.owner_user_id == user_id:
-        return
-
-    membership = (
-        await db.execute(
-            select(CollectionMember).where(
-                CollectionMember.collection_id == collection_id,
-                CollectionMember.user_id == user_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not membership:
+    if not await user_can_access_collection(db, collection, user_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
 

@@ -1,20 +1,18 @@
 # Dependency and Upgrade Inventory
 
-This document is the baseline for dependency maintenance. It records the
-dependency surfaces that must move together, the checks that protect them, and
-the commands used to refresh the snapshot. It is not a request to upgrade every
-package in one change.
+This document records the dependency surfaces that must move together, the
+checks that protect them, and the commands used to refresh the snapshot.
 
 Snapshot date: **2026-09-01**  
-Repository baseline: **ea266bd16c8fbebda569c1cb9b9f81e4be1801a2**
+Repository baseline: **5691da2e591781847cc2be81f9cd9c4abda9b8c4**
 
 ## Inventory Summary
 
 | Surface | Manifest and lock | Current size | Runtime role |
 | --- | --- | ---: | --- |
-| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 241 locked packages; 29 core plus 1 optional LSP, 8 API, 11 worker, and 9 development declarations | API, MCP, sync worker, analysis, search, graph, telemetry |
-| Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 9 runtime and 19 development declarations; 456 lock entries | React cockpit, diagrams, observability |
-| Rust crawler | `rust/spider_md/Cargo.toml`, `rust/spider_md/Cargo.lock` | 8 direct declarations; 357 locked packages | Deterministic website crawling binary embedded in the worker image |
+| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 244 locked packages | API, MCP, sync worker, analysis, search, graph, telemetry |
+| Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 12 runtime and 20 development declarations; 481 lock entries | React cockpit, diagrams, observability |
+| Rust crawler | `rust/spider_md/Cargo.toml`, `rust/spider_md/Cargo.lock` | 9 direct declarations; 339 locked packages | Deterministic website crawling binary embedded in the worker image |
 | Runtime images | Dockerfiles, Compose files, Helm values | API, worker, web, PostgreSQL/pg4ai, Prefect, CodeCharta, OpenTelemetry | Build and deployment compatibility |
 | CI actions and tools | `.github/workflows/*.yml`, `.pre-commit-config.yaml` | SHA-pinned GitHub Actions plus scanner/tool versions | Verification and delivery |
 
@@ -22,35 +20,6 @@ The Python requirements use lower bounds while `uv.lock` supplies the exact
 resolved environment. This makes the lockfile essential: a fresh unlocked
 resolution may cross major-version boundaries even when a manifest was not
 edited.
-
-## Pinned Runtime Inputs
-
-Third-party image tags remain in each reference as a readable update channel,
-but an OCI digest fixes the bytes used by builds, local Compose, Helm defaults,
-and CI. The application image tags in the Helm values are release outputs and
-remain deployment overrides rather than upstream dependency pins.
-
-| Input | Immutable selector |
-| --- | --- |
-| Node build image | `node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf` |
-| Node runtime image | `node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e` (`24.20.0`) |
-| Python runtime image | `python:3.12-slim@sha256:e5c9fa26ffb76e11e0f054f30dc2523a2f9693f0c36c0cf1e39b27e152d899fc` |
-| Rust builder image | `rust:1.88-slim@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89` |
-| uv build image | `ghcr.io/astral-sh/uv:latest@sha256:d1cbaeadc234fe19c0d93daabcf5e98738cd93c6d1dd4918ef6aa30735feb23a` (`0.12.8`) |
-| pg4ai | `ghcr.io/mayflower/pg4ai:latest@sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802` |
-| Prefect server | `prefecthq/prefect:3-python3.12@sha256:6c0dc14195cae814eddeb66104a8333810a0a9886a5d7f0c45443136f167b3e0` (`3.8.4`) |
-| CodeCharta | `codecharta/codecharta-visualization:latest@sha256:c72f6ed979dcbaaf4e08289a5c3e34d9c872f564a70ceb4b5252318209f10d35` |
-| OpenTelemetry Collector | `otel/opentelemetry-collector-contrib:latest@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc` (`0.159.0`) |
-| Semgrep CI image | `semgrep/semgrep:latest@sha256:f1f7b71861c7b28b6e0f661225a2c4f58a484f5d0f182465c6d6b3b22f972ade` |
-| Helm init image | `busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662` |
-| pgvector fallback image | `pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b` |
-
-The worker additionally pins the Coursier launcher to commit
-`15f36c167c30be237105f923151adaf177e7ee61` with per-architecture checksums,
-Composer to version `2.10.3` with its PHAR checksum, and scip-php to commit
-`efaf87cd05cf174db8ac25ad4d07eb646d4883d1` with an archive checksum. scip-php
-is installed from its committed `composer.lock`, so its Composer dependency
-graph is not resolved from `dev-main` during an image build.
 
 ## Component Ownership
 
@@ -67,43 +36,47 @@ graph is not resolved from `dev-main` during an image build.
 | Telemetry | OpenTelemetry API/SDK/exporter/instrumentation family and Grafana Faro | Upgrade each telemetry family as a synchronized set; verify disabled and enabled startup modes. |
 | Deployment | Python/Node/Rust base images, uv image, pg4ai, Prefect, CodeCharta, OTel collector, Helm | Floating tags are not reproducible. Move them to reviewed version or digest pins in dedicated changes, with container and Helm checks. |
 
-### DeepAgents
+### DeepAgents and agent sandbox
 
-`deepagents` is neither declared nor imported. ContextMine currently implements
-its research agent with its own LangChain/LangGraph-based code. Adding
-DeepAgents would therefore be an architecture and behavior change, not a
-dependency update, and should be evaluated separately.
+`deepagents` is not currently declared or imported by ContextMine; its research
+graph uses LangGraph directly. The existing DeepAgents integration for the
+Mayflower Kubernetes sandbox lives in
+`mayflower/langchain-google` as `langchain-google-agent-sandbox`. Reuse that
+backend when a ContextMine DeepAgents execution path needs sandboxed tools; do
+not implement a second DeepAgents sandbox adapter here.
+
+The repository analyzer is a deterministic Prefect job rather than a
+DeepAgents tool backend. It therefore uses the sandbox control-plane Job/Result
+API directly; `langchain-google-agent-sandbox` explicitly does not own that
+control plane or durable product lifecycle.
 
 ## Upgrade Snapshot
 
-A read-only refresh on the snapshot date found a broad pending set:
+The snapshot-date modernization is applied:
 
-- A full Python resolution would change roughly one hundred transitive entries
-  and increase the lock from 230 to 232 packages. Direct major boundaries
-  include Anthropic `0.112.0 -> 1.2.0`, OpenAI `2.44.0 -> 3.6.0`,
-  cryptography `49.0.0 -> 50.0.1`, protobuf `6.33.6 -> 7.36.0`, and pgvector
-  `0.4.2 -> 0.5.0`. LangChain provider packages, LangChain Core, LangGraph,
-  Prefect, FastAPI, FastMCP, Uvicorn, tree-sitter-language-pack, and the
-  OpenTelemetry family also have newer compatible resolutions.
-- The web runtime has compatible updates for the Grafana Faro family,
-  Cytoscape, React, and React DOM. ELK moves from `0.11.1` to `0.12.0`; because
-  it is pre-1.0, treat that as a potentially breaking change. Separate tooling
-  majors are available for ESLint 10, TypeScript 7, jsdom 30, and Testing
-  Library jest-dom 7.
-- The completed non-major web security refresh moved Mermaid above its fixed
-  boundary and refreshed affected transitive packages. `npm audit` now reports
-  zero vulnerabilities in the current lock.
-- `cargo update --dry-run` proposes 121 compatible lock changes, including
-  `spider 2.52.4 -> 2.53.6`. This is a lock refresh, not evidence that a future
-  direct major is safe.
-- Third-party operational images, Docker base images, the copied uv binary,
-  Coursier, Composer, and scip-php now have immutable selectors. The hosted
-  GitHub runner labels and the application image tags emitted by the release
-  workflow remain moving operational surfaces; the latter must be replaced by
-  release-specific tags or digests at deployment time.
+- Python direct dependencies and the `uv` lock are current. This includes
+  Anthropic 1.2, OpenAI 3.6, Claude Agent SDK 0.2.149, LangGraph 1.2.11,
+  Prefect 3.8.4, FastAPI 0.141.1, FastMCP 4, protobuf 7.36, pgvector 0.5,
+  SQLAlchemy 2.0.52, and the OpenTelemetry 1.44/0.65 family.
+- Web runtime and tooling dependencies are current except where the active
+  runtime or peer contract requires a lower major. TypeScript stays on 5.9
+  because openapi-typescript 7 and typescript-eslint 8 reject TypeScript 7;
+  `@types/node` stays on 24 to match the Node 24 production runtime. The current
+  lock reports zero `npm audit` vulnerabilities.
+- The Rust lock is refreshed to the latest Rust 1.98-compatible resolution,
+  including `spider 2.53.6`. A direct feature activation works around
+  `http-global-cache 0.2` not forwarding the middleware feature required by
+  `http-cache-reqwest 1.0.0-alpha.8`. The crawler uses Spider's in-memory cache
+  backend to avoid the vulnerable `memmap2 0.5` pulled by its disk-cache backend.
+- Runtime inputs are pinned to versioned image tags and immutable digests.
+  Python uses the supported 3.14 line, Node and `@types/node` use Node 24 LTS,
+  and Rust uses 1.98 with Edition 2024. Coursier has an explicit SHA-256 check,
+  Composer comes from a pinned image, and scip-php is checked out at an exact
+  commit. These inputs still require manual refreshes because language package
+  bots do not cover all of them reliably.
 
-Do not combine these sets into one upgrade. The counts are a triage signal, not
-a target change list.
+All direct Rust dependencies resolve to their current Rust-1.98-compatible
+release line.
 
 ## Required Upgrade Gate
 
@@ -112,7 +85,7 @@ The normal CI checks remain required:
 1. Ruff lint and formatting plus `ty` type checking.
 2. The complete PostgreSQL-backed Python test suite.
 3. Web ESLint, Vitest, Playwright end-to-end tests, and production build.
-4. Rust 1.88 formatting, strict Clippy, and all crawler tests.
+4. Rust 1.98 formatting, strict Clippy, and all crawler tests.
 5. Security workflows and the relevant container/Helm build checks. Helm
    publication waits for the complete image-build dependency chain.
 
@@ -120,7 +93,6 @@ Dependency changes additionally run:
 
 ```bash
 ./scripts/smoke/model-free-system.sh
-./scripts/smoke/otel-enabled.sh
 ```
 
 The system gate deliberately takes longer than a unit smoke test. It:
@@ -155,13 +127,6 @@ Joern is advisory in this gate, so this test does not qualify Joern/CPG changes.
 Authenticated browser workflows, web crawling, and model-provider behavior also
 need their own targeted checks when those surfaces change.
 
-The OpenTelemetry gate keeps the default-disabled path above intact and starts
-the pinned collector separately with telemetry enabled. It requires exported
-FastAPI route spans, distinct API and worker service resources, a real Prefect
-flow with its semantic attributes, SQLAlchemy telemetry, and a flushed result
-metric. This verifies useful OTLP data rather than startup or exporter calls
-alone.
-
 ## Refresh Commands
 
 These commands inspect available updates without modifying a lockfile:
@@ -182,13 +147,6 @@ Also review image tags and action references:
 
 ```bash
 rg -n 'uses:|image:|FROM ' .github apps scripts docker-compose.yml deploy/helm
-```
-
-Resolve a reviewed image tag to its multi-platform manifest digest before
-changing a pin:
-
-```bash
-docker buildx imagetools inspect <image>:<tag>
 ```
 
 Record the date and baseline commit whenever the snapshot is refreshed.

@@ -168,26 +168,46 @@ class TestInitPrefect:
 
 
 # ---------------------------------------------------------------------------
-# main.py scheduler loop -- uses asyncio.create_task so run under asyncio only
+# main.py official Prefect worker
 # ---------------------------------------------------------------------------
 
 
-class TestSchedulerLoop:
-    def test_scheduler_loop_runs_and_can_be_cancelled(self) -> None:
-        """Use asyncio.run directly to avoid trio parametrization
-        since the scheduler uses asyncio.create_task."""
+class TestWorkerMain:
+    def test_configure_deployments_applies_due_and_single_source(self) -> None:
+        from contextmine_worker import main
 
+        due_deployment = MagicMock()
+        single_deployment = MagicMock()
+        with (
+            patch.object(main.sync_due_sources, "to_deployment", return_value=due_deployment),
+            patch.object(
+                main.sync_single_source,
+                "to_deployment",
+                return_value=single_deployment,
+            ),
+        ):
+            main.configure_deployments()
+
+        due_deployment.apply.assert_called_once()
+        single_deployment.apply.assert_called_once()
+
+    def test_run_worker_uses_supported_process_worker(self) -> None:
         async def _inner() -> None:
-            with patch("contextmine_worker.main.sync_due_sources") as mock_flow:
-                mock_flow.fn = AsyncMock(return_value={"synced": 0})
+            from contextmine_worker import main
 
-                from contextmine_worker.main import scheduler_loop
+            worker = MagicMock()
+            worker.start = AsyncMock()
+            with (
+                patch("contextmine_worker.main.ProcessWorker", return_value=worker),
+                patch(
+                    "contextmine_worker.main.shutdown_lsp_manager",
+                    new=AsyncMock(),
+                ) as shutdown,
+            ):
+                await main.run_worker()
 
-                task = asyncio.create_task(scheduler_loop())
-                await asyncio.sleep(0.05)
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task
+            worker.start.assert_awaited_once_with(with_healthcheck=True)
+            shutdown.assert_awaited_once()
 
         asyncio.run(_inner())
 

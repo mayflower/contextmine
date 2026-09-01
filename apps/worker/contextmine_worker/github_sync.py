@@ -173,7 +173,7 @@ def _cached_composer_vendor_dirs(repo_root_str: str) -> tuple[str, ...]:
 
     try:
         payload = json.loads(composer_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return ()
 
     config = payload.get("config") if isinstance(payload, dict) else None
@@ -654,7 +654,7 @@ class _EvoAccumulator:
     max_files_per_commit: int = 200
 
     @staticmethod
-    def create(max_files_per_commit: int = 200) -> "_EvoAccumulator":
+    def create(max_files_per_commit: int = 200) -> _EvoAccumulator:
         from contextmine_core.twin import derive_arch_group
 
         return _EvoAccumulator(
@@ -1101,7 +1101,7 @@ def read_file_content(repo_path: Path, file_path: str) -> str | None:
     try:
         content = full_path.read_text(encoding="utf-8")
         return content.replace("\x00", "\\0")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
 
 

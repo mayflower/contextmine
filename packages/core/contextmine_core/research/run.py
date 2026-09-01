@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     DONE = "done"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -215,7 +217,31 @@ class ResearchRun:
         self.total_duration_ms += step.duration_ms
 
     def add_evidence(self, evidence: Evidence) -> None:
-        """Add evidence to the collection."""
+        """Add evidence once and disambiguate concurrent identifier collisions."""
+        identity = "\0".join(
+            (
+                evidence.file_path,
+                str(evidence.start_line),
+                str(evidence.end_line),
+                evidence.content,
+                evidence.provenance,
+            )
+        )
+        for existing in self.evidence:
+            existing_identity = "\0".join(
+                (
+                    existing.file_path,
+                    str(existing.start_line),
+                    str(existing.end_line),
+                    existing.content,
+                    existing.provenance,
+                )
+            )
+            if existing_identity == identity:
+                evidence.id = existing.id
+                return
+            if existing.id == evidence.id:
+                evidence.id = f"ev-{self.run_id[:8]}-{sha256(identity.encode()).hexdigest()[:12]}"
         self.evidence.append(evidence)
 
     def complete(self, answer: str) -> None:
@@ -228,6 +254,11 @@ class ResearchRun:
         """Mark the run as failed."""
         self.status = RunStatus.ERROR
         self.error_message = error_message
+        self.completed_at = datetime.now(UTC)
+
+    def cancel(self) -> None:
+        """Mark the run as cancelled."""
+        self.status = RunStatus.CANCELLED
         self.completed_at = datetime.now(UTC)
 
     def get_evidence_by_id(self, evidence_id: str) -> Evidence | None:
@@ -263,6 +294,14 @@ class ResearchRun:
             "question": self.question,
             "evidence_count": len(self.evidence),
             "evidence": [e.to_dict() for e in self.evidence],
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the complete JSON-serializable run state."""
+        return {
+            **self.to_trace_dict(),
+            **self.to_evidence_dict(),
+            "answer": self.answer,
         }
 
     def _report_header_lines(self) -> list[str]:

@@ -6,10 +6,9 @@ from typing import Annotated
 
 from contextmine_core import (
     Collection,
-    CollectionMember,
-    CollectionVisibility,
     Document,
     Source,
+    user_can_access_collection,
 )
 from contextmine_core import (
     get_session as get_db_session,
@@ -90,18 +89,8 @@ async def list_documents(
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
-        # Verify access: global, owner, or member
-        if (
-            collection.visibility == CollectionVisibility.PRIVATE
-            and collection.owner_user_id != user_id
-        ):
-            result = await db.execute(
-                select(CollectionMember)
-                .where(CollectionMember.collection_id == collection.id)
-                .where(CollectionMember.user_id == user_id)
-            )
-            if not result.scalar_one_or_none():
-                raise HTTPException(status_code=403, detail="Access denied to this source")
+        if not await user_can_access_collection(db, collection, user_id):
+            raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get total count
         result = await db.execute(
@@ -171,18 +160,8 @@ async def get_document_count(request: Request, source_id: str) -> dict:
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
-        # Verify access: global, owner, or member
-        if (
-            collection.visibility == CollectionVisibility.PRIVATE
-            and collection.owner_user_id != user_id
-        ):
-            result = await db.execute(
-                select(CollectionMember)
-                .where(CollectionMember.collection_id == collection.id)
-                .where(CollectionMember.user_id == user_id)
-            )
-            if not result.scalar_one_or_none():
-                raise HTTPException(status_code=403, detail="Access denied to this source")
+        if not await user_can_access_collection(db, collection, user_id):
+            raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get count
         result = await db.execute(

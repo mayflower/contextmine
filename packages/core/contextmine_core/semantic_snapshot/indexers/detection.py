@@ -342,7 +342,7 @@ def _composer_vendor_dirs(project_root: Path) -> set[Path]:
     composer_json = project_root / _COMPOSER_JSON
     try:
         payload = json.loads(composer_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {Path("vendor")}
 
     config = payload.get("config")

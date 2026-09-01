@@ -273,7 +273,7 @@ def _crawl_spider_md(
             text=True,
             timeout=600,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired, FileNotFoundError:
         return []
 
     if result.returncode != 0:
@@ -305,7 +305,7 @@ def _crawl_spider_md(
                     last_modified=data.get("last_modified"),
                 )
             )
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             continue
 
     return pages

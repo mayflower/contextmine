@@ -384,7 +384,7 @@ def _accumulate_scip_projects_by_language(
             continue
         try:
             scip_projects_by_language[normalized_language] += int(count or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
 
 
@@ -2627,7 +2627,7 @@ async def joern_find_taint_flows(
 def _symbol_kind_to_name(kind: Any) -> str:
     try:
         value = int(kind)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(kind or "unknown")
     mapping = {
         1: "file",
@@ -2775,13 +2775,53 @@ async def _collect_lsp_symbols(
             break
 
     if files_scanned == 0:
-        raise RuntimeError("No accessible checked-out repository files for LSP analysis")
+        source_version_ids = {
+            node.source_version_id for node in nodes if node.source_version_id is not None
+        }
+        source_ids = {
+            source_id for node in nodes if (source_id := _read_node_source_id(node)) is not None
+        }
+        if source_version_ids or source_ids:
+            source_versions = (
+                (
+                    await session.execute(
+                        select(TwinSourceVersion)
+                        .where(
+                            TwinSourceVersion.collection_id == collection_id,
+                            TwinSourceVersion.status == "ready",
+                            or_(
+                                TwinSourceVersion.id.in_(source_version_ids),
+                                TwinSourceVersion.source_id.in_(source_ids),
+                            ),
+                        )
+                        .order_by(TwinSourceVersion.finished_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            seen_sources: set[UUID] = set()
+            for source_version in source_versions:
+                stats = dict(source_version.stats or {})
+                if str(stats.get("scenario_id") or "") != str(scenario.id):
+                    continue
+                if source_version.source_id in seen_sources:
+                    continue
+                seen_sources.add(source_version.source_id)
+                lsp_result = dict(stats.get("lsp") or {})
+                files_scanned += int(lsp_result.get("files_scanned") or 0)
+                errors.extend(str(error) for error in lsp_result.get("errors") or [])
+                for symbol in lsp_result.get("symbols") or []:
+                    if isinstance(symbol, dict):
+                        symbols.append(dict(symbol))
+        if files_scanned == 0:
+            raise RuntimeError("No sandboxed LSP result exists for this scenario")
 
     return {
         "scenario_id": str(scenario.id),
         "scenario_version": int(scenario.version),
-        "files_scanned": files_scanned,
-        "errors": errors,
+        "files_scanned": min(files_scanned, max_files),
+        "errors": errors[:30],
         "symbols": symbols,
     }
 

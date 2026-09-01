@@ -18,6 +18,8 @@ from httpx import AsyncClient
 def _mock_db_session(mock_db: MagicMock):
     """Create an async context manager that yields the mock DB."""
 
+    mock_db.commit = AsyncMock()
+
     @asynccontextmanager
     async def session():
         yield mock_db

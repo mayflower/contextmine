@@ -43,7 +43,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         if value is None:
             return default
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -52,7 +52,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
         if value is None:
             return default
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

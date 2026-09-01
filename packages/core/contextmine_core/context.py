@@ -8,7 +8,7 @@ from enum import Enum
 
 from contextmine_core.model_policy import ensure_model_calls_enabled
 from contextmine_core.search import SearchResult, hybrid_search
-from contextmine_core.settings import get_settings
+from contextmine_core.settings import get_settings, secret_value
 
 
 class LLMProvider(Enum):
@@ -249,9 +249,10 @@ class FakeLLM(LLM):
 class OpenAILLM(LLM):
     """OpenAI LLM implementation."""
 
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
-        self.model = model
-        self.api_key = api_key or get_settings().openai_api_key
+    def __init__(self, model: str | None = None, api_key: str | None = None):
+        settings = get_settings()
+        self.model = model or settings.openai_llm_model
+        self.api_key = api_key or secret_value(settings.openai_api_key)
         if not self.api_key:
             raise ValueError("OpenAI API key required")
 
@@ -296,9 +297,10 @@ class OpenAILLM(LLM):
 class AnthropicLLM(LLM):
     """Anthropic LLM implementation."""
 
-    def __init__(self, model: str = "claude-3-haiku-20240307", api_key: str | None = None):
-        self.model = model
-        self.api_key = api_key or get_settings().anthropic_api_key
+    def __init__(self, model: str | None = None, api_key: str | None = None):
+        settings = get_settings()
+        self.model = model or settings.anthropic_llm_model
+        self.api_key = api_key or secret_value(settings.anthropic_api_key)
         if not self.api_key:
             raise ValueError("Anthropic API key required")
 
@@ -307,13 +309,13 @@ class AnthropicLLM(LLM):
         ensure_model_calls_enabled()
         import anthropic
 
-        client = anthropic.AsyncAnthropic(api_key=self.api_key)
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        async with anthropic.AsyncAnthropic(api_key=self.api_key) as client:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
         # Extract text from content blocks
         text_parts = []
         for block in response.content:
@@ -328,13 +330,15 @@ class AnthropicLLM(LLM):
         ensure_model_calls_enabled()
         import anthropic
 
-        client = anthropic.AsyncAnthropic(api_key=self.api_key)
-        async with client.messages.stream(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        ) as stream:
+        async with (
+            anthropic.AsyncAnthropic(api_key=self.api_key) as client,
+            client.messages.stream(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            ) as stream,
+        ):
             async for text in stream.text_stream:
                 yield text
 
@@ -342,9 +346,10 @@ class AnthropicLLM(LLM):
 class GeminiLLM(LLM):
     """Google Gemini LLM implementation."""
 
-    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None):
-        self.model = model
-        self.api_key = api_key or get_settings().gemini_api_key
+    def __init__(self, model: str | None = None, api_key: str | None = None):
+        settings = get_settings()
+        self.model = model or settings.gemini_llm_model
+        self.api_key = api_key or secret_value(settings.gemini_api_key)
         if not self.api_key:
             raise ValueError("Gemini API key required")
 
@@ -411,17 +416,17 @@ def get_llm(
 
     if provider == LLMProvider.OPENAI:
         return OpenAILLM(
-            model=model or settings.default_llm_model,
+            model=model or settings.openai_llm_model,
             api_key=api_key,
         )
     elif provider == LLMProvider.ANTHROPIC:
         return AnthropicLLM(
-            model=model or settings.default_llm_model,
+            model=model or settings.anthropic_llm_model,
             api_key=api_key,
         )
     elif provider == LLMProvider.GEMINI:
         return GeminiLLM(
-            model=model or "gemini-2.0-flash",
+            model=model or settings.gemini_llm_model,
             api_key=api_key,
         )
     else:

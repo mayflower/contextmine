@@ -1,17 +1,19 @@
 # Values for mayflower.gmbh deployment
 
 global:
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
 
 api:
   image:
     repository: ghcr.io/mayflower/contextmine-api
-    tag: latest
+    tag: sha-35e5920
+    digest: sha256:f6e21413d357f3780478ec61cc19ebc44178037e6b79035100842cfb458da00e
 
 worker:
   image:
     repository: ghcr.io/mayflower/contextmine-worker
-    tag: latest
+    tag: sha-35e5920
+    digest: sha256:0877bad4fadde65e00436753585d8d9b0c4ad19df5b2b5964b78362445595bf1
 
 ingress:
   enabled: true
@@ -35,12 +37,7 @@ config:
   mcpOauthBaseUrl: "https://contextmine.mayflower.gmbh"
   mcpAllowedOrigins: "https://claude.ai"
 
-# Secrets
+# The production namespace must provide this secret out of band. No production
+# credential belongs in a values file committed to the repository.
 secrets:
-  github:
-    clientId: "Ov23li7GdWnNTLwEOvEb"
-    clientSecret: "8cbb760b01ef1b7920666d41c25f78bae2b7a3a5"
-  sessionSecret: "rNY1xux1zFXdYioeFv8Pz17gSXfZ1IxoAKYXqHmjKFM"
-  tokenEncryptionKey: "hmgA_aPpf0O2PtyN_eKUxKV4Juv0KZVclGoQQMggdsA"
-  openaiApiKey: ""
-  anthropicApiKey: ""
+  existingSecret: contextmine-secrets

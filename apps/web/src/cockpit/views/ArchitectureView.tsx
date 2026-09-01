@@ -508,7 +508,7 @@ export default function ArchitectureView({
           <span>arc42 section coverage</span>
         </div>
         <div>
-          <strong>{shortHash(arc42?.facts_hash)}</strong>
+          <strong>{shortHash(arc42?.facts_hash ?? undefined)}</strong>
           <span>Facts hash</span>
         </div>
         <div>

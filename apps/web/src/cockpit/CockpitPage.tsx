@@ -374,19 +374,11 @@ export default function CockpitPage({
   })
 
   const openCollections = useCallback(() => {
-    if (onOpenCollections) {
-      onOpenCollections()
-      return
-    }
-    globalThis.location.href = '/?page=collections'
+    onOpenCollections?.()
   }, [onOpenCollections])
 
   const openRuns = useCallback(() => {
-    if (onOpenRuns) {
-      onOpenRuns()
-      return
-    }
-    globalThis.location.href = '/?page=runs'
+    onOpenRuns?.()
   }, [onOpenRuns])
 
   const trackFilterChange = useCallback(() => {

@@ -92,17 +92,24 @@ codecharta:
 
 # -- Application configuration for production
 config:
+  appMode: "production"
   debug: "false"
   # IMPORTANT: Update these URLs for your domain
   publicBaseUrl: "https://contextmine.your-domain.com"
   mcpOauthBaseUrl: "https://contextmine.your-domain.com"
   # Restrict MCP allowed origins in production
   mcpAllowedOrigins: "https://claude.ai"
+  sandbox:
+    apiUrl: "https://agent-sandbox-platform-api.data.mayflower.zone"
+    analyzerSnapshot: "contextmine-analyzer"
+  scip:
+    installDepsMode: "never"
 
 # -- Secrets for production
 # IMPORTANT: Override these with actual secrets!
 # Best practice: Use external secrets management (Vault, AWS Secrets Manager, etc.)
 secrets:
+  sandboxApiKey: "CHANGE_ME_IN_PRODUCTION"
   github:
     clientId: "your-github-client-id"
     clientSecret: "your-github-client-secret"

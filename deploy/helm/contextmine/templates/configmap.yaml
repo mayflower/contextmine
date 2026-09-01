@@ -6,6 +6,7 @@ metadata:
     {{- include "contextmine.labels" . | nindent 4 }}
 data:
   # API settings
+  APP_MODE: {{ .Values.config.appMode | quote }}
   DEBUG: {{ .Values.config.debug | quote }}
   API_HOST: "0.0.0.0"
   API_PORT: "8000"
@@ -17,8 +18,20 @@ data:
 
   # Prefect settings (for worker)
   PREFECT_API_URL: {{ include "contextmine.prefectApiUrl" . | quote }}
-  # Disable subprocess isolation to prevent zombie processes from OTEL threads
-  PREFECT_RUNNER_PROCESS_ISOLATION: "0"
+
+  # Ephemeral repository analyzer
+  {{- if .Values.config.sandbox.apiUrl }}
+  SANDBOX_API_URL: {{ .Values.config.sandbox.apiUrl | quote }}
+  {{- end }}
+  {{- if .Values.config.sandbox.analyzerSnapshot }}
+  SANDBOX_ANALYZER_SNAPSHOT: {{ .Values.config.sandbox.analyzerSnapshot | quote }}
+  {{- end }}
+  SANDBOX_ANALYSIS_TIMEOUT_SECONDS: {{ .Values.config.sandbox.timeoutSeconds | quote }}
+  SANDBOX_RESULT_MAX_BYTES: {{ .Values.config.sandbox.resultMaxBytes | quote }}
+  SANDBOX_ARTIFACT_MAX_BYTES: {{ .Values.config.sandbox.artifactMaxBytes | quote }}
+  SANDBOX_ANALYZER_VCPUS: {{ .Values.config.sandbox.vcpus | quote }}
+  SANDBOX_ANALYZER_MEM_BYTES: {{ .Values.config.sandbox.memBytes | quote }}
+  SANDBOX_ANALYZER_FS_BYTES: {{ .Values.config.sandbox.fsBytes | quote }}
 
   # Default LLM settings
   {{- if .Values.config.llm.defaultEmbeddingModel }}
@@ -41,6 +54,10 @@ data:
   RESEARCH_BUDGET_STEPS: {{ .Values.config.research.budgetSteps | quote }}
   {{- $configValues := .Values.config | default (dict) }}
   {{- $syncValues := get $configValues "sync" | default (dict) }}
+  PREFECT_DUE_INTERVAL_SECONDS: {{ get $syncValues "dueIntervalSeconds" | default "60" | quote }}
+  PREFECT_WORKER_LIMIT: {{ get $syncValues "workerLimit" | default "2" | quote }}
+  PREFECT_WORK_POOL_NAME: {{ get $syncValues "workPoolName" | default "contextmine-process" | quote }}
+  PREFECT_SYNC_DEPLOYMENT: {{ get $syncValues "deployment" | default "sync_single_source/default" | quote }}
   SYNC_SOURCE_TIMEOUT_SECONDS: {{ get $syncValues "sourceTimeoutSeconds" | default "0" | quote }}
 
   # SCIP Polyglot Indexing settings

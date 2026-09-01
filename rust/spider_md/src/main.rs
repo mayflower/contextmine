@@ -11,8 +11,8 @@ use spider::configuration::Configuration;
 use spider::reqwest::header::HeaderName;
 use spider::website::Website;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -93,24 +93,24 @@ fn is_url_in_scope(url: &str, base_url: &Url) -> bool {
 /// Extract title from HTML
 fn extract_title(html: &str) -> String {
     // Simple title extraction - look for <title> tag
-    if let Some(start) = html.find("<title>") {
-        if let Some(end) = html[start..].find("</title>") {
-            let title_start = start + 7;
-            let title_end = start + end;
-            if title_end > title_start {
-                return html[title_start..title_end].trim().to_string();
-            }
+    if let Some(start) = html.find("<title>")
+        && let Some(end) = html[start..].find("</title>")
+    {
+        let title_start = start + 7;
+        let title_end = start + end;
+        if title_end > title_start {
+            return html[title_start..title_end].trim().to_string();
         }
     }
     // Fallback: try case-insensitive
     let lower = html.to_lowercase();
-    if let Some(start) = lower.find("<title>") {
-        if let Some(end) = lower[start..].find("</title>") {
-            let title_start = start + 7;
-            let title_end = start + end;
-            if title_end > title_start {
-                return html[title_start..title_end].trim().to_string();
-            }
+    if let Some(start) = lower.find("<title>")
+        && let Some(end) = lower[start..].find("</title>")
+    {
+        let title_start = start + 7;
+        let title_end = start + end;
+        if title_end > title_start {
+            return html[title_start..title_end].trim().to_string();
         }
     }
     String::new()

@@ -277,7 +277,7 @@ class FileArtifactStore(ArtifactStore):
                     meta = json.loads(meta_path.read_text())
                     created_at = datetime.fromisoformat(meta["created_at"])
                     run_times.append((run_dir, created_at))
-                except (json.JSONDecodeError, KeyError):
+                except json.JSONDecodeError, KeyError:
                     # Invalid meta, use mtime
                     run_times.append(
                         (run_dir, datetime.fromtimestamp(run_dir.stat().st_mtime, tz=UTC))
@@ -352,7 +352,7 @@ class FileArtifactStore(ArtifactStore):
                             ),
                         )
                     )
-                except (json.JSONDecodeError, KeyError):
+                except json.JSONDecodeError, KeyError:
                     continue
 
         metas.sort(key=lambda m: m.created_at, reverse=True)
@@ -386,7 +386,7 @@ class FileArtifactStore(ArtifactStore):
                         if expires_at < now:
                             self._delete_run_dir(run_dir)
                             evicted += 1
-                except (json.JSONDecodeError, KeyError):
+                except json.JSONDecodeError, KeyError:
                     continue
 
         return evicted

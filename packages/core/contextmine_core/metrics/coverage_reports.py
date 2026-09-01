@@ -362,7 +362,7 @@ def parse_generic_file_coverage_json(
             continue
         try:
             coverage = float(entry.get("coverage"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
 
         file_path = to_repo_relative_path(

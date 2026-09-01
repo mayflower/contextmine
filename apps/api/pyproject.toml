@@ -2,16 +2,17 @@
 name = "contextmine-api"
 version = "0.1.0"
 description = "ContextMine API server with FastAPI and MCP"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "fastapi>=0.138.0",
-    "uvicorn[standard]>=0.49.0",
-    "fastmcp>=3.4.2",
-    "contextmine-core[lsp]",
+    "uvicorn[standard]>=0.52.4",
+    "fastmcp==4.0.0",
+    "contextmine-core",
     "itsdangerous>=2.2.0",
     "httpx>=0.28.1",
     "slowapi>=0.1.10",
-    "prometheus-fastapi-instrumentator>=8.0.2",
+    "prometheus-fastapi-instrumentator>=8.1.0",
+    "prefect==3.8.4",
 ]
 
 [build-system]

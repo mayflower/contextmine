@@ -25,7 +25,7 @@ spec:
       {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
       containers:
         - name: codecharta
-          image: "{{ .Values.codecharta.image.repository }}:{{ .Values.codecharta.image.tag }}"
+          image: "{{ .Values.codecharta.image.repository }}:{{ .Values.codecharta.image.tag }}@{{ .Values.codecharta.image.digest }}"
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
             - name: http

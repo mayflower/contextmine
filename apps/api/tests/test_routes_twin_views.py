@@ -331,7 +331,12 @@ class TestTwinRefresh:
         with patch(
             "app.routes.twin.trigger_collection_refresh",
             new_callable=AsyncMock,
-            return_value={"refreshed": True, "source_count": 1},
+            return_value={
+                "collection_id": str(_COLLECTION_ID),
+                "created": 1,
+                "skipped": 0,
+                "items": [],
+            },
         ):
             resp = await _post(
                 f"/api/twin/collections/{_COLLECTION_ID}/refresh",
@@ -340,7 +345,7 @@ class TestTwinRefresh:
             )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["refreshed"] is True
+        assert body["created"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +388,7 @@ class TestTopologyView:
             "total_nodes": 0,
             "projection": "architecture",
             "entity_level": "domain",
-            "grouping_strategy": "domain",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
             "warnings": ["Heuristic grouping in use"],
             "provenance": {"source": "scenario_graph"},
@@ -436,7 +441,7 @@ class TestDeepDiveView:
             "total_nodes": 0,
             "projection": "code_file",
             "entity_level": "file",
-            "grouping_strategy": "file",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
             "warnings": ["Cross-page edges hidden"],
             "provenance": {"source": "scenario_graph"},
@@ -471,14 +476,26 @@ class TestDeepDiveView:
         node_id = str(uuid.uuid4())
         fake_full_graph = {
             "nodes": [
-                {"id": node_id, "natural_key": "sym:foo"},
+                {
+                    "id": node_id,
+                    "natural_key": "sym:foo",
+                    "kind": "symbol",
+                    "name": "foo",
+                    "meta": {},
+                },
             ],
             "edges": [
-                {"source_node_id": node_id, "target_node_id": node_id},
+                {
+                    "id": "edge-1",
+                    "source_node_id": node_id,
+                    "target_node_id": node_id,
+                    "kind": "symbol_calls_symbol",
+                    "meta": {},
+                },
             ],
             "projection": "code_symbol",
             "entity_level": "symbol",
-            "grouping_strategy": "symbol",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
         }
         db = _make_db(collection=_fake_collection())
@@ -508,21 +525,24 @@ class TestDeepDiveView:
         fake_scenario = _fake_scenario()
         fake_full_graph = {
             "nodes": [
-                {"id": "a", "natural_key": "sym:a"},
-                {"id": "b", "natural_key": "sym:b"},
-                {"id": "c", "natural_key": "sym:c"},
-                {"id": "d", "natural_key": "sym:d"},
-                {"id": "e", "natural_key": "sym:e"},
+                {"id": key, "natural_key": f"sym:{key}", "kind": "symbol", "name": key, "meta": {}}
+                for key in ("a", "b", "c", "d", "e")
             ],
             "edges": [
-                {"source_node_id": "a", "target_node_id": "b"},
-                {"source_node_id": "a", "target_node_id": "c"},
-                {"source_node_id": "b", "target_node_id": "d"},
-                {"source_node_id": "c", "target_node_id": "e"},
+                {
+                    "id": f"edge-{index}",
+                    "source_node_id": source,
+                    "target_node_id": target,
+                    "kind": "symbol_calls_symbol",
+                    "meta": {},
+                }
+                for index, (source, target) in enumerate(
+                    (("a", "b"), ("a", "c"), ("b", "d"), ("c", "e")), start=1
+                )
             ],
             "projection": "code_symbol",
             "entity_level": "symbol",
-            "grouping_strategy": "symbol",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
             "warnings": [],
             "provenance": {"source": "scenario_graph"},
@@ -562,7 +582,7 @@ class TestDeepDiveView:
             "total_nodes": 0,
             "projection": "code_symbol",
             "entity_level": "symbol",
-            "grouping_strategy": "symbol",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
         }
         db = _make_db(collection=_fake_collection())
@@ -614,8 +634,25 @@ class TestUiMapView:
         fake_scenario = _fake_scenario()
         fake_full_graph = {"nodes": [], "edges": []}
         fake_projection = {
-            "summary": {"routes": 2, "views": 3, "trace_edges": 5},
-            "graph": {"nodes": [{"id": "n1"}], "edges": []},
+            "summary": {
+                "routes": 2,
+                "views": 3,
+                "components": 4,
+                "contracts": 1,
+                "trace_edges": 5,
+            },
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "natural_key": "ui:n1",
+                        "kind": "ui_view",
+                        "name": "Main view",
+                        "meta": {},
+                    }
+                ],
+                "edges": [],
+            },
         }
         db = _make_db(collection=_fake_collection())
         with (
@@ -656,8 +693,24 @@ class TestTestMatrixView:
         fake_scenario = _fake_scenario()
         fake_full_graph = {"nodes": [], "edges": []}
         fake_projection = {
-            "summary": {"test_cases": 5, "subjects": 3},
-            "matrix": [["a", "b"]],
+            "summary": {
+                "test_cases": 5,
+                "test_suites": 1,
+                "test_fixtures": 2,
+                "matrix_rows": 1,
+            },
+            "matrix": [
+                {
+                    "test_case_id": "a",
+                    "test_case_key": "test:a",
+                    "test_case_name": "a",
+                    "covers_symbols": ["b"],
+                    "validates_rules": [],
+                    "fixtures": [],
+                    "verifies_flows": [],
+                    "evidence_ids": [],
+                }
+            ],
             "graph": {"nodes": [], "edges": []},
         }
         db = _make_db(collection=_fake_collection())
@@ -686,7 +739,7 @@ class TestTestMatrixView:
         body = resp.json()
         assert body["projection"] == "test_matrix"
         assert body["summary"]["test_cases"] == 5
-        assert body["matrix"] == [["a", "b"]]
+        assert body["matrix"][0]["covers_symbols"] == ["b"]
 
 
 # ---------------------------------------------------------------------------
@@ -699,8 +752,18 @@ class TestUserFlowsView:
         fake_scenario = _fake_scenario()
         fake_full_graph = {"nodes": [], "edges": []}
         fake_projection = {
-            "summary": {"user_flows": 2, "flow_steps": 10},
-            "flows": [{"id": "f1", "name": "Login"}],
+            "summary": {"user_flows": 2, "flow_steps": 10, "flow_edges": 12},
+            "flows": [
+                {
+                    "flow_id": "f1",
+                    "flow_key": "flow:login",
+                    "flow_name": "Login",
+                    "route_path": "/login",
+                    "steps": [],
+                    "verified_by_tests": [],
+                    "evidence_ids": [],
+                }
+            ],
             "graph": {"nodes": [], "edges": []},
         }
         db = _make_db(collection=_fake_collection())
@@ -742,8 +805,15 @@ class TestRebuildReadinessView:
         fake_scenario = _fake_scenario()
         fake_full_graph = {"nodes": [], "edges": []}
         fake_readiness = {
-            "score": 0.75,
-            "summary": "Good shape",
+            "score": 75,
+            "summary": {
+                "interface_test_coverage": 0.75,
+                "flow_evidence_density": 0.5,
+                "ui_to_endpoint_traceability": 1.0,
+                "critical_inferred_only_count": 0,
+                "total_nodes": 10,
+                "total_edges": 12,
+            },
             "known_gaps": [],
             "critical_inferred_only": [],
         }
@@ -785,7 +855,7 @@ class TestRebuildReadinessView:
             )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["score"] == 0.75
+        assert body["score"] == 75
         assert body["projection"] == "rebuild_readiness"
         assert body["behavioral_layers_status"] == "ok"
 
@@ -1207,8 +1277,11 @@ class TestArc42DriftView:
         @dataclass
         class FakeDelta:
             delta_type: str = "added"
-            section: str = "context"
-            description: str = "new item"
+            subject: str = "fact:new"
+            detail: str = "new item"
+            before: dict | None = None
+            after: dict | None = None
+            confidence: float = 1.0
 
         @dataclass
         class FakeReport:
@@ -1269,10 +1342,17 @@ class TestPortsAdaptersView:
 
         @dataclass
         class FakeFact:
+            fact_id: str = "port:http"
             direction: str = "inbound"
-            container: str = "api"
             port_name: str = "HTTP"
             adapter_name: str = "FastAPI"
+            container: str = "api"
+            component: str | None = None
+            protocol: str | None = "http"
+            source: str = "deterministic"
+            confidence: float = 1.0
+            attributes: dict = field(default_factory=dict)
+            evidence: tuple = ()
 
         fake_bundle = MagicMock()
         fake_bundle.ports_adapters = [FakeFact(), FakeFact(direction="outbound")]
@@ -1335,7 +1415,19 @@ class TestEvolutionInvestmentUtilization:
             patch(
                 "app.routes.twin.get_investment_utilization_payload",
                 new_callable=AsyncMock,
-                return_value={"quadrants": [], "items": []},
+                return_value={
+                    "status": "unavailable",
+                    "reason": "no_real_metrics",
+                    "window_days": 90,
+                    "summary": {
+                        "total_entities": 0,
+                        "coverage_entity_ratio": 0.0,
+                        "utilization_available": False,
+                        "quadrants": {},
+                    },
+                    "items": [],
+                    "warnings": [],
+                },
             ),
         ):
             resp = await _get(
@@ -1345,7 +1437,7 @@ class TestEvolutionInvestmentUtilization:
         assert resp.status_code == 200
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
-        assert "quadrants" in body
+        assert body["summary"]["quadrants"] == {}
 
     async def test_disabled_returns_404(self) -> None:
         db = _make_db(collection=_fake_collection())
@@ -1373,7 +1465,21 @@ class TestEvolutionKnowledgeIslands:
             patch(
                 "app.routes.twin.get_knowledge_islands_payload",
                 new_callable=AsyncMock,
-                return_value={"islands": [], "bus_factor": 2},
+                return_value={
+                    "status": "unavailable",
+                    "reason": "no_git_history",
+                    "window_days": 90,
+                    "summary": {
+                        "files": 0,
+                        "entities": 0,
+                        "bus_factor_global": 0,
+                        "single_owner_files": 0,
+                        "churn_p75": 0.0,
+                    },
+                    "entities": [],
+                    "at_risk_files": [],
+                    "warnings": [],
+                },
             ),
         ):
             resp = await _get(
@@ -1383,7 +1489,7 @@ class TestEvolutionKnowledgeIslands:
         assert resp.status_code == 200
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
-        assert "islands" in body
+        assert body["entities"] == []
 
 
 class TestEvolutionTemporalCoupling:
@@ -1401,7 +1507,20 @@ class TestEvolutionTemporalCoupling:
             patch(
                 "app.routes.twin.get_temporal_coupling_payload",
                 new_callable=AsyncMock,
-                return_value={"edges": [], "clusters": []},
+                return_value={
+                    "status": "unavailable",
+                    "reason": "no_temporal_coupling",
+                    "window_days": 90,
+                    "entity_level": "component",
+                    "summary": {
+                        "nodes": 0,
+                        "edges": 0,
+                        "cross_boundary_edges": 0,
+                        "avg_jaccard": 0.0,
+                    },
+                    "graph": {"nodes": [], "edges": []},
+                    "warnings": [],
+                },
             ),
         ):
             resp = await _get(
@@ -1411,7 +1530,7 @@ class TestEvolutionTemporalCoupling:
         assert resp.status_code == 200
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
-        assert "edges" in body
+        assert body["graph"]["edges"] == []
 
 
 class TestEvolutionFitnessFunctions:
@@ -1429,7 +1548,21 @@ class TestEvolutionFitnessFunctions:
             patch(
                 "app.routes.twin.get_fitness_functions_payload",
                 new_callable=AsyncMock,
-                return_value={"functions": [], "violations": 0},
+                return_value={
+                    "status": "unavailable",
+                    "reason": "no_fitness_findings",
+                    "window_days": 90,
+                    "summary": {
+                        "rules": 0,
+                        "violations": 0,
+                        "open": 0,
+                        "resolved": 0,
+                        "highest_severity": "low",
+                    },
+                    "rules": [],
+                    "violations": [],
+                    "warnings": [],
+                },
             ),
         ):
             resp = await _get(
@@ -1439,7 +1572,7 @@ class TestEvolutionFitnessFunctions:
         assert resp.status_code == 200
         body = resp.json()
         assert body["collection_id"] == str(_COLLECTION_ID)
-        assert "functions" in body
+        assert body["rules"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1610,8 +1743,15 @@ class TestGraphragCommunitiesView:
                 "label": "Auth",
                 "size": 5,
                 "cohesion": 0.8,
-                "top_kinds": [("symbol", 5)],
-                "sample_nodes": ["node1"],
+                "top_kinds": [{"kind": "symbol", "count": 5}],
+                "sample_nodes": [
+                    {
+                        "id": "node1",
+                        "name": "login",
+                        "kind": "symbol",
+                        "natural_key": "sym:login",
+                    }
+                ],
             }
         }
         with (
@@ -1653,7 +1793,7 @@ class TestGraphragProcessesView:
         fake_process = {
             "id": "proc-1",
             "label": "Checkout Flow",
-            "process_type": "linear",
+            "process_type": "intra_community",
             "step_count": 3,
             "community_ids": ["c1"],
             "entry_node_id": str(uuid.uuid4()),
@@ -2065,11 +2205,19 @@ class TestScenarioGraphNeighborhoodView:
         fake_scenario = _fake_scenario()
         node_id = str(uuid.uuid4())
         fake_full_graph = {
-            "nodes": [{"id": node_id, "natural_key": "sym:main"}],
+            "nodes": [
+                {
+                    "id": node_id,
+                    "natural_key": "sym:main",
+                    "kind": "symbol",
+                    "name": "main",
+                    "meta": {},
+                }
+            ],
             "edges": [],
             "projection": "code_symbol",
             "entity_level": "symbol",
-            "grouping_strategy": "symbol",
+            "grouping_strategy": "heuristic",
             "excluded_kinds": [],
         }
         db = _make_db()

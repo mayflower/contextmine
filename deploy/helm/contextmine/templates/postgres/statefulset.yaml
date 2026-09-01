@@ -19,7 +19,7 @@ spec:
       {{- include "contextmine.imagePullSecrets" . | nindent 6 }}
       containers:
         - name: postgres
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}@{{ .Values.postgresql.image.digest }}"
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
             - name: postgres

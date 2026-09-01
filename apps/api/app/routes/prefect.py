@@ -1,173 +1,181 @@
-"""Prefect API proxy routes for flow run status and progress."""
+"""Prefect orchestration routes backed by the official async client."""
 
-import httpx
-from contextmine_core import get_settings
-from fastapi import APIRouter
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from contextmine_core import SyncRun, SyncRunStatus, get_session, get_settings
+from fastapi import APIRouter, HTTPException
+from prefect.client.orchestration import PrefectClient, get_client
+from prefect.client.schemas.filters import TaskRunFilter, TaskRunFilterFlowRunId
+from prefect.client.schemas.sorting import FlowRunSort
+from prefect.deployments import run_deployment
+from prefect.exceptions import ObjectNotFound
+from prefect.states import Cancelling
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 router = APIRouter(tags=["prefect"])
 
 
-@router.get("/prefect/flow-runs")
-async def get_flow_runs() -> dict:
-    """Get flow runs from Prefect with their status and progress.
-
-    Only shows RUNNING/PENDING runs as "active" (not SCHEDULED, which are
-    just pre-created by Prefect's scheduler).
-
-    Filters out sync_due_sources scheduler runs (empty polling runs).
-    """
-    settings = get_settings()
-    prefect_url = settings.prefect_api_url
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            # First, get flow IDs to filter (we want to exclude sync_due_sources)
-            flow_id_to_name = await _get_flow_names(client, prefect_url)
-
-            # Get recently started/completed runs (not scheduled)
-            response = await client.post(
-                f"{prefect_url}/flow_runs/filter",
-                json={
-                    "limit": 50,
-                    "sort": "START_TIME_DESC",
-                    "flow_runs": {
-                        "state": {
-                            "type": {
-                                "any_": [
-                                    "RUNNING",
-                                    "PENDING",
-                                    "COMPLETED",
-                                    "FAILED",
-                                    "CANCELLED",
-                                ]
-                            }
-                        }
-                    },
-                },
-            )
-            response.raise_for_status()
-            all_runs = response.json()
-
-            # Separate active and recent runs
-            active_runs = []
-            recent_runs = []
-
-            for run in all_runs:
-                flow_id = run.get("flow_id")
-                flow_name = flow_id_to_name.get(flow_id, "")
-
-                # Skip sync_due_sources scheduler runs (polling runs with no actual work)
-                if flow_name == "sync_due_sources":
-                    continue
-
-                state_type = run.get("state_type", "")
-                run_data = {
-                    "id": run.get("id"),
-                    "name": run.get("name"),
-                    "flow_id": flow_id,
-                    "flow_name": flow_name,
-                    "state_type": state_type,
-                    "state_name": run.get("state_name"),
-                    "start_time": run.get("start_time"),
-                    "end_time": run.get("end_time"),
-                    "parameters": run.get("parameters", {}),
-                    "total_run_time": run.get("total_run_time"),
-                }
-
-                # Only RUNNING and PENDING are truly "active"
-                if state_type in ("RUNNING", "PENDING"):
-                    active_runs.append(run_data)
-                else:
-                    recent_runs.append(run_data)
-
-            # For active runs, get task run progress
-            for run in active_runs:
-                run["progress"] = await _get_flow_run_progress(client, prefect_url, run["id"])
-
-            return {
-                "active": active_runs,
-                "recent": recent_runs[:20],  # Limit recent to 20
-            }
-
-        except httpx.HTTPError as e:
-            return {"error": f"Failed to connect to Prefect: {e}", "active": [], "recent": []}
-        except Exception as e:
-            return {"error": str(e), "active": [], "recent": []}
+class FlowRunProgressResponse(BaseModel):
+    total: int
+    completed: int
+    failed: int
+    running: int
+    pending: int
+    current_task: str | None = None
+    percent: int
 
 
-async def _get_flow_names(client: httpx.AsyncClient, prefect_url: str) -> dict[str, str]:
-    """Get mapping of flow_id to flow_name."""
-    try:
-        response = await client.post(
-            f"{prefect_url}/flows/filter",
-            json={"limit": 100},
-        )
-        response.raise_for_status()
-        flows = response.json()
-        return {flow["id"]: flow["name"] for flow in flows}
-    except Exception:
-        return {}
+class FlowRunParametersResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    source_id: str | None = None
+    source_url: str | None = None
+    sync_run_id: str | None = None
+
+
+class FlowRunResponse(BaseModel):
+    id: str
+    name: str
+    flow_id: str
+    flow_name: str
+    state_type: str
+    state_name: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    parameters: FlowRunParametersResponse
+    total_run_time: float
+    progress: FlowRunProgressResponse | None = None
+
+
+class FlowRunsResponse(BaseModel):
+    active: list[FlowRunResponse] = Field(default_factory=list)
+    recent: list[FlowRunResponse] = Field(default_factory=list)
+    error: str | None = None
+
+
+async def start_source_sync(source_id: str, source_url: str, sync_run_id: str) -> str:
+    """Start the configured single-source deployment idempotently."""
+    flow_run = await run_deployment(
+        get_settings().prefect_sync_deployment,
+        parameters={
+            "source_id": source_id,
+            "source_url": source_url,
+            "sync_run_id": sync_run_id,
+        },
+        timeout=0,
+        as_subflow=False,
+        idempotency_key=sync_run_id,
+    )
+    return str(flow_run.id)
 
 
 async def _get_flow_run_progress(
-    client: httpx.AsyncClient, prefect_url: str, flow_run_id: str
-) -> dict:
-    """Get task run progress for a flow run."""
+    client: PrefectClient,
+    flow_run_id: uuid.UUID,
+) -> dict[str, Any]:
+    task_runs = await client.read_task_runs(
+        task_run_filter=TaskRunFilter(flow_run_id=TaskRunFilterFlowRunId(any_=[flow_run_id]))
+    )
+    state_types = [str(task.state_type.value) if task.state_type else "" for task in task_runs]
+    completed = state_types.count("COMPLETED")
+    running = state_types.count("RUNNING")
+    failed = state_types.count("FAILED")
+    pending = state_types.count("PENDING") + state_types.count("SCHEDULED")
+    current_task = next(
+        (task.name for task in task_runs if task.state_type and task.state_type.value == "RUNNING"),
+        None,
+    )
+    total = len(task_runs)
+    return {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "running": running,
+        "pending": pending,
+        "current_task": current_task,
+        "percent": round((completed / total) * 100) if total else 0,
+    }
+
+
+@router.get("/prefect/flow-runs", response_model=FlowRunsResponse)
+async def get_flow_runs() -> FlowRunsResponse:
+    """Return active and recent Prefect runs using supported client models."""
     try:
-        response = await client.post(
-            f"{prefect_url}/task_runs/filter",
-            json={
-                "flow_runs": {"id": {"any_": [flow_run_id]}},
-                "limit": 100,
-            },
-        )
-        response.raise_for_status()
-        task_runs = response.json()
+        async with get_client() as client:
+            flow_runs = await client.read_flow_runs(
+                sort=FlowRunSort.START_TIME_DESC,
+                limit=50,
+            )
+            flow_names: dict[uuid.UUID, str] = {}
+            for flow_id in {run.flow_id for run in flow_runs}:
+                flow_names[flow_id] = (await client.read_flow(flow_id)).name
 
-        total = len(task_runs)
-        completed = sum(1 for t in task_runs if t.get("state_type") == "COMPLETED")
-        failed = sum(1 for t in task_runs if t.get("state_type") == "FAILED")
-        running = sum(1 for t in task_runs if t.get("state_type") == "RUNNING")
-        pending = sum(1 for t in task_runs if t.get("state_type") in ("PENDING", "SCHEDULED"))
+            active: list[dict[str, Any]] = []
+            recent: list[dict[str, Any]] = []
+            for run in flow_runs:
+                state_type = run.state_type.value if run.state_type else ""
+                item: dict[str, Any] = {
+                    "id": str(run.id),
+                    "name": run.name,
+                    "flow_id": str(run.flow_id),
+                    "flow_name": flow_names.get(run.flow_id, ""),
+                    "state_type": state_type,
+                    "state_name": run.state_name,
+                    "start_time": run.start_time.isoformat() if run.start_time else None,
+                    "end_time": run.end_time.isoformat() if run.end_time else None,
+                    "parameters": run.parameters,
+                    "total_run_time": (
+                        run.total_run_time.total_seconds() if run.total_run_time else 0
+                    ),
+                }
+                if state_type in {"RUNNING", "PENDING", "SCHEDULED"}:
+                    item["progress"] = await _get_flow_run_progress(client, run.id)
+                    active.append(item)
+                else:
+                    recent.append(item)
+            return FlowRunsResponse(active=active, recent=recent[:20])
+    except Exception as e:
+        return FlowRunsResponse(error=str(e))
 
-        # Get current task if any
-        current_task = None
-        for t in task_runs:
-            if t.get("state_type") == "RUNNING":
-                current_task = t.get("name")
-                break
 
-        return {
-            "total": total,
-            "completed": completed,
-            "failed": failed,
-            "running": running,
-            "pending": pending,
-            "current_task": current_task,
-            "percent": round((completed / total) * 100) if total > 0 else 0,
-        }
-    except Exception:
-        return {
-            "total": 0,
-            "completed": 0,
-            "failed": 0,
-            "running": 0,
-            "pending": 0,
-            "current_task": None,
-            "percent": 0,
-        }
+@router.post("/prefect/flow-runs/{flow_run_id}/cancel")
+async def cancel_flow_run(flow_run_id: uuid.UUID) -> dict[str, str]:
+    """Request cancellation and mirror the business run's terminal state."""
+    try:
+        async with get_client() as client:
+            await client.set_flow_run_state(flow_run_id, Cancelling())
+    except ObjectNotFound as e:
+        raise HTTPException(status_code=404, detail="Prefect flow run not found") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail="Prefect cancellation failed") from e
+
+    async with get_session() as session:
+        sync_run = (
+            await session.execute(select(SyncRun).where(SyncRun.flow_run_id == str(flow_run_id)))
+        ).scalar_one_or_none()
+        if sync_run is not None and sync_run.status in {
+            SyncRunStatus.SCHEDULED,
+            SyncRunStatus.RUNNING,
+        }:
+            from datetime import UTC, datetime
+
+            sync_run.status = SyncRunStatus.CANCELLED
+            sync_run.finished_at = datetime.now(UTC)
+            sync_run.error = "Cancellation requested through Prefect"
+            await session.commit()
+    return {"flow_run_id": str(flow_run_id), "status": "cancelling"}
 
 
 @router.get("/prefect/health")
-async def prefect_health() -> dict:
-    """Check Prefect server health."""
-    settings = get_settings()
-    prefect_url = settings.prefect_api_url
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            response = await client.get(f"{prefect_url}/health")
-            response.raise_for_status()
-            return {"prefect": "ok"}
-        except Exception as e:
-            return {"prefect": "error", "detail": str(e)}
+async def prefect_health() -> dict[str, str]:
+    """Check Prefect server connectivity through the supported client."""
+    try:
+        async with get_client() as client:
+            await client.api_healthcheck()
+        return {"prefect": "ok"}
+    except Exception as e:
+        return {"prefect": "error", "detail": str(e)}

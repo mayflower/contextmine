@@ -2,20 +2,24 @@
 name = "contextmine-worker"
 version = "0.1.0"
 description = "ContextMine Prefect worker for syncing sources"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = [
-    "contextmine-core[lsp]",
+    "contextmine-core",
     "prefect==3.8.4",
     "gitpython>=3.1.50",
     "langchain-text-splitters>=1.1.2",
-    "openai>=2.44.0",
-    "anthropic>=0.112.0",
-    "google-genai>=2.10.0",
+    "openai>=3.6.0",
+    "anthropic==1.2.0",
+    "google-genai>=2.21.0",
     "tenacity>=9.1.4",
-    "lizard>=1.23.0",
-    "trafilatura>=2.1.0",
+    "lizard>=1.24.0",
+    "trafilatura>=2.2.0",
     "lxml_html_clean>=0.4.5",
+    "langsmith==0.11.2",
 ]
+
+[project.optional-dependencies]
+analyzer = ["contextmine-core[lsp]"]
 
 [build-system]
 requires = ["hatchling"]

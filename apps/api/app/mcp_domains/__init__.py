@@ -1,0 +1,1 @@
+"""Domain-owned MCP tools."""

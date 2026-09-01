@@ -18,6 +18,8 @@ from httpx import AsyncClient
 def _mock_db_session(mock_db: MagicMock):
     """Create an async context manager that yields the mock DB."""
 
+    mock_db.commit = AsyncMock()
+
     @asynccontextmanager
     async def session():
         yield mock_db
@@ -416,6 +418,146 @@ class TestSyncNow:
         response = await client.post(f"/api/sources/{uuid.uuid4()}/sync-now")
         assert response.status_code == 404
         assert "Source not found" in response.json()["detail"]
+
+    async def test_sync_now_starts_visible_prefect_run(self, client: AsyncClient) -> None:
+        source_id = uuid.uuid4()
+        collection_id = uuid.uuid4()
+        sync_run_id = uuid.uuid4()
+        flow_run_id = uuid.uuid4()
+        source = MagicMock(
+            id=source_id,
+            collection_id=collection_id,
+            url="https://github.com/example/repository",
+            schedule_interval_minutes=60,
+        )
+        scheduled_run = None
+        mock_db = MagicMock()
+
+        def add(row: Any) -> None:
+            nonlocal scheduled_run
+            row.id = sync_run_id
+            scheduled_run = row
+
+        mock_db.add = add
+        mock_db.flush = AsyncMock()
+
+        async def execute(_statement: Any) -> MagicMock:
+            result = MagicMock()
+            if mock_db.execute.await_count == 1:
+                result.scalar_one_or_none.return_value = source
+            elif mock_db.execute.await_count == 2:
+                result.scalar_one_or_none.return_value = None
+            else:
+                result.scalar_one.return_value = scheduled_run
+            return result
+
+        mock_db.execute = AsyncMock(side_effect=execute)
+
+        with (
+            patch("app.routes.sources.get_session", return_value={"user_id": str(uuid.uuid4())}),
+            patch(
+                "app.routes.sources.get_db_session",
+                side_effect=lambda: _mock_db_session(mock_db),
+            ),
+            patch("app.routes.sources._get_collection_with_access", new=AsyncMock()),
+            patch(
+                "app.routes.prefect.start_source_sync",
+                new=AsyncMock(return_value=str(flow_run_id)),
+            ) as start_sync,
+        ):
+            response = await client.post(f"/api/sources/{source_id}/sync-now")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "sync_scheduled",
+            "sync_run_id": str(sync_run_id),
+            "flow_run_id": str(flow_run_id),
+        }
+        start_sync.assert_awaited_once_with(str(source_id), source.url, str(sync_run_id))
+        assert scheduled_run.flow_run_id == str(flow_run_id)
+
+    async def test_sync_now_reuses_active_prefect_run(self, client: AsyncClient) -> None:
+        source_id = uuid.uuid4()
+        flow_run_id = str(uuid.uuid4())
+        source = MagicMock(
+            id=source_id,
+            collection_id=uuid.uuid4(),
+            url="https://github.com/example/repository",
+        )
+        active_run = MagicMock(id=uuid.uuid4(), flow_run_id=flow_run_id)
+        source_result = MagicMock()
+        source_result.scalar_one_or_none.return_value = source
+        active_result = MagicMock()
+        active_result.scalar_one_or_none.return_value = active_run
+        mock_db = MagicMock()
+        mock_db.execute = AsyncMock(side_effect=[source_result, active_result])
+
+        with (
+            patch("app.routes.sources.get_session", return_value={"user_id": str(uuid.uuid4())}),
+            patch(
+                "app.routes.sources.get_db_session",
+                side_effect=lambda: _mock_db_session(mock_db),
+            ),
+            patch("app.routes.sources._get_collection_with_access", new=AsyncMock()),
+            patch("app.routes.prefect.start_source_sync", new=AsyncMock()) as start_sync,
+        ):
+            response = await client.post(f"/api/sources/{source_id}/sync-now")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "already_scheduled"
+        assert response.json()["flow_run_id"] == flow_run_id
+        start_sync.assert_not_awaited()
+
+    async def test_sync_now_prefect_outage_finishes_business_run(self, client: AsyncClient) -> None:
+        source_id = uuid.uuid4()
+        sync_run_id = uuid.uuid4()
+        source = MagicMock(
+            id=source_id,
+            collection_id=uuid.uuid4(),
+            url="https://github.com/example/repository",
+            schedule_interval_minutes=60,
+        )
+        scheduled_run = None
+        mock_db = MagicMock()
+
+        def add(row: Any) -> None:
+            nonlocal scheduled_run
+            row.id = sync_run_id
+            scheduled_run = row
+
+        mock_db.add = add
+        mock_db.flush = AsyncMock()
+
+        async def execute(_statement: Any) -> MagicMock:
+            result = MagicMock()
+            if mock_db.execute.await_count == 1:
+                result.scalar_one_or_none.return_value = source
+            elif mock_db.execute.await_count == 2:
+                result.scalar_one_or_none.return_value = None
+            else:
+                result.scalar_one.return_value = scheduled_run
+            return result
+
+        mock_db.execute = AsyncMock(side_effect=execute)
+
+        with (
+            patch("app.routes.sources.get_session", return_value={"user_id": str(uuid.uuid4())}),
+            patch(
+                "app.routes.sources.get_db_session",
+                side_effect=lambda: _mock_db_session(mock_db),
+            ),
+            patch("app.routes.sources._get_collection_with_access", new=AsyncMock()),
+            patch(
+                "app.routes.prefect.start_source_sync",
+                new=AsyncMock(side_effect=RuntimeError("prefect unavailable")),
+            ),
+        ):
+            response = await client.post(f"/api/sources/{source_id}/sync-now")
+
+        assert response.status_code == 502
+        assert scheduled_run.status.value == "failed"
+        assert scheduled_run.finished_at is not None
+        assert scheduled_run.error == "Prefect scheduling failed: prefect unavailable"
 
 
 # ---------------------------------------------------------------------------

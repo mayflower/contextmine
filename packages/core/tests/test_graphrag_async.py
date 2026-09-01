@@ -717,7 +717,7 @@ class TestTracePath:
 
         call_count = [0]
 
-        async def mock_execute(stmt):
+        async def mock_execute(stmt, params=None):
             result = MagicMock()
             if call_count[0] == 0:
                 result.fetchall.return_value = [(coll_id,)]
@@ -746,7 +746,7 @@ class TestTracePath:
 
         call_count = [0]
 
-        async def mock_execute(stmt):
+        async def mock_execute(stmt, params=None):
             result = MagicMock()
             if call_count[0] == 0:
                 # BFS edges from nid1

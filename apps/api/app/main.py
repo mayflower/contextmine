@@ -5,8 +5,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from contextmine_core import close_engine
+from contextmine_core import close_engine, get_settings
 from contextmine_core.lsp import shutdown_lsp_manager
+from contextmine_core.research.checkpoints import (
+    close_research_checkpointer,
+    init_research_checkpointer,
+)
 from contextmine_core.telemetry import init_telemetry, shutdown_telemetry
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,14 +47,16 @@ _INDEX_HTML = STATIC_DIR / "index.html"
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan handler - integrates MCP and telemetry."""
-    # Run MCP lifespan (initializes StreamableHTTPSessionManager)
-    async with mcp_lifespan(app):
-        # Startup
-        yield
-    # Shutdown
-    await shutdown_lsp_manager()
-    await close_engine()
-    await shutdown_telemetry()
+    await init_research_checkpointer()
+    try:
+        # Run MCP lifespan (initializes StreamableHTTPSessionManager)
+        async with mcp_lifespan(app):
+            yield
+    finally:
+        await shutdown_lsp_manager()
+        await close_research_checkpointer()
+        await close_engine()
+        await shutdown_telemetry()
 
 
 def _configure_telemetry(app: FastAPI) -> None:
@@ -126,9 +132,10 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SessionMiddleware)
+    settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:8000"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -145,11 +152,14 @@ def create_app() -> FastAPI:
         """Forward .well-known requests to MCP sub-app for OAuth discovery."""
         import httpx
 
-        mcp_url = (
-            f"http://localhost:{os.getenv('API_PORT', '8000')}/mcp/.well-known/{well_known_type}"
-        )
+        suffix = f"/{path}" if path else ""
+        mcp_url = f"/.well-known/{well_known_type}{suffix}"
         try:
-            async with httpx.AsyncClient() as client:
+            transport = httpx.ASGITransport(app=mcp_app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://embedded-mcp",
+            ) as client:
                 resp = await client.get(mcp_url, timeout=5.0)
                 if resp.status_code == 200:
                     return JSONResponse(content=resp.json())

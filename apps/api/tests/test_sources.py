@@ -196,6 +196,7 @@ class TestSourceValidation:
 
         mock_db.execute = AsyncMock(side_effect=mock_execute)
         mock_db.flush = AsyncMock()
+        mock_db.commit = AsyncMock()
 
         @asynccontextmanager
         async def mock_session():
@@ -264,6 +265,7 @@ class TestSourceValidation:
 
         mock_db.execute = AsyncMock(side_effect=mock_execute)
         mock_db.flush = AsyncMock()
+        mock_db.commit = AsyncMock()
 
         @asynccontextmanager
         async def mock_session():

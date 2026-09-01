@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from contextmine_core import get_settings
+from contextmine_core.settings import secret_value
 from fastapi import Request, Response
 from itsdangerous import BadSignature, TimestampSigner
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -15,7 +16,7 @@ SESSION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 def get_signer() -> TimestampSigner:
     """Get signer for session cookies."""
     settings = get_settings()
-    return TimestampSigner(settings.session_secret)
+    return TimestampSigner(secret_value(settings.session_secret) or "")
 
 
 class SessionMiddleware(BaseHTTPMiddleware):
@@ -32,7 +33,7 @@ class SessionMiddleware(BaseHTTPMiddleware):
                 signer = get_signer()
                 unsigned = signer.unsign(cookie, max_age=SESSION_MAX_AGE)
                 session_data = json.loads(unsigned.decode())
-            except (BadSignature, json.JSONDecodeError):
+            except BadSignature, json.JSONDecodeError:
                 # Invalid or expired session, start fresh
                 session_data = {}
 

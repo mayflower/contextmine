@@ -216,30 +216,12 @@ When `cfg.best_effort=True` (default), individual project failures don't abort t
 
 ## Docker Image Requirements
 
-The worker image must include:
-
-```dockerfile
-# Node.js 24 (for scip-python, scip-typescript)
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs
-
-# SCIP indexers (npm)
-RUN npm install -g @sourcegraph/scip-typescript@0.3.0 \
-                   @anthropic/scip-python@0.5.0
-
-# Java 21 (for scip-java)
-RUN apt-get install -y openjdk-21-jdk-headless
-
-# scip-java (Coursier)
-RUN curl -fL https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz | \
-    gzip -d > /usr/local/bin/cs && chmod +x /usr/local/bin/cs && \
-    cs install scip-java --install-dir /usr/local/bin
-
-# PHP + Composer (for scip-php)
-RUN apt-get install -y php-cli composer
-RUN composer global require davidrjenni/scip-php
-ENV PATH="${PATH}:/root/.composer/vendor/bin"
-```
+The production worker image contains Node 24 LTS, Java 21, PHP, and the four
+SCIP indexers. Their versions and base-image digests are declared in
+`apps/worker/Dockerfile`. Coursier is downloaded from an immutable commit and
+verified with SHA-256; Composer is copied from its pinned official image, and
+scip-php is installed from an exact commit. Do not replace these inputs with
+floating branches or pipe remote installer output into a shell or PHP.
 
 ## Kubernetes Configuration
 

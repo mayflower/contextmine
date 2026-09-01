@@ -1,6 +1,9 @@
 """Application settings using pydantic-settings."""
 
-from pydantic import Field
+from typing import Literal
+from urllib.parse import urlsplit
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +17,7 @@ class Settings(BaseSettings):
     )
 
     # API settings
+    app_mode: Literal["development", "test", "production"] = "development"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     debug: bool = False
@@ -35,19 +39,19 @@ class Settings(BaseSettings):
 
     # GitHub OAuth
     github_client_id: str | None = None
-    github_client_secret: str | None = None
+    github_client_secret: SecretStr | None = None
 
     # Public URL for OAuth callbacks
     public_base_url: str = "http://localhost:8000"
 
     # Session management
-    session_secret: str = Field(
+    session_secret: SecretStr = Field(
         default="dev-session-secret-change-in-production",
         description="Secret key for signing session cookies",
     )
 
     # Token encryption
-    token_encryption_key: str = Field(
+    token_encryption_key: SecretStr = Field(
         default="dev-encryption-key-change-in-prod",
         description="Key for encrypting OAuth tokens (should be 32 bytes for Fernet)",
     )
@@ -56,6 +60,10 @@ class Settings(BaseSettings):
     mcp_allowed_origins: str = Field(
         default="",
         description="Comma-separated list of allowed origins for MCP requests. Empty = allow all (dev mode).",
+    )
+    cors_allowed_origins: str = Field(
+        default="http://localhost:8000",
+        description="Comma-separated browser origins allowed to call the API",
     )
 
     # MCP OAuth (uses same GitHub OAuth app, different callback path)
@@ -74,15 +82,15 @@ class Settings(BaseSettings):
     )
 
     # Embedding providers
-    openai_api_key: str | None = Field(
+    openai_api_key: SecretStr | None = Field(
         default=None,
         description="OpenAI API key for embeddings and LLM",
     )
-    gemini_api_key: str | None = Field(
+    gemini_api_key: SecretStr | None = Field(
         default=None,
         description="Google Gemini API key for embeddings and LLM",
     )
-    anthropic_api_key: str | None = Field(
+    anthropic_api_key: SecretStr | None = Field(
         default=None,
         description="Anthropic API key for LLM",
     )
@@ -98,12 +106,62 @@ class Settings(BaseSettings):
         default="gpt-5-mini",
         description="Default LLM model for context assembly",
     )
+    openai_llm_model: str = Field(
+        default="gpt-5-mini",
+        description="Default OpenAI chat model",
+    )
+    anthropic_llm_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        description="Default Anthropic chat model",
+    )
+    gemini_llm_model: str = Field(
+        default="gemini-2.0-flash",
+        description="Default Gemini chat model",
+    )
 
     # Prefect
     prefect_api_url: str = Field(
         default="http://prefect-server:4200/api",
         description="Prefect server API URL",
     )
+    prefect_work_pool_name: str = Field(
+        default="contextmine-process",
+        description="Prefect work pool used by ContextMine deployments",
+    )
+    prefect_sync_deployment: str = Field(
+        default="sync_single_source/default",
+        description="Prefect deployment used for source sync runs",
+    )
+    prefect_due_interval_seconds: int = Field(
+        default=60,
+        ge=10,
+        description="Schedule interval for the due-source dispatcher",
+    )
+    prefect_worker_limit: int = Field(
+        default=2,
+        ge=1,
+        description="Maximum concurrent flow runs for the process worker",
+    )
+
+    # Ephemeral repository analyzer
+    sandbox_api_url: str | None = Field(
+        default=None,
+        description="Mayflower Agent Sandbox platform API URL",
+    )
+    sandbox_api_key: SecretStr | None = Field(
+        default=None,
+        description="Credential used only by the worker to create analyzer sandboxes",
+    )
+    sandbox_analyzer_snapshot: str | None = Field(
+        default=None,
+        description="Published snapshot containing the ContextMine analyzer toolchain",
+    )
+    sandbox_analysis_timeout_seconds: int = Field(default=3600, ge=60, le=86_400)
+    sandbox_result_max_bytes: int = Field(default=64 * 1024 * 1024, ge=1024, le=1024**3)
+    sandbox_artifact_max_bytes: int = Field(default=1024**3, ge=1024, le=4 * 1024**3)
+    sandbox_analyzer_vcpus: int = Field(default=2, ge=1, le=32)
+    sandbox_analyzer_mem_bytes: int = Field(default=8 * 1024**3, ge=256 * 1024**2)
+    sandbox_analyzer_fs_bytes: int = Field(default=20 * 1024**3, ge=1024**3)
 
     # Research Agent
     artifact_store: str = Field(
@@ -334,10 +392,6 @@ class Settings(BaseSettings):
         default=50,
         description="Maximum turns for arc42 agent-sdk generation",
     )
-    arch_docs_agent_sdk_permission_mode: str = Field(
-        default="bypassPermissions",
-        description="Permission mode for arc42 agent-sdk generation",
-    )
     arch_docs_generate_on_sync: bool = Field(
         default=True,
         description=(
@@ -423,6 +477,68 @@ class Settings(BaseSettings):
         default="INFO",
         description="Minimum log level to export via OTEL: DEBUG, INFO, WARNING, ERROR",
     )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Return configured CORS origins without empty entries."""
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_production_safety(self) -> Settings:
+        """Reject development-only behavior in production."""
+        if self.app_mode != "production":
+            return self
+
+        errors: list[str] = []
+        if self.debug:
+            errors.append("DEBUG must be disabled")
+        if secret_value(self.session_secret).startswith("dev-"):
+            errors.append("SESSION_SECRET must not use the development default")
+        if secret_value(self.token_encryption_key).startswith("dev-"):
+            errors.append("TOKEN_ENCRYPTION_KEY must not use the development default")
+        if not [origin.strip() for origin in self.mcp_allowed_origins.split(",") if origin.strip()]:
+            errors.append("MCP_ALLOWED_ORIGINS must not be empty")
+        if not self.cors_origins:
+            errors.append("CORS_ALLOWED_ORIGINS must not be empty")
+        if self.scip_install_deps_mode != "never":
+            errors.append("SCIP_INSTALL_DEPS_MODE must be 'never'")
+        if not self.sandbox_api_url:
+            errors.append("SANDBOX_API_URL is required")
+        else:
+            parsed_sandbox_url = urlsplit(self.sandbox_api_url)
+            if parsed_sandbox_url.scheme != "https" or parsed_sandbox_url.hostname in {
+                None,
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+            }:
+                errors.append("SANDBOX_API_URL must be an external HTTPS URL")
+        if not secret_value(self.sandbox_api_key):
+            errors.append("SANDBOX_API_KEY is required")
+        if not self.sandbox_analyzer_snapshot:
+            errors.append("SANDBOX_ANALYZER_SNAPSHOT is required")
+        for name, value in (
+            ("PUBLIC_BASE_URL", self.public_base_url),
+            ("MCP_OAUTH_BASE_URL", self.mcp_oauth_base_url),
+        ):
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or parsed.hostname in {
+                None,
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+            }:
+                errors.append(f"{name} must be an external HTTPS URL")
+        if errors:
+            raise ValueError("Unsafe production configuration: " + "; ".join(errors))
+        return self
+
+
+def secret_value(value: SecretStr | str | None) -> str | None:
+    """Reveal a secret only at the boundary that consumes it."""
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    return value
 
 
 # Singleton instance

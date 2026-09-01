@@ -203,10 +203,9 @@ class TestSyncWebSourceHappyPath:
             ),
         )
 
-        # Mock _materialize_behavioral_layers_impl
         monkeypatch.setattr(
             flows,
-            "_materialize_behavioral_layers_impl",
+            "materialize_behavioral_layers",
             AsyncMock(return_value={}),
         )
 
@@ -396,6 +395,7 @@ class TestSyncWebSourceHappyPath:
             call_idx += 1
             if call_idx <= 1:
                 # First wait_for is for maintain_chunks - time out
+                coro.close()
                 raise TimeoutError("chunk timeout")
             return await original_wait_for(coro, timeout=timeout)
 
@@ -480,6 +480,7 @@ class TestSyncWebSourceHappyPath:
             # Surface materialization is first wait_for (idx 1)
             # Twin build is second wait_for (idx 2)
             if wait_idx == 2:
+                coro.close()
                 raise TimeoutError("twin timeout")
             return await original_wait_for(coro, timeout=timeout)
 
@@ -795,7 +796,7 @@ class TestSyncGithubSourceHappyPath:
 
         monkeypatch.setattr(
             flows,
-            "_materialize_behavioral_layers_impl",
+            "materialize_behavioral_layers",
             AsyncMock(return_value={}),
         )
 
@@ -1024,11 +1025,11 @@ class TestSyncGithubSourceHappyPath:
                 }
             ),
         )
-        behavioral_impl = AsyncMock(return_value={})
+        behavioral_materialization = AsyncMock(return_value={})
         monkeypatch.setattr(
             flows,
-            "_materialize_behavioral_layers_impl",
-            behavioral_impl,
+            "materialize_behavioral_layers",
+            behavioral_materialization,
         )
 
         result = await flows.sync_github_source.fn(source, sync_run, run_started_at)
@@ -1037,4 +1038,4 @@ class TestSyncGithubSourceHappyPath:
         assert result.files_scanned == 1
         assert result.files_indexed == 1
         assert result.docs_deleted >= 0
-        behavioral_impl.assert_awaited_once()
+        behavioral_materialization.assert_awaited_once()

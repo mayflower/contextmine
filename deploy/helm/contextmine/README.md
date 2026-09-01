@@ -17,13 +17,15 @@ This Helm chart deploys ContextMine, a documentation/code indexing system with M
 Before deploying, build and push the Docker images to your registry:
 
 ```bash
-# Build and tag images
-docker build -t ghcr.io/your-org/contextmine-api:latest -f apps/api/Dockerfile .
-docker build -t ghcr.io/your-org/contextmine-worker:latest -f apps/worker/Dockerfile .
+# Build and tag images with the source revision
+docker build -t ghcr.io/your-org/contextmine-api:sha-<git-sha> -f apps/api/Dockerfile .
+docker build -t ghcr.io/your-org/contextmine-worker:sha-<git-sha> -f apps/worker/Dockerfile .
+docker build --target analyzer -t ghcr.io/your-org/contextmine-analyzer:sha-<git-sha> -f apps/worker/Dockerfile .
 
 # Push to registry
-docker push ghcr.io/your-org/contextmine-api:latest
-docker push ghcr.io/your-org/contextmine-worker:latest
+docker push ghcr.io/your-org/contextmine-api:sha-<git-sha>
+docker push ghcr.io/your-org/contextmine-worker:sha-<git-sha>
+docker push ghcr.io/your-org/contextmine-analyzer:sha-<git-sha>
 ```
 
 ### 2. Create Values Override
@@ -34,18 +36,27 @@ Create a `my-values.yaml` file with your configuration:
 api:
   image:
     repository: ghcr.io/your-org/contextmine-api
-    tag: latest
+    tag: sha-<git-sha>
+    digest: sha256:<registry-digest>
 
 worker:
   image:
     repository: ghcr.io/your-org/contextmine-worker
-    tag: latest
+    tag: sha-<git-sha>
+    digest: sha256:<registry-digest>
 
 config:
+  appMode: "production"
   publicBaseUrl: "http://localhost:8000"
   mcpOauthBaseUrl: "http://localhost:8000"
+  sandbox:
+    apiUrl: "https://agent-sandbox-platform-api.data.mayflower.zone"
+    analyzerSnapshot: "contextmine-analyzer"
+  scip:
+    installDepsMode: "never"
 
 secrets:
+  sandboxApiKey: "your-platform-api-key"
   github:
     clientId: "your-github-client-id"
     clientSecret: "your-github-client-secret"
@@ -107,7 +118,8 @@ Open http://localhost:8000 in your browser.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `api.image.repository` | API image repository | `ghcr.io/your-org/contextmine-api` |
-| `api.image.tag` | API image tag | `latest` |
+| `api.image.tag` | API image tag | `sha-35e5920` |
+| `api.image.digest` | API image digest | See values.yaml |
 | `api.replicaCount` | Number of replicas | `1` |
 | `api.service.type` | Service type | `ClusterIP` |
 | `api.service.port` | Service port | `8000` |
@@ -118,7 +130,8 @@ Open http://localhost:8000 in your browser.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `prefect.image.repository` | Prefect image | `prefecthq/prefect` |
-| `prefect.image.tag` | Prefect image tag | `3-python3.12` |
+| `prefect.image.tag` | Prefect image tag | `3.8.4-python3.14` |
+| `prefect.image.digest` | Prefect image digest | See values.yaml |
 | `prefect.replicaCount` | Number of replicas | `1` |
 | `prefect.service.type` | Service type | `ClusterIP` |
 | `prefect.service.port` | Service port | `4200` |
@@ -128,7 +141,8 @@ Open http://localhost:8000 in your browser.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `worker.image.repository` | Worker image repository | `ghcr.io/your-org/contextmine-worker` |
-| `worker.image.tag` | Worker image tag | `latest` |
+| `worker.image.tag` | Worker image tag | `sha-35e5920` |
+| `worker.image.digest` | Worker image digest | See values.yaml |
 | `worker.replicaCount` | Number of replicas | `1` |
 | `worker.persistence.enabled` | Enable persistence | `true` |
 | `worker.persistence.size` | Storage size | `20Gi` |
@@ -148,15 +162,19 @@ Open http://localhost:8000 in your browser.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `config.debug` | Enable debug mode | `"true"` |
+| `config.appMode` | Runtime mode; production disables local repository analysis | `"development"` |
 | `config.publicBaseUrl` | Public URL for OAuth | `"http://localhost:8000"` |
 | `config.mcpOauthBaseUrl` | MCP OAuth base URL | `"http://localhost:8000"` |
 | `config.mcpAllowedOrigins` | Allowed CORS origins | `""` |
+| `config.sandbox.apiUrl` | Mayflower Agent Sandbox platform API | `""` |
+| `config.sandbox.analyzerSnapshot` | Published analyzer snapshot name | `""` |
 
 ### Secrets
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `secrets.github.clientId` | GitHub OAuth client ID | `""` |
+| `secrets.sandboxApiKey` | Agent Sandbox platform API key | `""` |
 | `secrets.github.clientSecret` | GitHub OAuth client secret | `""` |
 | `secrets.sessionSecret` | Session encryption key | `"dev-..."` |
 | `secrets.tokenEncryptionKey` | Token encryption key | `"dev-..."` |
@@ -207,6 +225,8 @@ helm install contextmine ./deploy/helm/contextmine \
 - [ ] Configure proper storage classes
 - [ ] Set `config.debug` to `"false"`
 - [ ] Restrict `config.mcpAllowedOrigins`
+- [ ] Publish the non-root `analyzer` image as the configured sandbox snapshot
+- [ ] Configure the sandbox API key and verify one create/run/result/delete lifecycle
 - [ ] Set up monitoring and alerting
 - [ ] Configure backup for PostgreSQL
 

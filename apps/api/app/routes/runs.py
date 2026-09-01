@@ -6,10 +6,9 @@ from typing import Annotated
 
 from contextmine_core import (
     Collection,
-    CollectionMember,
-    CollectionVisibility,
     Source,
     SyncRun,
+    user_can_access_collection,
 )
 from contextmine_core import (
     get_session as get_db_session,
@@ -31,8 +30,26 @@ class SyncRunResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     status: str
-    stats: dict | None = None
+    stats: SyncRunStatsResponse | None = None
     error: str | None = None
+
+
+class SyncRunStatsResponse(BaseModel):
+    files_scanned: int | None = None
+    files_indexed: int | None = None
+    files_skipped: int | None = None
+    files_deleted: int | None = None
+    pages_crawled: int | None = None
+    pages_skipped: int | None = None
+    docs_created: int | None = None
+    docs_updated: int | None = None
+    docs_deleted: int | None = None
+    chunks_created: int | None = None
+    chunks_deleted: int | None = None
+    chunks_embedded: int | None = None
+    embedding_tokens_used: int | None = None
+    commit_sha: str | None = None
+    previous_sha: str | None = None
 
 
 def get_current_user_id(request: Request) -> uuid.UUID:
@@ -46,6 +63,7 @@ def get_current_user_id(request: Request) -> uuid.UUID:
 
 @router.get(
     "/runs",
+    response_model=list[SyncRunResponse],
     responses={
         400: {"description": "Invalid source ID"},
         401: {"description": "Not authenticated"},
@@ -77,18 +95,8 @@ async def list_runs(
         result = await db.execute(select(Collection).where(Collection.id == source.collection_id))
         collection = result.scalar_one()
 
-        # Verify access: global, owner, or member
-        if (
-            collection.visibility == CollectionVisibility.PRIVATE
-            and collection.owner_user_id != user_id
-        ):
-            result = await db.execute(
-                select(CollectionMember)
-                .where(CollectionMember.collection_id == collection.id)
-                .where(CollectionMember.user_id == user_id)
-            )
-            if not result.scalar_one_or_none():
-                raise HTTPException(status_code=403, detail="Access denied to this source")
+        if not await user_can_access_collection(db, collection, user_id):
+            raise HTTPException(status_code=403, detail="Access denied to this source")
 
         # Get runs for source, ordered by started_at desc
         result = await db.execute(

@@ -5,21 +5,14 @@ import {
 } from "@grafana/faro-web-sdk";
 import { TracingInstrumentation } from "@grafana/faro-web-tracing";
 
+import { api, apiData } from "./api/client";
+
 let faro: Faro | null = null;
 let initPromise: Promise<Faro | null> | null = null;
 
-interface FrontendConfig {
-  faroUrl: string | null;
-  version: string;
-}
-
-async function fetchConfig(): Promise<FrontendConfig> {
+async function fetchConfig() {
   try {
-    const response = await fetch("/api/config");
-    if (!response.ok) {
-      throw new Error(`Config fetch failed: ${response.status}`);
-    }
-    return await response.json();
+    return await apiData(api.GET("/api/config"));
   } catch (error) {
     console.debug("Failed to fetch frontend config:", error);
     return { faroUrl: null, version: "0.0.0" };

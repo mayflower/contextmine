@@ -26,7 +26,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def test_session() -> AsyncGenerator[AsyncSession, None]:
+async def test_session() -> AsyncGenerator[AsyncSession]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

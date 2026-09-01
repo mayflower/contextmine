@@ -14,7 +14,8 @@ postgresql:
   enabled: true
   image:
     repository: ghcr.io/mayflower/pg4ai
-    tag: "latest@sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802"
+    tag: sha-87808a9
+    digest: sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802
   # -- External PostgreSQL configuration (used when enabled: false)
   external:
     host: ""
@@ -44,7 +45,8 @@ postgresql:
 api:
   image:
     repository: ghcr.io/mayflower/contextmine-api
-    tag: latest
+    tag: sha-35e5920
+    digest: sha256:f6e21413d357f3780478ec61cc19ebc44178037e6b79035100842cfb458da00e
   # -- Number of replicas
   replicaCount: 1
   # -- Resource limits
@@ -74,7 +76,8 @@ api:
 prefect:
   image:
     repository: prefecthq/prefect
-    tag: "3-python3.12@sha256:6c0dc14195cae814eddeb66104a8333810a0a9886a5d7f0c45443136f167b3e0"
+    tag: 3.8.4-python3.14
+    digest: sha256:721b957b86d64228350f94a238b9c42d11fd482c74f79e39b54ac2c37be4a907
   # -- Number of replicas (should be 1 for Prefect server)
   replicaCount: 1
   # -- Resource limits
@@ -104,31 +107,23 @@ prefect:
 worker:
   image:
     repository: ghcr.io/mayflower/contextmine-worker
-    tag: latest
+    tag: sha-35e5920
+    digest: sha256:0877bad4fadde65e00436753585d8d9b0c4ad19df5b2b5964b78362445595bf1
   # -- Number of replicas
   replicaCount: 1
-  # -- Resource limits (sized for SCIP indexing)
+  # -- Resource limits for orchestration and result import
   resources:
     requests:
-      memory: "2Gi"
-      cpu: "500m"
+      memory: "512Mi"
+      cpu: "250m"
     limits:
-      memory: "8Gi"
-      cpu: "2000m"
-  # -- Persistence for cloned repos and crawl cache
+      memory: "2Gi"
+      cpu: "1000m"
+  # -- Persistence for imported analyzer artifacts and crawler data; repositories remain sandboxed
   persistence:
     enabled: true
     size: 20Gi
     storageClass: ""
-  # -- Build tool cache volumes (for faster SCIP indexing)
-  # Uses emptyDir by default (lost on pod restart)
-  buildCache:
-    enabled: false
-    # -- Size limits for emptyDir caches (set to "" for no limit)
-    npmCacheSize: "2Gi"
-    mavenCacheSize: "5Gi"
-    gradleCacheSize: "5Gi"
-    composerCacheSize: "1Gi"
   # -- Pod annotations
   podAnnotations: {}
   # -- Pod labels
@@ -146,7 +141,8 @@ codecharta:
   enabled: true
   image:
     repository: codecharta/codecharta-visualization
-    tag: "latest@sha256:c72f6ed979dcbaaf4e08289a5c3e34d9c872f564a70ceb4b5252318209f10d35"
+    tag: 1.143.0
+    digest: sha256:c72f6ed979dcbaaf4e08289a5c3e34d9c872f564a70ceb4b5252318209f10d35
   # -- Number of replicas
   replicaCount: 1
   # -- Service configuration
@@ -210,6 +206,8 @@ ingress:
 
 # -- Application configuration
 config:
+  # -- Explicit application safety mode
+  appMode: "development"
   # -- Debug mode (disable in production)
   debug: "true"
   # -- Public base URL for OAuth callbacks
@@ -237,8 +235,25 @@ config:
     budgetSteps: "10"
   # -- Worker sync scheduler settings
   sync:
+    # -- Interval for the Prefect due-source dispatcher deployment
+    dueIntervalSeconds: "60"
+    # -- Maximum concurrent runs handled by the Prefect process worker
+    workerLimit: "2"
+    # -- Prefect work pool and single-source deployment names
+    workPoolName: "contextmine-process"
+    deployment: "sync_single_source/default"
     # -- Maximum duration for one source sync run (seconds, 0 disables outer timeout)
     sourceTimeoutSeconds: "0"
+  # -- Mayflower Agent Sandbox platform for untrusted repository analysis
+  sandbox:
+    apiUrl: ""
+    analyzerSnapshot: ""
+    timeoutSeconds: "3600"
+    resultMaxBytes: "67108864"
+    artifactMaxBytes: "1073741824"
+    vcpus: "2"
+    memBytes: "8589934592"
+    fsBytes: "21474836480"
   # -- SCIP Polyglot Indexing settings
   scip:
     # -- Comma-separated list of enabled languages
@@ -321,3 +336,5 @@ secrets:
   openaiApiKey: ""
   anthropicApiKey: ""
   geminiApiKey: ""
+  # -- Agent Sandbox platform API credential (required in production)
+  sandboxApiKey: ""

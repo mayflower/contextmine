@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,7 +13,9 @@ from contextmine_core.research.agent import AgentConfig, ResearchAgent
 from contextmine_core.research.llm.mock import MockLLMProvider
 from contextmine_core.research.run import RunStatus
 from contextmine_core.research.verification import VerificationStatus
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 @pytest.fixture
@@ -93,6 +96,10 @@ class ScriptedResearchProvider(MockLLMProvider):
         )
         self._model = model
 
+    def bind_tools(self, tools: Sequence[Any]) -> BaseChatModel:
+        """Expose the scripted model through the provider's public capability."""
+        return cast(BaseChatModel, self._model.bind_tools(list(tools)))
+
 
 @pytest.mark.anyio
 async def test_research_executes_the_compiled_graph_end_to_end() -> None:
@@ -102,9 +109,11 @@ async def test_research_executes_the_compiled_graph_end_to_end() -> None:
     agent = ResearchAgent(
         llm_provider=provider,
         config=AgentConfig(max_steps=4, store_artifacts=False),
+        checkpointer=InMemorySaver(),
     )
 
     settings = SimpleNamespace(
+        model_calls_enabled=True,
         default_embedding_model="mock:fixture",
         verification_confidence_tolerance=0.2,
         verification_min_evidence_support=0.5,

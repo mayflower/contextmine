@@ -59,9 +59,12 @@ class SourceType(enum.Enum):
 class SyncRunStatus(enum.Enum):
     """Status of a sync run."""
 
+    SCHEDULED = "scheduled"
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
 
 
 class EmbeddingProvider(enum.Enum):
@@ -284,13 +287,13 @@ class User(Base):
     )
 
     # Relationships
-    oauth_tokens: Mapped[list["OAuthToken"]] = relationship(
+    oauth_tokens: Mapped[list[OAuthToken]] = relationship(
         back_populates="user", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    owned_collections: Mapped[list["Collection"]] = relationship(
+    owned_collections: Mapped[list[Collection]] = relationship(
         back_populates="owner", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    collection_memberships: Mapped[list["CollectionMember"]] = relationship(
+    collection_memberships: Mapped[list[CollectionMember]] = relationship(
         back_populates="user", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -311,7 +314,7 @@ class OAuthToken(Base):
     )
 
     # Relationships
-    user: Mapped["User"] = relationship(back_populates="oauth_tokens")
+    user: Mapped[User] = relationship(back_populates="oauth_tokens")
 
 
 class Collection(Base):
@@ -340,14 +343,14 @@ class Collection(Base):
     )
 
     # Relationships
-    owner: Mapped["User"] = relationship(back_populates="owned_collections")
-    members: Mapped[list["CollectionMember"]] = relationship(
+    owner: Mapped[User] = relationship(back_populates="owned_collections")
+    members: Mapped[list[CollectionMember]] = relationship(
         back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    invites: Mapped[list["CollectionInvite"]] = relationship(
+    invites: Mapped[list[CollectionInvite]] = relationship(
         back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    sources: Mapped[list["Source"]] = relationship(
+    sources: Mapped[list[Source]] = relationship(
         back_populates="collection", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -372,8 +375,8 @@ class CollectionMember(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="collection_memberships")
+    collection: Mapped[Collection] = relationship(back_populates="members")
+    user: Mapped[User] = relationship(back_populates="collection_memberships")
 
 
 class CollectionInvite(Base):
@@ -393,7 +396,7 @@ class CollectionInvite(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship(back_populates="invites")
+    collection: Mapped[Collection] = relationship(back_populates="invites")
 
 
 class Source(Base):
@@ -431,17 +434,17 @@ class Source(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship(back_populates="sources")
-    runs: Mapped[list["SyncRun"]] = relationship(
+    collection: Mapped[Collection] = relationship(back_populates="sources")
+    runs: Mapped[list[SyncRun]] = relationship(
         back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    documents: Mapped[list["Document"]] = relationship(
+    documents: Mapped[list[Document]] = relationship(
         back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    ingest_token: Mapped["SourceIngestToken | None"] = relationship(
+    ingest_token: Mapped[SourceIngestToken | None] = relationship(
         back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN, uselist=False
     )
-    coverage_ingest_jobs: Mapped[list["CoverageIngestJob"]] = relationship(
+    coverage_ingest_jobs: Mapped[list[CoverageIngestJob]] = relationship(
         back_populates="source", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -466,7 +469,7 @@ class SourceIngestToken(Base):
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    source: Mapped["Source"] = relationship(back_populates="ingest_token")
+    source: Mapped[Source] = relationship(back_populates="ingest_token")
 
 
 class CoverageIngestJob(Base):
@@ -512,10 +515,10 @@ class CoverageIngestJob(Base):
         nullable=False,
     )
 
-    source: Mapped["Source"] = relationship(back_populates="coverage_ingest_jobs")
-    collection: Mapped["Collection"] = relationship()
-    scenario: Mapped["TwinScenario | None"] = relationship()
-    reports: Mapped[list["CoverageIngestReport"]] = relationship(
+    source: Mapped[Source] = relationship(back_populates="coverage_ingest_jobs")
+    collection: Mapped[Collection] = relationship()
+    scenario: Mapped[TwinScenario | None] = relationship()
+    reports: Mapped[list[CoverageIngestReport]] = relationship(
         back_populates="job", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -540,7 +543,7 @@ class CoverageIngestReport(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    job: Mapped["CoverageIngestJob"] = relationship(back_populates="reports")
+    job: Mapped[CoverageIngestJob] = relationship(back_populates="reports")
 
 
 class SyncRun(Base):
@@ -569,9 +572,10 @@ class SyncRun(Base):
     )
     stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    flow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
 
     # Relationships
-    source: Mapped["Source"] = relationship(back_populates="runs")
+    source: Mapped[Source] = relationship(back_populates="runs")
 
 
 class Document(Base):
@@ -602,11 +606,11 @@ class Document(Base):
     )
 
     # Relationships
-    source: Mapped["Source"] = relationship(back_populates="documents")
-    chunks: Mapped[list["Chunk"]] = relationship(
+    source: Mapped[Source] = relationship(back_populates="documents")
+    chunks: Mapped[list[Chunk]] = relationship(
         back_populates="document", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    symbols: Mapped[list["Symbol"]] = relationship(
+    symbols: Mapped[list[Symbol]] = relationship(
         back_populates="document", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -633,7 +637,7 @@ class EmbeddingModel(Base):
     )
 
     # Relationships
-    chunks: Mapped[list["Chunk"]] = relationship(back_populates="embedding_model")
+    chunks: Mapped[list[Chunk]] = relationship(back_populates="embedding_model")
 
 
 class Chunk(Base):
@@ -666,8 +670,8 @@ class Chunk(Base):
     # It's accessed via raw SQL for pgvector operations
 
     # Relationships
-    document: Mapped["Document"] = relationship(back_populates="chunks")
-    embedding_model: Mapped["EmbeddingModel | None"] = relationship(back_populates="chunks")
+    document: Mapped[Document] = relationship(back_populates="chunks")
+    embedding_model: Mapped[EmbeddingModel | None] = relationship(back_populates="chunks")
 
 
 class Symbol(Base):
@@ -722,15 +726,15 @@ class Symbol(Base):
     )
 
     # Relationships
-    document: Mapped["Document"] = relationship(back_populates="symbols")
+    document: Mapped[Document] = relationship(back_populates="symbols")
     # Edges where this symbol is the source
-    outgoing_edges: Mapped[list["SymbolEdge"]] = relationship(
+    outgoing_edges: Mapped[list[SymbolEdge]] = relationship(
         back_populates="source_symbol",
         foreign_keys="SymbolEdge.source_symbol_id",
         cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
     # Edges where this symbol is the target
-    incoming_edges: Mapped[list["SymbolEdge"]] = relationship(
+    incoming_edges: Mapped[list[SymbolEdge]] = relationship(
         back_populates="target_symbol",
         foreign_keys="SymbolEdge.target_symbol_id",
         cascade=_CASCADE_ALL_DELETE_ORPHAN,
@@ -785,11 +789,11 @@ class SymbolEdge(Base):
     )
 
     # Relationships
-    source_symbol: Mapped["Symbol"] = relationship(
+    source_symbol: Mapped[Symbol] = relationship(
         back_populates="outgoing_edges",
         foreign_keys=[source_symbol_id],
     )
-    target_symbol: Mapped["Symbol"] = relationship(
+    target_symbol: Mapped[Symbol] = relationship(
         back_populates="incoming_edges",
         foreign_keys=[target_symbol_id],
     )
@@ -834,8 +838,8 @@ class KnowledgeEvidence(Base):
     )
 
     # Relationships
-    document: Mapped["Document | None"] = relationship()
-    chunk: Mapped["Chunk | None"] = relationship()
+    document: Mapped[Document | None] = relationship()
+    chunk: Mapped[Chunk | None] = relationship()
 
 
 class KnowledgeNode(Base):
@@ -884,16 +888,16 @@ class KnowledgeNode(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship()
-    evidence_links: Mapped[list["KnowledgeNodeEvidence"]] = relationship(
+    collection: Mapped[Collection] = relationship()
+    evidence_links: Mapped[list[KnowledgeNodeEvidence]] = relationship(
         back_populates="node", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
-    outgoing_edges: Mapped[list["KnowledgeEdge"]] = relationship(
+    outgoing_edges: Mapped[list[KnowledgeEdge]] = relationship(
         back_populates="source_node",
         foreign_keys="KnowledgeEdge.source_node_id",
         cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
-    incoming_edges: Mapped[list["KnowledgeEdge"]] = relationship(
+    incoming_edges: Mapped[list[KnowledgeEdge]] = relationship(
         back_populates="target_node",
         foreign_keys="KnowledgeEdge.target_node_id",
         cascade=_CASCADE_ALL_DELETE_ORPHAN,
@@ -953,16 +957,16 @@ class KnowledgeEdge(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship()
-    source_node: Mapped["KnowledgeNode"] = relationship(
+    collection: Mapped[Collection] = relationship()
+    source_node: Mapped[KnowledgeNode] = relationship(
         back_populates="outgoing_edges",
         foreign_keys=[source_node_id],
     )
-    target_node: Mapped["KnowledgeNode"] = relationship(
+    target_node: Mapped[KnowledgeNode] = relationship(
         back_populates="incoming_edges",
         foreign_keys=[target_node_id],
     )
-    evidence_links: Mapped[list["KnowledgeEdgeEvidence"]] = relationship(
+    evidence_links: Mapped[list[KnowledgeEdgeEvidence]] = relationship(
         back_populates="edge", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -984,8 +988,8 @@ class KnowledgeNodeEvidence(Base):
     )
 
     # Relationships
-    node: Mapped["KnowledgeNode"] = relationship(back_populates="evidence_links")
-    evidence: Mapped["KnowledgeEvidence"] = relationship()
+    node: Mapped[KnowledgeNode] = relationship(back_populates="evidence_links")
+    evidence: Mapped[KnowledgeEvidence] = relationship()
 
 
 class KnowledgeEdgeEvidence(Base):
@@ -1005,8 +1009,8 @@ class KnowledgeEdgeEvidence(Base):
     )
 
     # Relationships
-    edge: Mapped["KnowledgeEdge"] = relationship(back_populates="evidence_links")
-    evidence: Mapped["KnowledgeEvidence"] = relationship()
+    edge: Mapped[KnowledgeEdge] = relationship(back_populates="evidence_links")
+    evidence: Mapped[KnowledgeEvidence] = relationship()
 
 
 class KnowledgeArtifact(Base):
@@ -1053,8 +1057,8 @@ class KnowledgeArtifact(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship()
-    evidence_links: Mapped[list["KnowledgeArtifactEvidence"]] = relationship(
+    collection: Mapped[Collection] = relationship()
+    evidence_links: Mapped[list[KnowledgeArtifactEvidence]] = relationship(
         back_populates="artifact", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -1076,8 +1080,8 @@ class KnowledgeArtifactEvidence(Base):
     )
 
     # Relationships
-    artifact: Mapped["KnowledgeArtifact"] = relationship(back_populates="evidence_links")
-    evidence: Mapped["KnowledgeEvidence"] = relationship()
+    artifact: Mapped[KnowledgeArtifact] = relationship(back_populates="evidence_links")
+    evidence: Mapped[KnowledgeEvidence] = relationship()
 
 
 # -----------------------------------------------------------------------------
@@ -1128,8 +1132,8 @@ class KnowledgeCommunity(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship()
-    members: Mapped[list["CommunityMember"]] = relationship(
+    collection: Mapped[Collection] = relationship()
+    members: Mapped[list[CommunityMember]] = relationship(
         back_populates="community", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -1162,8 +1166,8 @@ class CommunityMember(Base):
     )
 
     # Relationships
-    community: Mapped["KnowledgeCommunity"] = relationship(back_populates="members")
-    node: Mapped["KnowledgeNode"] = relationship()
+    community: Mapped[KnowledgeCommunity] = relationship(back_populates="members")
+    node: Mapped[KnowledgeNode] = relationship()
 
 
 class KnowledgeEmbedding(Base):
@@ -1220,7 +1224,7 @@ class KnowledgeEmbedding(Base):
     )
 
     # Relationships
-    collection: Mapped["Collection"] = relationship()
+    collection: Mapped[Collection] = relationship()
 
 
 # -----------------------------------------------------------------------------
@@ -1267,9 +1271,9 @@ class TwinScenario(Base):
         nullable=False,
     )
 
-    collection: Mapped["Collection"] = relationship()
-    base_scenario: Mapped["TwinScenario | None"] = relationship(remote_side=[id])
-    created_by: Mapped["User | None"] = relationship()
+    collection: Mapped[Collection] = relationship()
+    base_scenario: Mapped[TwinScenario | None] = relationship(remote_side=[id])
+    created_by: Mapped[User | None] = relationship()
 
 
 class TwinNode(Base):
@@ -1323,10 +1327,10 @@ class TwinNode(Base):
         nullable=False,
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
-    provenance_node: Mapped["KnowledgeNode | None"] = relationship()
-    source: Mapped["Source | None"] = relationship()
-    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
+    provenance_node: Mapped[KnowledgeNode | None] = relationship()
+    source: Mapped[Source | None] = relationship()
+    source_version: Mapped[TwinSourceVersion | None] = relationship()
 
 
 class TwinEdge(Base):
@@ -1389,11 +1393,11 @@ class TwinEdge(Base):
         nullable=False,
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
-    source_node: Mapped["TwinNode"] = relationship(foreign_keys=[source_node_id])
-    target_node: Mapped["TwinNode"] = relationship(foreign_keys=[target_node_id])
-    source: Mapped["Source | None"] = relationship()
-    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
+    source_node: Mapped[TwinNode] = relationship(foreign_keys=[source_node_id])
+    target_node: Mapped[TwinNode] = relationship(foreign_keys=[target_node_id])
+    source: Mapped[Source | None] = relationship()
+    source_version: Mapped[TwinSourceVersion | None] = relationship()
 
 
 class TwinSourceVersion(Base):
@@ -1451,8 +1455,8 @@ class TwinSourceVersion(Base):
         nullable=False,
     )
 
-    collection: Mapped["Collection"] = relationship()
-    source: Mapped["Source"] = relationship()
+    collection: Mapped[Collection] = relationship()
+    source: Mapped[Source] = relationship()
 
 
 class TwinEvent(Base):
@@ -1500,10 +1504,10 @@ class TwinEvent(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    collection: Mapped["Collection"] = relationship()
-    scenario: Mapped["TwinScenario | None"] = relationship()
-    source: Mapped["Source | None"] = relationship()
-    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+    collection: Mapped[Collection] = relationship()
+    scenario: Mapped[TwinScenario | None] = relationship()
+    source: Mapped[Source | None] = relationship()
+    source_version: Mapped[TwinSourceVersion | None] = relationship()
 
 
 class TwinAnalysisCache(Base):
@@ -1544,7 +1548,7 @@ class TwinAnalysisCache(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    scenario: Mapped["TwinScenario"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
 
 
 class TwinFinding(Base):
@@ -1593,8 +1597,8 @@ class TwinFinding(Base):
         nullable=False,
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
-    source_version: Mapped["TwinSourceVersion | None"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
+    source_version: Mapped[TwinSourceVersion | None] = relationship()
 
 
 class TwinNodeLayer(Base):
@@ -1622,7 +1626,7 @@ class TwinNodeLayer(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    node: Mapped["TwinNode"] = relationship()
+    node: Mapped[TwinNode] = relationship()
 
 
 class TwinEdgeLayer(Base):
@@ -1650,7 +1654,7 @@ class TwinEdgeLayer(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    edge: Mapped["TwinEdge"] = relationship()
+    edge: Mapped[TwinEdge] = relationship()
 
 
 class ArchitectureIntent(Base):
@@ -1719,8 +1723,8 @@ class ArchitectureIntent(Base):
         nullable=False,
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
-    requested_by: Mapped["User | None"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
+    requested_by: Mapped[User | None] = relationship()
 
 
 class ArchitectureIntentRun(Base):
@@ -1744,7 +1748,7 @@ class ArchitectureIntentRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    intent: Mapped["ArchitectureIntent"] = relationship()
+    intent: Mapped[ArchitectureIntent] = relationship()
 
 
 class TwinPatch(Base):
@@ -1778,9 +1782,9 @@ class TwinPatch(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
-    intent: Mapped["ArchitectureIntent | None"] = relationship()
-    created_by: Mapped["User | None"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
+    intent: Mapped[ArchitectureIntent | None] = relationship()
+    created_by: Mapped[User | None] = relationship()
 
 
 class ValidationSnapshot(Base):
@@ -1815,7 +1819,7 @@ class ValidationSnapshot(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    collection: Mapped["Collection | None"] = relationship()
+    collection: Mapped[Collection | None] = relationship()
 
 
 class MetricSnapshot(Base):
@@ -1853,7 +1857,7 @@ class MetricSnapshot(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
 
 
 class TwinOwnershipSnapshot(Base):
@@ -1885,7 +1889,7 @@ class TwinOwnershipSnapshot(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
 
 
 class TwinTemporalCouplingSnapshot(Base):
@@ -1940,7 +1944,7 @@ class TwinTemporalCouplingSnapshot(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    scenario: Mapped["TwinScenario"] = relationship()
+    scenario: Mapped[TwinScenario] = relationship()
 
 
 # -----------------------------------------------------------------------------
@@ -1970,8 +1974,8 @@ class GUIScreen(Base):
     )
 
     # Relationships
-    source: Mapped["Source"] = relationship()
-    elements: Mapped[list["GUIElement"]] = relationship(
+    source: Mapped[Source] = relationship()
+    elements: Mapped[list[GUIElement]] = relationship(
         back_populates="screen", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
@@ -1995,4 +1999,4 @@ class GUIElement(Base):
     )
 
     # Relationships
-    screen: Mapped["GUIScreen"] = relationship(back_populates="elements")
+    screen: Mapped[GUIScreen] = relationship(back_populates="elements")

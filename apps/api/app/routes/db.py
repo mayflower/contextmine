@@ -10,9 +10,29 @@ from contextmine_core import (
     get_settings,
 )
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 
 router = APIRouter(tags=["database"])
+
+
+class RecentRunResponse(BaseModel):
+    id: str
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    source_url: str
+
+
+class DashboardStatsResponse(BaseModel):
+    collections: int = 0
+    sources: int = 0
+    documents: int = 0
+    chunks: int = 0
+    embedded_chunks: int = 0
+    runs_by_status: dict[str, int] = Field(default_factory=dict)
+    recent_runs: list[RecentRunResponse] = Field(default_factory=list)
+    error: str | None = None
 
 
 @router.get("/db/health")
@@ -32,13 +52,13 @@ async def db_health_check() -> dict[str, str]:
         return {"db": "error", "detail": str(e)}
 
 
-@router.get("/stats")
-async def get_stats() -> dict:
+@router.get("/stats", response_model=DashboardStatsResponse)
+async def get_stats() -> DashboardStatsResponse:
     """Get dashboard statistics."""
     settings = get_settings()
 
     if not settings.database_url:
-        return {"error": "database_not_configured"}
+        return DashboardStatsResponse(error="database_not_configured")
 
     try:
         async with get_session() as session:
@@ -94,14 +114,14 @@ async def get_stats() -> dict:
                 for row in result.fetchall()
             ]
 
-            return {
-                "collections": collections_count,
-                "sources": sources_count,
-                "documents": documents_count,
-                "chunks": chunks_count,
-                "embedded_chunks": embedded_chunks_count,
-                "runs_by_status": runs_by_status,
-                "recent_runs": recent_runs,
-            }
+            return DashboardStatsResponse(
+                collections=collections_count,
+                sources=sources_count,
+                documents=documents_count,
+                chunks=chunks_count,
+                embedded_chunks=embedded_chunks_count,
+                runs_by_status=runs_by_status,
+                recent_runs=recent_runs,
+            )
     except Exception as e:
-        return {"error": str(e)}
+        return DashboardStatsResponse(error=str(e))

@@ -9,13 +9,13 @@ from __future__ import annotations
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from contextmine_core.model_policy import ensure_model_calls_enabled
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -43,6 +43,15 @@ class LLMProvider(ABC):
     def model_name(self) -> str:
         """Get the model name being used."""
         ...
+
+    @property
+    def provider_name(self) -> str:
+        """Get the provider identity used for telemetry and persisted metadata."""
+        return "unknown"
+
+    def bind_tools(self, tools: Sequence[Any]) -> BaseChatModel:
+        """Bind tools through the provider's public interface."""
+        raise NotImplementedError(f"{type(self).__name__} does not support tool binding")
 
     @abstractmethod
     async def generate_text(
@@ -107,6 +116,7 @@ class LangChainProvider(LLMProvider):
         self,
         model: BaseChatModel,
         model_name: str,
+        provider_name: str = "unknown",
         max_retries: int = 3,
     ):
         """Initialize the provider.
@@ -118,12 +128,22 @@ class LangChainProvider(LLMProvider):
         """
         self._model = model
         self._model_name = model_name
+        self._provider_name = provider_name
         self._max_retries = max_retries
 
     @property
     def model_name(self) -> str:
         """Get the model name."""
         return self._model_name
+
+    @property
+    def provider_name(self) -> str:
+        """Get the provider name."""
+        return self._provider_name
+
+    def bind_tools(self, tools: Sequence[Any]) -> BaseChatModel:
+        """Bind tools without exposing the underlying LangChain model."""
+        return self._model.bind_tools(tools)
 
     def _build_messages(
         self,
@@ -170,13 +190,10 @@ class LangChainProvider(LLMProvider):
 
         tracer = trace.get_tracer(__name__)
 
-        # Determine provider from model name
-        provider = "anthropic" if "claude" in self._model_name.lower() else "openai"
-
         with tracer.start_as_current_span(
             "llm.generate_text",
             attributes={
-                "gen_ai.system": provider,
+                "gen_ai.system": self._provider_name,
                 "gen_ai.request.model": self._model_name,
                 "gen_ai.operation.name": "chat",
                 "gen_ai.request.max_tokens": max_tokens,
@@ -209,7 +226,7 @@ class LangChainProvider(LLMProvider):
                 raise
 
     @retry(
-        retry=retry_if_exception_type((ConnectionError, TimeoutError, ValidationError, ValueError)),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         wait=wait_exponential_jitter(initial=1, max=10, jitter=2),
         stop=stop_after_attempt(3),
         reraise=True,
@@ -318,11 +335,14 @@ def get_llm_provider(
         ValueError: If provider is not supported
     """
     ensure_model_calls_enabled()
+    from contextmine_core.settings import get_settings
+
+    settings = get_settings()
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        selected_model = model or "claude-sonnet-4-5-20250929"
+        selected_model = model or settings.anthropic_llm_model
         # Read from environment if not provided
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
@@ -338,13 +358,14 @@ def get_llm_provider(
         return LangChainProvider(
             model=chat_model,
             model_name=selected_model,
+            provider_name="anthropic",
             max_retries=max_retries,
         )
 
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        selected_model = model or "gpt-4o"
+        selected_model = model or settings.openai_llm_model
         # Read from environment if not provided
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_key:
@@ -358,6 +379,7 @@ def get_llm_provider(
         return LangChainProvider(
             model=chat_model,
             model_name=selected_model,
+            provider_name="openai",
             max_retries=max_retries,
         )
 
@@ -376,7 +398,8 @@ def get_research_llm_provider() -> LLMProvider:
     Returns:
         Configured LLMProvider for research agent
     """
-    from contextmine_core.settings import get_settings
+    ensure_model_calls_enabled()
+    from contextmine_core.settings import get_settings, secret_value
 
     settings = get_settings()
 
@@ -389,7 +412,7 @@ def get_research_llm_provider() -> LLMProvider:
         return get_llm_provider(
             provider="anthropic",
             model=model,
-            api_key=settings.anthropic_api_key,
+            api_key=secret_value(settings.anthropic_api_key),
         )
     elif model.startswith("gpt") or model.startswith("o1"):
         if not settings.openai_api_key:
@@ -397,7 +420,7 @@ def get_research_llm_provider() -> LLMProvider:
         return get_llm_provider(
             provider="openai",
             model=model,
-            api_key=settings.openai_api_key,
+            api_key=secret_value(settings.openai_api_key),
         )
     else:
         # Default to Anthropic if key available
@@ -405,13 +428,13 @@ def get_research_llm_provider() -> LLMProvider:
             return get_llm_provider(
                 provider="anthropic",
                 model=model,
-                api_key=settings.anthropic_api_key,
+                api_key=secret_value(settings.anthropic_api_key),
             )
         elif settings.openai_api_key:
             return get_llm_provider(
                 provider="openai",
                 model=model,
-                api_key=settings.openai_api_key,
+                api_key=secret_value(settings.openai_api_key),
             )
         else:
             raise ValueError("No API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")

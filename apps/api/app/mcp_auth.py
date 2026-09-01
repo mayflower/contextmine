@@ -13,17 +13,15 @@ import uuid
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
-import httpx
-from contextmine_core import User
 from contextmine_core import get_session as get_db_session
-from contextmine_core.settings import get_settings
+from contextmine_core import github_profile_from_verified_claims, upsert_github_user
+from contextmine_core.settings import get_settings, secret_value
 from fastmcp.server.auth.providers.github import GitHubProvider
 from pydantic import AnyHttpUrl
-from sqlalchemy import select
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 if TYPE_CHECKING:
     pass  # Reserved for future type-only imports
@@ -48,8 +46,7 @@ class UserMappingMiddleware(BaseHTTPMiddleware):
     """Middleware to map GitHub user to ContextMine database user.
 
     This middleware runs after FastMCP's authentication middleware.
-    It extracts the GitHub token from the authenticated request,
-    fetches GitHub user info, and maps to a ContextMine user.
+    It maps FastMCP's verified GitHub claims to a ContextMine user.
     """
 
     async def dispatch(
@@ -63,52 +60,26 @@ class UserMappingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         try:
-            # Get GitHub token from authenticated user
-            github_token = request.user.access_token.token
-
-            # Fetch GitHub user info
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"Bearer {github_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                    timeout=10.0,
-                )
-
-                if resp.status_code != 200:
-                    logger.warning("Failed to fetch GitHub user: %s", resp.status_code)
-                    return await call_next(request)
-
-                github_user = resp.json()
+            github_user = github_profile_from_verified_claims(request.user.access_token.claims)
 
             # Look up or create user in database
             async with get_db_session() as db:
-                result = await db.execute(
-                    select(User).where(User.github_user_id == github_user["id"])
-                )
-                user = result.scalar_one_or_none()
-
-                if not user:
-                    # Create new user
-                    user = User(
-                        id=uuid.uuid4(),
-                        github_user_id=github_user["id"],
-                        github_login=github_user["login"],
-                        name=github_user.get("name"),
-                        avatar_url=github_user.get("avatar_url"),
-                    )
-                    db.add(user)
-                    await db.commit()
-                    logger.info("Created new user for GitHub: %s", github_user["login"])
+                user = await upsert_github_user(db, github_user)
+                await db.commit()
 
                 # Store user_id in context for tools
                 set_current_user_id(user.id)
 
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.warning("Verified GitHub identity claims are unusable: %s", e)
+            return JSONResponse(
+                {"detail": "Authenticated identity is unavailable"}, status_code=401
+            )
         except Exception as e:
             logger.exception("Error mapping GitHub user: %s", e)
-            # Continue without user mapping - request is still authenticated
+            return JSONResponse(
+                {"detail": "Authenticated identity is unavailable"}, status_code=401
+            )
 
         try:
             return await call_next(request)
@@ -141,7 +112,7 @@ class ContextMineGitHubProvider(GitHubProvider):
 
         super().__init__(
             client_id=settings.github_client_id,
-            client_secret=settings.github_client_secret,
+            client_secret=secret_value(settings.github_client_secret),
             # Use /mcp path to match the MCP sub-app mount point in main.py.
             # This ensures OAuth metadata endpoints (authorize, token, register)
             # resolve to /mcp/... where FastMCP actually serves them.

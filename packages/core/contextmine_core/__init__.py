@@ -1,5 +1,10 @@
 """ContextMine core library."""
 
+from contextmine_core.access import (
+    accessible_collections_clause,
+    get_accessible_collection_ids,
+    user_can_access_collection,
+)
 from contextmine_core.auth import (
     compute_ssh_key_fingerprint,
     decrypt_token,
@@ -28,6 +33,10 @@ from contextmine_core.embeddings import (
     OpenAIEmbedder,
     get_embedder,
     parse_embedding_model_spec,
+)
+from contextmine_core.identity import (
+    github_profile_from_verified_claims,
+    upsert_github_user,
 )
 from contextmine_core.joern import JoernClient, JoernResponse, parse_joern_output
 from contextmine_core.model_policy import ModelCallsDisabledError, ensure_model_calls_enabled
@@ -83,6 +92,7 @@ from contextmine_core.search import (
 from contextmine_core.settings import Settings, get_settings
 
 __all__ = [
+    "accessible_collections_clause",
     "AppKV",
     "ArchitectureIntent",
     "ArchitectureIntentAction",
@@ -148,11 +158,13 @@ __all__ = [
     "exchange_code_for_token",
     "generate_state",
     "get_embedder",
+    "get_accessible_collection_ids",
     "get_engine",
     "get_github_authorize_url",
     "get_github_user",
     "get_session",
     "get_settings",
+    "github_profile_from_verified_claims",
     "hybrid_search",
     "JoernClient",
     "JoernResponse",
@@ -160,5 +172,7 @@ __all__ = [
     "parse_joern_output",
     "SearchResponse",
     "SearchResult",
+    "upsert_github_user",
+    "user_can_access_collection",
     "validate_ssh_private_key",
 ]

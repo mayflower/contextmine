@@ -123,7 +123,7 @@ class SurfaceCatalogExtractor:
 
         try:
             parsed = yaml.safe_load(content)
-        except (yaml.YAMLError, json.JSONDecodeError):
+        except yaml.YAMLError, json.JSONDecodeError:
             return None
         if not isinstance(parsed, dict):
             return None

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { useSearchParams } from 'react-router'
 
 import {
   type CockpitLayer,
@@ -11,8 +12,8 @@ import {
   DEFAULT_VIEW,
 } from '../types'
 
-const VALID_LAYERS = new Set<CockpitLayer>(COCKPIT_LAYERS.map((l) => l.key))
-const VALID_VIEWS = new Set<CockpitView>(COCKPIT_VIEWS.map((v) => v.key))
+const VALID_LAYERS = new Set<CockpitLayer>(COCKPIT_LAYERS.map((layer) => layer.key))
+const VALID_VIEWS = new Set<CockpitView>(COCKPIT_VIEWS.map((view) => view.key))
 const VALID_OVERLAYS = new Set<OverlayMode>(['none', 'runtime', 'risk'])
 const DEFAULT_PAGE = 0
 const DEFAULT_LIMIT = 1200
@@ -22,206 +23,124 @@ function parseCsvParam(value: string | null): string[] {
   return value.split(',').map((entry) => entry.trim()).filter(Boolean)
 }
 
-function parseInitialSelection(): CockpitSelection {
-  const params = new URLSearchParams(globalThis.location.search)
+function setOrDelete(params: URLSearchParams, key: string, value: string | false): void {
+  if (value) params.set(key, value)
+  else params.delete(key)
+}
+
+function parseSelection(params: URLSearchParams): CockpitSelection {
   const rawLayer = params.get('layer')
   const rawView = params.get('view')
-  const normalizedRawView = rawView === 'user_flows' ? 'ui_map' : rawView
-
+  const normalizedView = rawView === 'user_flows' ? 'ui_map' : rawView
   return {
     collectionId: params.get('collection') ?? '',
     scenarioId: params.get('scenario') ?? '',
-    layer: VALID_LAYERS.has(rawLayer as CockpitLayer)
-      ? (rawLayer as CockpitLayer)
-      : DEFAULT_LAYER,
-    view: VALID_VIEWS.has(normalizedRawView as CockpitView)
-      ? (normalizedRawView as CockpitView)
-      : DEFAULT_VIEW,
+    layer: VALID_LAYERS.has(rawLayer as CockpitLayer) ? rawLayer as CockpitLayer : DEFAULT_LAYER,
+    view: VALID_VIEWS.has(normalizedView as CockpitView) ? normalizedView as CockpitView : DEFAULT_VIEW,
   }
 }
 
-/** Set or delete a URL parameter based on a truthy/falsy value. */
-function setOrDelete(params: URLSearchParams, key: string, value: string | false): void {
-  if (value) {
-    params.set(key, value)
-  } else {
-    params.delete(key)
-  }
-}
-
-function writeSelectionToUrl(args: {
-  selection: CockpitSelection
-  graphQuery: string
-  selectedNodeId: string
-  graphPage: number
-  graphLimit: number
-  includeKinds: string[]
-  excludeKinds: string[]
-  overlayMode: OverlayMode
-  hideIsolated: boolean
-  edgeKinds: string[]
-}): void {
-  const {
-    selection,
-    graphQuery,
-    selectedNodeId,
-    graphPage,
-    graphLimit,
-    includeKinds,
-    excludeKinds,
-    overlayMode,
-    hideIsolated,
-    edgeKinds,
-  } = args
-
-  const params = new URLSearchParams(globalThis.location.search)
-  params.set('page', 'cockpit')
-
-  setOrDelete(params, 'collection', selection.collectionId || false)
-  setOrDelete(params, 'scenario', selection.scenarioId || false)
-  setOrDelete(params, 'view', selection.view !== DEFAULT_VIEW && selection.view)
-  setOrDelete(params, 'layer', selection.layer !== DEFAULT_LAYER && selection.layer)
-  setOrDelete(params, 'query', graphQuery.trim() || false)
-  setOrDelete(params, 'node', selectedNodeId.trim() || false)
-  setOrDelete(params, 'pageIndex', graphPage > DEFAULT_PAGE && String(graphPage))
-  setOrDelete(params, 'limit', graphLimit !== DEFAULT_LIMIT && String(graphLimit))
-  setOrDelete(params, 'includeKinds', includeKinds.length > 0 && includeKinds.join(','))
-  setOrDelete(params, 'excludeKinds', excludeKinds.length > 0 && excludeKinds.join(','))
-  setOrDelete(params, 'overlay', overlayMode !== 'none' && overlayMode)
-  setOrDelete(params, 'hideIsolated', hideIsolated && '1')
-  setOrDelete(params, 'edgeKinds', edgeKinds.length > 0 && edgeKinds.join(','))
-
-  const nextQuery = params.toString()
-  const nextUrl = nextQuery ? `${globalThis.location.pathname}?${nextQuery}` : globalThis.location.pathname
-  globalThis.history.replaceState({}, '', nextUrl)
+function parseNumber(value: string | null, fallback: number, minimum: number): number {
+  const parsed = Number(value ?? fallback)
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback
 }
 
 export function useCockpitState() {
-  const [selection, setSelection] = useState<CockpitSelection>(() => parseInitialSelection())
+  const [params, setParams] = useSearchParams()
   const [hotspotFilter, setHotspotFilter] = useState('')
-  const [graphQuery, setGraphQuery] = useState(() => {
-    return new URLSearchParams(globalThis.location.search).get('query') ?? ''
-  })
-  const [selectedNodeId, setSelectedNodeId] = useState(() => {
-    return new URLSearchParams(globalThis.location.search).get('node') ?? ''
-  })
-  const [graphPage, setGraphPage] = useState(() => {
-    const raw = Number(new URLSearchParams(globalThis.location.search).get('pageIndex') ?? DEFAULT_PAGE)
-    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PAGE
-  })
-  const [graphLimit, setGraphLimit] = useState(() => {
-    const raw = Number(new URLSearchParams(globalThis.location.search).get('limit') ?? DEFAULT_LIMIT)
-    return Number.isFinite(raw) && raw >= 1 ? raw : DEFAULT_LIMIT
-  })
-  const [includeKinds, setIncludeKinds] = useState<string[]>(() => {
-    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('includeKinds'))
-  })
-  const [excludeKinds, setExcludeKinds] = useState<string[]>(() => {
-    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('excludeKinds'))
-  })
-  const [edgeKinds, setEdgeKinds] = useState<string[]>(() => {
-    return parseCsvParam(new URLSearchParams(globalThis.location.search).get('edgeKinds'))
-  })
-  const [hideIsolated, setHideIsolated] = useState(() => {
-    return (new URLSearchParams(globalThis.location.search).get('hideIsolated') ?? '') === '1'
-  })
-  const [overlayMode, setOverlayMode] = useState<OverlayMode>(() => {
-    const raw = (new URLSearchParams(globalThis.location.search).get('overlay') ?? 'none') as OverlayMode
-    return VALID_OVERLAYS.has(raw) ? raw : 'none'
-  })
 
-  useEffect(() => {
-    writeSelectionToUrl({
-      selection,
-      graphQuery,
-      selectedNodeId,
-      graphPage,
-      graphLimit,
-      includeKinds,
-      excludeKinds,
-      overlayMode,
-      hideIsolated,
-      edgeKinds,
-    })
-  }, [
-    selection,
-    graphQuery,
-    selectedNodeId,
-    graphPage,
-    graphLimit,
-    includeKinds,
-    excludeKinds,
-    overlayMode,
-    hideIsolated,
-    edgeKinds,
-  ])
+  const updateParams = useCallback((mutate: (next: URLSearchParams) => void) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('page')
+      mutate(next)
+      return next
+    }, { replace: true })
+  }, [setParams])
 
-  const updateSelection = useCallback((patch: Partial<CockpitSelection>) => {
-    setSelection((prev) => ({ ...prev, ...patch }))
+  const selection = parseSelection(params)
+  const graphQuery = params.get('query') ?? ''
+  const selectedNodeId = params.get('node') ?? ''
+  const graphPage = parseNumber(params.get('pageIndex'), DEFAULT_PAGE, 0)
+  const graphLimit = parseNumber(params.get('limit'), DEFAULT_LIMIT, 1)
+  const includeKinds = parseCsvParam(params.get('includeKinds'))
+  const excludeKinds = parseCsvParam(params.get('excludeKinds'))
+  const edgeKinds = parseCsvParam(params.get('edgeKinds'))
+  const hideIsolated = params.get('hideIsolated') === '1'
+  const rawOverlay = (params.get('overlay') ?? 'none') as OverlayMode
+  const overlayMode = VALID_OVERLAYS.has(rawOverlay) ? rawOverlay : 'none'
+
+  const resetGraphSelection = useCallback((next: URLSearchParams) => {
+    next.delete('node')
+    next.delete('pageIndex')
   }, [])
 
-  const setCollectionId = useCallback(
-    (collectionId: string) => {
-      setSelection((prev) => ({
-        ...prev,
-        collectionId,
-        scenarioId: '',
-      }))
-      setSelectedNodeId('')
-      setGraphPage(DEFAULT_PAGE)
-    },
-    [],
-  )
+  const updateSelection = useCallback((patch: Partial<CockpitSelection>) => {
+    updateParams((next) => {
+      const updated = { ...parseSelection(next), ...patch }
+      setOrDelete(next, 'collection', updated.collectionId || false)
+      setOrDelete(next, 'scenario', updated.scenarioId || false)
+      setOrDelete(next, 'view', updated.view !== DEFAULT_VIEW && updated.view)
+      setOrDelete(next, 'layer', updated.layer !== DEFAULT_LAYER && updated.layer)
+    })
+  }, [updateParams])
 
-  const setScenarioId = useCallback(
-    (scenarioId: string) => {
-      updateSelection({ scenarioId })
-      setSelectedNodeId('')
-      setGraphPage(DEFAULT_PAGE)
-    },
-    [updateSelection],
-  )
+  const setCollectionId = useCallback((collectionId: string) => {
+    updateParams((next) => {
+      setOrDelete(next, 'collection', collectionId || false)
+      next.delete('scenario')
+      resetGraphSelection(next)
+    })
+  }, [resetGraphSelection, updateParams])
 
-  const setLayer = useCallback(
-    (layer: CockpitLayer) => {
-      updateSelection({ layer })
-      setSelectedNodeId('')
-      setGraphPage(DEFAULT_PAGE)
-    },
-    [updateSelection],
-  )
+  const setScenarioId = useCallback((scenarioId: string) => {
+    updateParams((next) => {
+      setOrDelete(next, 'scenario', scenarioId || false)
+      resetGraphSelection(next)
+    })
+  }, [resetGraphSelection, updateParams])
 
-  const setView = useCallback(
-    (view: CockpitView) => {
-      updateSelection({ view: view === 'user_flows' ? 'ui_map' : view })
-      setSelectedNodeId('')
-      setGraphPage(DEFAULT_PAGE)
-    },
-    [updateSelection],
-  )
+  const setLayer = useCallback((layer: CockpitLayer) => {
+    updateParams((next) => {
+      setOrDelete(next, 'layer', layer !== DEFAULT_LAYER && layer)
+      resetGraphSelection(next)
+    })
+  }, [resetGraphSelection, updateParams])
+
+  const setView = useCallback((view: CockpitView) => {
+    const normalized = view === 'user_flows' ? 'ui_map' : view
+    updateParams((next) => {
+      setOrDelete(next, 'view', normalized !== DEFAULT_VIEW && normalized)
+      resetGraphSelection(next)
+    })
+  }, [resetGraphSelection, updateParams])
+
+  const setStringParam = useCallback((key: string, value: string) => {
+    updateParams((next) => setOrDelete(next, key, value.trim() || false))
+  }, [updateParams])
 
   return {
     selection,
     hotspotFilter,
     setHotspotFilter,
     graphQuery,
-    setGraphQuery,
+    setGraphQuery: (value: string) => setStringParam('query', value),
     selectedNodeId,
-    setSelectedNodeId,
+    setSelectedNodeId: (value: string) => setStringParam('node', value),
     graphPage,
-    setGraphPage,
+    setGraphPage: (value: number) => updateParams((next) => setOrDelete(next, 'pageIndex', value > DEFAULT_PAGE && String(value))),
     graphLimit,
-    setGraphLimit,
+    setGraphLimit: (value: number) => updateParams((next) => setOrDelete(next, 'limit', value !== DEFAULT_LIMIT && String(value))),
     includeKinds,
-    setIncludeKinds,
+    setIncludeKinds: (values: string[]) => updateParams((next) => setOrDelete(next, 'includeKinds', values.length > 0 && values.join(','))),
     excludeKinds,
-    setExcludeKinds,
+    setExcludeKinds: (values: string[]) => updateParams((next) => setOrDelete(next, 'excludeKinds', values.length > 0 && values.join(','))),
     edgeKinds,
-    setEdgeKinds,
+    setEdgeKinds: (values: string[]) => updateParams((next) => setOrDelete(next, 'edgeKinds', values.length > 0 && values.join(','))),
     hideIsolated,
-    setHideIsolated,
+    setHideIsolated: (value: boolean) => updateParams((next) => setOrDelete(next, 'hideIsolated', value && '1')),
     overlayMode,
-    setOverlayMode,
+    setOverlayMode: (value: OverlayMode) => updateParams((next) => setOrDelete(next, 'overlay', value !== 'none' && value)),
     setCollectionId,
     setScenarioId,
     setLayer,

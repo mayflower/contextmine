@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -422,54 +421,6 @@ async def graph_neighborhood(
     return pack
 
 
-async def _bfs_shortest_path(
-    session: AsyncSession,
-    from_node_id: UUID,
-    to_node_id: UUID,
-    collection_ids: list[UUID],
-    max_hops: int,
-    allowed_node_ids: set[UUID] | None = None,
-) -> tuple[list[UUID], list[tuple[UUID, UUID, str]]]:
-    """Run BFS to find shortest path between two nodes."""
-    from contextmine_core.models import KnowledgeEdge
-    from sqlalchemy import or_, select
-
-    queue: deque[tuple[UUID, list[UUID], list[tuple[UUID, UUID, str]]]] = deque()
-    queue.append((from_node_id, [from_node_id], []))
-    visited: set[UUID] = {from_node_id}
-
-    while queue:
-        current, node_path, edge_path = queue.popleft()
-        if len(node_path) > max_hops + 1:
-            break
-        if current == to_node_id:
-            return node_path, edge_path
-
-        stmt = select(KnowledgeEdge).where(
-            KnowledgeEdge.collection_id.in_(collection_ids),
-            or_(
-                KnowledgeEdge.source_node_id == current,
-                KnowledgeEdge.target_node_id == current,
-            ),
-        )
-        for edge in (await session.execute(stmt)).scalars().all():
-            next_node = (
-                edge.target_node_id if edge.source_node_id == current else edge.source_node_id
-            )
-            if allowed_node_ids is not None and next_node not in allowed_node_ids:
-                continue
-            if next_node not in visited:
-                visited.add(next_node)
-                queue.append(
-                    (
-                        next_node,
-                        node_path + [next_node],
-                        edge_path + [(edge.source_node_id, edge.target_node_id, edge.kind.value)],
-                    )
-                )
-    return [], []
-
-
 async def _populate_path_pack(
     session: AsyncSession,
     pack: ContextPack,
@@ -554,7 +505,9 @@ async def trace_path(
     ):
         return pack
 
-    path_nodes, path_edges = await _bfs_shortest_path(
+    from contextmine_core.graphrag_paths import find_shortest_path
+
+    path_nodes, path_edges = await find_shortest_path(
         session,
         from_node_id,
         to_node_id,

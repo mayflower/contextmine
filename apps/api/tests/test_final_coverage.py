@@ -11,13 +11,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from app.mcp_server import (
-    _filter_graph_payload,
-    _node_kind_in_scope,
-    _parse_csv_list,
-    _sha256_text,
-    escape_like_pattern,
-)
+from app.mcp_domains.collections import escape_like_pattern
 from app.routes.context import ContextRequest as APIContextRequest
 from app.routes.context import ContextResponse as APIContextResponse
 from app.routes.context import SourceInfo
@@ -271,7 +265,7 @@ class TestRequestModels:
 
 
 # ============================================================================
-# 3. mcp_server.py — pure helper functions (lines 39-133)
+# 3. MCP collection query escaping
 # ============================================================================
 
 
@@ -292,152 +286,8 @@ class TestEscapeLikePattern:
         assert escape_like_pattern("a%b_c\\d") == "a\\%b\\_c\\\\d"
 
 
-class TestSha256Text:
-    def test_deterministic(self) -> None:
-        h1 = _sha256_text("hello")
-        h2 = _sha256_text("hello")
-        assert h1 == h2
-
-    def test_length(self) -> None:
-        assert len(_sha256_text("test")) == 64
-
-
-class TestParseCsvList:
-    def test_none(self) -> None:
-        assert _parse_csv_list(None) is None
-
-    def test_empty(self) -> None:
-        assert _parse_csv_list("") is None
-
-    def test_single(self) -> None:
-        assert _parse_csv_list("hello") == ["hello"]
-
-    def test_multiple(self) -> None:
-        assert _parse_csv_list("a, b, c") == ["a", "b", "c"]
-
-    def test_whitespace(self) -> None:
-        assert _parse_csv_list("  a , , b  ") == ["a", "b"]
-
-
-class TestNodeKindInScope:
-    def test_all_scope(self) -> None:
-        assert _node_kind_in_scope("test_case", "all") is True
-        assert _node_kind_in_scope("file", "all") is True
-
-    def test_tests_scope(self) -> None:
-        assert _node_kind_in_scope("test_case", "tests") is True
-        assert _node_kind_in_scope("test_suite", "tests") is True
-        assert _node_kind_in_scope("test_fixture", "tests") is True
-        assert _node_kind_in_scope("file", "tests") is False
-
-    def test_ui_scope(self) -> None:
-        assert _node_kind_in_scope("ui_route", "ui") is True
-        assert _node_kind_in_scope("ui_view", "ui") is True
-        assert _node_kind_in_scope("ui_component", "ui") is True
-        assert _node_kind_in_scope("interface_contract", "ui") is True
-        assert _node_kind_in_scope("file", "ui") is False
-
-    def test_flows_scope(self) -> None:
-        assert _node_kind_in_scope("user_flow", "flows") is True
-        assert _node_kind_in_scope("flow_step", "flows") is True
-        assert _node_kind_in_scope("file", "flows") is False
-
-    def test_code_scope(self) -> None:
-        assert _node_kind_in_scope("file", "code") is True
-        assert _node_kind_in_scope("test_case", "code") is False
-        assert _node_kind_in_scope("ui_route", "code") is False
-        assert _node_kind_in_scope("user_flow", "code") is False
-
-    def test_unknown_scope(self) -> None:
-        assert _node_kind_in_scope("anything", "unknown") is True
-
-
 # ============================================================================
-# 4. mcp_server.py — _filter_graph_payload (lines 135-191)
-# ============================================================================
-
-
-class TestFilterGraphPayload:
-    def test_all_scope_passthrough(self) -> None:
-        graph = {
-            "nodes": [
-                {"id": "1", "kind": "file"},
-                {"id": "2", "kind": "test_case"},
-            ],
-            "edges": [
-                {"source_node_id": "1", "target_node_id": "2", "kind": "test_covers"},
-            ],
-        }
-        result = _filter_graph_payload(graph, scope="all")
-        assert len(result["nodes"]) == 2
-        assert len(result["edges"]) == 1
-
-    def test_tests_scope_filters(self) -> None:
-        graph = {
-            "nodes": [
-                {"id": "1", "kind": "file"},
-                {"id": "2", "kind": "test_case"},
-                {"id": "3", "kind": "test_suite"},
-            ],
-            "edges": [
-                {"source_node_id": "1", "target_node_id": "2", "kind": "x"},
-                {"source_node_id": "2", "target_node_id": "3", "kind": "y"},
-            ],
-        }
-        result = _filter_graph_payload(graph, scope="tests")
-        assert len(result["nodes"]) == 2
-        # Only edge between test nodes survives
-        assert len(result["edges"]) == 1
-
-    def test_provenance_filter(self) -> None:
-        graph = {
-            "nodes": [
-                {"id": "1", "kind": "file", "meta": {"provenance": {"mode": "deterministic"}}},
-                {"id": "2", "kind": "file", "meta": {"provenance": {"mode": "inferred"}}},
-            ],
-            "edges": [],
-        }
-        result = _filter_graph_payload(graph, provenance_mode="deterministic")
-        assert len(result["nodes"]) == 1
-        assert result["nodes"][0]["id"] == "1"
-
-    def test_exclude_test_links(self) -> None:
-        graph = {
-            "nodes": [{"id": "1", "kind": "file"}],
-            "edges": [
-                {"source_node_id": "1", "target_node_id": "1", "kind": "test_covers_symbol"},
-                {"source_node_id": "1", "target_node_id": "1", "kind": "depends_on"},
-            ],
-        }
-        result = _filter_graph_payload(graph, include_test_links=False)
-        assert len(result["edges"]) == 1
-        assert result["edges"][0]["kind"] == "depends_on"
-
-    def test_exclude_ui_links(self) -> None:
-        graph = {
-            "nodes": [{"id": "1", "kind": "file"}],
-            "edges": [
-                {"source_node_id": "1", "target_node_id": "1", "kind": "ui_route_renders"},
-                {"source_node_id": "1", "target_node_id": "1", "kind": "calls"},
-            ],
-        }
-        result = _filter_graph_payload(graph, include_ui_links=False)
-        assert len(result["edges"]) == 1
-
-    def test_total_nodes_added(self) -> None:
-        graph = {"nodes": [{"id": "1", "kind": "file"}], "edges": []}
-        result = _filter_graph_payload(graph)
-        assert result["total_nodes"] == 1
-
-    def test_empty_graph(self) -> None:
-        result = _filter_graph_payload({})
-        assert result["nodes"] == []
-        assert result["edges"] == []
-        assert result["total_nodes"] == 0
-
-
-# ============================================================================
-# 5. routes/context.py — models (lines 27-61)
+# 4. routes/context.py — models (lines 27-61)
 # ============================================================================
 
 

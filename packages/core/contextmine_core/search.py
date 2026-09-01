@@ -3,6 +3,7 @@
 import uuid
 from dataclasses import dataclass
 
+from contextmine_core.access import get_accessible_collection_ids
 from contextmine_core.database import get_session
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,43 +35,6 @@ class SearchResponse:
     query: str
     total_fts_matches: int
     total_vector_matches: int
-
-
-async def get_accessible_collection_ids(
-    session: AsyncSession,
-    user_id: uuid.UUID | None,
-) -> list[uuid.UUID]:
-    """Get IDs of collections accessible to the user.
-
-    Returns:
-        List of collection IDs that are:
-        - Global (visible to all)
-        - Owned by the user
-        - User is a member of
-    """
-    if user_id is None:
-        # Anonymous user: only global collections
-        result = await session.execute(
-            text("""
-                SELECT id FROM collections
-                WHERE visibility = 'global'
-            """)
-        )
-    else:
-        result = await session.execute(
-            text("""
-                SELECT id FROM collections
-                WHERE visibility = 'global'
-                   OR owner_user_id = :user_id
-                   OR id IN (
-                       SELECT collection_id FROM collection_members
-                       WHERE user_id = :user_id
-                   )
-            """),
-            {"user_id": user_id},
-        )
-
-    return [row[0] for row in result.fetchall()]
 
 
 async def search_fts(

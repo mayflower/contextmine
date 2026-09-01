@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-import { resolveCodechartaUrl } from './config/codecharta'
+import { resolveCodechartaUrl } from './config/codecharta.ts'
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url))
 

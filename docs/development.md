@@ -305,12 +305,13 @@ docker compose logs -f worker
 
 ### Container Images
 
-Pre-built images from GitHub Container Registry:
+Pre-built images from GitHub Container Registry use the immutable tag and
+digest emitted by the build workflow:
 
 ```bash
-docker pull ghcr.io/mayflower/contextmine-api:latest
-docker pull ghcr.io/mayflower/contextmine-worker:latest
-docker pull ghcr.io/mayflower/contextmine-web:latest
+docker pull ghcr.io/mayflower/contextmine-api:sha-<git-sha>@sha256:<registry-digest>
+docker pull ghcr.io/mayflower/contextmine-worker:sha-<git-sha>@sha256:<registry-digest>
+docker pull ghcr.io/mayflower/contextmine-web:sha-<git-sha>@sha256:<registry-digest>
 ```
 
 ### Helm Chart

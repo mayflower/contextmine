@@ -1,79 +1,49 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-/** Process a batch of Promise.allSettled results into values/errors. */
-function processSettledResults<K extends string>(
-  entries: ReadonlyArray<{ key: K; result: PromiseSettledResult<unknown>; setter: (v: never) => void; fallbackError: string }>,
-): { errors: Record<K, string>; successCount: number } {
-  const errors = {} as Record<K, string>
-  let successCount = 0
-  for (const { key, result, setter, fallbackError } of entries) {
-    if (result.status === 'fulfilled') {
-      setter(result.value as never)
-      successCount += 1
-      errors[key] = ''
-    } else {
-      errors[key] = result.reason instanceof Error ? result.reason.message : fallbackError
-    }
-  }
-  return { errors, successCount }
-}
-
+import { api, apiData, apiErrorMessage } from '../../api/client'
 import type {
   Arc42DriftPayload,
   Arc42ViewPayload,
   C4ViewMode,
   CityEntityLevel,
-  CityProjection,
   CityPayload,
-  FitnessFunctionsPayload,
-  GraphRagCommunity,
-  GraphRagCommunityMode,
-  GraphRagCommunitiesPayload,
-  GraphRagPathPayload,
-  GraphRagProcessDetailPayload,
-  GraphRagProcessSummary,
-  GraphRagStatusReason,
-  SemanticMapMode,
-  SemanticMapPayload,
-  SemanticMapThresholds,
-  RebuildReadinessPayload,
+  CityProjection,
   CockpitLayer,
   CockpitLoadState,
-  CockpitProjection,
   CockpitSelection,
   CockpitView,
   DeepDiveMode,
+  ErmViewPayload,
   ExportFormat,
+  ExportProjection,
+  FitnessFunctionsPayload,
   GraphFilters,
-  GraphRagEvidenceItem,
-  GraphRagEvidencePayload,
-  GraphRagPayload,
-  GraphViewPayload,
-  GraphNeighborhoodResponse,
   GraphPagingState,
+  GraphRagCommunity,
+  GraphRagCommunityMode,
+  GraphRagEvidenceItem,
+  GraphRagProcessSummary,
+  GraphRagStatusReason,
+  GraphViewPayload,
   InvestmentUtilizationPayload,
   KnowledgeIslandsPayload,
-  ErmViewPayload,
+  MermaidPayload,
   PortsAdaptersPayload,
+  PortsDirection,
+  RebuildReadinessPayload,
+  SemanticMapMode,
+  SemanticMapPayload,
+  SemanticMapThresholds,
+  TemporalCouplingPayload,
   TestMatrixPayload,
+  TwinGraphResponse,
   UIMapPayload,
   UserFlowsPayload,
-  MermaidPayload,
-  ScenarioLite,
-  TemporalCouplingPayload,
-  PortsDirection,
-  TwinGraphResponse,
 } from '../types'
 
 type DataStates = Record<CockpitView, CockpitLoadState>
 type DataErrors = Record<CockpitView, string>
-type DataUpdated = Partial<Record<CockpitView, string>>
-type ArchitectureActionState = {
-  reindexState: CockpitLoadState
-  reindexMessage: string
-  regenerateState: CockpitLoadState
-  regenerateMessage: string
-}
 
 const DEFAULT_GRAPH: TwinGraphResponse = {
   nodes: [],
@@ -84,45 +54,15 @@ const DEFAULT_GRAPH: TwinGraphResponse = {
   warnings: [],
 }
 
-const DEFAULT_STATES: DataStates = {
-  overview: 'idle',
-  topology: 'idle',
-  deep_dive: 'idle',
-  c4_diff: 'idle',
-  architecture: 'idle',
-  city: 'idle',
-  evolution: 'idle',
-  graphrag: 'idle',
-  ui_map: 'idle',
-  semantic_map: 'idle',
-  test_matrix: 'idle',
-  user_flows: 'idle',
-  rebuild_readiness: 'idle',
-  exports: 'idle',
+const EMPTY_STATES: DataStates = {
+  overview: 'idle', topology: 'idle', deep_dive: 'idle', c4_diff: 'idle', architecture: 'idle',
+  city: 'idle', evolution: 'idle', graphrag: 'idle', ui_map: 'idle', semantic_map: 'idle',
+  test_matrix: 'idle', user_flows: 'idle', rebuild_readiness: 'idle', exports: 'idle',
 }
 
-const DEFAULT_ERRORS: DataErrors = {
-  overview: '',
-  topology: '',
-  deep_dive: '',
-  c4_diff: '',
-  architecture: '',
-  city: '',
-  evolution: '',
-  graphrag: '',
-  ui_map: '',
-  semantic_map: '',
-  test_matrix: '',
-  user_flows: '',
-  rebuild_readiness: '',
-  exports: '',
-}
-
-const DEFAULT_ARCHITECTURE_ACTION_STATE: ArchitectureActionState = {
-  reindexState: 'idle',
-  reindexMessage: '',
-  regenerateState: 'idle',
-  regenerateMessage: '',
+const EMPTY_ERRORS: DataErrors = {
+  overview: '', topology: '', deep_dive: '', c4_diff: '', architecture: '', city: '', evolution: '',
+  graphrag: '', ui_map: '', semantic_map: '', test_matrix: '', user_flows: '', rebuild_readiness: '', exports: '',
 }
 
 interface UseCockpitDataArgs {
@@ -149,1263 +89,446 @@ interface UseCockpitDataArgs {
   onViewError?: (view: CockpitView, message: string) => void
 }
 
+interface ViewData {
+  city?: CityPayload
+  graph?: TwinGraphResponse
+  mermaid?: MermaidPayload
+  arc42?: Arc42ViewPayload
+  portsAdapters?: PortsAdaptersPayload
+  arc42Drift?: Arc42DriftPayload
+  erm?: ErmViewPayload
+  architecturePanelErrors?: { arc42: string; ports: string; drift: string; erm: string }
+  cityEmbedUrl?: string
+  investmentUtilization?: InvestmentUtilizationPayload
+  knowledgeIslands?: KnowledgeIslandsPayload
+  temporalCoupling?: TemporalCouplingPayload
+  fitnessFunctions?: FitnessFunctionsPayload
+  evolutionPanelErrors?: { investment: string; knowledge: string; coupling: string; fitness: string }
+  graphRagStatus?: 'ready' | 'unavailable'
+  graphRagReason?: GraphRagStatusReason
+  graphRagCommunities?: GraphRagCommunity[]
+  graphRagCommunitiesError?: string
+  graphRagProcesses?: GraphRagProcessSummary[]
+  graphRagProcessesError?: string
+  uiMapSummary?: UIMapPayload['summary']
+  uiMapGraph?: TwinGraphResponse
+  userFlowsGraph?: TwinGraphResponse
+  semanticMap?: SemanticMapPayload
+  semanticMapComparison?: SemanticMapPayload
+  testMatrix?: TestMatrixPayload
+  userFlows?: UserFlowsPayload
+  rebuildReadiness?: RebuildReadinessPayload
+}
+
 function topologyEntityLevel(layer: CockpitLayer): 'domain' | 'container' | 'component' {
   if (layer === 'portfolio_system') return 'domain'
   if (layer === 'component_interface') return 'component'
   return 'container'
 }
 
-export function useCockpitData({
-  selection,
-  behaviorGraphMode,
-  topologyLimit,
-  deepDiveLimit,
-  deepDiveMode,
-  c4View,
-  c4Scope,
-  c4MaxNodes,
-  architectureSection,
-  portsDirection,
-  portsContainer,
-  driftBaselineScenarioId,
-  graphFilters,
-  graphPaging,
-  graphRagCommunityMode,
-  graphRagCommunityId,
-  semanticMapMode,
-  semanticMapThresholdsByMode,
-  selectedNodeId,
-  onScenarioAutoSelect,
-  onViewError,
-}: UseCockpitDataArgs) {
-  const [scenarios, setScenarios] = useState<ScenarioLite[]>([])
-  const [scenariosState, setScenariosState] = useState<CockpitLoadState>('idle')
-  const [city, setCity] = useState<CityPayload | null>(null)
-  const [graph, setGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
-  const [mermaid, setMermaid] = useState<MermaidPayload | null>(null)
-  const [arc42, setArc42] = useState<Arc42ViewPayload | null>(null)
-  const [portsAdapters, setPortsAdapters] = useState<PortsAdaptersPayload | null>(null)
-  const [arc42Drift, setArc42Drift] = useState<Arc42DriftPayload | null>(null)
-  const [erm, setErm] = useState<ErmViewPayload | null>(null)
-  const [architecturePanelErrors, setArchitecturePanelErrors] = useState<{
-    arc42: string
-    ports: string
-    drift: string
-    erm: string
-  }>({
-    arc42: '',
-    ports: '',
-    drift: '',
-    erm: '',
-  })
-  const [architectureActions, setArchitectureActions] = useState<ArchitectureActionState>(
-    DEFAULT_ARCHITECTURE_ACTION_STATE,
-  )
-  const [states, setStates] = useState<DataStates>(DEFAULT_STATES)
-  const [errors, setErrors] = useState<DataErrors>(DEFAULT_ERRORS)
-  const [updatedAt, setUpdatedAt] = useState<DataUpdated>({})
-  const [refreshNonce, setRefreshNonce] = useState(0)
+function errorText(result: PromiseSettledResult<unknown>, fallback: string): string {
+  return result.status === 'rejected' ? apiErrorMessage(result.reason, fallback) : ''
+}
+
+function graphFromView(payload: GraphViewPayload): TwinGraphResponse {
+  const graph = payload.graph || DEFAULT_GRAPH
+  return {
+    ...graph,
+    projection: payload.projection ?? graph.projection,
+    entity_level: payload.entity_level ?? graph.entity_level,
+    grouping_strategy: payload.grouping_strategy ?? graph.grouping_strategy,
+    excluded_kinds: payload.excluded_kinds ?? graph.excluded_kinds,
+    warnings: payload.warnings ?? graph.warnings ?? [],
+    provenance: payload.provenance ?? graph.provenance,
+  }
+}
+
+export function useCockpitData(args: UseCockpitDataArgs) {
+  const {
+    selection, behaviorGraphMode, topologyLimit, deepDiveLimit, deepDiveMode, c4View, c4Scope,
+    c4MaxNodes, architectureSection, portsDirection, portsContainer, driftBaselineScenarioId,
+    graphFilters, graphPaging, graphRagCommunityMode, graphRagCommunityId, semanticMapMode,
+    semanticMapThresholdsByMode, selectedNodeId, onScenarioAutoSelect, onViewError,
+  } = args
+  const queryClient = useQueryClient()
   const [cityProjection, setCityProjection] = useState<CityProjection>('architecture')
   const [cityEntityLevel, setCityEntityLevel] = useState<CityEntityLevel>('container')
-  const [cityEmbedUrl, setCityEmbedUrl] = useState('')
-  const [investmentUtilization, setInvestmentUtilization] = useState<InvestmentUtilizationPayload | null>(null)
-  const [knowledgeIslands, setKnowledgeIslands] = useState<KnowledgeIslandsPayload | null>(null)
-  const [temporalCoupling, setTemporalCoupling] = useState<TemporalCouplingPayload | null>(null)
-  const [fitnessFunctions, setFitnessFunctions] = useState<FitnessFunctionsPayload | null>(null)
-  const [evolutionPanelErrors, setEvolutionPanelErrors] = useState<{
-    investment: string
-    knowledge: string
-    coupling: string
-    fitness: string
-  }>({
-    investment: '',
-    knowledge: '',
-    coupling: '',
-    fitness: '',
-  })
   const [exportFormat, setExportFormat] = useState<ExportFormat>('cc_json')
-  const [exportProjection, setExportProjection] = useState<CockpitProjection>('architecture')
+  const [exportProjection, setExportProjection] = useState<ExportProjection>('architecture')
   const [exportContent, setExportContent] = useState('')
-  const [neighborhood, setNeighborhood] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
-  const [neighborhoodState, setNeighborhoodState] = useState<CockpitLoadState>('idle')
-  const [neighborhoodError, setNeighborhoodError] = useState('')
-  const [graphRagStatus, setGraphRagStatus] = useState<'ready' | 'unavailable'>('ready')
-  const [graphRagReason, setGraphRagReason] = useState<GraphRagStatusReason>('ok')
-  const [graphRagEvidenceItems, setGraphRagEvidenceItems] = useState<GraphRagEvidenceItem[]>([])
-  const [graphRagEvidenceTotal, setGraphRagEvidenceTotal] = useState(0)
-  const [graphRagEvidenceNodeName, setGraphRagEvidenceNodeName] = useState('')
-  const [graphRagEvidenceState, setGraphRagEvidenceState] = useState<CockpitLoadState>('idle')
-  const [graphRagEvidenceError, setGraphRagEvidenceError] = useState('')
-  const [graphRagCommunities, setGraphRagCommunities] = useState<GraphRagCommunity[]>([])
-  const [graphRagCommunitiesState, setGraphRagCommunitiesState] = useState<CockpitLoadState>('idle')
-  const [graphRagCommunitiesError, setGraphRagCommunitiesError] = useState('')
-  const [graphRagPath, setGraphRagPath] = useState<GraphRagPathPayload | null>(null)
-  const [graphRagPathState, setGraphRagPathState] = useState<CockpitLoadState>('idle')
-  const [graphRagPathError, setGraphRagPathError] = useState('')
-  const [graphRagProcesses, setGraphRagProcesses] = useState<GraphRagProcessSummary[]>([])
-  const [graphRagProcessesState, setGraphRagProcessesState] = useState<CockpitLoadState>('idle')
-  const [graphRagProcessesError, setGraphRagProcessesError] = useState('')
-  const [graphRagProcessDetail, setGraphRagProcessDetail] = useState<GraphRagProcessDetailPayload | null>(null)
-  const [graphRagProcessDetailState, setGraphRagProcessDetailState] = useState<CockpitLoadState>('idle')
-  const [graphRagProcessDetailError, setGraphRagProcessDetailError] = useState('')
-  const [uiMapSummary, setUiMapSummary] = useState<UIMapPayload['summary'] | null>(null)
-  const [uiMapGraph, setUiMapGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
-  const [userFlowsGraph, setUserFlowsGraph] = useState<TwinGraphResponse>(DEFAULT_GRAPH)
-  const [semanticMap, setSemanticMap] = useState<SemanticMapPayload | null>(null)
-  const [semanticMapComparison, setSemanticMapComparison] = useState<SemanticMapPayload | null>(null)
-  const [testMatrix, setTestMatrix] = useState<TestMatrixPayload | null>(null)
-  const [userFlows, setUserFlows] = useState<UserFlowsPayload | null>(null)
-  const [rebuildReadiness, setRebuildReadiness] = useState<RebuildReadinessPayload | null>(null)
 
-  const setViewState = useCallback((view: CockpitView, nextState: CockpitLoadState) => {
-    setStates((prev) => ({ ...prev, [view]: nextState }))
-  }, [])
+  const scenariosQuery = useQuery({
+    queryKey: ['twin', 'scenarios', selection.collectionId],
+    enabled: Boolean(selection.collectionId),
+    queryFn: ({ signal }) => apiData(api.GET('/api/twin/scenarios', {
+      params: { query: { collection_id: selection.collectionId } }, signal,
+    })),
+  })
+  const scenarios = useMemo(() => scenariosQuery.data?.scenarios ?? [], [scenariosQuery.data])
 
-  const setViewError = useCallback(
-    (view: CockpitView, message: string) => {
-      setErrors((prev) => ({ ...prev, [view]: message }))
-      if (message && onViewError) {
-        onViewError(view, message)
+  useEffect(() => {
+    if (scenarios.length === 0 || scenarios.some((scenario) => scenario.id === selection.scenarioId)) return
+    onScenarioAutoSelect(scenarios.find((scenario) => scenario.is_as_is)?.id ?? scenarios[0].id)
+  }, [onScenarioAutoSelect, scenarios, selection.scenarioId])
+
+  const activeQuery = useQuery({
+    queryKey: ['cockpit', selection.collectionId, selection.scenarioId, selection.view, {
+      layer: selection.layer, topologyLimit, deepDiveLimit, deepDiveMode, c4View, c4Scope, c4MaxNodes,
+      architectureSection, portsDirection, portsContainer, driftBaselineScenarioId, graphFilters,
+      graphPaging, graphRagCommunityMode, graphRagCommunityId, semanticMapMode,
+      semanticThresholds: semanticMapThresholdsByMode, cityProjection, cityEntityLevel,
+    }],
+    enabled: Boolean(selection.collectionId && selection.scenarioId && selection.view !== 'exports'),
+    queryFn: async ({ signal }): Promise<ViewData> => {
+      const collectionId = selection.collectionId
+      const scenarioId = selection.scenarioId
+      const path = { collection_id: collectionId }
+      const page = graphPaging.page
+      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
+
+      if (selection.view === 'overview') {
+        const city = await apiData(api.GET('/api/twin/collections/{collection_id}/views/city', {
+          params: { path, query: { scenario_id: scenarioId, hotspots_limit: 60 } }, signal,
+        }))
+        return { city }
       }
-    },
-    [onViewError],
-  )
 
-  const markUpdated = useCallback((view: CockpitView) => {
-    setUpdatedAt((prev) => ({ ...prev, [view]: new Date().toISOString() }))
-  }, [])
+      if (selection.view === 'topology' || selection.view === 'deep_dive') {
+        const view = selection.view
+        const viewLimit = graphPaging.limit > 0 ? graphPaging.limit : view === 'topology' ? topologyLimit : deepDiveLimit
+        const common = {
+          scenario_id: scenarioId, layer: selection.layer, limit: viewLimit, page,
+          include_kinds: graphFilters.includeKinds.join(',') || null,
+          exclude_kinds: graphFilters.excludeKinds.join(',') || null,
+        }
+        let payload: GraphViewPayload
+        if (view === 'topology') {
+          payload = await apiData(api.GET('/api/twin/collections/{collection_id}/views/topology', {
+            params: { path, query: { ...common, projection: 'architecture', entity_level: topologyEntityLevel(selection.layer) } }, signal,
+          }))
+        } else {
+          const projection = deepDiveMode === 'file_dependency' ? 'code_file' : 'code_symbol'
+          const entityLevel = deepDiveMode === 'file_dependency' ? 'file' : 'symbol'
+          payload = await apiData(api.GET('/api/twin/collections/{collection_id}/views/deep-dive', {
+            params: { path, query: { ...common, projection, entity_level: entityLevel, mode: deepDiveMode } }, signal,
+          }))
+        }
+        return { graph: graphFromView(payload) }
+      }
+
+      if (selection.view === 'ui_map') {
+        const query = { scenario_id: scenarioId, page, limit }
+        const [ui, flows] = await Promise.allSettled([
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/ui-map', { params: { path, query }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/user-flows', { params: { path, query }, signal })),
+        ])
+        if (ui.status === 'rejected' && flows.status === 'rejected') throw ui.reason
+        const uiPayload = ui.status === 'fulfilled' ? ui.value : undefined
+        const flowsPayload = flows.status === 'fulfilled' ? flows.value : undefined
+        const uiGraph = uiPayload ? { ...uiPayload.graph, projection: 'code_symbol' as const, entity_level: uiPayload.entity_level } : DEFAULT_GRAPH
+        const flowsGraph = flowsPayload ? { ...flowsPayload.graph, projection: 'code_symbol' as const, entity_level: flowsPayload.entity_level } : DEFAULT_GRAPH
+        return {
+          uiMapSummary: uiPayload?.summary, uiMapGraph: uiGraph, userFlows: flowsPayload,
+          userFlowsGraph: flowsGraph,
+          graph: behaviorGraphMode === 'user_flows'
+            ? (flowsGraph.total_nodes > 0 ? flowsGraph : uiGraph)
+            : (uiGraph.total_nodes > 0 ? uiGraph : flowsGraph),
+        }
+      }
+
+      if (selection.view === 'test_matrix') {
+        const testMatrix = await apiData(api.GET('/api/twin/collections/{collection_id}/views/test-matrix', {
+          params: { path, query: { scenario_id: scenarioId, page, limit } }, signal,
+        }))
+        return { testMatrix, graph: { ...testMatrix.graph, projection: 'code_symbol', entity_level: testMatrix.entity_level } }
+      }
+
+      if (selection.view === 'semantic_map') {
+        const buildQuery = (mode: SemanticMapMode) => {
+          const thresholds = semanticMapThresholdsByMode[mode]
+          return {
+            scenario_id: scenarioId, map_mode: mode, page, limit,
+            include_kinds: graphFilters.includeKinds.join(',') || null,
+            exclude_kinds: graphFilters.excludeKinds.join(',') || null,
+            edge_kinds: graphFilters.edgeKinds.join(',') || null,
+            ...thresholds,
+          }
+        }
+        const comparisonMode = semanticMapMode === 'semantic' ? 'code_structure' : 'semantic'
+        const [current, comparison, context] = await Promise.allSettled([
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/semantic-map', { params: { path, query: buildQuery(semanticMapMode) }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/semantic-map', { params: { path, query: buildQuery(comparisonMode) }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag', {
+            params: { path, query: { scenario_id: scenarioId, community_mode: 'color', page, limit,
+              include_kinds: graphFilters.includeKinds.join(',') || null,
+              exclude_kinds: graphFilters.excludeKinds.join(',') || null,
+              edge_kinds: graphFilters.edgeKinds.join(',') || null } }, signal,
+          })),
+        ])
+        if (current.status === 'rejected') throw current.reason
+        return {
+          semanticMap: current.value,
+          semanticMapComparison: comparison.status === 'fulfilled' ? comparison.value : undefined,
+          graph: context.status === 'fulfilled' ? { ...context.value.graph, projection: context.value.projection, entity_level: context.value.entity_level } : DEFAULT_GRAPH,
+        }
+      }
+
+      if (selection.view === 'rebuild_readiness') {
+        return { rebuildReadiness: await apiData(api.GET('/api/twin/collections/{collection_id}/views/rebuild-readiness', {
+          params: { path, query: { scenario_id: scenarioId } }, signal,
+        })) }
+      }
+
+      if (selection.view === 'architecture') {
+        const section = architectureSection.trim() || null
+        const direction = portsDirection === 'all' ? null : portsDirection
+        const container = portsContainer.trim() || null
+        const baseline = driftBaselineScenarioId.trim() || null
+        const results = await Promise.allSettled([
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/arc42', { params: { path, query: { scenario_id: scenarioId, section } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/ports-adapters', { params: { path, query: { scenario_id: scenarioId, direction, container } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/arc42/drift', { params: { path, query: { scenario_id: scenarioId, baseline_scenario_id: baseline } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/erm', { params: { path, query: { scenario_id: scenarioId } }, signal })),
+        ])
+        if (results.every((result) => result.status === 'rejected')) throw (results[0] as PromiseRejectedResult).reason
+        return {
+          arc42: results[0].status === 'fulfilled' ? results[0].value : undefined,
+          portsAdapters: results[1].status === 'fulfilled' ? results[1].value : undefined,
+          arc42Drift: results[2].status === 'fulfilled' ? results[2].value : undefined,
+          erm: results[3].status === 'fulfilled' ? results[3].value : undefined,
+          architecturePanelErrors: {
+            arc42: errorText(results[0], 'Could not load arc42 view'), ports: errorText(results[1], 'Could not load ports/adapters view'),
+            drift: errorText(results[2], 'Could not load drift view'), erm: errorText(results[3], 'Could not load ERM view'),
+          },
+        }
+      }
+
+      if (selection.view === 'evolution') {
+        const results = await Promise.allSettled([
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/evolution/investment-utilization', { params: { path, query: { scenario_id: scenarioId, entity_level: 'container', window_days: 365 } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/evolution/knowledge-islands', { params: { path, query: { scenario_id: scenarioId, entity_level: 'container', window_days: 365, ownership_threshold: 0.7 } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/evolution/temporal-coupling', { params: { path, query: { scenario_id: scenarioId, entity_level: 'component', window_days: 365, min_jaccard: 0.2, max_edges: 300 } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/evolution/fitness-functions', { params: { path, query: { scenario_id: scenarioId, window_days: 365, include_resolved: false } }, signal })),
+        ])
+        if (results.every((result) => result.status === 'rejected')) throw (results[0] as PromiseRejectedResult).reason
+        return {
+          investmentUtilization: results[0].status === 'fulfilled' ? results[0].value : undefined,
+          knowledgeIslands: results[1].status === 'fulfilled' ? results[1].value : undefined,
+          temporalCoupling: results[2].status === 'fulfilled' ? results[2].value : undefined,
+          fitnessFunctions: results[3].status === 'fulfilled' ? results[3].value : undefined,
+          evolutionPanelErrors: {
+            investment: errorText(results[0], 'Could not load investment/utilization'), knowledge: errorText(results[1], 'Could not load knowledge islands'),
+            coupling: errorText(results[2], 'Could not load temporal coupling'), fitness: errorText(results[3], 'Could not load fitness functions'),
+          },
+        }
+      }
+
+      if (selection.view === 'graphrag') {
+        const query = { scenario_id: scenarioId, page, limit, community_mode: graphRagCommunityMode,
+          community_id: graphRagCommunityId.trim() || null, include_kinds: graphFilters.includeKinds.join(',') || null,
+          exclude_kinds: graphFilters.excludeKinds.join(',') || null, edge_kinds: graphFilters.edgeKinds.join(',') || null }
+        const [main, communities, processes] = await Promise.allSettled([
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag', { params: { path, query }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag/communities', { params: { path, query: { scenario_id: scenarioId, limit: 500 } }, signal })),
+          apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag/processes', { params: { path, query: { scenario_id: scenarioId } }, signal })),
+        ])
+        if (main.status === 'rejected') throw main.reason
+        return {
+          graph: { ...main.value.graph, projection: main.value.projection, entity_level: main.value.entity_level },
+          graphRagStatus: main.value.status?.status ?? 'ready', graphRagReason: main.value.status?.reason ?? 'ok',
+          graphRagCommunities: communities.status === 'fulfilled' ? communities.value.items : [],
+          graphRagCommunitiesError: errorText(communities, 'Could not load communities'),
+          graphRagProcesses: processes.status === 'fulfilled' ? processes.value.items : [],
+          graphRagProcessesError: errorText(processes, 'Could not load processes'),
+        }
+      }
+
+      if (selection.view === 'c4_diff') {
+        return { mermaid: await apiData(api.GET('/api/twin/collections/{collection_id}/views/mermaid', {
+          params: { path, query: { scenario_id: scenarioId, compare_with_base: true, c4_view: c4View,
+            c4_scope: c4Scope.trim() || null, max_nodes: Math.max(10, c4MaxNodes || 120) } }, signal,
+        })) }
+      }
+
+      if (selection.view === 'city') {
+        const entityLevel = cityProjection === 'architecture' ? cityEntityLevel : 'file'
+        const created = await apiData(api.POST('/api/twin/scenarios/{scenario_id}/exports', {
+          params: { path: { scenario_id: scenarioId } }, body: { format: 'cc_json', projection: cityProjection, entity_level: entityLevel }, signal,
+        }))
+        const exportId = created.id ?? created.exports?.[0]?.id
+        if (!exportId) throw new Error('Missing export id from city export response')
+        const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
+        const embed = new URLSearchParams({ file: rawPath, area: 'loc', height: 'coupling', color: 'complexity', mode: 'Single' })
+        return { cityEmbedUrl: `/codecharta/index.html?${embed.toString()}` }
+      }
+
+      return {}
+    },
+  })
+
+  const evidenceQuery = useQuery({
+    queryKey: ['cockpit', selection.collectionId, selection.scenarioId, 'graphrag-evidence', selectedNodeId],
+    enabled: selection.view === 'graphrag' && Boolean(selection.collectionId && selection.scenarioId && selectedNodeId),
+    queryFn: ({ signal }) => apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag/evidence', {
+      params: { path: { collection_id: selection.collectionId }, query: { scenario_id: selection.scenarioId, node_id: selectedNodeId, limit: 50 } }, signal,
+    })),
+  })
+
+  const neighborhoodQuery = useQuery({
+    queryKey: ['cockpit', selection.scenarioId, 'neighborhood', selectedNodeId, selection.view, deepDiveMode],
+    enabled: Boolean(selection.scenarioId && selectedNodeId && (selection.view === 'topology' || selection.view === 'deep_dive')),
+    queryFn: ({ signal }) => {
+      const projection = selection.view === 'topology' ? 'architecture' : deepDiveMode === 'file_dependency' ? 'code_file' : 'code_symbol'
+      return apiData(api.GET('/api/twin/scenarios/{scenario_id}/graph/neighborhood', {
+        params: { path: { scenario_id: selection.scenarioId }, query: { node_id: selectedNodeId, projection, hops: 1, limit: 200 } }, signal,
+      }))
+    },
+  })
+
+  const reindex = useMutation({
+    mutationFn: async () => apiData(api.POST('/api/twin/collections/{collection_id}/refresh', {
+      params: { path: { collection_id: selection.collectionId } }, body: { force: true },
+    })),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['cockpit', selection.collectionId] }),
+  })
+  const regenerate = useMutation({
+    mutationFn: () => apiData(api.GET('/api/twin/collections/{collection_id}/views/arc42', {
+      params: { path: { collection_id: selection.collectionId }, query: { scenario_id: selection.scenarioId, regenerate: true, section: architectureSection.trim() || null } },
+    })),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['cockpit', selection.collectionId, selection.scenarioId, 'architecture'] }),
+  })
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      const entityLevel = exportProjection === 'architecture' ? topologyEntityLevel(selection.layer) : exportProjection === 'code_file' ? 'file' : 'symbol'
+      const created = await apiData(api.POST('/api/twin/scenarios/{scenario_id}/exports', {
+        params: { path: { scenario_id: selection.scenarioId } }, body: { format: exportFormat, projection: exportProjection, entity_level: entityLevel },
+      }))
+      const exportId = created.id ?? created.exports?.[0]?.id
+      if (!exportId) throw new Error('Missing export id from API response')
+      const artifact = await apiData(api.GET('/api/twin/scenarios/{scenario_id}/exports/{export_id}', {
+        params: { path: { scenario_id: selection.scenarioId, export_id: exportId } },
+      }))
+      return { content: artifact.content ?? '', name: artifact.name ?? `${exportFormat}.txt` }
+    },
+    onSuccess: (artifact) => setExportContent(artifact.content),
+  })
+  const pathMutation = useMutation({
+    mutationFn: ({ from, to, maxHops }: { from: string; to: string; maxHops: number }) => apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag/path', {
+      params: { path: { collection_id: selection.collectionId }, query: { scenario_id: selection.scenarioId, from_node_id: from, to_node_id: to, max_hops: Math.max(1, Math.min(20, maxHops)) } },
+    })),
+  })
+  const processMutation = useMutation({
+    mutationFn: (processId: string) => apiData(api.GET('/api/twin/collections/{collection_id}/views/graphrag/processes/{process_id}', {
+      params: { path: { collection_id: selection.collectionId, process_id: processId }, query: { scenario_id: selection.scenarioId } },
+    })),
+  })
 
   const refreshActiveView = useCallback(() => {
-    setRefreshNonce((prev) => prev + 1)
-  }, [])
-
-  const parseApiErrorMessage = useCallback(
-    async (response: Response, fallback: string): Promise<string> => {
-      try {
-        const payload = await response.json()
-        const detail = payload?.detail
-        if (typeof detail === 'string' && detail.trim()) {
-          return detail
-        }
-      } catch {
-        // Ignore parse errors and use fallback.
-      }
-      return `${fallback} (${response.status})`
-    },
-    [],
-  )
-
-  useEffect(() => {
-    setArchitectureActions(DEFAULT_ARCHITECTURE_ACTION_STATE)
-  }, [selection.collectionId, selection.scenarioId])
-
-  useEffect(() => {
-    if (!selection.collectionId) {
-      setScenarios([])
-      setScenariosState('empty')
-      return
-    }
-
-    const controller = new AbortController()
-
-    const run = async () => {
-      setScenariosState('loading')
-      try {
-        const response = await fetch(`/api/twin/scenarios?collection_id=${selection.collectionId}`, {
-          credentials: 'include',
-          signal: controller.signal,
-        })
-
-        if (!response.ok) {
-          throw new Error(`Could not load scenarios (${response.status})`)
-        }
-
-        const payload = await response.json()
-        const nextScenarios: ScenarioLite[] = payload.scenarios || []
-        setScenarios(nextScenarios)
-
-        if (nextScenarios.length === 0) {
-          setScenariosState('empty')
-          return
-        }
-
-        const selectedScenario = nextScenarios.find((scenario) => scenario.id === selection.scenarioId)
-        if (!selectedScenario) {
-          const asIs = nextScenarios.find((scenario) => scenario.is_as_is)
-          onScenarioAutoSelect(asIs?.id || nextScenarios[0].id)
-        }
-
-        setScenariosState('ready')
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return
-        }
-        setScenariosState('error')
-        setScenarios([])
-        setViewError(selection.view, error instanceof Error ? error.message : 'Could not load scenarios')
-      }
-    }
-
-    run()
-
-    return () => {
-      controller.abort()
-    }
-  }, [selection.collectionId, selection.scenarioId, selection.view, onScenarioAutoSelect, setViewError])
-
-  useEffect(() => {
-    const { collectionId, scenarioId, view, layer } = selection
-    if (!collectionId || !scenarioId) {
-      setViewState(view, 'empty')
-      return
-    }
-
-    if (view === 'exports') {
-      setViewState('exports', 'ready')
-      return
-    }
-
-    const controller = new AbortController()
-
-    const fetchJson = async <T>(url: string, label: string): Promise<T> => {
-      const response = await fetch(url, {
-        credentials: 'include',
-        signal: controller.signal,
-      })
-      if (!response.ok) {
-        throw new Error(`Could not load ${label} (${response.status})`)
-      }
-      return (await response.json()) as T
-    }
-
-    const fetchOverview = async () => {
-      const payload = await fetchJson<CityPayload>(
-        `/api/twin/collections/${collectionId}/views/city?scenario_id=${scenarioId}&hotspots_limit=60`,
-        'overview',
-      )
-      setCity(payload)
-      setViewState('overview', 'ready')
-      markUpdated('overview')
-    }
-
-    const fetchTopologyOrDeepDive = async () => {
-      const endpoint = view === 'topology' ? 'topology' : 'deep-dive'
-      const fallbackLimit = view === 'topology' ? topologyLimit : deepDiveLimit
-      const limit = graphPaging.limit > 0 ? graphPaging.limit : fallbackLimit
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        layer,
-        limit: String(limit),
-        page: String(graphPaging.page),
-      })
-
-      if (graphFilters.includeKinds.length > 0) {
-        query.set('include_kinds', graphFilters.includeKinds.join(','))
-      }
-      if (graphFilters.excludeKinds.length > 0) {
-        query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-      }
-
-      if (view === 'topology') {
-        query.set('projection', 'architecture')
-        query.set('entity_level', topologyEntityLevel(layer))
-      } else if (deepDiveMode === 'file_dependency') {
-        query.set('projection', 'code_file')
-        query.set('entity_level', 'file')
-      } else if (deepDiveMode === 'symbol_callgraph') {
-        query.set('projection', 'code_symbol')
-        query.set('entity_level', 'symbol')
-        query.set('mode', 'symbol_callgraph')
-      } else {
-        query.set('projection', 'code_symbol')
-        query.set('entity_level', 'symbol')
-        query.set('mode', 'contains_hierarchy')
-      }
-
-      const payload = await fetchJson<GraphViewPayload>(
-        `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
-        endpoint,
-      )
-      const g = payload.graph || DEFAULT_GRAPH
-      setGraph({
-        ...g,
-        projection: payload.projection ?? g.projection,
-        entity_level: payload.entity_level ?? g.entity_level,
-        grouping_strategy: payload.grouping_strategy ?? g.grouping_strategy,
-        excluded_kinds: payload.excluded_kinds ?? g.excluded_kinds,
-        warnings: payload.warnings ?? g.warnings ?? [],
-        provenance: payload.provenance ?? g.provenance,
-      })
-      setViewState(view, 'ready')
-      markUpdated(view)
-    }
-
-    const fetchUiMap = async () => {
-      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        limit: String(limit),
-        page: String(graphPaging.page),
-      })
-
-      const loadEndpoint = async <T>(endpoint: 'ui-map' | 'user-flows'): Promise<T> => {
-        return fetchJson<T>(
-          `/api/twin/collections/${collectionId}/views/${endpoint}?${query.toString()}`,
-          endpoint,
-        )
-      }
-
-      const [uiResult, flowsResult] = await Promise.allSettled([
-        loadEndpoint<UIMapPayload>('ui-map'),
-        loadEndpoint<UserFlowsPayload>('user-flows'),
-      ])
-
-      let successCount = 0
-      const viewErrors: string[] = []
-      let nextUiGraph = DEFAULT_GRAPH
-      let nextFlowsGraph = DEFAULT_GRAPH
-
-      if (uiResult.status === 'fulfilled') {
-        setUiMapSummary(uiResult.value.summary)
-        nextUiGraph = {
-          ...(uiResult.value.graph || DEFAULT_GRAPH),
-          projection: 'code_symbol',
-          entity_level: uiResult.value.entity_level,
-          warnings: uiResult.value.warnings ?? uiResult.value.graph?.warnings ?? [],
-          provenance: uiResult.value.graph?.provenance,
-        }
-        setUiMapGraph(nextUiGraph)
-        successCount += 1
-      } else {
-        setUiMapSummary(null)
-        setUiMapGraph(DEFAULT_GRAPH)
-        viewErrors.push(uiResult.reason instanceof Error ? uiResult.reason.message : 'Could not load ui-map')
-      }
-
-      if (flowsResult.status === 'fulfilled') {
-        setUserFlows(flowsResult.value)
-        nextFlowsGraph = {
-          ...(flowsResult.value.graph || DEFAULT_GRAPH),
-          projection: 'code_symbol',
-          entity_level: flowsResult.value.entity_level,
-          warnings: flowsResult.value.warnings ?? flowsResult.value.graph?.warnings ?? [],
-          provenance: flowsResult.value.graph?.provenance,
-        }
-        setUserFlowsGraph(nextFlowsGraph)
-        successCount += 1
-      } else {
-        setUserFlows(null)
-        setUserFlowsGraph(DEFAULT_GRAPH)
-        viewErrors.push(
-          flowsResult.reason instanceof Error
-            ? flowsResult.reason.message
-            : 'Could not load user-flows',
-        )
-      }
-
-      setGraph(nextUiGraph.total_nodes > 0 ? nextUiGraph : nextFlowsGraph)
-      setViewError('ui_map', viewErrors.length > 0 ? viewErrors.join(' • ') : '')
-      if (successCount > 0) {
-        setViewState('ui_map', 'ready')
-        markUpdated('ui_map')
-      } else {
-        setViewState('ui_map', 'error')
-      }
-    }
-
-    const fetchTestMatrix = async () => {
-      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        limit: String(limit),
-        page: String(graphPaging.page),
-      })
-      const payload = await fetchJson<TestMatrixPayload>(
-        `/api/twin/collections/${collectionId}/views/test-matrix?${query.toString()}`,
-        'test-matrix',
-      )
-      setTestMatrix(payload)
-      setGraph({
-        ...(payload.graph || DEFAULT_GRAPH),
-        projection: 'code_symbol',
-        entity_level: payload.entity_level,
-        warnings: payload.warnings ?? payload.graph?.warnings ?? [],
-        provenance: payload.graph?.provenance,
-      })
-      setViewState('test_matrix', 'ready')
-      markUpdated('test_matrix')
-    }
-
-    const fetchSemanticMap = async () => {
-      const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-      const buildMapQuery = (mode: SemanticMapMode) => {
-        const thresholds = semanticMapThresholdsByMode[mode]
-        const q = new URLSearchParams({
-          scenario_id: scenarioId,
-          map_mode: mode,
-          limit: String(limit),
-          page: String(graphPaging.page),
-          mixed_cluster_max_dominant_ratio: String(thresholds.mixed_cluster_max_dominant_ratio),
-          isolated_distance_multiplier: String(thresholds.isolated_distance_multiplier),
-          semantic_duplication_min_similarity: String(thresholds.semantic_duplication_min_similarity),
-          semantic_duplication_max_source_overlap: String(thresholds.semantic_duplication_max_source_overlap),
-          misplaced_min_dominant_ratio: String(thresholds.misplaced_min_dominant_ratio),
-        })
-        if (graphFilters.includeKinds.length > 0) q.set('include_kinds', graphFilters.includeKinds.join(','))
-        if (graphFilters.excludeKinds.length > 0) q.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-        if (graphFilters.edgeKinds.length > 0) q.set('edge_kinds', graphFilters.edgeKinds.join(','))
-        return q
-      }
-
-      const comparisonMode: SemanticMapMode = semanticMapMode === 'semantic' ? 'code_structure' : 'semantic'
-      const [activeMapResult, comparisonMapResult] = await Promise.allSettled([
-        fetchJson<SemanticMapPayload>(
-          `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(semanticMapMode).toString()}`,
-          'semantic map',
-        ),
-        fetchJson<SemanticMapPayload>(
-          `/api/twin/collections/${collectionId}/views/semantic-map?${buildMapQuery(comparisonMode).toString()}`,
-          'semantic map comparison',
-        ),
-      ])
-
-      if (activeMapResult.status !== 'fulfilled') {
-        throw activeMapResult.reason
-      }
-
-      setSemanticMap(activeMapResult.value)
-      setSemanticMapComparison(comparisonMapResult.status === 'fulfilled' ? comparisonMapResult.value : null)
-      setGraph(DEFAULT_GRAPH)
-      setViewState('semantic_map', 'ready')
-      markUpdated('semantic_map')
-    }
-
-    const fetchRebuildReadiness = async () => {
-      const payload = await fetchJson<RebuildReadinessPayload>(
-        `/api/twin/collections/${collectionId}/views/rebuild-readiness?scenario_id=${encodeURIComponent(scenarioId)}`,
-        'rebuild-readiness',
-      )
-      setRebuildReadiness(payload)
-      setViewState('rebuild_readiness', 'ready')
-      markUpdated('rebuild_readiness')
-    }
-
-    const fetchArchitecture = async () => {
-      const section = architectureSection.trim()
-      const normalizedContainer = portsContainer.trim()
-      const baselineScenarioId = driftBaselineScenarioId.trim()
-
-      const arc42Query = new URLSearchParams({ scenario_id: scenarioId })
-      if (section) arc42Query.set('section', section)
-
-      const portsQuery = new URLSearchParams({ scenario_id: scenarioId })
-      if (portsDirection !== 'all') portsQuery.set('direction', portsDirection)
-      if (normalizedContainer) portsQuery.set('container', normalizedContainer)
-
-      const driftQuery = new URLSearchParams({ scenario_id: scenarioId })
-      if (baselineScenarioId) driftQuery.set('baseline_scenario_id', baselineScenarioId)
-
-      const [arc42Result, portsResult, driftResult, ermResult] = await Promise.allSettled([
-        fetchJson<Arc42ViewPayload>(`/api/twin/collections/${collectionId}/views/arc42?${arc42Query.toString()}`, 'arc42 view'),
-        fetchJson<PortsAdaptersPayload>(`/api/twin/collections/${collectionId}/views/ports-adapters?${portsQuery.toString()}`, 'ports/adapters view'),
-        fetchJson<Arc42DriftPayload>(`/api/twin/collections/${collectionId}/views/arc42/drift?${driftQuery.toString()}`, 'arc42 drift view'),
-        fetchJson<ErmViewPayload>(`/api/twin/collections/${collectionId}/views/erm?scenario_id=${encodeURIComponent(scenarioId)}`, 'erm view'),
-      ])
-
-      const { errors: nextErrors, successCount } = processSettledResults([
-        { key: 'arc42' as const, result: arc42Result, setter: setArc42 as (v: never) => void, fallbackError: 'Could not load arc42 view' },
-        { key: 'ports' as const, result: portsResult, setter: setPortsAdapters as (v: never) => void, fallbackError: 'Could not load ports/adapters view' },
-        { key: 'drift' as const, result: driftResult, setter: setArc42Drift as (v: never) => void, fallbackError: 'Could not load drift view' },
-        { key: 'erm' as const, result: ermResult, setter: setErm as (v: never) => void, fallbackError: 'Could not load erm view' },
-      ])
-      setArchitecturePanelErrors(nextErrors)
-      const allErrors = Object.values(nextErrors).filter(Boolean)
-      setViewError('architecture', allErrors.length > 0 ? allErrors.join(' • ') : '')
-      if (successCount > 0) { setViewState('architecture', 'ready'); markUpdated('architecture') }
-      else { setViewState('architecture', 'error') }
-    }
-
-    const fetchEvolution = async () => {
-      const [investmentResult, knowledgeResult, couplingResult, fitnessResult] =
-        await Promise.allSettled([
-          fetchJson<InvestmentUtilizationPayload>(`/api/twin/collections/${collectionId}/views/evolution/investment-utilization?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365`, 'evolution investment/utilization'),
-          fetchJson<KnowledgeIslandsPayload>(`/api/twin/collections/${collectionId}/views/evolution/knowledge-islands?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=container&window_days=365&ownership_threshold=0.7`, 'evolution knowledge islands'),
-          fetchJson<TemporalCouplingPayload>(`/api/twin/collections/${collectionId}/views/evolution/temporal-coupling?scenario_id=${encodeURIComponent(scenarioId)}&entity_level=component&window_days=365&min_jaccard=0.2&max_edges=300`, 'evolution temporal coupling'),
-          fetchJson<FitnessFunctionsPayload>(`/api/twin/collections/${collectionId}/views/evolution/fitness-functions?scenario_id=${encodeURIComponent(scenarioId)}&window_days=365&include_resolved=false`, 'evolution fitness functions'),
-        ])
-
-      const { errors: nextErrors, successCount } = processSettledResults([
-        { key: 'investment' as const, result: investmentResult, setter: setInvestmentUtilization as (v: never) => void, fallbackError: 'Could not load investment/utilization panel' },
-        { key: 'knowledge' as const, result: knowledgeResult, setter: setKnowledgeIslands as (v: never) => void, fallbackError: 'Could not load knowledge islands panel' },
-        { key: 'coupling' as const, result: couplingResult, setter: setTemporalCoupling as (v: never) => void, fallbackError: 'Could not load temporal coupling panel' },
-        { key: 'fitness' as const, result: fitnessResult, setter: setFitnessFunctions as (v: never) => void, fallbackError: 'Could not load fitness functions panel' },
-      ])
-      setEvolutionPanelErrors(nextErrors)
-      const allErrors = Object.values(nextErrors).filter(Boolean)
-      setViewError('evolution', allErrors.length > 0 ? allErrors.join(' • ') : '')
-      if (successCount > 0) { setViewState('evolution', 'ready'); markUpdated('evolution') }
-      else { setViewState('evolution', 'error') }
-    }
-
-    const fetchGraphRagCommunities = async () => {
-      setGraphRagCommunitiesState('loading')
-      setGraphRagCommunitiesError('')
-      try {
-        const communitiesPayload = await fetchJson<GraphRagCommunitiesPayload>(
-          `/api/twin/collections/${collectionId}/views/graphrag/communities?scenario_id=${encodeURIComponent(scenarioId)}&limit=500`,
-          'communities',
-        )
-        setGraphRagCommunities(communitiesPayload.items || [])
-        setGraphRagCommunitiesState((communitiesPayload.items || []).length > 0 ? 'ready' : 'empty')
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setGraphRagCommunitiesState('error')
-          setGraphRagCommunitiesError(error instanceof Error ? error.message : 'Could not load communities')
-        }
-      }
-    }
-
-    const fetchGraphRagProcesses = async () => {
-      setGraphRagProcessesState('loading')
-      setGraphRagProcessesError('')
-      try {
-        const processesPayload = await fetchJson<{ items?: GraphRagProcessSummary[] }>(
-          `/api/twin/collections/${collectionId}/views/graphrag/processes?scenario_id=${encodeURIComponent(scenarioId)}`,
-          'processes',
-        )
-        setGraphRagProcesses(processesPayload.items || [])
-        setGraphRagProcessesState((processesPayload.items || []).length > 0 ? 'ready' : 'empty')
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setGraphRagProcessesState('error')
-          setGraphRagProcessesError(error instanceof Error ? error.message : 'Could not load processes')
-        }
-      }
-    }
-
-    const fetchGraphRag = async () => {
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        limit: String(graphPaging.limit > 0 ? graphPaging.limit : topologyLimit),
-        page: String(graphPaging.page),
-        community_mode: graphRagCommunityMode,
-      })
-      const normalizedCommunityId = graphRagCommunityId.trim()
-      if (normalizedCommunityId) query.set('community_id', normalizedCommunityId)
-      if (graphFilters.includeKinds.length > 0) query.set('include_kinds', graphFilters.includeKinds.join(','))
-      if (graphFilters.excludeKinds.length > 0) query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-      if (graphFilters.edgeKinds.length > 0) query.set('edge_kinds', graphFilters.edgeKinds.join(','))
-
-      const payload = await fetchJson<GraphRagPayload>(
-        `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
-        'graphrag view',
-      )
-      setGraph({
-        ...(payload.graph || DEFAULT_GRAPH),
-        projection: payload.projection,
-        entity_level: payload.entity_level,
-      })
-      setGraphRagStatus(payload.status?.status || 'ready')
-      setGraphRagReason(payload.status?.reason || 'ok')
-
-      await fetchGraphRagCommunities()
-      await fetchGraphRagProcesses()
-      setViewState('graphrag', 'ready')
-      markUpdated('graphrag')
-    }
-
-    const fetchC4Diff = async () => {
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        compare_with_base: 'true',
-        c4_view: c4View,
-        max_nodes: String(Math.max(10, c4MaxNodes || 120)),
-      })
-      const normalizedScope = c4Scope.trim()
-      if (normalizedScope) query.set('c4_scope', normalizedScope)
-
-      const payload = await fetchJson<MermaidPayload>(
-        `/api/twin/collections/${collectionId}/views/mermaid?${query.toString()}`,
-        'C4 view',
-      )
-      setMermaid(payload)
-      setViewState('c4_diff', 'ready')
-      markUpdated('c4_diff')
-    }
-
-    const fetchCity = async () => {
-      const cityProjectionValue: CityProjection = cityProjection
-      const entityLevel = cityProjectionValue === 'architecture' ? cityEntityLevel : 'file'
-
-      const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        signal: controller.signal,
-        body: JSON.stringify({ format: 'cc_json', projection: cityProjectionValue, entity_level: entityLevel }),
-      })
-      if (!exportResponse.ok) {
-        throw new Error(`Could not generate city map (${exportResponse.status})`)
-      }
-
-      const exportData = await exportResponse.json()
-      const exportId = exportData.id || exportData.exports?.[0]?.id
-      if (!exportId) {
-        throw new Error('Missing export id from city export response')
-      }
-
-      const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
-      const params = new URLSearchParams({ file: rawPath, area: 'loc', height: 'coupling', color: 'complexity', mode: 'Single' })
-      setCityEmbedUrl(`/codecharta/index.html?${params.toString()}`)
-      setViewState('city', 'ready')
-      markUpdated('city')
-    }
-
-    const viewHandlers: Record<string, (() => Promise<void>) | undefined> = {
-      overview: fetchOverview,
-      topology: fetchTopologyOrDeepDive,
-      deep_dive: fetchTopologyOrDeepDive,
-      ui_map: fetchUiMap,
-      test_matrix: fetchTestMatrix,
-      semantic_map: fetchSemanticMap,
-      rebuild_readiness: fetchRebuildReadiness,
-      architecture: fetchArchitecture,
-      evolution: fetchEvolution,
-      graphrag: fetchGraphRag,
-      c4_diff: fetchC4Diff,
-      city: fetchCity,
-    }
-
-    const run = async () => {
-      setViewState(view, 'loading')
-      setViewError(view, '')
-      if (view === 'city') {
-        setCityEmbedUrl('')
-      }
-
-      try {
-        const handler = viewHandlers[view]
-        if (handler) {
-          await handler()
-        }
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return
-        }
-        const message = error instanceof Error ? error.message : 'Unexpected Cockpit request error'
-        setViewError(view, message)
-        setViewState(view, 'error')
-      }
-    }
-
-    run()
-
-    return () => {
-      controller.abort()
-    }
-  }, [
-    selection,
-    topologyLimit,
-    deepDiveLimit,
-    deepDiveMode,
-    c4View,
-    c4Scope,
-    c4MaxNodes,
-    architectureSection,
-    portsDirection,
-    portsContainer,
-    driftBaselineScenarioId,
-    graphFilters.excludeKinds,
-    graphFilters.edgeKinds,
-    graphFilters.includeKinds,
-    graphPaging.limit,
-    graphPaging.page,
-    graphRagCommunityMode,
-    graphRagCommunityId,
-    semanticMapMode,
-    semanticMapThresholdsByMode.code_structure.mixed_cluster_max_dominant_ratio,
-    semanticMapThresholdsByMode.code_structure.isolated_distance_multiplier,
-    semanticMapThresholdsByMode.code_structure.semantic_duplication_min_similarity,
-    semanticMapThresholdsByMode.code_structure.semantic_duplication_max_source_overlap,
-    semanticMapThresholdsByMode.code_structure.misplaced_min_dominant_ratio,
-    semanticMapThresholdsByMode.semantic.mixed_cluster_max_dominant_ratio,
-    semanticMapThresholdsByMode.semantic.isolated_distance_multiplier,
-    semanticMapThresholdsByMode.semantic.semantic_duplication_min_similarity,
-    semanticMapThresholdsByMode.semantic.semantic_duplication_max_source_overlap,
-    semanticMapThresholdsByMode.semantic.misplaced_min_dominant_ratio,
-    semanticMapThresholdsByMode,
-    cityProjection,
-    cityEntityLevel,
-    refreshNonce,
-    markUpdated,
-    setViewError,
-    setViewState,
-  ])
-
-  useEffect(() => {
-    if (selection.view !== 'ui_map') {
-      return
-    }
-    let preferred: TwinGraphResponse
-    if (behaviorGraphMode === 'user_flows') {
-      preferred = userFlowsGraph.total_nodes > 0 ? userFlowsGraph : uiMapGraph
-    } else {
-      preferred = uiMapGraph.total_nodes > 0 ? uiMapGraph : userFlowsGraph
-    }
-    setGraph(preferred)
-  }, [selection.view, behaviorGraphMode, uiMapGraph, userFlowsGraph])
-
-  useEffect(() => {
-    const { collectionId, scenarioId, view } = selection
-    if (!collectionId || !scenarioId || view !== 'semantic_map' || !selectedNodeId) {
-      return
-    }
-
-    const controller = new AbortController()
-    const run = async () => {
-      try {
-        const limit = graphPaging.limit > 0 ? graphPaging.limit : topologyLimit
-        const query = new URLSearchParams({
-          scenario_id: scenarioId,
-          community_mode: 'color',
-          limit: String(limit),
-          page: String(graphPaging.page),
-        })
-        if (graphFilters.includeKinds.length > 0) {
-          query.set('include_kinds', graphFilters.includeKinds.join(','))
-        }
-        if (graphFilters.excludeKinds.length > 0) {
-          query.set('exclude_kinds', graphFilters.excludeKinds.join(','))
-        }
-        if (graphFilters.edgeKinds.length > 0) {
-          query.set('edge_kinds', graphFilters.edgeKinds.join(','))
-        }
-
-        const response = await fetch(
-          `/api/twin/collections/${collectionId}/views/graphrag?${query.toString()}`,
-          {
-            credentials: 'include',
-            signal: controller.signal,
-          },
-        )
-        if (!response.ok) {
-          return
-        }
-        const payload: GraphRagPayload = await response.json()
-        if (controller.signal.aborted) {
-          return
-        }
-        setGraph({
-          ...(payload.graph || DEFAULT_GRAPH),
-          projection: payload.projection,
-          entity_level: payload.entity_level,
-        })
-      } catch {
-        // Keep semantic map usable even if optional graph context cannot be loaded.
-      }
-    }
-
-    run()
-    return () => {
-      controller.abort()
-    }
-  }, [
-    selection,
-    selectedNodeId,
-    graphFilters.includeKinds,
-    graphFilters.excludeKinds,
-    graphFilters.edgeKinds,
-    graphPaging.limit,
-    graphPaging.page,
-    topologyLimit,
-    refreshNonce,
-  ])
-
-  useEffect(() => {
-    const { collectionId, scenarioId, view } = selection
-    if (!collectionId || !scenarioId || view !== 'graphrag') {
-      setGraphRagEvidenceItems([])
-      setGraphRagEvidenceTotal(0)
-      setGraphRagEvidenceNodeName('')
-      setGraphRagEvidenceState('idle')
-      setGraphRagEvidenceError('')
-      return
-    }
-    if (!selectedNodeId) {
-      setGraphRagEvidenceItems([])
-      setGraphRagEvidenceTotal(0)
-      setGraphRagEvidenceNodeName('')
-      setGraphRagEvidenceState('empty')
-      setGraphRagEvidenceError('')
-      return
-    }
-
-    const controller = new AbortController()
-    const run = async () => {
-      setGraphRagEvidenceState('loading')
-      setGraphRagEvidenceError('')
-      try {
-        const query = new URLSearchParams({
-          scenario_id: scenarioId,
-          node_id: selectedNodeId,
-          limit: '50',
-        })
-        const response = await fetch(
-          `/api/twin/collections/${collectionId}/views/graphrag/evidence?${query.toString()}`,
-          {
-            credentials: 'include',
-            signal: controller.signal,
-          },
-        )
-        if (!response.ok) {
-          throw new Error(`Could not load node evidence (${response.status})`)
-        }
-        const payload: GraphRagEvidencePayload = await response.json()
-        setGraphRagEvidenceItems(payload.items || [])
-        setGraphRagEvidenceTotal(payload.total || 0)
-        setGraphRagEvidenceNodeName(payload.node_name || '')
-        setGraphRagEvidenceState((payload.items || []).length > 0 ? 'ready' : 'empty')
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return
-        }
-        setGraphRagEvidenceState('error')
-        setGraphRagEvidenceError(
-          error instanceof Error ? error.message : 'Could not load node evidence',
-        )
-      }
-    }
-
-    run()
-    return () => {
-      controller.abort()
-    }
-  }, [selection, selectedNodeId, refreshNonce])
-
-  useEffect(() => {
-    if (selection.view === 'graphrag') {
-      return
-    }
-    setGraphRagCommunities([])
-    setGraphRagCommunitiesState('idle')
-    setGraphRagCommunitiesError('')
-    setGraphRagPath(null)
-    setGraphRagPathState('idle')
-    setGraphRagPathError('')
-    setGraphRagProcesses([])
-    setGraphRagProcessesState('idle')
-    setGraphRagProcessesError('')
-    setGraphRagProcessDetail(null)
-    setGraphRagProcessDetailState('idle')
-    setGraphRagProcessDetailError('')
-  }, [selection.view])
-
-  useEffect(() => {
-    const { scenarioId, view } = selection
-    if (!scenarioId || !selectedNodeId || (view !== 'topology' && view !== 'deep_dive')) {
-      setNeighborhood(DEFAULT_GRAPH)
-      setNeighborhoodState('idle')
-      setNeighborhoodError('')
-      return
-    }
-
-    const controller = new AbortController()
-    const run = async () => {
-      setNeighborhoodState('loading')
-      setNeighborhoodError('')
-      try {
-        let projection: string
-        if (view === 'topology') {
-          projection = 'architecture'
-        } else if (deepDiveMode === 'file_dependency') {
-          projection = 'code_file'
-        } else {
-          projection = 'code_symbol'
-        }
-        const response = await fetch(
-          `/api/twin/scenarios/${scenarioId}/graph/neighborhood?node_id=${encodeURIComponent(selectedNodeId)}&projection=${projection}&hops=1&limit=200`,
-          {
-            credentials: 'include',
-            signal: controller.signal,
-          },
-        )
-        if (!response.ok) {
-          throw new Error(`Could not load neighborhood (${response.status})`)
-        }
-        const payload: GraphNeighborhoodResponse = await response.json()
-        setNeighborhood(payload.graph || DEFAULT_GRAPH)
-        setNeighborhoodState('ready')
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return
-        }
-        const message = error instanceof Error ? error.message : 'Could not load neighborhood'
-        setNeighborhoodState('error')
-        setNeighborhoodError(message)
-      }
-    }
-
-    run()
-    return () => {
-      controller.abort()
-    }
-  }, [selection, selectedNodeId, deepDiveMode])
+    void queryClient.invalidateQueries({ queryKey: ['cockpit', selection.collectionId, selection.scenarioId] })
+  }, [queryClient, selection.collectionId, selection.scenarioId])
 
   const triggerCollectionReindex = useCallback(async () => {
-    const collectionId = selection.collectionId
-    if (!collectionId) {
-      setArchitectureActions((prev) => ({
-        ...prev,
-        reindexState: 'error',
-        reindexMessage: 'Select a project before starting reindexing.',
-      }))
-      return false
-    }
-
-    setArchitectureActions((prev) => ({
-      ...prev,
-      reindexState: 'loading',
-      reindexMessage: 'Reindexing started...',
-    }))
-
-    try {
-      const response = await fetch(`/api/twin/collections/${collectionId}/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ force: true }),
-      })
-      if (!response.ok) {
-        const detail = await parseApiErrorMessage(response, 'Could not start reindexing')
-        throw new Error(detail)
-      }
-
-      const payload = await response.json()
-      const created = Number(payload?.created || 0)
-      const skipped = Number(payload?.skipped || 0)
-      let message: string
-      if (created > 0) {
-        message = `Reindexing queued for ${created} source(s).`
-      } else if (skipped > 0) {
-        message = `No new source revisions queued (${skipped} unchanged).`
-      } else {
-        message = 'Reindexing request accepted.'
-      }
-      setArchitectureActions((prev) => ({
-        ...prev,
-        reindexState: 'ready',
-        reindexMessage: message,
-      }))
-      refreshActiveView()
-      return true
-    } catch (error) {
-      setArchitectureActions((prev) => ({
-        ...prev,
-        reindexState: 'error',
-        reindexMessage: error instanceof Error ? error.message : 'Could not start reindexing.',
-      }))
-      return false
-    }
-  }, [parseApiErrorMessage, refreshActiveView, selection.collectionId])
-
+    if (!selection.collectionId) return false
+    try { await reindex.mutateAsync(); return true } catch { return false }
+  }, [reindex, selection.collectionId])
   const regenerateArc42 = useCallback(async () => {
-    const collectionId = selection.collectionId
-    const scenarioId = selection.scenarioId
-    if (!collectionId || !scenarioId) {
-      setArchitectureActions((prev) => ({
-        ...prev,
-        regenerateState: 'error',
-        regenerateMessage: 'Select project and scenario before regenerating arc42.',
-      }))
-      return false
-    }
-
-    setArchitectureActions((prev) => ({
-      ...prev,
-      regenerateState: 'loading',
-      regenerateMessage: 'Generating arc42...',
-    }))
-
-    try {
-      const query = new URLSearchParams({
-        scenario_id: scenarioId,
-        regenerate: 'true',
-      })
-      const section = architectureSection.trim()
-      if (section) {
-        query.set('section', section)
-      }
-      const response = await fetch(
-        `/api/twin/collections/${collectionId}/views/arc42?${query.toString()}`,
-        {
-          credentials: 'include',
-        },
-      )
-      if (!response.ok) {
-        const detail = await parseApiErrorMessage(response, 'Could not regenerate arc42')
-        throw new Error(detail)
-      }
-      const payload: Arc42ViewPayload = await response.json()
-      setArc42(payload)
-      setArchitecturePanelErrors((prev) => ({ ...prev, arc42: '' }))
-      setArchitectureActions((prev) => ({
-        ...prev,
-        regenerateState: 'ready',
-        regenerateMessage: 'arc42 regenerated successfully.',
-      }))
-      refreshActiveView()
-      return true
-    } catch (error) {
-      setArchitectureActions((prev) => ({
-        ...prev,
-        regenerateState: 'error',
-        regenerateMessage: error instanceof Error ? error.message : 'Could not regenerate arc42.',
-      }))
-      return false
-    }
-  }, [
-    architectureSection,
-    parseApiErrorMessage,
-    refreshActiveView,
-    selection.collectionId,
-    selection.scenarioId,
-  ])
-
+    if (!selection.collectionId || !selection.scenarioId) return false
+    try { await regenerate.mutateAsync(); return true } catch { return false }
+  }, [regenerate, selection.collectionId, selection.scenarioId])
   const generateExport = useCallback(async () => {
-    const scenarioId = selection.scenarioId
-    if (!scenarioId) {
-      setViewError('exports', 'Select a scenario before generating an export.')
-      setViewState('exports', 'error')
-      return null
-    }
+    if (!selection.scenarioId) return null
+    try { return await exportMutation.mutateAsync() } catch { return null }
+  }, [exportMutation, selection.scenarioId])
+  const traceGraphRagPath = useCallback(async (fromNodeId: string, toNodeId: string, maxHops: number) => {
+    const from = fromNodeId.trim(); const to = toNodeId.trim()
+    if (!selection.collectionId || !selection.scenarioId || !from || !to) return null
+    try { return await pathMutation.mutateAsync({ from, to, maxHops }) } catch { return null }
+  }, [pathMutation, selection.collectionId, selection.scenarioId])
+  const loadGraphRagProcessDetail = useCallback(async (processId: string) => {
+    if (!selection.collectionId || !selection.scenarioId || !processId) return null
+    try { return await processMutation.mutateAsync(processId) } catch { return null }
+  }, [processMutation, selection.collectionId, selection.scenarioId])
 
-    setViewError('exports', '')
-    setViewState('exports', 'loading')
+  const activeState: CockpitLoadState = selection.view === 'exports'
+    ? (selection.scenarioId ? (exportMutation.isPending ? 'loading' : exportMutation.isError ? 'error' : 'ready') : 'empty')
+    : !selection.collectionId || !selection.scenarioId ? 'empty'
+      : activeQuery.isPending ? 'loading' : activeQuery.isError ? 'error' : 'ready'
+  const activeError = activeQuery.isError ? apiErrorMessage(activeQuery.error, 'Unexpected Cockpit request error')
+    : exportMutation.isError ? apiErrorMessage(exportMutation.error, 'Export generation failed') : ''
+  const states = useMemo(() => ({ ...EMPTY_STATES, [selection.view]: activeState }), [activeState, selection.view])
+  const errors = useMemo(() => ({ ...EMPTY_ERRORS, [selection.view]: activeError }), [activeError, selection.view])
 
-    try {
-      let entityLevel: string
-      if (exportProjection === 'architecture') {
-        entityLevel = topologyEntityLevel(selection.layer)
-      } else if (exportProjection === 'code_file') {
-        entityLevel = 'file'
-      } else {
-        entityLevel = 'symbol'
-      }
+  useEffect(() => {
+    if (activeError) onViewError?.(selection.view, activeError)
+  }, [activeError, onViewError, selection.view])
 
-      const exportResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          format: exportFormat,
-          projection: exportProjection,
-          entity_level: entityLevel,
-        }),
-      })
-
-      if (!exportResponse.ok) {
-        throw new Error(`Could not generate export (${exportResponse.status})`)
-      }
-
-      const exportData = await exportResponse.json()
-      const exportId = exportData.id || exportData.exports?.[0]?.id
-      if (!exportId) {
-        throw new Error('Missing export id from API response')
-      }
-
-      const artifactResponse = await fetch(`/api/twin/scenarios/${scenarioId}/exports/${exportId}`, {
-        credentials: 'include',
-      })
-
-      if (!artifactResponse.ok) {
-        throw new Error(`Could not fetch export artifact (${artifactResponse.status})`)
-      }
-
-      const artifact = await artifactResponse.json()
-      const content = artifact.content || ''
-      setExportContent(content)
-      setViewState('exports', 'ready')
-      markUpdated('exports')
-      return {
-        content,
-        name: artifact.name || `${exportFormat}.txt`,
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Export generation failed'
-      setViewError('exports', message)
-      setViewState('exports', 'error')
-      return null
-    }
-  }, [
-    exportFormat,
-    exportProjection,
-    markUpdated,
-    selection.layer,
-    selection.scenarioId,
-    setViewError,
-    setViewState,
-  ])
-
-  const traceGraphRagPath = useCallback(
-    async (fromNodeId: string, toNodeId: string, maxHops: number) => {
-      const { collectionId, scenarioId } = selection
-      if (!collectionId || !scenarioId) {
-        setGraphRagPathState('error')
-        setGraphRagPathError('Select a project and scenario before tracing a path.')
-        return null
-      }
-
-      const normalizedFrom = fromNodeId.trim()
-      const normalizedTo = toNodeId.trim()
-      if (!normalizedFrom || !normalizedTo) {
-        setGraphRagPathState('error')
-        setGraphRagPathError('Both from/to node IDs are required.')
-        return null
-      }
-
-      setGraphRagPathState('loading')
-      setGraphRagPathError('')
-
-      try {
-        const query = new URLSearchParams({
-          scenario_id: scenarioId,
-          from_node_id: normalizedFrom,
-          to_node_id: normalizedTo,
-          max_hops: String(Math.max(1, Math.min(20, maxHops))),
-        })
-        const response = await fetch(
-          `/api/twin/collections/${collectionId}/views/graphrag/path?${query.toString()}`,
-          {
-            credentials: 'include',
-          },
-        )
-        if (!response.ok) {
-          throw new Error(`Could not trace path (${response.status})`)
-        }
-        const payload: GraphRagPathPayload = await response.json()
-        setGraphRagPath(payload)
-        setGraphRagPathState(payload.status === 'found' ? 'ready' : 'empty')
-        return payload
-      } catch (error) {
-        setGraphRagPathState('error')
-        setGraphRagPathError(error instanceof Error ? error.message : 'Could not trace path')
-        return null
-      }
-    },
-    [selection],
-  )
-
-  const loadGraphRagProcessDetail = useCallback(
-    async (processId: string) => {
-      const { collectionId, scenarioId } = selection
-      if (!collectionId || !scenarioId || !processId) {
-        setGraphRagProcessDetailState('error')
-        setGraphRagProcessDetailError('Missing process context.')
-        return null
-      }
-      setGraphRagProcessDetailState('loading')
-      setGraphRagProcessDetailError('')
-      try {
-        const response = await fetch(
-          `/api/twin/collections/${collectionId}/views/graphrag/processes/${encodeURIComponent(processId)}?scenario_id=${encodeURIComponent(scenarioId)}`,
-          {
-            credentials: 'include',
-          },
-        )
-        if (!response.ok) {
-          throw new Error(`Could not load process detail (${response.status})`)
-        }
-        const payload: GraphRagProcessDetailPayload = await response.json()
-        setGraphRagProcessDetail(payload)
-        setGraphRagProcessDetailState('ready')
-        return payload
-      } catch (error) {
-        setGraphRagProcessDetailState('error')
-        setGraphRagProcessDetailError(
-          error instanceof Error ? error.message : 'Could not load process detail',
-        )
-        return null
-      }
-    },
-    [selection],
-  )
-
-  const activeState = useMemo(() => states[selection.view], [states, selection.view])
-  const activeError = useMemo(() => errors[selection.view], [errors, selection.view])
-  const activeUpdatedAt = useMemo(
-    () => updatedAt[selection.view] ?? null,
-    [updatedAt, selection.view],
-  )
+  const data = activeQuery.data ?? {}
+  const graph = data.graph ?? DEFAULT_GRAPH
+  const evidence = evidenceQuery.data
+  const architectureActions = {
+    reindexState: (reindex.isPending ? 'loading' : reindex.isError ? 'error' : reindex.isSuccess ? 'ready' : 'idle') as CockpitLoadState,
+    reindexMessage: reindex.isPending ? 'Reindexing started...' : reindex.isError ? apiErrorMessage(reindex.error, 'Could not start reindexing.')
+      : reindex.data ? reindex.data.created ? `Reindexing queued for ${reindex.data.created} source(s).` : reindex.data.skipped ? `No new source revisions queued (${reindex.data.skipped} unchanged).` : 'Reindexing request accepted.' : '',
+    regenerateState: (regenerate.isPending ? 'loading' : regenerate.isError ? 'error' : regenerate.isSuccess ? 'ready' : 'idle') as CockpitLoadState,
+    regenerateMessage: regenerate.isPending ? 'Generating arc42...' : regenerate.isError ? apiErrorMessage(regenerate.error, 'Could not regenerate arc42.') : regenerate.isSuccess ? 'arc42 regenerated successfully.' : '',
+  }
 
   return {
     scenarios,
-    scenariosState,
-    city,
+    scenariosState: (!selection.collectionId ? 'empty' : scenariosQuery.isPending ? 'loading' : scenariosQuery.isError ? 'error' : scenarios.length ? 'ready' : 'empty') as CockpitLoadState,
+    city: data.city ?? null,
     graph,
-    mermaid,
-    arc42,
-    portsAdapters,
-    arc42Drift,
-    erm,
-    architecturePanelErrors,
+    mermaid: data.mermaid ?? null,
+    arc42: data.arc42 ?? null,
+    portsAdapters: data.portsAdapters ?? null,
+    arc42Drift: data.arc42Drift ?? null,
+    erm: data.erm ?? null,
+    architecturePanelErrors: data.architecturePanelErrors ?? { arc42: '', ports: '', drift: '', erm: '' },
     architectureActions,
     states,
     errors,
     activeState,
     activeError,
-    activeUpdatedAt,
-    cityProjection,
-    setCityProjection,
-    cityEntityLevel,
-    setCityEntityLevel,
-    cityEmbedUrl,
-    setCityEmbedUrl,
-    investmentUtilization,
-    knowledgeIslands,
-    temporalCoupling,
-    fitnessFunctions,
-    evolutionPanelErrors,
-    exportFormat,
-    setExportFormat,
-    exportProjection,
-    setExportProjection,
-    exportContent,
-    setExportContent,
-    neighborhood,
-    neighborhoodState,
-    neighborhoodError,
-    graphRagStatus,
-    graphRagReason,
-    graphRagEvidenceItems,
-    graphRagEvidenceTotal,
-    graphRagEvidenceNodeName,
-    graphRagEvidenceState,
-    graphRagEvidenceError,
-    graphRagCommunities,
-    graphRagCommunitiesState,
-    graphRagCommunitiesError,
-    graphRagPath,
-    graphRagPathState,
-    graphRagPathError,
-    graphRagProcesses,
-    graphRagProcessesState,
-    graphRagProcessesError,
-    graphRagProcessDetail,
-    graphRagProcessDetailState,
-    graphRagProcessDetailError,
-    uiMapSummary,
-    uiMapGraph,
-    userFlowsGraph,
-    semanticMap,
-    semanticMapComparison,
-    testMatrix,
-    userFlows,
-    rebuildReadiness,
-    traceGraphRagPath,
-    loadGraphRagProcessDetail,
-    triggerCollectionReindex,
-    regenerateArc42,
-    generateExport,
-    refreshActiveView,
+    activeUpdatedAt: activeQuery.dataUpdatedAt ? new Date(activeQuery.dataUpdatedAt).toISOString() : null,
+    cityProjection, setCityProjection, cityEntityLevel, setCityEntityLevel,
+    cityEmbedUrl: data.cityEmbedUrl ?? '',
+    investmentUtilization: data.investmentUtilization ?? null,
+    knowledgeIslands: data.knowledgeIslands ?? null,
+    temporalCoupling: data.temporalCoupling ?? null,
+    fitnessFunctions: data.fitnessFunctions ?? null,
+    evolutionPanelErrors: data.evolutionPanelErrors ?? { investment: '', knowledge: '', coupling: '', fitness: '' },
+    exportFormat, setExportFormat, exportProjection, setExportProjection, exportContent, setExportContent,
+    neighborhood: neighborhoodQuery.data?.graph ?? DEFAULT_GRAPH,
+    neighborhoodState: (!neighborhoodQuery.isEnabled ? 'idle' : neighborhoodQuery.isPending ? 'loading' : neighborhoodQuery.isError ? 'error' : 'ready') as CockpitLoadState,
+    neighborhoodError: neighborhoodQuery.isError ? apiErrorMessage(neighborhoodQuery.error, 'Could not load neighborhood') : '',
+    graphRagStatus: data.graphRagStatus ?? 'ready',
+    graphRagReason: data.graphRagReason ?? 'ok',
+    graphRagEvidenceItems: evidence?.items ?? [] as GraphRagEvidenceItem[],
+    graphRagEvidenceTotal: evidence?.total ?? 0,
+    graphRagEvidenceNodeName: evidence?.node_name ?? '',
+    graphRagEvidenceState: (!evidenceQuery.isEnabled ? (selection.view === 'graphrag' ? 'empty' : 'idle') : evidenceQuery.isPending ? 'loading' : evidenceQuery.isError ? 'error' : evidence?.items.length ? 'ready' : 'empty') as CockpitLoadState,
+    graphRagEvidenceError: evidenceQuery.isError ? apiErrorMessage(evidenceQuery.error, 'Could not load node evidence') : '',
+    graphRagCommunities: data.graphRagCommunities ?? [],
+    graphRagCommunitiesState: (selection.view !== 'graphrag' ? 'idle' : activeQuery.isPending ? 'loading' : data.graphRagCommunities?.length ? 'ready' : data.graphRagCommunitiesError ? 'error' : 'empty') as CockpitLoadState,
+    graphRagCommunitiesError: data.graphRagCommunitiesError ?? '',
+    graphRagPath: pathMutation.data ?? null,
+    graphRagPathState: (pathMutation.isPending ? 'loading' : pathMutation.isError ? 'error' : pathMutation.data ? pathMutation.data.status === 'found' ? 'ready' : 'empty' : 'idle') as CockpitLoadState,
+    graphRagPathError: pathMutation.isError ? apiErrorMessage(pathMutation.error, 'Could not trace path') : '',
+    graphRagProcesses: data.graphRagProcesses ?? [],
+    graphRagProcessesState: (selection.view !== 'graphrag' ? 'idle' : activeQuery.isPending ? 'loading' : data.graphRagProcesses?.length ? 'ready' : data.graphRagProcessesError ? 'error' : 'empty') as CockpitLoadState,
+    graphRagProcessesError: data.graphRagProcessesError ?? '',
+    graphRagProcessDetail: processMutation.data ?? null,
+    graphRagProcessDetailState: (processMutation.isPending ? 'loading' : processMutation.isError ? 'error' : processMutation.data ? 'ready' : 'idle') as CockpitLoadState,
+    graphRagProcessDetailError: processMutation.isError ? apiErrorMessage(processMutation.error, 'Could not load process detail') : '',
+    uiMapSummary: data.uiMapSummary ?? null,
+    uiMapGraph: data.uiMapGraph ?? DEFAULT_GRAPH,
+    userFlowsGraph: data.userFlowsGraph ?? DEFAULT_GRAPH,
+    semanticMap: data.semanticMap ?? null,
+    semanticMapComparison: data.semanticMapComparison ?? null,
+    testMatrix: data.testMatrix ?? null,
+    userFlows: data.userFlows ?? null,
+    rebuildReadiness: data.rebuildReadiness ?? null,
+    traceGraphRagPath, loadGraphRagProcessDetail, triggerCollectionReindex, regenerateArc42,
+    generateExport, refreshActiveView,
   }
 }

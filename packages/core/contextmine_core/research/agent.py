@@ -10,15 +10,17 @@ import logging
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
+from contextmine_core.model_policy import ensure_model_calls_enabled
 from contextmine_core.research.artifacts import get_artifact_store
-from contextmine_core.research.run import Evidence, ResearchRun
+from contextmine_core.research.run import Evidence, ResearchRun, RunStatus
 from contextmine_core.research.verification.models import VerificationStatus
 from contextmine_core.research.verification.verifier import AnswerVerifier
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode, ToolRuntime, tools_condition
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
@@ -35,20 +37,63 @@ def _escape_like_pattern(value: str) -> str:
 # =============================================================================
 
 
+def _merge_run_state(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Merge parallel tool updates without duplicating evidence."""
+    if not left:
+        return right
+    if not right:
+        return left
+    merged = {**left, **right}
+    evidence = {
+        item["id"]: item for item in [*left.get("evidence", []), *right.get("evidence", [])]
+    }
+    merged["evidence"] = list(evidence.values())
+    terminal = {"done", "error", "cancelled"}
+    if left.get("status") in terminal and right.get("status") != left.get("status"):
+        merged["status"] = left["status"]
+        merged["completed_at"] = left.get("completed_at")
+        merged["answer"] = left.get("answer")
+        merged["error_message"] = left.get("error_message")
+    merged["budget_used"] = max(left.get("budget_used", 0), right.get("budget_used", 0))
+    return merged
+
+
 class AgentState(TypedDict):
     """State for the research agent graph."""
 
     messages: Annotated[list[BaseMessage], add_messages]
     """Conversation messages including tool calls."""
 
-    run: ResearchRun
-    """The research run being executed."""
+    run: Annotated[dict[str, Any], _merge_run_state]
+    """Serializable research run state."""
 
     pending_answer: str | None
     """Answer pending verification."""
 
     verification_attempts: int
     """Number of verification attempts."""
+
+    confidence: float
+    """Confidence supplied by the finalize tool."""
+
+
+def _runtime_run(runtime: ToolRuntime) -> ResearchRun:
+    return ResearchRun.from_dict(runtime.state["run"])
+
+
+def _tool_command(content: str, run: ResearchRun, runtime: ToolRuntime) -> Command:
+    limited = content if len(content) <= 12_000 else content[:12_000] + "\n[truncated]"
+    return Command(
+        update={
+            "run": run.to_dict(),
+            "messages": [
+                ToolMessage(
+                    content=limited,
+                    tool_call_id=runtime.tool_call_id,
+                )
+            ],
+        }
+    )
 
 
 # =============================================================================
@@ -78,17 +123,17 @@ class FinalizeInput(BaseModel):
     confidence: float = Field(default=0.8, description="Confidence 0.0-1.0")
 
 
-def _create_search_tools(run_holder: dict[str, ResearchRun]) -> list:
+def _create_search_tools() -> list:
     """Create search and finalize tools."""
 
     @tool
-    async def hybrid_search(query: str, k: int = 10) -> str:
+    async def hybrid_search(query: str, runtime: ToolRuntime, k: int = 10) -> Command:
         """Search the codebase using hybrid BM25 + vector retrieval.
 
         Use this to find relevant code snippets for your investigation.
         Returns matching code with file paths and line numbers.
         """
-        run = run_holder["run"]
+        run = _runtime_run(runtime)
 
         try:
             from contextmine_core.embeddings import get_embedder, parse_embedding_model_spec
@@ -129,35 +174,38 @@ def _create_search_tools(run_holder: dict[str, ResearchRun]) -> list:
                 )
 
             if not output_parts:
-                return "No results found."
+                return _tool_command("No results found.", run, runtime)
 
-            return f"Found {len(results.results)} results:\n\n" + "\n\n".join(output_parts)
+            content = f"Found {len(results.results)} results:\n\n" + "\n\n".join(output_parts)
+            return _tool_command(content, run, runtime)
 
         except Exception as e:
             logger.exception("hybrid_search failed: %s", e)
-            return f"Search failed: {e}"
+            return _tool_command(f"Search failed: {e}", run, runtime)
 
     @tool
-    async def open_span(file_path: str, start_line: int, end_line: int) -> str:
+    async def open_span(
+        file_path: str, start_line: int, end_line: int, runtime: ToolRuntime
+    ) -> Command:
         """Read a specific range of lines from a file.
 
         Use this to examine code in detail after finding it via search.
         Registers the content as evidence for your answer.
         """
-        run = run_holder["run"]
+        run = _runtime_run(runtime)
 
         try:
-            from contextmine_core.database import get_async_session
+            from contextmine_core.database import get_session
             from contextmine_core.models import Document
             from sqlalchemy import select
 
-            async with get_async_session() as session:
+            async with get_session() as session:
                 stmt = select(Document).where(Document.uri == file_path)
                 result = await session.execute(stmt)
                 doc = result.scalar_one_or_none()
 
                 if not doc:
-                    return f"File not found: {file_path}"
+                    return _tool_command(f"File not found: {file_path}", run, runtime)
 
                 lines = (doc.content_markdown or "").split("\n")
                 start_idx = max(0, start_line - 1)
@@ -175,36 +223,47 @@ def _create_search_tools(run_holder: dict[str, ResearchRun]) -> list:
                 )
                 run.add_evidence(evidence)
 
-                return f"[{evidence.id}] {file_path}:{start_line}-{end_line}\n```\n{content}\n```"
+                content = (
+                    f"[{evidence.id}] {file_path}:{start_line}-{end_line}\n```\n{content}\n```"
+                )
+                return _tool_command(content, run, runtime)
 
         except Exception as e:
             logger.exception("open_span failed: %s", e)
-            return f"Failed to read file: {e}"
+            return _tool_command(f"Failed to read file: {e}", run, runtime)
 
     @tool
-    async def finalize(answer: str, confidence: float = 0.8) -> str:
+    async def finalize(answer: str, runtime: ToolRuntime, confidence: float = 0.8) -> Command:
         """Submit your final answer with citations to evidence.
 
         Use this when you have gathered sufficient evidence to answer the question.
         Include citation IDs like [ev-abc-001] in your answer.
         The answer will be verified against the evidence before acceptance.
         """
-        # This tool just returns the answer - verification happens in the graph
-        run_holder["pending_answer"] = answer
-        run_holder["confidence"] = confidence
-        return f"Answer submitted for verification (confidence: {confidence})"
+        return Command(
+            update={
+                "pending_answer": answer,
+                "confidence": max(0.0, min(1.0, confidence)),
+                "messages": [
+                    ToolMessage(
+                        content=f"Answer submitted for verification (confidence: {confidence})",
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
 
     return [hybrid_search, open_span, finalize]
 
 
 async def _query_goto_definition(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
     """Fetch definitions from DB and return formatted output."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = (
             select(Symbol)
             .join(Document)
@@ -254,12 +313,12 @@ async def _query_goto_definition(symbol_name: str, file_path: str | None, run: R
 
 async def _query_find_references(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
     """Fetch references from DB and return formatted output."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
     from sqlalchemy import or_, select
     from sqlalchemy.orm import selectinload
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         target_stmt = select(Symbol).join(Document).where(Symbol.name == symbol_name)
         if file_path:
             target_stmt = target_stmt.where(Document.uri == file_path)
@@ -274,7 +333,7 @@ async def _query_find_references(symbol_name: str, file_path: str | None, run: R
     output_parts: list[str] = []
     total_refs = 0
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         for target in targets:
             edges_stmt = (
                 select(SymbolEdge)
@@ -340,12 +399,12 @@ def _format_reference_evidence(
 
 async def _query_get_signature(symbol_name: str, file_path: str | None, run: ResearchRun) -> str:
     """Fetch symbol signature/docs from DB and return formatted output."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = (
             select(Symbol)
             .join(Document)
@@ -403,57 +462,69 @@ def _build_signature_content(sym: Any, doc: Any) -> str:
     return "\n\n".join(content_parts)
 
 
-def _create_definition_tools(run_holder: dict[str, ResearchRun]) -> list:
+def _create_definition_tools() -> list:
     """Create definition/reference lookup tools."""
 
     @tool
-    async def goto_definition(symbol_name: str, file_path: str | None = None) -> str:
+    async def goto_definition(
+        symbol_name: str, runtime: ToolRuntime, file_path: str | None = None
+    ) -> Command:
         """Jump to the definition of a symbol.
 
         Uses pre-indexed Symbol table to find where a symbol is defined.
         Optionally filter by file path if you know where it's used.
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_goto_definition(symbol_name, file_path, run_holder["run"])
+            output = await _query_goto_definition(symbol_name, file_path, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("goto_definition failed: %s", e)
-            return f"Goto definition failed: {e}"
+            return _tool_command(f"Goto definition failed: {e}", run, runtime)
 
     @tool
-    async def find_references(symbol_name: str, file_path: str | None = None) -> str:
+    async def find_references(
+        symbol_name: str, runtime: ToolRuntime, file_path: str | None = None
+    ) -> Command:
         """Find all usages/references of a symbol in the codebase.
 
         Uses pre-indexed SymbolEdge table to find where a symbol is referenced.
         Returns both callers (CALLS edges) and references (REFERENCES edges).
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_find_references(symbol_name, file_path, run_holder["run"])
+            output = await _query_find_references(symbol_name, file_path, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("find_references failed: %s", e)
-            return f"Find references failed: {e}"
+            return _tool_command(f"Find references failed: {e}", run, runtime)
 
     @tool
-    async def get_signature(symbol_name: str, file_path: str | None = None) -> str:
+    async def get_signature(
+        symbol_name: str, runtime: ToolRuntime, file_path: str | None = None
+    ) -> Command:
         """Get type signature and documentation for a symbol.
 
         Uses pre-indexed Symbol table to retrieve signature and docstring.
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_get_signature(symbol_name, file_path, run_holder["run"])
+            output = await _query_get_signature(symbol_name, file_path, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("get_signature failed: %s", e)
-            return f"Get signature failed: {e}"
+            return _tool_command(f"Get signature failed: {e}", run, runtime)
 
     return [goto_definition, find_references, get_signature]
 
 
 async def _query_symbol_outline(file_path: str) -> str:
     """Fetch symbol outline for a file from DB."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol
     from sqlalchemy import select
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         doc_stmt = select(Document).where(Document.uri == file_path)
         doc_result = await session.execute(doc_stmt)
         doc = doc_result.scalar_one_or_none()
@@ -483,9 +554,8 @@ async def _query_symbol_outline(file_path: str) -> str:
     return summary
 
 
-def _create_symbol_outline_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_symbol_outline_tool() -> list:
     """Create symbol_outline tool (split from _create_symbol_tools to reduce complexity)."""
-    _ = run_holder  # outline does not need run
 
     @tool
     async def symbol_outline(file_path: str) -> str:
@@ -505,11 +575,11 @@ def _create_symbol_outline_tool(run_holder: dict[str, ResearchRun]) -> list:
 
 async def _query_symbol_find(name: str, file_path: str | None, run: ResearchRun) -> str:
     """Find a symbol by name in the indexed codebase."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol
     from sqlalchemy import select
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = select(Symbol).join(Document)
         if file_path:
             stmt = stmt.where(Document.uri == file_path)
@@ -562,12 +632,12 @@ async def _query_symbol_find(name: str, file_path: str | None, run: ResearchRun)
 
 async def _query_symbol_callers(name: str, file_path: str | None, run: ResearchRun) -> str:
     """Find all functions/methods that call a given symbol."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = select(Symbol).join(Document).where(Symbol.name == name)
         if file_path:
             stmt = stmt.where(Document.uri == file_path)
@@ -621,12 +691,12 @@ async def _query_symbol_callers(name: str, file_path: str | None, run: ResearchR
 
 async def _query_symbol_callees(name: str, file_path: str | None) -> str:
     """Find all functions/methods that a given symbol calls."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol, SymbolEdge, SymbolEdgeType
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = select(Symbol).join(Document).where(Symbol.name == name)
         if file_path:
             stmt = stmt.where(Document.uri == file_path)
@@ -664,11 +734,11 @@ async def _query_symbol_callees(name: str, file_path: str | None) -> str:
 
 async def _query_symbol_enclosing(file_path: str, line: int, run: ResearchRun) -> str:
     """Find what function, class, or method contains a specific line."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Document, Symbol
     from sqlalchemy import and_, select
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         doc_stmt = select(Document).where(Document.uri == file_path)
         doc_result = await session.execute(doc_stmt)
         doc = doc_result.scalar_one_or_none()
@@ -710,34 +780,40 @@ async def _query_symbol_enclosing(file_path: str, line: int, run: ResearchRun) -
     return f"[{evidence.id}] Line {line} is inside {sym.kind.value} '{sym.name}' (L{sym.start_line}-{sym.end_line})\n```\n{content[:1000]}\n```"
 
 
-def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
+def _create_symbol_tools() -> list:
     """Create symbol index tools (excluding outline, which is created separately)."""
 
     @tool
-    async def symbol_find(name: str, file_path: str | None = None) -> str:
+    async def symbol_find(name: str, runtime: ToolRuntime, file_path: str | None = None) -> Command:
         """Find a symbol by name in the indexed codebase.
 
         Uses the pre-indexed symbol database. Optionally filter by file path.
         Returns the symbol's source code as evidence.
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_symbol_find(name, file_path, run_holder["run"])
+            output = await _query_symbol_find(name, file_path, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("symbol_find failed: %s", e)
-            return f"Symbol find failed: {e}"
+            return _tool_command(f"Symbol find failed: {e}", run, runtime)
 
     @tool
-    async def symbol_callers(name: str, file_path: str | None = None) -> str:
+    async def symbol_callers(
+        name: str, runtime: ToolRuntime, file_path: str | None = None
+    ) -> Command:
         """Find all functions/methods that call a given symbol.
 
         Uses the pre-indexed symbol graph (SymbolEdge table).
         Returns callers as evidence.
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_symbol_callers(name, file_path, run_holder["run"])
+            output = await _query_symbol_callers(name, file_path, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("symbol_callers failed: %s", e)
-            return f"Symbol callers failed: {e}"
+            return _tool_command(f"Symbol callers failed: {e}", run, runtime)
 
     @tool
     async def symbol_callees(name: str, file_path: str | None = None) -> str:
@@ -753,26 +829,28 @@ def _create_symbol_tools(run_holder: dict[str, ResearchRun]) -> list:
             return f"Symbol callees failed: {e}"
 
     @tool
-    async def symbol_enclosing(file_path: str, line: int) -> str:
+    async def symbol_enclosing(file_path: str, line: int, runtime: ToolRuntime) -> Command:
         """Find what function, class, or method contains a specific line.
 
         Uses the pre-indexed symbol database.
         Returns the enclosing symbol's information.
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_symbol_enclosing(file_path, line, run_holder["run"])
+            output = await _query_symbol_enclosing(file_path, line, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("symbol_enclosing failed: %s", e)
-            return f"Symbol enclosing failed: {e}"
+            return _tool_command(f"Symbol enclosing failed: {e}", run, runtime)
 
     @tool
-    async def summarize_evidence(goal: str) -> str:
+    async def summarize_evidence(goal: str, runtime: ToolRuntime) -> str:
         """Use LLM to summarize collected evidence into a focused memo.
 
         Use this when you have gathered many evidence items and need to
         organize them before answering. Specify a goal to focus the summary.
         """
-        run = run_holder["run"]
+        run = _runtime_run(runtime)
 
         if not run.evidence:
             return "No evidence collected yet to summarize."
@@ -829,7 +907,7 @@ async def _query_graph_expand(
     run: ResearchRun,
 ) -> str:
     """BFS expansion from seed symbols following relationship types."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Symbol, SymbolEdgeType
     from sqlalchemy import or_, select
 
@@ -847,7 +925,7 @@ async def _query_graph_expand(
         [edge_type_map[t] for t in edge_types if t in edge_type_map] if edge_types else None
     )
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         seed_stmt = select(Symbol).where(or_(*[Symbol.name == name for name in seed_names]))
         seed_result = await session.execute(seed_stmt)
         seeds = {s.id: s for s in seed_result.scalars().all()}
@@ -945,16 +1023,17 @@ def _format_expansion_evidence(
     return output_parts
 
 
-def _create_graph_expand_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_graph_expand_tool() -> list:
     """Create graph_expand tool."""
 
     @tool
     async def graph_expand(
         seed_names: list[str],
+        runtime: ToolRuntime,
         edge_types: list[str] | None = None,
         depth: int = 2,
         limit: int = 50,
-    ) -> str:
+    ) -> Command:
         """Expand from seed symbols following relationship types.
 
         Uses the pre-indexed symbol graph (SymbolEdge table).
@@ -966,13 +1045,13 @@ def _create_graph_expand_tool(run_holder: dict[str, ResearchRun]) -> list:
             depth: Max traversal depth (1-5)
             limit: Max nodes to return
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_graph_expand(
-                seed_names, edge_types, depth, limit, run_holder["run"]
-            )
+            output = await _query_graph_expand(seed_names, edge_types, depth, limit, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("graph_expand failed: %s", e)
-            return f"Graph expand failed: {e}"
+            return _tool_command(f"Graph expand failed: {e}", run, runtime)
 
     return [graph_expand]
 
@@ -1008,11 +1087,11 @@ def _score_evidence_item(ev: Evidence) -> float:
     return score
 
 
-def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_graph_pack_tool() -> list:
     """Create graph_pack tool."""
 
     @tool
-    async def graph_pack(target_count: int = 10) -> str:
+    async def graph_pack(runtime: ToolRuntime, target_count: int = 10) -> str:
         """Select the most relevant evidence items from collected evidence.
 
         Scores evidence by:
@@ -1022,7 +1101,7 @@ def _create_graph_pack_tool(run_holder: dict[str, ResearchRun]) -> list:
 
         Returns a ranked list of the most important evidence.
         """
-        run = run_holder["run"]
+        run = _runtime_run(runtime)
 
         if not run.evidence:
             return "No evidence collected yet to pack."
@@ -1053,7 +1132,7 @@ async def _query_graph_trace(
 ) -> str:
     """Find paths between two symbols via BFS."""
 
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import Symbol, SymbolEdgeType
     from sqlalchemy import or_, select
     from sqlalchemy.orm import selectinload
@@ -1070,7 +1149,7 @@ async def _query_graph_trace(
         [edge_type_map[t] for t in edge_types if t in edge_type_map] if edge_types else None
     )
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         sym_stmt = (
             select(Symbol)
             .where(or_(Symbol.name == from_symbol, Symbol.name == to_symbol))
@@ -1195,16 +1274,17 @@ def _format_trace_paths(
     return "\n".join(output_parts)
 
 
-def _create_graph_trace_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_graph_trace_tool() -> list:
     """Create graph_trace tool."""
 
     @tool
     async def graph_trace(
         from_symbol: str,
         to_symbol: str,
+        runtime: ToolRuntime,
         edge_types: list[str] | None = None,
         max_depth: int = 5,
-    ) -> str:
+    ) -> Command:
         """Find paths between two symbols in the code graph.
 
         Uses bidirectional BFS to find shortest paths.
@@ -1216,23 +1296,23 @@ def _create_graph_trace_tool(run_holder: dict[str, ResearchRun]) -> list:
             edge_types: Filter by edge types (calls, references, imports, inherits)
             max_depth: Maximum path length
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_graph_trace(
-                from_symbol, to_symbol, edge_types, max_depth, run_holder["run"]
-            )
+            output = await _query_graph_trace(from_symbol, to_symbol, edge_types, max_depth, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("graph_trace failed: %s", e)
-            return f"Graph trace failed: {e}"
+            return _tool_command(f"Graph trace failed: {e}", run, runtime)
 
     return [graph_trace]
 
 
 async def _query_graphrag_search(query: str, max_entities: int, run: ResearchRun) -> str:
     """Execute GraphRAG search and format results as evidence."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.graphrag import graph_rag_context
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         context = await graph_rag_context(
             session=session,
             query=query,
@@ -1306,11 +1386,11 @@ def _format_edge_summary(context: Any, output_parts: list[str]) -> None:
         output_parts.append(f"- {kind}: {count}")
 
 
-def _create_graphrag_search_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_graphrag_search_tool() -> list:
     """Create graphrag_search tool."""
 
     @tool
-    async def graphrag_search(query: str, max_entities: int = 15) -> str:
+    async def graphrag_search(query: str, runtime: ToolRuntime, max_entities: int = 15) -> Command:
         """Search using GraphRAG with community-aware retrieval.
 
         This is the most powerful search tool - it combines:
@@ -1325,22 +1405,26 @@ def _create_graphrag_search_tool(run_holder: dict[str, ResearchRun]) -> list:
             query: Natural language query
             max_entities: Maximum entities to return (default 15)
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_graphrag_search(query, max_entities, run_holder["run"])
+            output = await _query_graphrag_search(query, max_entities, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("graphrag_search failed: %s", e)
-            return f"GraphRAG search failed: {e}. Try hybrid_search as fallback."
+            return _tool_command(
+                f"GraphRAG search failed: {e}. Try hybrid_search as fallback.", run, runtime
+            )
 
     return [graphrag_search]
 
 
 async def _find_kg_node(node_name: str, node_kind: str | None) -> Any:
     """Find a KnowledgeNode by name, optionally filtered by kind."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.models import KnowledgeNode
     from sqlalchemy import select
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         stmt = select(KnowledgeNode).where(KnowledgeNode.name == node_name)
         if node_kind:
             from contextmine_core.models import KnowledgeNodeKind
@@ -1399,7 +1483,7 @@ async def _query_kg_neighborhood(
     node_name: str, depth: int, node_kind: str | None, run: ResearchRun
 ) -> str:
     """Explore KG neighborhood of a node."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.graphrag import graph_neighborhood
 
     depth = max(1, min(3, depth))
@@ -1407,7 +1491,7 @@ async def _query_kg_neighborhood(
     if not node:
         return f"Node '{node_name}' not found in Knowledge Graph"
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         context = await graph_neighborhood(
             session=session,
             node_id=node.id,
@@ -1427,11 +1511,16 @@ async def _query_kg_neighborhood(
     return "\n".join(output_parts)
 
 
-def _create_kg_neighborhood_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_kg_neighborhood_tool() -> list:
     """Create kg_neighborhood tool."""
 
     @tool
-    async def kg_neighborhood(node_name: str, depth: int = 1, node_kind: str | None = None) -> str:
+    async def kg_neighborhood(
+        node_name: str,
+        runtime: ToolRuntime,
+        depth: int = 1,
+        node_kind: str | None = None,
+    ) -> Command:
         """Explore the Knowledge Graph neighborhood of a node.
 
         Returns connected nodes including:
@@ -1445,18 +1534,20 @@ def _create_kg_neighborhood_tool(run_holder: dict[str, ResearchRun]) -> list:
             depth: Expansion depth (1-3, default 1)
             node_kind: Optional kind filter (FILE, SYMBOL, DB_TABLE, API_ENDPOINT, etc.)
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_kg_neighborhood(node_name, depth, node_kind, run_holder["run"])
+            output = await _query_kg_neighborhood(node_name, depth, node_kind, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("kg_neighborhood failed: %s", e)
-            return f"Knowledge Graph neighborhood failed: {e}"
+            return _tool_command(f"Knowledge Graph neighborhood failed: {e}", run, runtime)
 
     return [kg_neighborhood]
 
 
 async def _query_kg_path(from_name: str, to_name: str, max_hops: int, run: ResearchRun) -> str:
     """Find path between two KG nodes."""
-    from contextmine_core.database import get_async_session
+    from contextmine_core.database import get_session
     from contextmine_core.graphrag import trace_path
 
     max_hops = max(1, min(10, max_hops))
@@ -1469,7 +1560,7 @@ async def _query_kg_path(from_name: str, to_name: str, max_hops: int, run: Resea
     if not to_node:
         return f"Target node '{to_name}' not found"
 
-    async with get_async_session() as session:
+    async with get_session() as session:
         context = await trace_path(
             session=session,
             from_node_id=from_node.id,
@@ -1519,11 +1610,13 @@ def _format_kg_path_step(
         output_parts.append(f"     {arrow} ({edge_kind})")
 
 
-def _create_kg_path_tool(run_holder: dict[str, ResearchRun]) -> list:
+def _create_kg_path_tool() -> list:
     """Create kg_path tool."""
 
     @tool
-    async def kg_path(from_name: str, to_name: str, max_hops: int = 6) -> str:
+    async def kg_path(
+        from_name: str, to_name: str, runtime: ToolRuntime, max_hops: int = 6
+    ) -> Command:
         """Find path between two nodes in the Knowledge Graph.
 
         Works across different node types (files, symbols, tables, APIs).
@@ -1534,35 +1627,30 @@ def _create_kg_path_tool(run_holder: dict[str, ResearchRun]) -> list:
             to_name: Target node name
             max_hops: Maximum path length (default 6)
         """
+        run = _runtime_run(runtime)
         try:
-            return await _query_kg_path(from_name, to_name, max_hops, run_holder["run"])
+            output = await _query_kg_path(from_name, to_name, max_hops, run)
+            return _tool_command(output, run, runtime)
         except Exception as e:
             logger.warning("kg_path failed: %s", e)
-            return f"Knowledge Graph path failed: {e}"
+            return _tool_command(f"Knowledge Graph path failed: {e}", run, runtime)
 
     return [kg_path]
 
 
-def create_tools(run_holder: dict[str, ResearchRun]) -> list:
-    """Create tools that operate on a shared ResearchRun.
-
-    Args:
-        run_holder: Dict holding the current run (mutable reference)
-
-    Returns:
-        List of tool functions
-    """
+def create_tools() -> list:
+    """Create tools that read and update native LangGraph state."""
     tools: list = []
-    tools.extend(_create_search_tools(run_holder))
-    tools.extend(_create_definition_tools(run_holder))
-    tools.extend(_create_symbol_outline_tool(run_holder))
-    tools.extend(_create_symbol_tools(run_holder))
-    tools.extend(_create_graph_expand_tool(run_holder))
-    tools.extend(_create_graph_pack_tool(run_holder))
-    tools.extend(_create_graph_trace_tool(run_holder))
-    tools.extend(_create_graphrag_search_tool(run_holder))
-    tools.extend(_create_kg_neighborhood_tool(run_holder))
-    tools.extend(_create_kg_path_tool(run_holder))
+    tools.extend(_create_search_tools())
+    tools.extend(_create_definition_tools())
+    tools.extend(_create_symbol_outline_tool())
+    tools.extend(_create_symbol_tools())
+    tools.extend(_create_graph_expand_tool())
+    tools.extend(_create_graph_pack_tool())
+    tools.extend(_create_graph_trace_tool())
+    tools.extend(_create_graphrag_search_tool())
+    tools.extend(_create_kg_neighborhood_tool())
+    tools.extend(_create_kg_path_tool())
     return tools
 
 
@@ -1606,10 +1694,16 @@ class ResearchAgent:
     config: AgentConfig = field(default_factory=AgentConfig)
     """Agent configuration."""
 
+    checkpointer: Any = None
+    """LangGraph checkpointer; production resolves the lifespan-managed PostgreSQL saver."""
+
+    _compiled_graph: Any = field(default=None, init=False, repr=False)
+
     async def research(
         self,
         question: str,
         scope: str | None = None,
+        run_id: str | None = None,
     ) -> ResearchRun:
         """Execute a research investigation.
 
@@ -1620,44 +1714,45 @@ class ResearchAgent:
         Returns:
             Completed ResearchRun with answer, evidence, and trace
         """
-        run = ResearchRun.create(
-            question=question,
-            scope=scope,
-            budget_steps=self.config.max_steps,
-        )
+        ensure_model_calls_enabled()
+        graph = self._graph_for_execution()
+        graph_config = {"configurable": {"thread_id": run_id or ""}}
+        run: ResearchRun
+        initial_state: AgentState | None
 
-        logger.info("Starting research run %s: %s", run.run_id[:8], question[:50])
+        if run_id:
+            snapshot = await graph.aget_state(graph_config)
+            if snapshot.values:
+                run = ResearchRun.from_dict(snapshot.values["run"])
+                if run.status != RunStatus.RUNNING:
+                    return run
+                initial_state = None
+            else:
+                run = ResearchRun.create(question, scope, self.config.max_steps)
+                run.run_id = run_id
+                initial_state = self._initial_state(run)
+        else:
+            run = ResearchRun.create(question, scope, self.config.max_steps)
+            graph_config["configurable"]["thread_id"] = run.run_id
+            initial_state = self._initial_state(run)
+
+        logger.info("Starting research run %s: %s", run.run_id[:8], run.question[:50])
 
         try:
-            # Shared state for tools
-            run_holder: dict[str, Any] = {
-                "run": run,
-                "pending_answer": None,
-                "confidence": 0.8,
-            }
-
-            # Build and run the graph
-            graph = self._build_graph(run_holder)
-
-            # Initial state
-            system_msg = self._build_system_prompt(question, scope)
-            initial_state: AgentState = {
-                "messages": [
-                    SystemMessage(content=system_msg),
-                    HumanMessage(content=question),
-                ],
-                "run": run,
-                "pending_answer": None,
-                "verification_attempts": 0,
-            }
-
-            # Run the graph
-            final_state = await graph.ainvoke(initial_state)
-            run = final_state["run"]
+            final_state = await graph.ainvoke(initial_state, config=graph_config)
+            run = ResearchRun.from_dict(final_state["run"])
 
         except Exception as e:
             logger.exception("Research failed: %s", e)
             run.fail(str(e))
+            try:
+                await graph.aupdate_state(
+                    graph_config,
+                    {"run": run.to_dict()},
+                    as_node="__start__",
+                )
+            except Exception as checkpoint_error:
+                logger.warning("Failed to persist research failure: %s", checkpoint_error)
 
         # Store artifacts
         if self.config.store_artifacts:
@@ -1670,11 +1765,48 @@ class ResearchAgent:
 
         return run
 
+    def _initial_state(self, run: ResearchRun) -> AgentState:
+        return {
+            "messages": [
+                SystemMessage(content=self._build_system_prompt(run.question, run.scope)),
+                HumanMessage(content=run.question),
+            ],
+            "run": run.to_dict(),
+            "pending_answer": None,
+            "verification_attempts": 0,
+            "confidence": 0.8,
+        }
+
+    async def resume(self, run_id: str) -> ResearchRun:
+        """Resume a persisted running research thread."""
+        graph = self._graph_for_execution()
+        snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+        if not snapshot.values:
+            raise KeyError(f"Research run not found: {run_id}")
+        run = ResearchRun.from_dict(snapshot.values["run"])
+        return await self.research(run.question, run.scope, run_id=run_id)
+
+    async def cancel(self, run_id: str) -> ResearchRun:
+        """Persist cancellation so a thread cannot resume execution."""
+        graph = self._graph_for_execution()
+        graph_config = {"configurable": {"thread_id": run_id}}
+        snapshot = await graph.aget_state(graph_config)
+        if not snapshot.values:
+            raise KeyError(f"Research run not found: {run_id}")
+        run = ResearchRun.from_dict(snapshot.values["run"])
+        if run.status == RunStatus.RUNNING:
+            run.cancel()
+            await graph.aupdate_state(
+                graph_config,
+                {"run": run.to_dict()},
+                as_node="__start__",
+            )
+        return run
+
     def _handle_verification_failure(
         self,
         state: dict,
         run: Any,
-        run_holder: dict[str, Any],
         pending: str,
         attempts: int,
     ) -> dict[str, object]:
@@ -1699,10 +1831,8 @@ class ResearchAgent:
                 attempts + 1,
             )
             run.complete(pending)
-            run_holder["pending_answer"] = None
-            return {"run": run, "pending_answer": None}
+            return {"run": run.to_dict(), "pending_answer": None}
         run.answer = None
-        run_holder["pending_answer"] = None
         feedback = (
             f"Your answer was rejected because it's not grounded in evidence. "
             f"Issues: {'; '.join(run.verification.issues[:3])}. "
@@ -1710,7 +1840,7 @@ class ResearchAgent:
         )
         return {
             "messages": [HumanMessage(content=feedback)],
-            "run": run,
+            "run": run.to_dict(),
             "pending_answer": None,
             "verification_attempts": attempts + 1,
         }
@@ -1721,7 +1851,7 @@ class ResearchAgent:
 
         async def agent_node(state: AgentState) -> dict:
             """Agent node - calls LLM with tools."""
-            run = state["run"]
+            run = ResearchRun.from_dict(state["run"])
             current_steps = len([m for m in state["messages"] if isinstance(m, AIMessage)])
             run.budget_used = current_steps
 
@@ -1737,7 +1867,7 @@ class ResearchAgent:
                         "Research budget exhausted. Based on evidence collected, "
                         "I could not find sufficient information to answer the question."
                     )
-                return {"run": run}
+                return {"run": run.to_dict()}
 
             messages_to_send = list(state["messages"])
             remaining = run.budget_steps - current_steps
@@ -1755,21 +1885,20 @@ class ResearchAgent:
                 )
 
             response = await model_with_tools.ainvoke(messages_to_send)
-            return {"messages": [response], "run": run}
+            return {"messages": [response], "run": run.to_dict()}
 
         return agent_node
 
-    def _build_graph(self, run_holder: dict[str, Any]) -> Any:
+    def _build_graph(self, checkpointer: Any = None) -> Any:
         """Build the LangGraph workflow."""
-        tools = create_tools(run_holder)
-        model = self.llm_provider._model
-        model_with_tools = model.bind_tools(tools)
+        tools = create_tools()
+        model_with_tools = self.llm_provider.bind_tools(tools)
         agent_node = self._build_agent_node(model_with_tools)
 
         async def verify_node(state: AgentState) -> dict[str, object]:
             """Verify the answer is grounded in evidence."""
-            run = state["run"]
-            pending = run_holder.get("pending_answer")
+            run = ResearchRun.from_dict(state["run"])
+            pending = state.get("pending_answer")
             attempts = state.get("verification_attempts", 0)
 
             if not pending:
@@ -1784,29 +1913,33 @@ class ResearchAgent:
             run.verification = verification
 
             if verification.status == VerificationStatus.FAILED:
-                return self._handle_verification_failure(state, run, run_holder, pending, attempts)
+                return self._handle_verification_failure(state, run, pending, attempts)
 
             # Verification passed
             run.complete(pending)
-            run_holder["pending_answer"] = None
 
             logger.info(
                 "Research run %s verified and completed",
                 run.run_id[:8],
             )
 
-            return {"run": run, "pending_answer": None}
+            return {"run": run.to_dict(), "pending_answer": None}
 
-        def after_tools(_state: AgentState) -> str:
+        def after_tools(state: AgentState) -> str:
             """Route after tool execution."""
-            if run_holder.get("pending_answer"):
+            if state.get("pending_answer"):
                 return "verify"
             return "agent"
 
+        def after_agent(state: AgentState) -> str:
+            if ResearchRun.from_dict(state["run"]).status != RunStatus.RUNNING:
+                return END
+            return tools_condition(state)
+
         def after_verify(state: AgentState) -> str:
             """Route after verification."""
-            run = state["run"]
-            if run.answer or run.error_message:
+            run = ResearchRun.from_dict(state["run"])
+            if run.status != RunStatus.RUNNING:
                 return END
             # Retry - go back to agent
             return "agent"
@@ -1823,7 +1956,7 @@ class ResearchAgent:
         # Agent -> tools or end
         workflow.add_conditional_edges(
             "agent",
-            tools_condition,
+            after_agent,
         )
 
         # Tools -> verify or agent
@@ -1839,7 +1972,16 @@ class ResearchAgent:
             after_verify,
         )
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=checkpointer)
+
+    def _graph_for_execution(self) -> Any:
+        if self._compiled_graph is None:
+            if self.checkpointer is None:
+                from contextmine_core.research.checkpoints import get_research_checkpointer
+
+                self.checkpointer = get_research_checkpointer()
+            self._compiled_graph = self._build_graph(self.checkpointer)
+        return self._compiled_graph
 
     def _build_system_prompt(self, question: str, scope: str | None) -> str:
         """Build the system prompt for the agent."""
@@ -1919,6 +2061,7 @@ async def run_research(
     llm_provider: Any = None,
     max_steps: int = 10,
     store_artifacts: bool = True,
+    run_id: str | None = None,
 ) -> ResearchRun:
     """Convenience function to run a research investigation.
 
@@ -1928,6 +2071,7 @@ async def run_research(
         llm_provider: LLM provider (uses default if None)
         max_steps: Maximum steps
         store_artifacts: Whether to store artifacts
+        run_id: Existing thread to resume, or caller-assigned ID for a new run
 
     Returns:
         Completed ResearchRun
@@ -1947,4 +2091,13 @@ async def run_research(
         config=config,
     )
 
-    return await agent.research(question, scope)
+    return await agent.research(question, scope, run_id=run_id)
+
+
+async def cancel_research(run_id: str, llm_provider: Any = None) -> ResearchRun:
+    """Cancel a persisted research run without invoking the model."""
+    if llm_provider is None:
+        from contextmine_core.research.llm import get_research_llm_provider
+
+        llm_provider = get_research_llm_provider()
+    return await ResearchAgent(llm_provider=llm_provider).cancel(run_id)

@@ -42,7 +42,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def test_session() -> AsyncGenerator[AsyncSession, None]:
+async def test_session() -> AsyncGenerator[AsyncSession]:
     """Create a test database session.
 
     Uses SQLite in-memory for unit tests.
