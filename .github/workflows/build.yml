@@ -108,6 +108,11 @@ jobs:
       # SonarQube scan. Advisory: a Sonar server outage (e.g. HTTP 500 from the
       # analysis API) should not fail the build. The quality gate below is also
       # intentionally not enforced.
+      - name: Install SonarScanner signature verification dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dirmngr
+
       - uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         continue-on-error: true
         env:
