@@ -26,7 +26,10 @@ members = ["apps/api", "apps/worker", "packages/*"]
 contextmine-core = { workspace = true }
 contextmine-worker = { workspace = true }
 
-[tool.uv]
+[tool.uv]  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+# A global dependency cooldown would force an unrelated full-workspace re-lock.
+# Keep this narrowly scoped dependency pinned by immutable commit and lockfile;
+# introduce the cooldown with the next controlled workspace dependency refresh.
 # multilspy's v0.1.0 release metadata still pins requests==2.32.3. Keep the
 # workspace on the current patched requests release while exercising the
 # compatibility in the real LSP smoke gate.
