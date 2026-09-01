@@ -95,23 +95,33 @@ rules so individual detectors do not re-implement prompt plumbing or validation.
 
 ```python
 class Candidate(BaseModel):
-    id: str                      # stable id the LLM must reference
-    label: str                   # human-readable
-    payload: dict[str, Any]      # features shown to the model
+    id: str  # stable id the LLM must reference
+    label: str  # human-readable
+    payload: dict[str, Any]  # features shown to the model
+
 
 class Evidence(BaseModel):
-    id: str                      # "ev-N"
-    ref: str                     # file:line / node id / edge id
+    id: str  # "ev-N"
+    ref: str  # file:line / node id / edge id
     snippet: str
 
-class Finding(BaseModel):        # base class detectors extend
-    candidate_ids: list[str]     # validated subset of supplied candidates
-    evidence_ids: list[str]      # validated subset of supplied evidence
+
+class Finding(BaseModel):  # base class detectors extend
+    candidate_ids: list[str]  # validated subset of supplied candidates
+    evidence_ids: list[str]  # validated subset of supplied evidence
     rationale: str
 
+
 async def judge(
-    *, provider, system, task, candidates, evidence, output_schema,
-    allow_abstain=True, samples=1,
+    *,
+    provider,
+    system,
+    task,
+    candidates,
+    evidence,
+    output_schema,
+    allow_abstain=True,
+    samples=1,
 ) -> JudgeResult[T]: ...
 ```
 

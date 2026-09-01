@@ -43,9 +43,9 @@ The same snapshot data is also the structural input for Twin/Cockpit real metric
 
 ```python
 from contextmine_core.semantic_snapshot import (
-    build_snapshot,      # Parse .scip file → Snapshot
-    detect_projects,     # Detect language projects in a repo
-    index_repo,          # Run SCIP indexers on detected projects
+    build_snapshot,  # Parse .scip file → Snapshot
+    detect_projects,  # Detect language projects in a repo
+    index_repo,  # Run SCIP indexers on detected projects
 )
 
 # Detect projects in a repository
@@ -71,11 +71,13 @@ class Language(Enum):
     JAVA = "java"
     PHP = "php"
 
+
 @dataclass
 class ProjectTarget:
     language: Language
     root_path: Path
     metadata: dict[str, Any]  # e.g., {"build_tool": "maven"}
+
 
 @dataclass
 class IndexArtifact:
@@ -88,6 +90,7 @@ class IndexArtifact:
     duration_s: float
     success: bool = True
     error_message: str | None = None
+
 
 @dataclass
 class IndexConfig:
