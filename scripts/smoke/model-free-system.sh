@@ -41,6 +41,17 @@ docker compose \
   up --build --detach --wait --wait-timeout 300 \
   postgres prefect-server api web browser
 
+prefect_server_version="$(
+  docker compose \
+    --project-name "${compose_project}" \
+    --file "${compose_file}" \
+    exec --no-TTY prefect-server python -c 'import prefect; print(prefect.__version__)'
+)"
+if [[ -z "${prefect_server_version}" ]]; then
+  echo "Prefect server version could not be determined" >&2
+  exit 1
+fi
+
 docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
@@ -59,4 +70,6 @@ docker compose \
 docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
-  run --build --rm --no-deps smoke
+  run --build --rm --no-deps \
+  --env CONTEXTMINE_SMOKE_PREFECT_SERVER_VERSION="${prefect_server_version}" \
+  smoke

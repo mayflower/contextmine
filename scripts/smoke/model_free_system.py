@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import prefect
 from contextmine_core import (
     Chunk,
     Collection,
@@ -60,6 +61,7 @@ def _require_environment(name: str) -> str:
 
 FIXTURE_PATH = Path(_require_environment("CONTEXTMINE_SMOKE_FIXTURE_DIR")).resolve()
 FIXTURE_REVISION = _require_environment("CONTEXTMINE_SMOKE_FIXTURE_REVISION")
+PREFECT_SERVER_VERSION = _require_environment("CONTEXTMINE_SMOKE_PREFECT_SERVER_VERSION")
 
 
 def _assert_fixture() -> None:
@@ -85,6 +87,16 @@ def _assert_api_health() -> None:
         connection.close()
     if payload != {"status": "ok"}:
         raise AssertionError(f"Unexpected API health response: {payload}")
+
+
+def _assert_prefect_versions() -> str:
+    client_version = prefect.__version__
+    if client_version != PREFECT_SERVER_VERSION:
+        raise AssertionError(
+            "Prefect client/server version mismatch: "
+            f"client={client_version}, server={PREFECT_SERVER_VERSION}"
+        )
+    return client_version
 
 
 def _forbid_model_provider(*_args: object, **_kwargs: object) -> None:
@@ -305,6 +317,7 @@ def _assert_noop_sync(result: dict[str, Any]) -> None:
 async def _run() -> None:
     _assert_fixture()
     _assert_api_health()
+    prefect_client_version = _assert_prefect_versions()
     settings = get_settings()
     if settings.model_calls_enabled:
         raise AssertionError("MODEL_CALLS_ENABLED must be false for this gate")
@@ -353,6 +366,10 @@ async def _run() -> None:
     summary = {
         "fixture": f"{FIXTURE_OWNER}/{FIXTURE_REPOSITORY}@{FIXTURE_REVISION}",
         "model_calls_enabled": False,
+        "prefect": {
+            "client": prefect_client_version,
+            "server": PREFECT_SERVER_VERSION,
+        },
         "first_sync": {
             key: first_stats.get(key)
             for key in (
