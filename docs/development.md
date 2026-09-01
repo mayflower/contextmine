@@ -5,7 +5,7 @@ This guide covers setting up a development environment and contributing to Conte
 ## Prerequisites
 
 - Python 3.12+
-- Node.js 20+
+- Node.js 24+
 - [uv](https://github.com/astral-sh/uv) for Python dependency management
 - Docker (for pg4ai: PostgreSQL + pgvector + Apache AGE)
 

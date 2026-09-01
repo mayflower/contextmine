@@ -11,8 +11,7 @@ interface MockOptions {
   collections?: Array<{ id: string; name: string }>
   scenariosByCollection?: Record<string, Scenario[]>
   cityDelayMs?: number
-  failCityOnce?: boolean
-  cityFailCount?: number
+  failCity?: boolean
 }
 
 const DEFAULT_COLLECTIONS = [{ id: 'col-1', name: 'Alpha Project' }]
@@ -30,7 +29,7 @@ function json(route: Route, payload: unknown, status = 200) {
 }
 
 async function mockApi(page: Page, options: MockOptions = {}) {
-  let cityFailuresRemaining = options.cityFailCount ?? (options.failCityOnce ? 1 : 0)
+  let failCity = options.failCity ?? false
   const collections = options.collections ?? DEFAULT_COLLECTIONS
   const scenariosByCollection = options.scenariosByCollection ?? { 'col-1': DEFAULT_SCENARIOS }
 
@@ -333,8 +332,7 @@ async function mockApi(page: Page, options: MockOptions = {}) {
         await new Promise((resolve) => setTimeout(resolve, options.cityDelayMs))
       }
 
-      if (cityFailuresRemaining > 0) {
-        cityFailuresRemaining -= 1
+      if (failCity) {
         return json(route, { detail: 'city endpoint failed' }, 500)
       }
 
@@ -827,6 +825,12 @@ async function mockApi(page: Page, options: MockOptions = {}) {
 
     return json(route, {})
   })
+
+  return {
+    allowCitySuccess: () => {
+      failCity = false
+    },
+  }
 }
 
 test('discoverability: sidebar and dashboard CTA open Architecture Cockpit', async ({ page }) => {
@@ -1067,10 +1071,11 @@ test('exports view can generate output and supports copy/download actions', asyn
 })
 
 test('overview error handling shows inline error and supports retry', async ({ page }) => {
-  await mockApi(page, { cityFailCount: 2 })
+  const cityMock = await mockApi(page, { failCity: true })
   await page.goto('/?page=cockpit&collection=col-1&scenario=scn-asis&view=overview')
 
   await expect(page.getByText('Overview request failed')).toBeVisible()
+  cityMock.allowCitySuccess()
   await page.getByRole('button', { name: 'Retry' }).first().click()
   await expect(page.getByText('System health summary')).toBeVisible()
 })

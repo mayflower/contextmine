@@ -216,8 +216,8 @@ When `cfg.best_effort=True` (default), individual project failures don't abort t
 The worker image must include:
 
 ```dockerfile
-# Node.js 20 (for scip-python, scip-typescript)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Node.js 24 (for scip-python, scip-typescript)
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs
 
 # SCIP indexers (npm)
