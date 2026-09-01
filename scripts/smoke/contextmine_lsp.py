@@ -14,9 +14,9 @@ from contextmine_core.lsp.manager import LspManager
 
 async def exercise_lsp() -> dict[str, str]:
     """Resolve a cross-file TypeScript definition through LspManager."""
-    server_binary = shutil.which("typescript-language-server")
+    server_binary = shutil.which("tsc")
     if server_binary is None:
-        raise RuntimeError("typescript-language-server is not available on PATH")
+        raise RuntimeError("the native TypeScript language server is not available on PATH")
 
     with tempfile.TemporaryDirectory(prefix="contextmine-lsp-manager-") as directory:
         workspace = Path(directory)

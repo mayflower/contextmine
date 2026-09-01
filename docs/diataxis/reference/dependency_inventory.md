@@ -63,6 +63,9 @@ The snapshot-date modernization is applied:
   because openapi-typescript 7 and typescript-eslint 8 reject TypeScript 7;
   `@types/node` stays on 24 to match the Node 24 production runtime. The current
   lock reports zero `npm audit` vulnerabilities.
+- Shipped code intelligence uses the native TypeScript 7 LSP because TypeScript
+  7 removed the JavaScript `tsserver` wrapped by `typescript-language-server`.
+  The model-free fixture exercises this native server end to end.
 - The Rust lock is refreshed to the latest Rust 1.98-compatible resolution,
   including `spider 2.53.6`. A direct feature activation works around
   `http-global-cache 0.2` not forwarding the middleware feature required by
