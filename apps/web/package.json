@@ -15,14 +15,14 @@
     "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
-    "@grafana/faro-react": "^2.7.1",
-    "@grafana/faro-web-sdk": "^2.7.1",
-    "@grafana/faro-web-tracing": "^2.7.1",
-    "cytoscape": "^3.34.0",
+    "@grafana/faro-react": "^2.11.0",
+    "@grafana/faro-web-sdk": "^2.11.0",
+    "@grafana/faro-web-tracing": "^2.11.0",
+    "cytoscape": "^3.34.2",
     "elkjs": "^0.11.1",
     "mermaid": "^11.17.2",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "reactflow": "^11.11.4"
   },
   "devDependencies": {
