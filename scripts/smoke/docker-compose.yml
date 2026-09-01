@@ -17,7 +17,7 @@ services:
       retries: 12
 
   prefect-server:
-    image: prefecthq/prefect:3.8.4-python3.14@sha256:721b957b86d64228350f94a238b9c42d11fd482c74f79e39b54ac2c37be4a907
+    image: prefecthq/prefect:3.8.5.dev4-python3.14@sha256:767cc086ec6ba240575991479efdb600cead8b1bb4b896feed3186e44b1908a3
     command: prefect server start --host 0.0.0.0
     environment:
       PREFECT_SERVER_API_HOST: 0.0.0.0
