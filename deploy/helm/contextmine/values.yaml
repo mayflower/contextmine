@@ -14,7 +14,7 @@ postgresql:
   enabled: true
   image:
     repository: ghcr.io/mayflower/pg4ai
-    tag: latest
+    tag: "latest@sha256:6489ff6174117b54fa25bebd5bce5c647258f833c1c68ff015e4f7c46f2f7802"
   # -- External PostgreSQL configuration (used when enabled: false)
   external:
     host: ""
@@ -74,7 +74,7 @@ api:
 prefect:
   image:
     repository: prefecthq/prefect
-    tag: 3-python3.12
+    tag: "3-python3.12@sha256:6c0dc14195cae814eddeb66104a8333810a0a9886a5d7f0c45443136f167b3e0"
   # -- Number of replicas (should be 1 for Prefect server)
   replicaCount: 1
   # -- Resource limits
@@ -146,7 +146,7 @@ codecharta:
   enabled: true
   image:
     repository: codecharta/codecharta-visualization
-    tag: latest
+    tag: "latest@sha256:c72f6ed979dcbaaf4e08289a5c3e34d9c872f564a70ceb4b5252318209f10d35"
   # -- Number of replicas
   replicaCount: 1
   # -- Service configuration
