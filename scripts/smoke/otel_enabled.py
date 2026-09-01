@@ -28,7 +28,7 @@ async def main() -> None:
         from contextmine_worker.flows import sync_due_sources
 
         result = await sync_due_sources()
-        expected = {"synced": 0, "skipped": 0, "sources": []}
+        expected = {"scheduled": 0, "sources": []}
         if result != expected:
             raise AssertionError(f"Unexpected empty sync result: {result!r}")
 
@@ -41,7 +41,7 @@ async def main() -> None:
             1,
             {
                 "contextmine.smoke.result": "empty",
-                "contextmine.smoke.synced": 0,
+                "contextmine.smoke.scheduled": 0,
             },
         )
     finally:

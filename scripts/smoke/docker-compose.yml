@@ -102,6 +102,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/worker/Dockerfile
+      target: ${CONTEXTMINE_SMOKE_WORKER_TARGET:?smoke worker target is required}
     environment:
       DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
       PREFECT_API_URL: http://prefect-server:4200/api

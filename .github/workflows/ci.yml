@@ -6,7 +6,7 @@ on:
   pull_request:
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.14"
   NODE_VERSION: "24"
   UV_CACHE_DIR: /tmp/.uv-cache
 
@@ -99,6 +99,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
       - name: Install dependencies
         run: npm ci
 
@@ -107,6 +113,9 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+      - name: Verify generated API client
+        run: npm run check:api
 
       - name: Build web application
         run: npm run build
@@ -157,17 +166,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Rust 1.88 toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
 
       - name: Check formatting
-        run: cargo +1.88.0 fmt --check
+        run: cargo fmt --check
 
       - name: Run Clippy
-        run: cargo +1.88.0 clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo +1.88.0 test --locked --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
 
   model-free-system-smoke:
     name: Model-free System & Live Web Smoke

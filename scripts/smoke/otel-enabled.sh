@@ -21,6 +21,7 @@ mkdir -p "${fixture_placeholder}"
 export CONTEXTMINE_SMOKE_FIXTURE_DIR="${fixture_placeholder}"
 export CONTEXTMINE_SMOKE_FIXTURE_REVISION="otel-enabled"
 export CONTEXTMINE_SMOKE_OTEL_ENABLED="true"
+export CONTEXTMINE_SMOKE_WORKER_TARGET="worker"
 
 docker compose \
   --project-name "${compose_project}" \

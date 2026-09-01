@@ -34,6 +34,7 @@ fi
 
 export CONTEXTMINE_SMOKE_FIXTURE_DIR="${fixture_repository}"
 export CONTEXTMINE_SMOKE_FIXTURE_REVISION="${FIXTURE_REVISION}"
+export CONTEXTMINE_SMOKE_WORKER_TARGET="analyzer"
 
 docker compose \
   --project-name "${compose_project}" \
