@@ -31,6 +31,7 @@ from contextmine_core import (
     get_settings,
     hybrid_search,
 )
+from contextmine_core.lsp import shutdown_lsp_manager
 from contextmine_core.models import KnowledgeNode
 from contextmine_worker import flows
 from git import Repo
@@ -376,5 +377,13 @@ async def _run() -> None:
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 
+async def main() -> None:
+    """Run the gate and close any language server started by traceability."""
+    try:
+        await _run()
+    finally:
+        await shutdown_lsp_manager()
+
+
 if __name__ == "__main__":
-    asyncio.run(_run())
+    asyncio.run(main())

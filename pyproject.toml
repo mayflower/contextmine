@@ -26,6 +26,12 @@ members = ["apps/api", "apps/worker", "packages/*"]
 contextmine-core = { workspace = true }
 contextmine-worker = { workspace = true }
 
+[tool.uv]
+# multilspy's v0.1.0 release metadata still pins requests==2.32.3. Keep the
+# workspace on the current patched requests release while exercising the
+# compatibility in the real LSP smoke gate.
+override-dependencies = ["requests>=2.34.2"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

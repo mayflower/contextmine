@@ -9,6 +9,7 @@ import logging
 import signal
 from datetime import timedelta
 
+from contextmine_core.lsp import shutdown_lsp_manager
 from contextmine_core.telemetry import init_telemetry
 
 from contextmine_worker.flows import sync_due_sources
@@ -69,6 +70,7 @@ async def run_worker() -> None:
         logger.info("Worker cancelled")
         raise
     finally:
+        await shutdown_lsp_manager()
         logger.info("Worker shutdown complete")
 
 

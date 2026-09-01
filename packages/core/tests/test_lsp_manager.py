@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +19,10 @@ from contextmine_core.lsp.languages import SupportedLanguage
 from contextmine_core.lsp.manager import (
     CachedServer,
     LspManager,
+    _find_server_binary,
+    _register_client_request_handlers,
     get_lsp_manager,
+    shutdown_lsp_manager,
 )
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,16 @@ class TestLspManagerSingleton:
     def test_get_lsp_manager_helper(self) -> None:
         instance = get_lsp_manager()
         assert isinstance(instance, LspManager)
+
+    @pytest.mark.anyio
+    async def test_shutdown_helper_closes_and_clears_singleton(self) -> None:
+        instance = LspManager.get_instance()
+        instance.shutdown = AsyncMock()
+
+        await shutdown_lsp_manager()
+
+        instance.shutdown.assert_awaited_once()
+        assert LspManager._instance is None
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +215,38 @@ class TestGetClient:
 
 
 class TestStartServer:
+    def test_preinstalled_typescript_server_is_discovered(self) -> None:
+        with patch(
+            "contextmine_core.lsp.manager.shutil.which",
+            return_value="/usr/local/bin/typescript-language-server",
+        ) as which:
+            assert (
+                _find_server_binary(SupportedLanguage.TYPESCRIPT)
+                == "/usr/local/bin/typescript-language-server"
+            )
+
+        which.assert_called_once_with("typescript-language-server")
+
+    def test_unmanaged_language_does_not_probe_for_server(self) -> None:
+        with patch("contextmine_core.lsp.manager.shutil.which") as which:
+            assert _find_server_binary(SupportedLanguage.PYTHON) is None
+
+        which.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_required_typescript_client_requests_are_registered(self, tmp_path: Path) -> None:
+        protocol = MagicMock()
+        handlers: dict[str, Any] = {}
+        protocol.on_request.side_effect = handlers.__setitem__
+        server = MagicMock(server=protocol)
+
+        _register_client_request_handlers(server, tmp_path)
+
+        configuration = handlers["workspace/configuration"]
+        folders = handlers["workspace/workspaceFolders"]
+        assert await configuration({"items": [{"section": "typescript"}]}) == [None]
+        assert await folders({}) == [{"uri": tmp_path.as_uri(), "name": tmp_path.name}]
+
     @pytest.mark.anyio
     async def test_multilspy_not_installed(self) -> None:
         manager = LspManager()

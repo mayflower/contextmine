@@ -5,14 +5,14 @@ dependency surfaces that must move together, the checks that protect them, and
 the commands used to refresh the snapshot. It is not a request to upgrade every
 package in one change.
 
-Snapshot date: **2026-08-31**  
-Repository baseline: **95caf9654eae39318a00d8c30eac0e6a3b2db242**
+Snapshot date: **2026-09-01**  
+Repository baseline: **5691da2e591781847cc2be81f9cd9c4abda9b8c4**
 
 ## Inventory Summary
 
 | Surface | Manifest and lock | Current size | Runtime role |
 | --- | --- | ---: | --- |
-| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 230 locked packages; 29 core, 8 API, 11 worker, and 9 development declarations | API, MCP, sync worker, analysis, search, graph, telemetry |
+| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 241 locked packages; 29 core plus 1 optional LSP, 8 API, 11 worker, and 9 development declarations | API, MCP, sync worker, analysis, search, graph, telemetry |
 | Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 9 runtime and 19 development declarations; 456 lock entries | React cockpit, diagrams, observability |
 | Rust crawler | `rust/spider_md/Cargo.toml`, `rust/spider_md/Cargo.lock` | 8 direct declarations; 357 locked packages | Deterministic website crawling binary embedded in the worker image |
 | Runtime images | Dockerfiles, Compose files, Helm values | API, worker, web, PostgreSQL/pg4ai, Prefect, CodeCharta, OpenTelemetry | Build and deployment compatibility |
@@ -31,7 +31,7 @@ edited.
 | API and MCP | FastAPI, FastMCP, Uvicorn, SlowAPI, Prometheus instrumentation | Upgrade FastAPI/Starlette/Pydantic together only after checking route, lifespan, middleware, MCP discovery, and container startup. |
 | Sync orchestration | Prefect, GitPython, Tenacity | The Prefect Python client and Prefect server image are one upgrade unit. Test a real submitted flow, not imports alone. |
 | Model integrations | OpenAI, Anthropic, Google Gen AI, LangChain Core, LangChain provider packages, LangGraph | Provider SDK majors and the LangChain/LangGraph family are high-risk. Model-free indexing must remain green before any provider-specific tests are considered. |
-| Code intelligence | protobuf, tree-sitter-language-pack, Lizard, SCIP CLIs installed by the worker image | Validate Python and TypeScript/JavaScript project detection, index creation, relation coverage, parsing, and persisted symbols. |
+| Code intelligence | protobuf, tree-sitter-language-pack, Lizard, optional multilspy, and SCIP/LSP CLIs installed by the runtime images | Validate Python and TypeScript/JavaScript project detection, index creation, relation coverage, parsing, persisted symbols, and a semantic request through the ContextMine LSP adapter. |
 | Knowledge graph and Twin | igraph, leidenalg, SQLAlchemy, pg4ai with Apache AGE and pgvector | Exercise deterministic knowledge-graph and Twin materialization against the production database image. |
 | Web cockpit | React, React Flow, Cytoscape, ELK, Mermaid, Grafana Faro | Run lint, component tests, TypeScript build, and API image build because the API image embeds the web bundle. |
 | Crawler | Rust `spider`, Tokio, serde, URL and hashing crates | Build the worker image and run Rust formatting, Clippy, and tests when the crawler lock or toolchain changes. |
@@ -109,6 +109,9 @@ The system gate deliberately takes longer than a unit smoke test. It:
   fails if an embedding or LLM provider is initialized;
 - requires strict Python and TypeScript/JavaScript SCIP project and relation
   coverage plus strict structural metrics;
+- starts the pinned TypeScript language server through ContextMine's real
+  `LspManager` and requires hover, client caching, and cross-file definition
+  resolution without downloading a server at runtime;
 - verifies persisted documents, chunks, symbols, knowledge nodes, Twin nodes,
   known fixture paths, and full-text-only retrieval;
 - compares deterministic extraction and persistence counts to an explicit
