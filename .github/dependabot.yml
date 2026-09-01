@@ -1,0 +1,254 @@
+version: 2
+
+# Version updates are deliberately review-driven. These cooldowns and groups do
+# not apply to security updates, whose availability is controlled by the
+# repository-level Dependabot security update setting. This repository does not
+# auto-merge Dependabot pull requests.
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/python)"
+    groups:
+      prefect-client:
+        applies-to: "version-updates"
+        patterns:
+          - "prefect"
+        update-types:
+          - "minor"
+          - "patch"
+      model-stack:
+        applies-to: "version-updates"
+        patterns:
+          - "anthropic"
+          - "claude-agent-sdk"
+          - "google-genai"
+          - "langchain-*"
+          - "langgraph*"
+          - "langsmith"
+          - "openai"
+        update-types:
+          - "minor"
+          - "patch"
+      opentelemetry:
+        applies-to: "version-updates"
+        patterns:
+          - "opentelemetry-*"
+        update-types:
+          - "minor"
+          - "patch"
+      api-stack:
+        applies-to: "version-updates"
+        patterns:
+          - "fastapi"
+          - "fastmcp"
+          - "pydantic*"
+          - "starlette"
+          - "uvicorn"
+        update-types:
+          - "minor"
+          - "patch"
+      database-stack:
+        applies-to: "version-updates"
+        patterns:
+          - "alembic"
+          - "asyncpg"
+          - "pgvector"
+          - "psycopg*"
+          - "sqlalchemy"
+        update-types:
+          - "minor"
+          - "patch"
+      code-intelligence:
+        applies-to: "version-updates"
+        patterns:
+          - "grpcio*"
+          - "multilspy"
+          - "protobuf"
+          - "tree-sitter*"
+        update-types:
+          - "minor"
+          - "patch"
+      python-tooling:
+        applies-to: "version-updates"
+        patterns:
+          - "bandit"
+          - "pre-commit"
+          - "pytest*"
+          - "ruff"
+          - "ty"
+          - "vulture"
+        update-types:
+          - "minor"
+          - "patch"
+      routine-python-patches:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:15"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/web)"
+    groups:
+      grafana-faro:
+        applies-to: "version-updates"
+        patterns:
+          - "@grafana/faro-*"
+        update-types:
+          - "minor"
+          - "patch"
+      web-runtime:
+        applies-to: "version-updates"
+        dependency-type: "production"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      web-tooling:
+        applies-to: "version-updates"
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "cargo"
+    directory: "/rust/spider_md"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:30"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/rust)"
+    groups:
+      rust-runtime:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "rust-toolchain"
+    directory: "/rust/spider_md"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:45"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/rust-toolchain)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/actions)"
+    groups:
+      github-actions:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/apps/api"
+      - "/apps/web"
+      - "/apps/worker"
+      - "/scripts/docker/postgres"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:15"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/docker)"
+    groups:
+      base-images:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+        group-by: "dependency-name"
+
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/"
+      - "/scripts/smoke"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:30"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps/compose)"
+    groups:
+      prefect-images:
+        applies-to: "version-updates"
+        patterns:
+          - "prefecthq/prefect"
+        update-types:
+          - "minor"
+          - "patch"
+        group-by: "dependency-name"
+      compose-images:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+        group-by: "dependency-name"
