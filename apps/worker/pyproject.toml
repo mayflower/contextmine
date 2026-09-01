@@ -5,7 +5,7 @@ description = "ContextMine Prefect worker for syncing sources"
 requires-python = ">=3.12"
 dependencies = [
     "contextmine-core[lsp]",
-    "prefect>=3.7.5",
+    "prefect==3.8.4",
     "gitpython>=3.1.50",
     "langchain-text-splitters>=1.1.2",
     "openai>=2.44.0",

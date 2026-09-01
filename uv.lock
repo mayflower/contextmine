@@ -648,7 +648,7 @@ requires-dist = [
     { name = "lizard", specifier = ">=1.23.0" },
     { name = "lxml-html-clean", specifier = ">=0.4.5" },
     { name = "openai", specifier = ">=2.44.0" },
-    { name = "prefect", specifier = ">=3.7.5" },
+    { name = "prefect", specifier = "==3.8.4" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "trafilatura", specifier = ">=2.1.0" },
 ]
@@ -944,7 +944,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.138.0"
+version = "0.141.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -953,9 +953,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/58/ff455d9fe47c60abadb34b9e05a304b1f05f5ab8000ac01565156b6f5e43/fastapi-0.138.0.tar.gz", hash = "sha256:d445a4877636ad191e7053e08c9bf98cb921a6756776848400bb773d1740c061", size = 419240, upload-time = "2026-06-20T01:18:05.259Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/ff/8496d9847a5fedae775eb49460722d3efaa80487854273e9647ae876218c/fastapi-0.138.0-py3-none-any.whl", hash = "sha256:b6f54fd1bd72c80b0f899f172c61a600f6f7af9b43d4d772a018f35624048cb0", size = 126779, upload-time = "2026-06-20T01:18:03.483Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
 ]
 
 [[package]]
@@ -2777,7 +2777,7 @@ wheels = [
 
 [[package]]
 name = "prefect"
-version = "3.7.5"
+version = "3.8.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2838,9 +2838,9 @@ dependencies = [
     { name = "websockets" },
     { name = "whenever", marker = "python_full_version >= '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/b4/ba44a2263940b53db323d059770e005aac959d272ba2025ad6fc7de10cba/prefect-3.7.5.tar.gz", hash = "sha256:e2838fa80562bfb7e27e67ea63c7b13d6fdead8052dbe76eb394c6b919ef3dcd", size = 13881122, upload-time = "2026-06-18T22:39:17.378Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/8d/0844fb814a6a02f03fe87a1c26cc3b8236a9c1f3e16364883f89d101d99d/prefect-3.8.4.tar.gz", hash = "sha256:ab7d7980db95e90a949b09732147324b939d1daf9a754b19c122040ff6a3a559", size = 14614713, upload-time = "2026-08-25T17:37:40.313Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/30/e9c5ad5f3fd17f7309bcd9bab6af5cb5811ae3b50d7d0fd15a3ea899f5e0/prefect-3.7.5-py3-none-any.whl", hash = "sha256:214837b7cb1e10f8fec59018253cd8ef65c8b394b7df29c511b645b0ff5e4478", size = 14766992, upload-time = "2026-06-18T22:39:14.383Z" },
+    { url = "https://files.pythonhosted.org/packages/76/87/39588aab2c3b2e12bfd84d64bcb2fe605376dbd6450edaf9da0a30ea814e/prefect-3.8.4-py3-none-any.whl", hash = "sha256:f7b4a5be5e186c34ca73485060062ebb4277771df8441f78fcaea5f86c8aa012", size = 15563985, upload-time = "2026-08-25T17:37:36.818Z" },
 ]
 
 [[package]]
