@@ -185,6 +185,10 @@ setting; the configuration file does not enable that setting.
 
 Patch and minor releases are grouped only where the repository already has a
 shared compatibility boundary. Major releases remain individual proposals.
+For uv and Cargo, direct dependencies remain eligible for every update type,
+while indirect dependencies are limited to patch and minor proposals. This
+keeps transitive lockfiles maintained without opening unbounded transitive
+major-upgrade pull requests.
 No Dependabot pull request is merged automatically: the normal branch
 protection and change-classified CI gates still decide whether a proposal is
 mergeable.
