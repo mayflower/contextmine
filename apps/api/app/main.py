@@ -43,17 +43,6 @@ _INDEX_HTML = STATIC_DIR / "index.html"
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan handler - integrates MCP and telemetry."""
-    # Initialize telemetry FIRST (before any other setup)
-    telemetry_enabled = init_telemetry(service_suffix="-api")
-
-    if telemetry_enabled:
-        # Auto-instrument FastAPI (must be done before routes are accessed)
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-
-        FastAPIInstrumentor.instrument_app(app)
-        HTTPXClientInstrumentor().instrument()
-
     # Run MCP lifespan (initializes StreamableHTTPSessionManager)
     async with mcp_lifespan(app):
         # Startup
@@ -62,6 +51,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await shutdown_lsp_manager()
     await close_engine()
     await shutdown_telemetry()
+
+
+def _configure_telemetry(app: FastAPI) -> None:
+    """Initialize and instrument the app before its middleware stack is built."""
+    if not init_telemetry(service_suffix="-api"):
+        return
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+    HTTPXClientInstrumentor().instrument()
 
 
 def _register_api_routes(app: FastAPI) -> None:
@@ -167,6 +168,7 @@ def create_app() -> FastAPI:
     )
     instrumentator.instrument(app)
     _register_spa_routes(app, instrumentator)
+    _configure_telemetry(app)
 
     return app
 
