@@ -21,7 +21,7 @@ ARG SCIP_PYTHON_VERSION=0.6.6
 ARG SCIP_JAVA_VERSION=0.10.3
 ARG SCIP_PHP_VERSION=dev-main
 ARG SCIP_PHP_REPO_URL=https://github.com/mayflower/scip-php.git
-ARG NODE_VERSION=20
+ARG NODE_VERSION=24
 
 # Install system dependencies
 # - git: for cloning repos
@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/* \
+    && node --version | grep -Eq "^v${NODE_VERSION}\\." \
     && corepack enable \
     && npm install -g \
        @sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION} \

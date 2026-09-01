@@ -53,4 +53,10 @@ docker compose \
 docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
+  exec --no-TTY api /app/.venv/bin/python - \
+  < "${repository_root}/scripts/smoke/typescript_lsp.py"
+
+docker compose \
+  --project-name "${compose_project}" \
+  --file "${compose_file}" \
   run --build --rm --no-deps smoke

@@ -1,5 +1,5 @@
 # Stage 1: Build frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 
 WORKDIR /app
 
@@ -15,17 +15,28 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+ARG NODE_VERSION=24
+ARG TYPESCRIPT_VERSION=6.0.3
+ARG TYPESCRIPT_LANGUAGE_SERVER_VERSION=6.0.0
+
 # Install system dependencies for LSP servers and TypeScript language server
 # - Node.js: Required for TypeScript/JavaScript language server
 # - git: Required by some language servers for project detection
-# - curl: For downloading language server binaries
+# - curl and gnupg: Required to install a supported Node.js release
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nodejs \
-    npm \
-    git \
+    ca-certificates \
     curl \
+    git \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g typescript typescript-language-server
+    && npm install -g \
+       typescript@${TYPESCRIPT_VERSION} \
+       typescript-language-server@${TYPESCRIPT_LANGUAGE_SERVER_VERSION} \
+    && node --version | grep -Eq "^v${NODE_VERSION}\\." \
+    && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}" \
+    && test "$(typescript-language-server --version)" = "${TYPESCRIPT_LANGUAGE_SERVER_VERSION}"
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy workspace files
