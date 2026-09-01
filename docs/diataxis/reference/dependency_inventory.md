@@ -4,13 +4,13 @@ This document records the dependency surfaces that must move together, the
 checks that protect them, and the commands used to refresh the snapshot.
 
 Snapshot date: **2026-09-01**  
-Repository baseline: **5691da2e591781847cc2be81f9cd9c4abda9b8c4**
+Repository baseline: **5c08653044523ba321efbc0abc9cb2d1854d2912**
 
 ## Inventory Summary
 
 | Surface | Manifest and lock | Current size | Runtime role |
 | --- | --- | ---: | --- |
-| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 244 locked packages | API, MCP, sync worker, analysis, search, graph, telemetry |
+| Python workspace | `pyproject.toml`, three workspace `pyproject.toml` files, `uv.lock` | 246 locked packages | API, MCP, sync worker, analysis, search, graph, telemetry |
 | Web application | `apps/web/package.json`, `apps/web/package-lock.json` | 12 runtime and 20 development declarations; 481 lock entries | React cockpit, diagrams, observability |
 | Rust crawler | `rust/spider_md/Cargo.toml`, `rust/spider_md/Cargo.lock` | 9 direct declarations; 339 locked packages | Deterministic website crawling binary embedded in the worker image |
 | Runtime images | Dockerfiles, Compose files, Helm values | API, worker, web, PostgreSQL/pg4ai, Prefect, CodeCharta, OpenTelemetry | Build and deployment compatibility |
@@ -172,3 +172,37 @@ Use small, independently revertible changes in this order:
 Dependabot or Renovate can create the routine proposals after these groups and
 required checks are defined. Automation is an input to this process; it does
 not replace compatibility grouping, release-note review, or the system gate.
+
+## Automated Update Policy
+
+Dependabot checks the uv workspace, web application, Rust crawler and
+toolchain, GitHub Actions, Dockerfiles, and Compose manifests every Monday.
+Each ecosystem is limited to three open version-update pull requests. A
+seven-day cooldown reduces exposure to freshly published releases; Dependabot
+security updates are not delayed by that cooldown. Automated security pull
+requests additionally require the repository-level Dependabot security update
+setting; the configuration file does not enable that setting.
+
+Patch and minor releases are grouped only where the repository already has a
+shared compatibility boundary. Major releases remain individual proposals.
+For uv and Cargo, direct dependencies remain eligible for every update type,
+while indirect dependencies are limited to patch and minor proposals. This
+keeps transitive lockfiles maintained without opening unbounded transitive
+major-upgrade pull requests.
+No Dependabot pull request is merged automatically: the normal branch
+protection and change-classified CI gates still decide whether a proposal is
+mergeable.
+
+The Prefect Python client and Prefect server images are grouped within their
+respective ecosystems, but Dependabot cannot combine a selective
+multi-ecosystem Prefect group with normal updates for the same uv and Compose
+directories without overlapping update entries. Any Prefect proposal must
+therefore be completed in its branch by synchronizing the client, Compose, and
+Helm references before merge. The model-free system gate verifies the real
+client/server version match. Image references in Helm values are synchronized
+manually because Dependabot does not update arbitrary Helm values.
+
+The Dependabot cooldown controls when proposals are opened; it does not alter
+uv's resolver cutoff. A matching `[tool.uv] exclude-newer` setting remains a
+separate controlled workspace refresh, so introducing this policy does not
+re-resolve or downgrade the current lockfile.
