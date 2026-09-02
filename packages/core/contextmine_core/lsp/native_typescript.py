@@ -69,6 +69,12 @@ class NativeTypeScriptLanguageServer(LanguageServer):
         if server_binary is None:
             raise ValueError("the native TypeScript server binary is required")
 
+        protocol_log_level = os.getenv("LSP_PROTOCOL_LOG_LEVEL", "INFO").upper()
+        if protocol_log_level not in {"DEBUG", "INFO"}:
+            raise ValueError("LSP_PROTOCOL_LOG_LEVEL must be DEBUG or INFO")
+        logger.logger = logging.getLogger("contextmine.lsp.typescript.protocol")
+        logger.logger.setLevel(protocol_log_level)
+
         super().__init__(
             config,
             logger,

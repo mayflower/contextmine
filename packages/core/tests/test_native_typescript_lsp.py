@@ -65,6 +65,45 @@ def test_native_server_requires_preinstalled_binary(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("configured_level", "expected_level"),
+    [(None, logging.INFO), ("debug", logging.DEBUG)],
+)
+def test_native_server_protocol_log_level_is_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_level: str | None,
+    expected_level: int,
+) -> None:
+    if configured_level is None:
+        monkeypatch.delenv("LSP_PROTOCOL_LOG_LEVEL", raising=False)
+    else:
+        monkeypatch.setenv("LSP_PROTOCOL_LOG_LEVEL", configured_level)
+
+    logger = MultilspyLogger()
+    NativeTypeScriptLanguageServer(
+        make_config("/usr/local/bin/tsc"), logger, str(tmp_path), "typescript"
+    )
+
+    assert logger.logger.name == "contextmine.lsp.typescript.protocol"
+    assert logger.logger.level == expected_level
+    assert logger.logger.isEnabledFor(logging.DEBUG) is (expected_level == logging.DEBUG)
+
+
+def test_native_server_rejects_invalid_protocol_log_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LSP_PROTOCOL_LOG_LEVEL", "WARNING")
+
+    with pytest.raises(ValueError, match="LSP_PROTOCOL_LOG_LEVEL must be DEBUG or INFO"):
+        NativeTypeScriptLanguageServer(
+            make_config("/usr/local/bin/tsc"),
+            MultilspyLogger(),
+            str(tmp_path),
+            "typescript",
+        )
+
+
+@pytest.mark.parametrize(
     ("message_type", "expected_level"),
     [
         (1, logging.ERROR),
