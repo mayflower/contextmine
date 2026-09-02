@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -11,9 +12,47 @@ from typing import Any
 
 from multilspy.language_server import LanguageServer
 from multilspy.lsp_protocol_handler.lsp_types import InitializeParams
-from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo
+from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo, Request
 from multilspy.multilspy_config import MultilspyConfig
 from multilspy.multilspy_logger import MultilspyLogger
+
+_LOG_PREFIX_CHARS = 8192
+_LOG_SUFFIX_CHARS = 1024
+
+
+def _bounded_message(message: str) -> str:
+    original_chars = len(message)
+    truncated = original_chars > _LOG_PREFIX_CHARS + _LOG_SUFFIX_CHARS
+    if truncated:
+        message = f"{message[:_LOG_PREFIX_CHARS]}...[truncated]...{message[-_LOG_SUFFIX_CHARS:]}"
+    return f"original_chars={original_chars} truncated={str(truncated).lower()} message={message}"
+
+
+def _format_log_message(params: Any) -> tuple[int, str]:
+    if not isinstance(params, dict):
+        return (
+            logging.WARNING,
+            f"LSP: invalid window/logMessage payload_type={type(params).__name__}",
+        )
+
+    message_type = params.get("type")
+    message = params.get("message")
+    if not isinstance(message, str):
+        return (
+            logging.WARNING,
+            f"LSP: invalid window/logMessage message_type={type(message).__name__}",
+        )
+    if type(message_type) is not int or message_type not in {1, 2, 3, 4}:
+        return (
+            logging.WARNING,
+            f"LSP: invalid window/logMessage {_bounded_message(message)}",
+        )
+
+    level = {1: logging.ERROR, 2: logging.WARNING}.get(message_type, logging.DEBUG)
+    return (
+        level,
+        f"LSP: window/logMessage type={message_type} {_bounded_message(message)}",
+    )
 
 
 class NativeTypeScriptLanguageServer(LanguageServer):
@@ -66,8 +105,9 @@ class NativeTypeScriptLanguageServer(LanguageServer):
         async def acknowledge(_params: dict[str, Any]) -> None:
             return None
 
-        async def log_message(params: dict[str, Any]) -> None:
-            self.logger.log(f"LSP: window/logMessage: {params}", logging.INFO)
+        async def log_message(params: Any) -> None:
+            level, message = _format_log_message(params)
+            self.logger.log(message, level)
 
         self.server.on_request("client/registerCapability", acknowledge)
         self.server.on_request("window/workDoneProgress/create", acknowledge)
@@ -75,6 +115,44 @@ class NativeTypeScriptLanguageServer(LanguageServer):
         self.server.on_notification("window/logMessage", log_message)
         self.server.on_notification("$/progress", acknowledge)
         self.server.on_notification("textDocument/publishDiagnostics", acknowledge)
+
+    async def _request_shutdown(self) -> None:
+        """Send TypeScript's parameterless shutdown request."""
+        request = Request()
+        request_id = self.server.request_id
+        self.server.request_id += 1
+        self.server._response_handlers[request_id] = request
+        try:
+            async with request.cv:
+                await self.server._send_payload(
+                    {"jsonrpc": "2.0", "id": request_id, "method": "shutdown"}
+                )
+                await request.cv.wait()
+        finally:
+            self.server._response_handlers.pop(request_id, None)
+        if request.error is not None:
+            raise request.error
+
+    async def _shutdown_server(self) -> None:
+        """Stop TypeScript without MultiLSPy's incompatible null parameters."""
+        error: Exception | None = None
+        try:
+            # ponytail: remove this shim when pinned MultiLSPy omits null params.
+            await asyncio.wait_for(self._request_shutdown(), timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+
+        self.server._received_shutdown = True
+        try:
+            await self.server._send_payload({"jsonrpc": "2.0", "method": "exit"})
+        except Exception as exc:  # noqa: BLE001
+            error = error or exc
+
+        if error is not None:
+            self.logger.log(
+                f"Native TypeScript LSP shutdown failed: {_bounded_message(str(error))}",
+                logging.WARNING,
+            )
 
     @asynccontextmanager
     async def start_server(self) -> AsyncIterator[NativeTypeScriptLanguageServer]:
@@ -100,5 +178,7 @@ class NativeTypeScriptLanguageServer(LanguageServer):
                     self.completions_available.set()
                 yield self
             finally:
-                await self.server.shutdown()
-                await self.server.stop()
+                try:
+                    await self._shutdown_server()
+                finally:
+                    await self.server.stop()
