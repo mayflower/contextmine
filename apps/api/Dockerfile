@@ -52,8 +52,7 @@ COPY --from=frontend-builder /app/dist /app/static
 
 COPY apps/api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
-    && useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app
+    && useradd --create-home --shell /bin/bash appuser
 USER appuser
 
 EXPOSE 8000

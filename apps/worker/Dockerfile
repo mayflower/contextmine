@@ -108,13 +108,15 @@ COPY apps/api/pyproject.toml apps/api/
 
 RUN uv sync --frozen --no-dev --package contextmine-worker --extra analyzer \
     && useradd --create-home --shell /bin/bash appuser \
-    && mkdir -p /data/repos \
+    && mkdir -p /data \
+    && install -d -o appuser -g appuser \
+      /data/repos \
+      /data/joern-cpg \
       /home/appuser/.npm \
       /home/appuser/.m2 \
       /home/appuser/.gradle \
-      /home/appuser/.cache/pip \
+      /home/appuser/.cache \
       /home/appuser/.composer/cache \
-    && chown -R appuser:appuser /app /data /home/appuser \
     && ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/java-21-openjdk
 
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk
@@ -161,7 +163,8 @@ COPY apps/api/pyproject.toml apps/api/
 
 RUN uv sync --frozen --no-dev --package contextmine-worker \
     && useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app /home/appuser
+    && mkdir -p /data \
+    && install -d -o appuser -g appuser /data/repos /data/joern-cpg
 
 USER appuser
 WORKDIR /app/apps/worker
