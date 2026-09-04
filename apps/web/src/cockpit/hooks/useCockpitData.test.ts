@@ -172,3 +172,4 @@ describe('parseApiErrorMessage', () => {
     expect(result).toBe('Validation error (422)')
   })
 })
+
