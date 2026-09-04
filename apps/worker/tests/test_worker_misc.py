@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import contextmine_core.settings as settings_module
@@ -190,6 +191,30 @@ class TestWorkerMain:
 
         due_deployment.apply.assert_called_once()
         single_deployment.apply.assert_called_once()
+
+    def test_configure_deployments_pins_the_entrypoint_working_directory(self) -> None:
+        """ProcessWorker runs flows in a temp dir unless working_dir is set.
+
+        The deployments register a relative entrypoint
+        ("contextmine_worker/flows.py:..."), so without an explicit working_dir
+        the worker cannot find the flow script and every run crashes.
+        """
+        from contextmine_worker import main
+
+        with (
+            patch.object(main.sync_due_sources, "to_deployment", return_value=MagicMock()) as due,
+            patch.object(
+                main.sync_single_source, "to_deployment", return_value=MagicMock()
+            ) as single,
+        ):
+            main.configure_deployments()
+
+        for call in (due, single):
+            job_variables = call.call_args.kwargs["job_variables"]
+            working_dir = Path(job_variables["working_dir"])
+            assert working_dir.is_absolute()
+            # The relative entrypoint must resolve against this directory.
+            assert (working_dir / "contextmine_worker" / "flows.py").is_file()
 
     def test_run_worker_uses_supported_process_worker(self) -> None:
         async def _inner() -> None:
