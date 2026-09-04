@@ -202,9 +202,7 @@ class TestWorkerMain:
         from contextmine_worker import main
 
         with (
-            patch.object(
-                main.sync_due_sources, "to_deployment", return_value=MagicMock()
-            ) as due,
+            patch.object(main.sync_due_sources, "to_deployment", return_value=MagicMock()) as due,
             patch.object(
                 main.sync_single_source, "to_deployment", return_value=MagicMock()
             ) as single,
