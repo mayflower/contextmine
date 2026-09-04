@@ -500,6 +500,8 @@ class TestSyncNow:
             ),
             patch("app.routes.sources._get_collection_with_access", new=AsyncMock()),
             patch("app.routes.prefect.start_source_sync", new=AsyncMock()) as start_sync,
+            # Prefect reports nothing terminal, i.e. the flow is still in flight.
+            patch("app.routes.prefect.terminal_flow_run_state", AsyncMock(return_value=None)),
         ):
             response = await client.post(f"/api/sources/{source_id}/sync-now")
 
@@ -507,6 +509,70 @@ class TestSyncNow:
         assert response.json()["status"] == "already_scheduled"
         assert response.json()["flow_run_id"] == flow_run_id
         start_sync.assert_not_awaited()
+
+    async def test_sync_now_replaces_a_run_whose_flow_already_crashed(
+        self, client: AsyncClient
+    ) -> None:
+        """A crashed flow must not block the source from syncing again."""
+        from contextmine_core import SyncRunStatus
+
+        source_id = uuid.uuid4()
+        dead_flow_run_id = str(uuid.uuid4())
+        new_flow_run_id = str(uuid.uuid4())
+        source = MagicMock(
+            id=source_id,
+            collection_id=uuid.uuid4(),
+            url="https://github.com/example/repository",
+            schedule_interval_minutes=60,
+        )
+        stale_run = MagicMock(
+            id=uuid.uuid4(),
+            flow_run_id=dead_flow_run_id,
+            status=SyncRunStatus.SCHEDULED,
+            finished_at=None,
+            error=None,
+        )
+        replacement_id = uuid.uuid4()
+
+        def add(row: Any) -> None:
+            row.id = replacement_id
+
+        mock_db = MagicMock()
+        mock_db.add = add
+        mock_db.flush = AsyncMock()
+        source_result = MagicMock()
+        source_result.scalar_one_or_none.return_value = source
+        active_result = MagicMock()
+        active_result.scalar_one_or_none.return_value = stale_run
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = stale_run
+        mock_db.execute = AsyncMock(
+            side_effect=[source_result, active_result, run_result, run_result, run_result]
+        )
+
+        with (
+            patch("app.routes.sources.get_session", return_value={"user_id": str(uuid.uuid4())}),
+            patch(
+                "app.routes.sources.get_db_session",
+                side_effect=lambda: _mock_db_session(mock_db),
+            ),
+            patch("app.routes.sources._get_collection_with_access", new=AsyncMock()),
+            patch(
+                "app.routes.prefect.terminal_flow_run_state",
+                AsyncMock(return_value="CRASHED"),
+            ),
+            patch(
+                "app.routes.prefect.start_source_sync",
+                AsyncMock(return_value=new_flow_run_id),
+            ) as start_sync,
+        ):
+            response = await client.post(f"/api/sources/{source_id}/sync-now")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "sync_scheduled"
+        assert response.json()["flow_run_id"] == new_flow_run_id
+        start_sync.assert_awaited_once()
+        assert stale_run.status is SyncRunStatus.FAILED
 
     async def test_sync_now_prefect_outage_finishes_business_run(self, client: AsyncClient) -> None:
         source_id = uuid.uuid4()
@@ -1005,3 +1071,152 @@ class TestListSources:
         response = await client.delete(f"/api/sources/{source_id}")
         assert response.status_code == 200
         assert response.json()["status"] == "deleted"
+
+
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+class TestTerminalFlowRunState:
+    """Tests for reading a flow run's terminal state from Prefect."""
+
+    @staticmethod
+    def _client_returning(flow_run: Any) -> Any:
+        @asynccontextmanager
+        async def factory():
+            client = MagicMock()
+            client.read_flow_run = AsyncMock(return_value=flow_run)
+            yield client
+
+        return factory
+
+    @pytest.mark.parametrize("state", ["COMPLETED", "FAILED", "CRASHED", "CANCELLED"])
+    async def test_reports_states_a_run_never_leaves(self, state: str) -> None:
+        from app.routes import prefect as prefect_routes
+
+        flow_run = MagicMock(state_type=MagicMock(value=state))
+        with patch.object(prefect_routes, "get_client", self._client_returning(flow_run)):
+            assert await prefect_routes.terminal_flow_run_state(str(uuid.uuid4())) == state
+
+    @pytest.mark.parametrize("state", ["RUNNING", "SCHEDULED", "PENDING", "PAUSED"])
+    async def test_reports_nothing_while_the_run_may_still_finish(self, state: str) -> None:
+        from app.routes import prefect as prefect_routes
+
+        flow_run = MagicMock(state_type=MagicMock(value=state))
+        with patch.object(prefect_routes, "get_client", self._client_returning(flow_run)):
+            assert await prefect_routes.terminal_flow_run_state(str(uuid.uuid4())) is None
+
+    async def test_treats_an_unknown_run_as_gone(self) -> None:
+        from app.routes import prefect as prefect_routes
+        from prefect.exceptions import ObjectNotFound
+
+        @asynccontextmanager
+        async def factory():
+            client = MagicMock()
+            client.read_flow_run = AsyncMock(
+                side_effect=ObjectNotFound(http_exc=Exception("404 flow run not found"))
+            )
+            yield client
+
+        with patch.object(prefect_routes, "get_client", factory):
+            result = await prefect_routes.terminal_flow_run_state(str(uuid.uuid4()))
+        assert result == prefect_routes.FLOW_RUN_MISSING
+
+    async def test_treats_a_malformed_id_as_gone(self) -> None:
+        from app.routes import prefect as prefect_routes
+
+        assert await prefect_routes.terminal_flow_run_state("not-a-uuid") == (
+            prefect_routes.FLOW_RUN_MISSING
+        )
+
+    async def test_stays_silent_when_prefect_is_unreachable(self) -> None:
+        """An unreachable server must not look like a finished run."""
+        from app.routes import prefect as prefect_routes
+
+        @asynccontextmanager
+        async def factory():
+            client = MagicMock()
+            client.read_flow_run = AsyncMock(side_effect=ConnectionError("boom"))
+            yield client
+
+        with patch.object(prefect_routes, "get_client", factory):
+            assert await prefect_routes.terminal_flow_run_state(str(uuid.uuid4())) is None
+
+
+@pytest.mark.anyio
+class TestReleaseFinishedSyncRun:
+    """A finished flow must not keep its source blocked from syncing again."""
+
+    @staticmethod
+    def _run() -> MagicMock:
+        from contextmine_core import SyncRunStatus
+
+        return MagicMock(
+            id=uuid.uuid4(),
+            status=SyncRunStatus.SCHEDULED,
+            finished_at=None,
+            error=None,
+        )
+
+    async def _release(self, run: MagicMock | None, flow_state: str | None) -> bool:
+        from app.routes import sources as sources_routes
+
+        mock_db = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = run
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        with (
+            patch.object(sources_routes, "get_db_session", lambda: _mock_db_session(mock_db)),
+            patch(
+                "app.routes.prefect.terminal_flow_run_state",
+                AsyncMock(return_value=flow_state),
+            ),
+        ):
+            return await sources_routes._release_finished_sync_run(
+                run.id if run else uuid.uuid4(), str(uuid.uuid4())
+            )
+
+    async def test_marks_a_crashed_run_failed(self) -> None:
+        from contextmine_core import SyncRunStatus
+
+        run = self._run()
+        assert await self._release(run, "CRASHED") is True
+        assert run.status is SyncRunStatus.FAILED
+        assert run.finished_at is not None
+        assert "RECONCILED_WITH_PREFECT" in run.error
+
+    async def test_marks_a_completed_run_successful_without_an_error(self) -> None:
+        from contextmine_core import SyncRunStatus
+
+        run = self._run()
+        assert await self._release(run, "COMPLETED") is True
+        assert run.status is SyncRunStatus.SUCCESS
+        assert run.error is None
+
+    async def test_keeps_waiting_while_the_flow_may_still_finish(self) -> None:
+        from contextmine_core import SyncRunStatus
+
+        run = self._run()
+        assert await self._release(run, None) is False
+        assert run.status is SyncRunStatus.SCHEDULED
+        assert run.finished_at is None
+
+    async def test_treats_a_vanished_flow_run_as_failed(self) -> None:
+        from app.routes import prefect as prefect_routes
+        from contextmine_core import SyncRunStatus
+
+        run = self._run()
+        assert await self._release(run, prefect_routes.FLOW_RUN_MISSING) is True
+        assert run.status is SyncRunStatus.FAILED
+        assert "an unknown run" in run.error
+
+    async def test_does_not_reconcile_a_run_someone_else_already_closed(self) -> None:
+        from contextmine_core import SyncRunStatus
+
+        run = self._run()
+        run.status = SyncRunStatus.FAILED
+        assert await self._release(run, "CRASHED") is False
+
+    async def test_does_nothing_when_the_run_is_gone(self) -> None:
+        assert await self._release(None, "CRASHED") is False
