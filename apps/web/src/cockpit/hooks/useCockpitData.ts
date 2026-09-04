@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, apiData, apiErrorMessage } from '../../api/client'
+import { buildCityEmbedUrl } from '../utils/cityEmbed'
 import type {
   Arc42DriftPayload,
   Arc42ViewPayload,
@@ -358,8 +359,7 @@ export function useCockpitData(args: UseCockpitDataArgs) {
         const exportId = created.id ?? created.exports?.[0]?.id
         if (!exportId) throw new Error('Missing export id from city export response')
         const rawPath = `/api/twin/scenarios/${scenarioId}/exports/${exportId}/raw`
-        const embed = new URLSearchParams({ file: rawPath, area: 'loc', height: 'coupling', color: 'complexity', mode: 'Single' })
-        return { cityEmbedUrl: `/codecharta/index.html?${embed.toString()}` }
+        return { cityEmbedUrl: buildCityEmbedUrl(rawPath) }
       }
 
       return {}
