@@ -993,12 +993,19 @@ def _edge_aware_node_order(
     ordered: list[str] = []
     queue: deque[str] = deque()
     queued: set[str] = set()
+    # Every node before this index has already been ordered, so the search for
+    # the next BFS anchor never rescans the list. Scanning from the start on
+    # every component made sparse graphs quadratic: a symbol graph with 200k
+    # mostly isolated nodes took minutes to page.
+    anchor_index = 0
 
     while remaining:
         if not queue:
-            next_anchor = next((node_id for node_id in node_ids if node_id in remaining), None)
-            if next_anchor is None:
+            while anchor_index < len(node_ids) and node_ids[anchor_index] not in remaining:
+                anchor_index += 1
+            if anchor_index >= len(node_ids):
                 break
+            next_anchor = node_ids[anchor_index]
             queue.append(next_anchor)
             queued.add(next_anchor)
 

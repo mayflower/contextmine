@@ -1108,6 +1108,43 @@ class TestGetScenarioGraph:
         assert result["dropped_cross_page_edges"] == 1
         assert result["warnings"]
 
+    def test_edge_aware_order_visits_components_in_sorted_order(self) -> None:
+        """Isolated nodes and separate components keep their natural-key order."""
+        from contextmine_core.twin.service import _edge_aware_node_order
+
+        nodes = [{"id": key, "natural_key": key} for key in ("a", "b", "c", "d", "e", "f")]
+        edges = [
+            {"source_node_id": "a", "target_node_id": "e"},
+            {"source_node_id": "c", "target_node_id": "f"},
+        ]
+
+        assert _edge_aware_node_order(nodes, edges) == ["a", "e", "b", "c", "f", "d"]
+
+    def test_edge_aware_order_scales_linearly_on_sparse_graphs(self) -> None:
+        """Anchor search must not rescan ordered nodes.
+
+        A 60k-node graph with mostly isolated nodes took ~40 s with the old
+        from-the-start anchor scan; linear behaviour finishes in well under a
+        second even on slow CI runners.
+        """
+        import time
+
+        from contextmine_core.twin.service import _edge_aware_node_order
+
+        count = 60_000
+        nodes = [{"id": f"n{index}", "natural_key": f"n{index:06d}"} for index in range(count)]
+        edges = [
+            {"source_node_id": f"n{index}", "target_node_id": f"n{index + 1}"}
+            for index in range(0, count - 1, 10)
+        ]
+
+        started = time.perf_counter()
+        ordered = _edge_aware_node_order(nodes, edges)
+        elapsed = time.perf_counter() - started
+
+        assert len(ordered) == count
+        assert elapsed < 5.0, f"edge-aware ordering took {elapsed:.1f}s for {count} nodes"
+
     def test_edge_aware_paging_preserves_bfs_frontier_across_pages(self) -> None:
         from contextmine_core.twin.service import paginate_graph_edge_aware
 
