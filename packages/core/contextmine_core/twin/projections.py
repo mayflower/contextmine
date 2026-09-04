@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -48,10 +49,11 @@ class ArchitectureProjectionEdge:
 
 _canonical_file_path = canonical_file_path_from_node
 
+# (domain, container, component, grouping strategy, confidence)
+ArchGroup = tuple[str, str, str, str, float]
 
-def _derive_group(
-    path: str | None, meta: dict[str, Any]
-) -> tuple[str, str, str, str, float] | None:
+
+def derive_group_with_strategy(path: str | None, meta: dict[str, Any]) -> ArchGroup | None:
     """Thin wrapper adding strategy/confidence to the shared grouping logic."""
     payload = meta or {}
     architecture_meta = payload.get("architecture")
@@ -68,6 +70,9 @@ def _derive_group(
     if is_explicit:
         return domain, container, component, "explicit", 1.0
     return domain, container, component, "heuristic", 0.6
+
+
+_derive_group = derive_group_with_strategy
 
 
 def _kind_allowed(
@@ -103,11 +108,9 @@ def _group_nodes_by_arch(
     nodes: list[dict[str, Any]],
     include_kinds: set[str] | None,
     exclude_kinds: set[str] | None,
-) -> tuple[dict[str, tuple[str, str, str, str, float]], int, int]:
-    """Assign each node to its architecture group. Return (mapping, explicit_count, heuristic_count)."""
-    group_by_node_id: dict[str, tuple[str, str, str, str, float]] = {}
-    explicit_count = 0
-    heuristic_count = 0
+) -> dict[str, ArchGroup]:
+    """Assign each allowed node to its architecture group, keyed by node id."""
+    group_by_node_id: dict[str, ArchGroup] = {}
     for node in nodes:
         kind = str(node.get("kind") or "")
         if not _kind_allowed(kind, include_kinds, exclude_kinds):
@@ -117,25 +120,18 @@ def _group_nodes_by_arch(
         if not group:
             continue
         group_by_node_id[str(node["id"])] = group
-        if group[3] == "explicit":
-            explicit_count += 1
-        else:
-            heuristic_count += 1
-    return group_by_node_id, explicit_count, heuristic_count
+    return group_by_node_id
 
 
 def _aggregate_arch_edges(
-    edges: list[dict[str, Any]],
-    group_by_node_id: dict[str, tuple[str, str, str, str, float]],
+    edge_groups: Iterable[tuple[ArchGroup, ArchGroup, str, int]],
     key_to_node_id: dict[str, str],
     level: str,
 ) -> list[dict[str, Any]]:
-    """Aggregate raw edges into architecture-level projected edges."""
+    """Fold grouped raw edges into architecture-level projected edges."""
     edge_stats: dict[tuple[str, str], dict[str, Any]] = {}
-    for edge in edges:
-        src = group_by_node_id.get(str(edge.get("source_node_id")))
-        dst = group_by_node_id.get(str(edge.get("target_node_id")))
-        if not src or not dst:
+    for src, dst, kind, count in edge_groups:
+        if count <= 0:
             continue
         src_key = "|".join(_make_level_key(level, src))
         dst_key = "|".join(_make_level_key(level, dst))
@@ -149,9 +145,9 @@ def _aggregate_arch_edges(
             (src_node_id, dst_node_id),
             {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
         )
-        bucket["weight"] += 1
-        bucket["raw_edge_count"] += 1
-        bucket["sample_edge_kinds"].add(str(edge.get("kind") or "depends_on"))
+        bucket["weight"] += count
+        bucket["raw_edge_count"] += count
+        bucket["sample_edge_kinds"].add(kind or "depends_on")
 
     projected_edges: list[dict[str, Any]] = []
     for idx, ((src, dst), stat) in enumerate(sorted(edge_stats.items()), start=1):
@@ -171,24 +167,39 @@ def _aggregate_arch_edges(
     return projected_edges
 
 
-def build_architecture_projection(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    entity_level: str,
-    include_kinds: set[str] | None = None,
-    exclude_kinds: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
-    """Aggregate raw nodes/edges into architecture entities."""
+def normalize_architecture_level(entity_level: str | None) -> str:
+    """Clamp a requested architecture level to the supported set."""
     level = (entity_level or "container").lower()
     if level not in {"domain", "container", "component"}:
-        level = "container"
+        return "container"
+    return level
 
-    group_by_node_id, explicit_count, heuristic_count = _group_nodes_by_arch(
-        nodes, include_kinds, exclude_kinds
-    )
+
+def assemble_architecture_projection(
+    member_groups: Iterable[tuple[ArchGroup, int]],
+    edge_groups: Iterable[tuple[ArchGroup, ArchGroup, str, int]],
+    entity_level: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Build architecture entities from pre-grouped, counted members and edges.
+
+    ``member_groups`` carries one entry per (group, member count); ``edge_groups``
+    one per (source group, target group, raw edge kind, raw edge count). Feeding
+    counts instead of individual nodes lets the database do the grouping while
+    the projected output stays byte-identical to the in-memory builder.
+    """
+    level = normalize_architecture_level(entity_level)
 
     node_stats: dict[str, dict[str, Any]] = {}
-    for group in group_by_node_id.values():
+    explicit_count = 0
+    heuristic_count = 0
+    for group, count in member_groups:
+        if count <= 0:
+            continue
+        strategy = group[3]
+        if strategy == "explicit":
+            explicit_count += count
+        else:
+            heuristic_count += count
         key = _make_level_key(level, group)
         stat = node_stats.setdefault(
             "|".join(key),
@@ -204,13 +215,13 @@ def build_architecture_projection(
                 "heuristic_member_count": 0,
             },
         )
-        stat["member_count"] += 1
-        stat["confidence_sum"] += float(group[4])
-        stat["derived_from"].add(group[3])
-        if group[3] == "explicit":
-            stat["explicit_member_count"] += 1
+        stat["member_count"] += count
+        stat["confidence_sum"] += float(group[4]) * count
+        stat["derived_from"].add(strategy)
+        if strategy == "explicit":
+            stat["explicit_member_count"] += count
         else:
-            stat["heuristic_member_count"] += 1
+            stat["heuristic_member_count"] += count
 
     projected_nodes: list[dict[str, Any]] = []
     key_to_node_id: dict[str, str] = {}
@@ -249,7 +260,7 @@ def build_architecture_projection(
             ).__dict__
         )
 
-    projected_edges = _aggregate_arch_edges(edges, group_by_node_id, key_to_node_id, level)
+    projected_edges = _aggregate_arch_edges(edge_groups, key_to_node_id, level)
 
     if explicit_count and heuristic_count:
         grouping_strategy = "mixed"
@@ -259,6 +270,31 @@ def build_architecture_projection(
         grouping_strategy = "heuristic"
 
     return projected_nodes, projected_edges, grouping_strategy
+
+
+def build_architecture_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    entity_level: str,
+    include_kinds: set[str] | None = None,
+    exclude_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Aggregate raw in-memory nodes/edges into architecture entities."""
+    group_by_node_id = _group_nodes_by_arch(nodes, include_kinds, exclude_kinds)
+
+    def _edge_groups() -> Iterable[tuple[ArchGroup, ArchGroup, str, int]]:
+        for edge in edges:
+            src = group_by_node_id.get(str(edge.get("source_node_id")))
+            dst = group_by_node_id.get(str(edge.get("target_node_id")))
+            if not src or not dst:
+                continue
+            yield src, dst, str(edge.get("kind") or "depends_on"), 1
+
+    return assemble_architecture_projection(
+        ((group, 1) for group in group_by_node_id.values()),
+        _edge_groups(),
+        entity_level,
+    )
 
 
 def _evidence_summary(evidence: tuple[EvidenceRef, ...]) -> list[str]:
@@ -475,85 +511,70 @@ def build_inferred_architecture_projection(
     }
 
 
-def _resolve_file_edge_endpoints(
-    edge: dict[str, Any],
-    node_by_id: dict[str, dict[str, Any]],
-    file_id_by_path: dict[str, str],
-) -> tuple[str, str] | None:
-    """Resolve an edge to source/target file IDs, returning None if ineligible."""
-    src_node = node_by_id.get(str(edge.get("source_node_id")))
-    dst_node = node_by_id.get(str(edge.get("target_node_id")))
-    if not src_node or not dst_node:
-        return None
-    src_path = _canonical_file_path(src_node)
-    dst_path = _canonical_file_path(dst_node)
-    if not src_path or not dst_path:
-        return None
-    src_file_id = file_id_by_path.get(src_path)
-    dst_file_id = file_id_by_path.get(dst_path)
-    if not src_file_id or not dst_file_id or src_file_id == dst_file_id:
-        return None
-    return src_file_id, dst_file_id
+FILE_DEFINES_SYMBOL_EDGE_KIND = "file_defines_symbol"
 
 
 def _classify_file_nodes(
     nodes: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Separate file nodes from symbol nodes and count symbols per path."""
     file_nodes: list[dict[str, Any]] = []
-    file_by_path: dict[str, dict[str, Any]] = {}
     symbol_count_by_path: dict[str, int] = defaultdict(int)
     for node in nodes:
         kind = str(node.get("kind") or "").lower()
         path = _canonical_file_path(node)
         if kind == "file" and path:
             file_nodes.append(node)
-            file_by_path[path] = node
         elif path:
             symbol_count_by_path[path] += 1
-    return file_nodes, file_by_path, symbol_count_by_path
+    return file_nodes, symbol_count_by_path
 
 
-def _bucket_file_edges(
+def _file_edge_groups(
     edges: list[dict[str, Any]],
     node_by_id: dict[str, dict[str, Any]],
-    file_id_by_path: dict[str, str],
     include_edge_kinds: set[str] | None,
-) -> dict[tuple[str, str], dict[str, Any]]:
-    """Bucket edges by (source_file, target_file) for file projection."""
-    edge_buckets: dict[tuple[str, str], dict[str, Any]] = {}
+) -> Iterable[tuple[str, str, str, int]]:
+    """Yield (source path, target path, edge kind, 1) for every eligible raw edge."""
     for edge in edges:
         edge_kind = str(edge.get("kind") or "")
-        if edge_kind == "file_defines_symbol":
+        if edge_kind == FILE_DEFINES_SYMBOL_EDGE_KIND:
             continue
         if include_edge_kinds and edge_kind.lower() not in include_edge_kinds:
             continue
-        endpoints = _resolve_file_edge_endpoints(edge, node_by_id, file_id_by_path)
-        if not endpoints:
+        src_node = node_by_id.get(str(edge.get("source_node_id")))
+        dst_node = node_by_id.get(str(edge.get("target_node_id")))
+        if not src_node or not dst_node:
             continue
-        src_file_id, dst_file_id = endpoints
-        bucket = edge_buckets.setdefault(
-            (src_file_id, dst_file_id),
-            {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
-        )
-        bucket["weight"] += 1
-        bucket["raw_edge_count"] += 1
-        bucket["sample_edge_kinds"].add(edge_kind)
-    return edge_buckets
+        src_path = _canonical_file_path(src_node)
+        dst_path = _canonical_file_path(dst_node)
+        if not src_path or not dst_path or src_path == dst_path:
+            continue
+        yield src_path, dst_path, edge_kind, 1
 
 
-def build_code_file_projection(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    include_edge_kinds: set[str] | None = None,
+def assemble_code_file_projection(
+    file_nodes: list[dict[str, Any]],
+    symbol_count_by_path: Mapping[str, int],
+    edge_groups: Iterable[tuple[str, str, str, int]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Project raw graph to file dependency graph."""
-    node_by_id = {str(node["id"]): node for node in nodes}
-    file_nodes, file_by_path, symbol_count_by_path = _classify_file_nodes(nodes)
+    """Build the file dependency graph from file nodes and path-grouped edges.
+
+    ``edge_groups`` carries (source path, target path, raw edge kind, raw edge
+    count) rows; edges touching a path without a file node are dropped, exactly
+    as the in-memory builder does.
+    """
+    file_by_path: dict[str, dict[str, Any]] = {}
+    for node in file_nodes:
+        path = _canonical_file_path(node)
+        if path:
+            file_by_path[path] = node
 
     projected_nodes: list[dict[str, Any]] = []
     for node in file_nodes:
-        path = _canonical_file_path(node) or str(node.get("name") or "")
+        path = _canonical_file_path(node)
+        if not path:
+            continue  # a file node without a path cannot anchor edges or counts
         meta = dict(node.get("meta") or {})
         meta["symbol_count"] = int(symbol_count_by_path.get(path, 0))
         projected_nodes.append(
@@ -567,7 +588,21 @@ def build_code_file_projection(
         )
 
     file_id_by_path = {path: str(node["id"]) for path, node in file_by_path.items()}
-    edge_buckets = _bucket_file_edges(edges, node_by_id, file_id_by_path, include_edge_kinds)
+    edge_buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for src_path, dst_path, edge_kind, count in edge_groups:
+        if count <= 0:
+            continue
+        src_file_id = file_id_by_path.get(src_path)
+        dst_file_id = file_id_by_path.get(dst_path)
+        if not src_file_id or not dst_file_id or src_file_id == dst_file_id:
+            continue
+        bucket = edge_buckets.setdefault(
+            (src_file_id, dst_file_id),
+            {"weight": 0, "sample_edge_kinds": set(), "raw_edge_count": 0},
+        )
+        bucket["weight"] += count
+        bucket["raw_edge_count"] += count
+        bucket["sample_edge_kinds"].add(edge_kind)
 
     projected_edges: list[dict[str, Any]] = []
     for idx, ((src, dst), bucket) in enumerate(sorted(edge_buckets.items()), start=1):
@@ -586,6 +621,21 @@ def build_code_file_projection(
         )
 
     return projected_nodes, projected_edges
+
+
+def build_code_file_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    include_edge_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project an in-memory raw graph to a file dependency graph."""
+    node_by_id = {str(node["id"]): node for node in nodes}
+    file_nodes, symbol_count_by_path = _classify_file_nodes(nodes)
+    return assemble_code_file_projection(
+        file_nodes,
+        symbol_count_by_path,
+        _file_edge_groups(edges, node_by_id, include_edge_kinds),
+    )
 
 
 def build_code_symbol_projection(

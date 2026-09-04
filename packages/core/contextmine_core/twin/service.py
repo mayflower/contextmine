@@ -44,12 +44,18 @@ from contextmine_core.models import (
 from contextmine_core.pathing import canonicalize_repo_relative_path
 from contextmine_core.semantic_snapshot.models import RelationKind, Snapshot, SymbolKind
 from contextmine_core.twin.projections import (
+    FILE_DEFINES_SYMBOL_EDGE_KIND,
+    ArchGroup,
     GraphProjection,
+    assemble_architecture_projection,
+    assemble_code_file_projection,
     build_architecture_projection,
     build_code_file_projection,
     build_code_symbol_projection,
+    derive_group_with_strategy,
+    normalize_architecture_level,
 )
-from sqlalchemy import delete, or_, select
+from sqlalchemy import ColumnElement, and_, case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -1100,65 +1106,48 @@ async def get_full_scenario_graph(
     exclude_kinds: set[str] | None = None,
     include_edge_kinds: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Get full (unpaged) graph view with optional projection."""
-    node_stmt = select(TwinNode).where(TwinNode.scenario_id == scenario_id)
-    if layer is not None:
-        node_stmt = node_stmt.join(TwinNodeLayer, TwinNodeLayer.node_id == TwinNode.id).where(
-            TwinNodeLayer.layer == layer
+    """Get full (unpaged) graph view with optional projection.
+
+    Filtering and grouping happen in the database wherever the projection allows
+    it: the architecture and file projections only ever need per-path counts, so
+    the raw symbol rows never leave PostgreSQL. The symbol projection still loads
+    rows, but only the kinds the caller asked for and as plain column tuples
+    rather than ORM instances.
+    """
+    include_kinds_norm = _normalize_kinds(include_kinds)
+    exclude_kinds_norm = _normalize_kinds(exclude_kinds)
+    include_edge_kinds_norm = _normalize_kinds(include_edge_kinds)
+
+    if projection == GraphProjection.ARCHITECTURE:
+        return await _load_architecture_projection(
+            session,
+            scenario_id,
+            layer,
+            entity_level,
+            include_kinds_norm,
+            exclude_kinds_norm,
+        )
+    if projection == GraphProjection.CODE_FILE:
+        return await _load_code_file_projection(
+            session,
+            scenario_id,
+            layer,
+            entity_level,
+            exclude_kinds_norm,
+            include_edge_kinds_norm,
         )
 
-    raw_nodes = (await session.execute(node_stmt)).scalars().all()
-    if not raw_nodes:
-        raw_edges = []
-    elif layer is None:
-        # Scenario edges already reference nodes within the same scenario, so avoid
-        # building a giant IN (...) filter that can exceed PostgreSQL parameter limits.
-        edge_stmt = select(TwinEdge).where(TwinEdge.scenario_id == scenario_id)
-        raw_edges = (await session.execute(edge_stmt)).scalars().all()
-    else:
-        src_layer = aliased(TwinNodeLayer)
-        dst_layer = aliased(TwinNodeLayer)
-        edge_stmt = (
-            select(TwinEdge)
-            .join(src_layer, src_layer.node_id == TwinEdge.source_node_id)
-            .join(dst_layer, dst_layer.node_id == TwinEdge.target_node_id)
-            .where(
-                TwinEdge.scenario_id == scenario_id,
-                src_layer.layer == layer,
-                dst_layer.layer == layer,
-            )
-            .distinct()
-        )
-        raw_edges = (await session.execute(edge_stmt)).scalars().all()
-
-    nodes = [
-        {
-            "id": str(n.id),
-            "natural_key": n.natural_key,
-            "kind": n.kind,
-            "name": n.name,
-            "meta": n.meta or {},
-        }
-        for n in raw_nodes
-    ]
-    edges = [
-        {
-            "id": str(e.id),
-            "source_node_id": str(e.source_node_id),
-            "target_node_id": str(e.target_node_id),
-            "kind": e.kind,
-            "meta": e.meta or {},
-        }
-        for e in raw_edges
-    ]
-
-    include_kinds_norm = {kind.lower() for kind in include_kinds} if include_kinds else None
-    exclude_kinds_norm = {kind.lower() for kind in exclude_kinds} if exclude_kinds else None
-    include_edge_kinds_norm = (
-        {kind.lower() for kind in include_edge_kinds} if include_edge_kinds else None
+    # Symbol projection: the builder hides ``file`` nodes on top of the caller's
+    # filters, so push the same predicate into SQL and let it see only survivors.
+    nodes, edges = await _load_graph_rows(
+        session,
+        scenario_id,
+        layer,
+        include_kinds=include_kinds_norm,
+        exclude_kinds=(exclude_kinds_norm or set()) | {"file"},
+        include_edge_kinds=include_edge_kinds_norm,
     )
-
-    result = _apply_graph_projection(
+    return _apply_graph_projection(
         nodes,
         edges,
         projection,
@@ -1167,7 +1156,346 @@ async def get_full_scenario_graph(
         exclude_kinds_norm,
         include_edge_kinds_norm,
     )
-    return result
+
+
+# ── Database-side loading helpers ────────────────────────────────────────
+
+
+def _normalize_kinds(kinds: set[str] | None) -> set[str] | None:
+    """Lower-case a kind filter; empty filters mean "no filter"."""
+    if not kinds:
+        return None
+    return {kind.lower() for kind in kinds} or None
+
+
+def _node_kind_filters(
+    node: Any,
+    include_kinds: set[str] | None,
+    exclude_kinds: set[str] | None,
+) -> list[ColumnElement[bool]]:
+    """SQL counterpart of projections._kind_allowed for a TwinNode (or alias)."""
+    clauses: list[ColumnElement[bool]] = []
+    if include_kinds:
+        clauses.append(func.lower(node.kind).in_(sorted(include_kinds)))
+    if exclude_kinds:
+        clauses.append(func.lower(node.kind).not_in(sorted(exclude_kinds)))
+    return clauses
+
+
+def _node_path_expression(node: Any) -> ColumnElement[str | None]:
+    """SQL counterpart of grouping.canonical_file_path_from_node.
+
+    File nodes take their path from the ``file:`` natural key; every other kind
+    falls back to ``meta.file_path``. Empty values become NULL.
+    """
+    key_path = func.nullif(func.trim(func.substr(node.natural_key, len("file:") + 1)), "")
+    meta_path = func.nullif(func.trim(node.meta["file_path"].as_string()), "")
+    return case(
+        (and_(func.lower(node.kind) == "file", node.natural_key.like("file:%")), key_path),
+        else_=meta_path,
+    )
+
+
+def _node_arch_meta_expressions(node: Any) -> tuple[ColumnElement[Any], ...]:
+    """Explicit ``meta.architecture`` fields, as consumed by derive_arch_group."""
+    architecture = node.meta["architecture"]
+    return (
+        architecture["domain"].as_string(),
+        architecture["container"].as_string(),
+        architecture["component"].as_string(),
+    )
+
+
+def _with_layer(stmt: Select, node: Any, layer: TwinLayer | None) -> Select:
+    """Restrict ``node`` rows to one layer through the membership table."""
+    if layer is None:
+        return stmt
+    membership = aliased(TwinNodeLayer)
+    return stmt.join(membership, membership.node_id == node.id).where(membership.layer == layer)
+
+
+def _edge_with_endpoints(
+    scenario_id: UUID,
+    layer: TwinLayer | None,
+    *columns: ColumnElement[Any],
+) -> tuple[Select, Any, Any]:
+    """Select ``columns`` from scenario edges joined to their endpoint nodes."""
+    source = aliased(TwinNode)
+    target = aliased(TwinNode)
+    stmt = (
+        select(*columns)
+        .select_from(TwinEdge)
+        .join(source, source.id == TwinEdge.source_node_id)
+        .join(target, target.id == TwinEdge.target_node_id)
+        .where(TwinEdge.scenario_id == scenario_id)
+    )
+    stmt = _with_layer(stmt, source, layer)
+    stmt = _with_layer(stmt, target, layer)
+    return stmt, source, target
+
+
+def _derive_group_cached(
+    cache: dict[tuple[Any, ...], ArchGroup | None],
+    path: str | None,
+    domain: str | None,
+    container: str | None,
+    component: str | None,
+) -> ArchGroup | None:
+    """Derive the architecture group for one grouped row, memoised per path."""
+    key = (path, domain, container, component)
+    if key not in cache:
+        meta: dict[str, Any] = {}
+        if domain is not None or container is not None or component is not None:
+            meta["architecture"] = {
+                "domain": domain,
+                "container": container,
+                "component": component,
+            }
+        cache[key] = derive_group_with_strategy(path, meta)
+    return cache[key]
+
+
+async def _load_architecture_projection(
+    session: AsyncSession,
+    scenario_id: UUID,
+    layer: TwinLayer | None,
+    entity_level: str | None,
+    include_kinds: set[str] | None,
+    exclude_kinds: set[str] | None,
+) -> dict[str, Any]:
+    """Architecture projection with grouping pushed into SQL.
+
+    Nodes and edges are grouped by (path, explicit architecture meta) in the
+    database; the heuristic domain/container derivation then runs once per
+    distinct path instead of once per node.
+    """
+    effective_entity_level = normalize_architecture_level(entity_level)
+    effective_excluded = set(exclude_kinds or set()) | _ARCHITECTURE_DEFAULT_HIDDEN_KINDS
+
+    node = TwinNode
+    node_columns = (_node_path_expression(node), *_node_arch_meta_expressions(node))
+    node_stmt = (
+        select(*node_columns, func.count())
+        .where(
+            TwinNode.scenario_id == scenario_id,
+            *_node_kind_filters(node, include_kinds, effective_excluded),
+        )
+        .group_by(*node_columns)
+    )
+    node_stmt = _with_layer(node_stmt, node, layer)
+
+    cache: dict[tuple[Any, ...], ArchGroup | None] = {}
+    member_groups: list[tuple[ArchGroup, int]] = []
+    for path, domain, container, component, count in (await session.execute(node_stmt)).all():
+        group = _derive_group_cached(cache, path, domain, container, component)
+        if group is not None:
+            member_groups.append((group, int(count)))
+
+    edge_groups: list[tuple[ArchGroup, ArchGroup, str, int]] = []
+    if member_groups:
+        edge_stmt, source, target = _edge_with_endpoints(scenario_id, layer)
+        source_columns = (_node_path_expression(source), *_node_arch_meta_expressions(source))
+        target_columns = (_node_path_expression(target), *_node_arch_meta_expressions(target))
+        edge_stmt = (
+            edge_stmt.add_columns(*source_columns, *target_columns, TwinEdge.kind, func.count())
+            .where(
+                *_node_kind_filters(source, include_kinds, effective_excluded),
+                *_node_kind_filters(target, include_kinds, effective_excluded),
+            )
+            .group_by(*source_columns, *target_columns, TwinEdge.kind)
+        )
+        for row in (await session.execute(edge_stmt)).all():
+            src = _derive_group_cached(cache, *row[0:4])
+            dst = _derive_group_cached(cache, *row[4:8])
+            if src is None or dst is None:
+                continue
+            edge_groups.append((src, dst, str(row[8] or "depends_on"), int(row[9])))
+
+    projected_nodes, projected_edges, grouping_strategy = assemble_architecture_projection(
+        member_groups, edge_groups, effective_entity_level
+    )
+    return _architecture_result(
+        projected_nodes,
+        projected_edges,
+        grouping_strategy,
+        effective_entity_level,
+        effective_excluded,
+    )
+
+
+async def _load_code_file_projection(
+    session: AsyncSession,
+    scenario_id: UUID,
+    layer: TwinLayer | None,
+    entity_level: str | None,
+    exclude_kinds: set[str] | None,
+    include_edge_kinds: set[str] | None,
+) -> dict[str, Any]:
+    """File dependency projection with symbol counts and edge folding in SQL.
+
+    ``exclude_kinds`` is only echoed back in the response: the file projection
+    never applied it, and the in-memory builder reports it the same way.
+    """
+    file_stmt = (
+        select(TwinNode.id, TwinNode.natural_key, TwinNode.kind, TwinNode.name, TwinNode.meta)
+        .where(
+            TwinNode.scenario_id == scenario_id,
+            func.lower(TwinNode.kind) == "file",
+            _node_path_expression(TwinNode).is_not(None),
+        )
+        .order_by(TwinNode.natural_key, TwinNode.id)
+    )
+    file_stmt = _with_layer(file_stmt, TwinNode, layer)
+    file_nodes = [_node_row_to_dict(row) for row in (await session.execute(file_stmt)).all()]
+
+    symbol_count_by_path: dict[str, int] = {}
+    edge_groups: list[tuple[str, str, str, int]] = []
+    if file_nodes:
+        path = _node_path_expression(TwinNode)
+        count_stmt = (
+            select(path, func.count())
+            .where(
+                TwinNode.scenario_id == scenario_id,
+                func.lower(TwinNode.kind) != "file",
+                path.is_not(None),
+            )
+            .group_by(path)
+        )
+        count_stmt = _with_layer(count_stmt, TwinNode, layer)
+        symbol_count_by_path = {
+            str(row_path): int(count)
+            for row_path, count in (await session.execute(count_stmt)).all()
+        }
+
+        edge_stmt, source, target = _edge_with_endpoints(scenario_id, layer)
+        source_path = _node_path_expression(source)
+        target_path = _node_path_expression(target)
+        edge_stmt = (
+            edge_stmt.add_columns(source_path, target_path, TwinEdge.kind, func.count())
+            .where(
+                TwinEdge.kind != FILE_DEFINES_SYMBOL_EDGE_KIND,
+                source_path.is_not(None),
+                target_path.is_not(None),
+                source_path != target_path,
+            )
+            .group_by(source_path, target_path, TwinEdge.kind)
+        )
+        if include_edge_kinds:
+            edge_stmt = edge_stmt.where(func.lower(TwinEdge.kind).in_(sorted(include_edge_kinds)))
+        edge_groups = [
+            (str(src), str(dst), str(kind or ""), int(count))
+            for src, dst, kind, count in (await session.execute(edge_stmt)).all()
+        ]
+
+    projected_nodes, projected_edges = assemble_code_file_projection(
+        file_nodes, symbol_count_by_path, edge_groups
+    )
+    return _projection_result(
+        projected_nodes,
+        projected_edges,
+        GraphProjection.CODE_FILE,
+        (entity_level or "file").lower(),
+        excluded_kinds=sorted(exclude_kinds or set()),
+    )
+
+
+def _node_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "natural_key": row.natural_key,
+        "kind": row.kind,
+        "name": row.name,
+        "meta": row.meta or {},
+    }
+
+
+async def _load_graph_rows(
+    session: AsyncSession,
+    scenario_id: UUID,
+    layer: TwinLayer | None,
+    *,
+    include_kinds: set[str] | None = None,
+    exclude_kinds: set[str] | None = None,
+    include_edge_kinds: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load raw nodes and edges as dicts, filtering kinds in the database.
+
+    Edges are restricted to the surviving nodes through the same kind filters on
+    both endpoints rather than an ``IN (...)`` list, which would exceed
+    PostgreSQL's parameter limit on large scenarios.
+    """
+    node_stmt = (
+        select(TwinNode.id, TwinNode.natural_key, TwinNode.kind, TwinNode.name, TwinNode.meta)
+        .where(TwinNode.scenario_id == scenario_id)
+        .where(*_node_kind_filters(TwinNode, include_kinds, exclude_kinds))
+    )
+    node_stmt = _with_layer(node_stmt, TwinNode, layer)
+    nodes = [_node_row_to_dict(row) for row in (await session.execute(node_stmt)).all()]
+    if not nodes:
+        return [], []
+
+    if layer is None and not include_kinds and not exclude_kinds:
+        # Scenario edges already reference nodes within the same scenario.
+        edge_stmt: Select = select(
+            TwinEdge.id,
+            TwinEdge.source_node_id,
+            TwinEdge.target_node_id,
+            TwinEdge.kind,
+            TwinEdge.meta,
+        ).where(TwinEdge.scenario_id == scenario_id)
+    else:
+        edge_stmt, source, target = _edge_with_endpoints(
+            scenario_id,
+            layer,
+            TwinEdge.id,
+            TwinEdge.source_node_id,
+            TwinEdge.target_node_id,
+            TwinEdge.kind,
+            TwinEdge.meta,
+        )
+        edge_stmt = edge_stmt.where(
+            *_node_kind_filters(source, include_kinds, exclude_kinds),
+            *_node_kind_filters(target, include_kinds, exclude_kinds),
+        )
+    if include_edge_kinds:
+        edge_stmt = edge_stmt.where(func.lower(TwinEdge.kind).in_(sorted(include_edge_kinds)))
+
+    edges = [
+        {
+            "id": str(row.id),
+            "source_node_id": str(row.source_node_id),
+            "target_node_id": str(row.target_node_id),
+            "kind": row.kind,
+            "meta": row.meta or {},
+        }
+        for row in (await session.execute(edge_stmt)).all()
+    ]
+    return nodes, edges
+
+
+def _projection_result(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    projection: GraphProjection,
+    entity_level: str,
+    *,
+    excluded_kinds: list[str],
+) -> dict[str, Any]:
+    """Wrap projected nodes/edges in the graph response dict."""
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "total_nodes": len(nodes),
+        "projection": projection.value,
+        "entity_level": entity_level,
+        "grouping_strategy": "heuristic",
+        "excluded_kinds": excluded_kinds,
+        "warnings": [],
+        "provenance": {
+            "source": "scenario_graph",
+            "projection": projection.value,
+        },
+    }
 
 
 def _apply_graph_projection(
@@ -1179,10 +1507,7 @@ def _apply_graph_projection(
     exclude_kinds_norm: set[str] | None,
     include_edge_kinds_norm: set[str] | None,
 ) -> dict[str, Any]:
-    """Apply the selected projection and return a graph response dict."""
-    grouping_strategy = "heuristic"
-    effective_excluded_kinds = sorted(exclude_kinds_norm or set())
-
+    """Apply the selected projection to an in-memory graph."""
     if projection == GraphProjection.ARCHITECTURE:
         return _project_architecture(
             nodes,
@@ -1192,36 +1517,38 @@ def _apply_graph_projection(
             exclude_kinds_norm,
         )
     if projection == GraphProjection.CODE_FILE:
-        effective_entity_level = (entity_level or "file").lower()
         projected_nodes, projected_edges = build_code_file_projection(
             nodes=nodes,
             edges=edges,
             include_edge_kinds=include_edge_kinds_norm,
         )
-    else:
-        effective_entity_level = (entity_level or "symbol").lower()
-        projected_nodes, projected_edges = build_code_symbol_projection(
-            nodes=nodes,
-            edges=edges,
-            include_kinds=include_kinds_norm,
-            exclude_kinds=exclude_kinds_norm,
-            include_edge_kinds=include_edge_kinds_norm,
+        return _projection_result(
+            projected_nodes,
+            projected_edges,
+            projection,
+            (entity_level or "file").lower(),
+            excluded_kinds=sorted(exclude_kinds_norm or set()),
         )
 
-    return {
-        "nodes": projected_nodes,
-        "edges": projected_edges,
-        "total_nodes": len(projected_nodes),
-        "projection": projection.value,
-        "entity_level": effective_entity_level,
-        "grouping_strategy": grouping_strategy,
-        "excluded_kinds": effective_excluded_kinds,
-        "warnings": [],
-        "provenance": {
-            "source": "scenario_graph",
-            "projection": projection.value,
-        },
-    }
+    projected_nodes, projected_edges = build_code_symbol_projection(
+        nodes=nodes,
+        edges=edges,
+        include_kinds=include_kinds_norm,
+        exclude_kinds=exclude_kinds_norm,
+        include_edge_kinds=include_edge_kinds_norm,
+    )
+    return _projection_result(
+        projected_nodes,
+        projected_edges,
+        projection,
+        (entity_level or "symbol").lower(),
+        excluded_kinds=sorted(exclude_kinds_norm or set()),
+    )
+
+
+_ARCHITECTURE_DEFAULT_HIDDEN_KINDS = frozenset(
+    {"class", "method", "function", "property", "parameter", "variable", "constant"}
+)
 
 
 def _project_architecture(
@@ -1231,18 +1558,9 @@ def _project_architecture(
     include_kinds_norm: set[str] | None,
     exclude_kinds_norm: set[str] | None,
 ) -> dict[str, Any]:
-    """Apply architecture projection with default hidden kinds."""
-    effective_entity_level = (entity_level or "container").lower()
-    default_hidden = {
-        "class",
-        "method",
-        "function",
-        "property",
-        "parameter",
-        "variable",
-        "constant",
-    }
-    effective_excluded = set(exclude_kinds_norm or set()) | default_hidden
+    """Apply architecture projection to an in-memory graph with default hidden kinds."""
+    effective_entity_level = normalize_architecture_level(entity_level)
+    effective_excluded = set(exclude_kinds_norm or set()) | _ARCHITECTURE_DEFAULT_HIDDEN_KINDS
     projected_nodes, projected_edges, grouping_strategy = build_architecture_projection(
         nodes=nodes,
         edges=edges,
@@ -1250,6 +1568,23 @@ def _project_architecture(
         include_kinds=include_kinds_norm,
         exclude_kinds=effective_excluded,
     )
+    return _architecture_result(
+        projected_nodes,
+        projected_edges,
+        grouping_strategy,
+        effective_entity_level,
+        effective_excluded,
+    )
+
+
+def _architecture_result(
+    projected_nodes: list[dict[str, Any]],
+    projected_edges: list[dict[str, Any]],
+    grouping_strategy: str,
+    entity_level: str,
+    excluded_kinds: set[str],
+) -> dict[str, Any]:
+    """Wrap an architecture projection in the graph response dict."""
     explicit_assignment_count = sum(
         int((node.get("meta") or {}).get("explicit_member_count") or 0) for node in projected_nodes
     )
@@ -1270,9 +1605,9 @@ def _project_architecture(
         "edges": projected_edges,
         "total_nodes": len(projected_nodes),
         "projection": GraphProjection.ARCHITECTURE.value,
-        "entity_level": effective_entity_level,
+        "entity_level": entity_level,
         "grouping_strategy": grouping_strategy,
-        "excluded_kinds": sorted(effective_excluded),
+        "excluded_kinds": sorted(excluded_kinds),
         "warnings": warnings,
         "provenance": {
             "source": "scenario_graph",
