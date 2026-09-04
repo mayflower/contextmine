@@ -434,6 +434,51 @@ async def update_source(
         )
 
 
+_ACTIVE_SYNC_RUN_STATUSES = (SyncRunStatus.SCHEDULED, SyncRunStatus.RUNNING)
+
+# How a finished Prefect flow run maps onto the business sync run behind it.
+_FLOW_STATE_TO_SYNC_STATUS = {
+    "COMPLETED": SyncRunStatus.SUCCESS,
+    "CANCELLED": SyncRunStatus.CANCELLED,
+    "FAILED": SyncRunStatus.FAILED,
+    "CRASHED": SyncRunStatus.FAILED,
+}
+
+
+async def _release_finished_sync_run(sync_run_id: uuid.UUID, flow_run_id: str) -> bool:
+    """Close out a sync run whose Prefect flow run has already finished.
+
+    A crashed flow leaves its sync run on 'scheduled' forever, and since any
+    active run counts as a sync in flight, the source would never accept
+    another one. The in-flow stale recovery cannot help: it runs inside the
+    flow that failed to start, and only considers running rows.
+
+    Returns True when the run was closed out, so the caller can schedule a
+    replacement. Returns False while the flow may still be in flight - which
+    includes Prefect being unreachable, where waiting is the safe answer.
+    """
+    from app.routes.prefect import FLOW_RUN_MISSING, terminal_flow_run_state
+
+    flow_state = await terminal_flow_run_state(flow_run_id)
+    if flow_state is None:
+        return False
+
+    async with get_db_session() as db:
+        run = (
+            await db.execute(select(SyncRun).where(SyncRun.id == sync_run_id).with_for_update())
+        ).scalar_one_or_none()
+        if run is None or run.status not in _ACTIVE_SYNC_RUN_STATUSES:
+            # Someone else already reconciled it.
+            return False
+        run.status = _FLOW_STATE_TO_SYNC_STATUS.get(flow_state, SyncRunStatus.FAILED)
+        run.finished_at = datetime.now(UTC)
+        if run.status is not SyncRunStatus.SUCCESS:
+            ended_as = "an unknown run" if flow_state == FLOW_RUN_MISSING else flow_state
+            run.error = f"RECONCILED_WITH_PREFECT: flow run {flow_run_id} ended as {ended_as}"
+        await db.commit()
+    return True
+
+
 @router.post(
     "/sources/{source_id}/sync-now",
     responses={
@@ -485,11 +530,21 @@ async def sync_now(request: Request, source_id: str) -> dict[str, str]:
         await db.commit()
 
     if existing_flow_run_id:
-        return {
-            "status": "already_scheduled",
-            "sync_run_id": sync_run_id,
-            "flow_run_id": existing_flow_run_id,
-        }
+        # A finished flow run must not keep the source blocked forever.
+        if not await _release_finished_sync_run(sync_run_uuid, existing_flow_run_id):
+            return {
+                "status": "already_scheduled",
+                "sync_run_id": sync_run_id,
+                "flow_run_id": existing_flow_run_id,
+            }
+        async with get_db_session() as db:
+            replacement = SyncRun(source_id=src_uuid, status=SyncRunStatus.SCHEDULED)
+            db.add(replacement)
+            await db.flush()
+            sync_run_id = str(replacement.id)
+            sync_run_uuid = replacement.id
+            await db.commit()
+        created = True
 
     from app.routes.prefect import start_source_sync
 
