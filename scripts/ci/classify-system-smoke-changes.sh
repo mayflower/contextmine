@@ -4,6 +4,7 @@ set -euo pipefail
 
 model_free="false"
 otel="false"
+live_web="false"
 
 while IFS= read -r path || [[ -n "${path}" ]]; do
   [[ -z "${path}" ]] && continue
@@ -14,7 +15,8 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       docker-compose.yml | \
       pyproject.toml | \
       uv.lock | \
-      apps/* | \
+      apps/api/* | \
+      apps/worker/* | \
       packages/* | \
       rust/* | \
       scripts/ci/* | \
@@ -43,7 +45,24 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       otel="true"
       ;;
   esac
+
+  case "${path}" in
+    .dockerignore | \
+      .github/workflows/ci.yml | \
+      docker-compose.yml | \
+      pyproject.toml | \
+      uv.lock | \
+      apps/web/* | \
+      apps/api/* | \
+      packages/* | \
+      scripts/ci/* | \
+      scripts/docker/* | \
+      scripts/smoke/*)
+      live_web="true"
+      ;;
+  esac
 done
 
 printf 'model_free=%s\n' "${model_free}"
 printf 'otel=%s\n' "${otel}"
+printf 'live_web=%s\n' "${live_web}"
