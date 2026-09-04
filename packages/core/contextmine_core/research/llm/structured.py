@@ -76,7 +76,7 @@ def coerce_json_string_fields(data: Any, schema: type[BaseModel]) -> Any:
                 continue
             try:
                 decoded = json.loads(raw)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 # Not JSON after all - let validation report the real problem.
                 continue
             if isinstance(decoded, str):

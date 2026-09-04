@@ -264,9 +264,7 @@ class LangChainProvider(LLMProvider):
             # Use default method - Anthropic uses tool calling, OpenAI uses json_schema.
             # include_raw keeps the tool-call arguments available so a response
             # that only fails schema validation can still be repaired below.
-            structured_model = self._model.with_structured_output(
-                output_schema, include_raw=True
-            )
+            structured_model = self._model.with_structured_output(output_schema, include_raw=True)
             configured_model = structured_model.bind(
                 **self._generation_parameters(
                     max_tokens=max_tokens,
