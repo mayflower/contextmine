@@ -178,7 +178,9 @@ export default function TopologyView({
   onLayoutCompleted,
   onRetry,
 }: Readonly<TopologyViewProps>) {
-  const [showLabels, setShowLabels] = useState(false)
+  // Labels are what makes a topology readable; without them the nodes collapse
+  // to their minimum height and the view reads as unlabelled dots.
+  const [showLabels, setShowLabels] = useState(true)
   const [showMiniMap, setShowMiniMap] = useState(false)
   const [showDisplayOptions, setShowDisplayOptions] = useState(false)
   const [instance, setInstance] = useState<ReactFlowInstance | null>(null)
