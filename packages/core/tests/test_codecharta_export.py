@@ -181,6 +181,21 @@ async def test_codecharta_file_projection_schema_and_edges(test_session: AsyncSe
     assert leaves["/root/apps/web/App.tsx"]["churn"] == pytest.approx(30.0)
     assert payload["attributeTypes"]["nodes"]["churn"] == "absolute"
 
+    # CodeCharta reverses its colour scale only when a descriptor says direction == 1.
+    # Without these, high coverage and high cohesion are painted as problems.
+    descriptors = payload["attributeDescriptors"]
+    assert descriptors["coverage"]["direction"] == 1
+    assert descriptors["cohesion"]["direction"] == 1
+    assert descriptors["complexity"]["direction"] == -1
+    assert descriptors["churn"]["direction"] == -1
+    assert descriptors["coverage"]["title"] == "Test coverage"
+    # Every exported node metric needs a descriptor, otherwise it silently
+    # falls back to "higher is worse".
+    for metric in payload["attributeTypes"]["nodes"]:
+        assert metric in descriptors, metric
+    for metric in payload["attributeTypes"]["edges"]:
+        assert metric in descriptors, metric
+
     assert len(payload["edges"]) == 1
     edge_payload = payload["edges"][0]
     assert edge_payload["fromNodeName"] == "/root/apps/api/main.py"

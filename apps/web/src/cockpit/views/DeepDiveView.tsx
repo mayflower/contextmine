@@ -21,8 +21,38 @@ interface DeepDiveViewProps {
   onRetry: () => void
 }
 
+/**
+ * cytoscape 3.31 added a WebGL renderer, but @types/cytoscape does not model the
+ * `renderer` option yet. Verified present in the installed build - cytoscape.esm.mjs
+ * contains webglTexSize, textureOnViewport and hideEdgesOnViewport.
+ */
+const WEBGL_RENDERER: Record<string, unknown> = {
+  renderer: { name: 'canvas', webgl: true },
+}
+
 function getLayoutName(density: number): 'cose' | 'breadthfirst' {
   return density > 5000 ? 'breadthfirst' : 'cose'
+}
+
+/**
+ * Cytoscape's cose defaults (idealEdgeLength 32, nodeRepulsion 2048) are tuned for
+ * small graphs. At the densities this view reaches - hundreds of nodes averaging
+ * several edges each - they pull everything into one unreadable clump.
+ */
+function layoutOptions(density: number) {
+  const name = getLayoutName(density)
+  if (name === 'breadthfirst') {
+    return { name, animate: false, spacingFactor: 1.4 }
+  }
+  return {
+    name,
+    animate: false,
+    idealEdgeLength: 80,
+    nodeRepulsion: 8000,
+    nodeOverlap: 20,
+    componentSpacing: 120,
+    nestingFactor: 1.2,
+  }
 }
 
 function humanizeSliceStrategy(strategy: string | undefined): string {
@@ -51,6 +81,13 @@ export default function DeepDiveView({
   const [showLabelsOverride, setShowLabelsOverride] = useState<boolean | null>(null)
   const showLabels = showLabelsOverride ?? density <= 5000
 
+  // Read through a ref so a caller that re-creates this handler on every render
+  // cannot invalidate the build effect and trigger a full relayout.
+  const selectHandlerRef = useRef(onSelectNodeId)
+  useEffect(() => {
+    selectHandlerRef.current = onSelectNodeId
+  }, [onSelectNodeId])
+
   useEffect(() => {
     if (!containerRef.current || state === 'loading' || graph.nodes.length === 0) {
       return
@@ -63,21 +100,23 @@ export default function DeepDiveView({
 
     const next = cytoscape({
       container: containerRef.current,
+      // Without the WebGL renderer cytoscape falls back to plain canvas and
+      // redraws every edge on each frame.
+      ...WEBGL_RENDERER,
+      textureOnViewport: true,
+      hideEdgesOnViewport: true,
+      motionBlur: true,
       elements: [
-        ...graph.nodes.map((node) => {
-          const runtime = overlay.runtimeByNodeKey[node.natural_key] || overlay.runtimeByNodeKey[node.name]
-          const risk = overlay.riskByNodeKey[node.natural_key] || overlay.riskByNodeKey[node.name]
-          return {
-            data: {
-              id: node.id,
-              label: node.name,
-              kind: node.kind,
-              selected: selectedNodeId === node.id ? 1 : 0,
-              runtime_error: Number(runtime?.error_rate || 0),
-              risk_score: Number(risk?.severity_score || 0),
-            },
-          }
-        }),
+        ...graph.nodes.map((node) => ({
+          data: {
+            id: node.id,
+            label: node.name,
+            kind: node.kind,
+            selected: 0,
+            runtime_error: 0,
+            risk_score: 0,
+          },
+        })),
         ...graph.edges.map((edge) => ({
           data: {
             id: edge.id,
@@ -93,14 +132,26 @@ export default function DeepDiveView({
           style: {
             'background-color': '#1d4ed8',
             color: '#0f172a',
-            label: showLabels ? 'data(label)' : '',
-            'font-size': 9,
+            label: 'data(label)',
+            'font-size': 10,
+            // Cytoscape's only built-in label LOD: stop drawing text that would
+            // be too small to read instead of painting hundreds of smudges.
+            'min-zoomed-font-size': 8,
             width: 20,
             height: 20,
             'text-valign': 'center',
-            'text-halign': 'center',
+            // A 10px label does not fit inside a 20px circle - place it beside.
+            'text-halign': 'right',
+            'text-margin-x': 4,
+            'text-events': 'no',
             'border-width': 1,
             'border-color': '#0f172a',
+          },
+        },
+        {
+          selector: 'node.cm-labels-hidden',
+          style: {
+            label: '',
           },
         },
         {
@@ -141,19 +192,15 @@ export default function DeepDiveView({
             'line-color': '#94a3b8',
             'target-arrow-color': '#94a3b8',
             'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
+            'curve-style': 'straight',
           },
         },
       ],
-      layout: {
-        name: getLayoutName(density),
-        animate: false,
-      },
+      layout: layoutOptions(density),
     })
 
     next.on('tap', 'node', (event) => {
-      const id = String(event.target.id())
-      onSelectNodeId(id)
+      selectHandlerRef.current(String(event.target.id()))
     })
 
     graphRef.current = next
@@ -162,7 +209,31 @@ export default function DeepDiveView({
       next.destroy()
       graphRef.current = null
     }
-  }, [graph, state, showLabels, density, overlay, selectedNodeId, onSelectNodeId])
+  }, [graph, state, density])
+
+  // Selection and overlay are data updates. Rebuilding the instance for them
+  // would re-run the layout on every click.
+  useEffect(() => {
+    const cy = graphRef.current
+    if (!cy) return
+    cy.batch(() => {
+      for (const node of graph.nodes) {
+        const element = cy.getElementById(node.id)
+        if (element.empty()) continue
+        const runtime = overlay.runtimeByNodeKey[node.natural_key] || overlay.runtimeByNodeKey[node.name]
+        const risk = overlay.riskByNodeKey[node.natural_key] || overlay.riskByNodeKey[node.name]
+        element.data('selected', selectedNodeId === node.id ? 1 : 0)
+        element.data('runtime_error', Number(runtime?.error_rate || 0))
+        element.data('risk_score', Number(risk?.severity_score || 0))
+      }
+    })
+  }, [graph, overlay, selectedNodeId, state, density])
+
+  useEffect(() => {
+    const cy = graphRef.current
+    if (!cy) return
+    cy.nodes().toggleClass('cm-labels-hidden', !showLabels)
+  }, [showLabels, graph, state, density])
   const warnings = graph.warnings || []
   const provenanceNotes: string[] = []
   if (graph.provenance?.source === 'knowledge_recovery') {
