@@ -31,6 +31,7 @@ from contextmine_core.embeddings import (
     FakeEmbedder,
     GeminiEmbedder,
     OpenAIEmbedder,
+    embedding_credential_available,
     get_embedder,
     parse_embedding_model_spec,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "ContextRequest",
     "ContextResponse",
     "Embedder",
+    "embedding_credential_available",
     "EmbeddingModel",
     "EmbeddingProvider",
     "EmbeddingResult",

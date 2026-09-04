@@ -699,6 +699,60 @@ class TestGetEmbeddingModelForCollection:
 
 
 class TestEmbedDocument:
+    async def test_skips_when_the_provider_key_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing key must not surface as a per-document processing failure.
+
+        get_embedder() raises when its provider key is absent, and that call
+        sits outside the batch fallback, so every document was counted as a
+        processing failure with the same underlying cause.
+        """
+        monkeypatch.setattr(
+            flows,
+            "get_settings",
+            lambda: _make_settings(
+                model_calls_enabled=True,
+                default_embedding_model="openai:text-embedding-3-small",
+            ),
+        )
+        monkeypatch.setattr(flows, "embedding_credential_available", lambda _provider: False)
+        embedder = MagicMock(side_effect=AssertionError("must not build an embedder"))
+        monkeypatch.setattr(flows, "get_embedder", embedder)
+        flows._warn_missing_embedding_credential.cache_clear()
+
+        result = await flows.embed_document(str(uuid.uuid4()))
+
+        assert result == {
+            "chunks_embedded": 0,
+            "chunks_deduplicated": 0,
+            "tokens_used": 0,
+            "skipped": True,
+            "skip_reason": "missing_api_key:openai",
+        }
+        embedder.assert_not_called()
+
+    async def test_warns_once_per_process_not_once_per_document(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(
+            flows,
+            "get_settings",
+            lambda: _make_settings(
+                model_calls_enabled=True,
+                default_embedding_model="openai:text-embedding-3-small",
+            ),
+        )
+        monkeypatch.setattr(flows, "embedding_credential_available", lambda _provider: False)
+        flows._warn_missing_embedding_credential.cache_clear()
+
+        with caplog.at_level("WARNING"):
+            for _ in range(5):
+                await flows.embed_document(str(uuid.uuid4()))
+
+        warnings = [r for r in caplog.records if "No API key configured" in r.getMessage()]
+        assert len(warnings) == 1
+
     async def test_skips_when_model_calls_are_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -736,6 +790,8 @@ class TestEmbedDocument:
             "get_embedding_model_for_collection",
             AsyncMock(return_value="openai:text-embedding-3-small"),
         )
+        # This path only runs when the provider's key is configured.
+        monkeypatch.setattr(flows, "embedding_credential_available", lambda _provider: True)
 
         mock_embedder = MagicMock()
         mock_embedder.dimension = 1536
