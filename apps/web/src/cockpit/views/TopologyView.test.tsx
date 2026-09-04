@@ -3,7 +3,7 @@
  */
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { OverlayState, TwinGraphResponse } from '../types'
 
@@ -288,5 +288,47 @@ describe('TopologyView rendering', () => {
     })} />)
     await userEvent.click(screen.getByText('Switch to Code / Controlflow'))
     expect(onSwitchToCodeLayer).toHaveBeenCalledOnce()
+  })
+})
+
+
+describe('TopologyView layout failures', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function architectureGraph(): TwinGraphResponse {
+    // ELK only runs for architecture projections of 100 nodes or more.
+    const nodes = Array.from({ length: 120 }, (_, index) => ({
+      id: `n${index}`,
+      natural_key: `file:module${index}.py`,
+      kind: 'FILE',
+      name: `module${index}.py`,
+      meta: {},
+    }))
+    return { nodes, edges: [], page: 0, limit: 5000, total_nodes: nodes.length, projection: 'architecture' }
+  }
+
+  it('reports a failed layout instead of claiming it finished', async () => {
+    // A swallowed error used to leave the grid placeholder on screen while the
+    // view reported a refined layout, with nothing to diagnose from.
+    const { runElkLayout } = await import('../layout/layoutCore')
+    vi.mocked(runElkLayout).mockRejectedValueOnce(new Error('elk failed'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    render(<TopologyView {...makeProps({ graph: architectureGraph(), layoutEngine: 'elk_layered' })} />)
+
+    expect(await screen.findByText(/Layout failed, showing grid placeholder/)).toBeInTheDocument()
+    expect(consoleError).toHaveBeenCalled()
+  })
+
+  it('does not report a failure when the layout succeeds', async () => {
+    const { runElkLayout } = await import('../layout/layoutCore')
+    vi.mocked(runElkLayout).mockResolvedValueOnce({})
+
+    render(<TopologyView {...makeProps({ graph: architectureGraph(), layoutEngine: 'elk_layered' })} />)
+
+    await screen.findByTestId('reactflow')
+    expect(screen.queryByText(/Layout failed/)).not.toBeInTheDocument()
   })
 })
