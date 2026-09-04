@@ -38,6 +38,7 @@ from git.exc import GitCommandError
 from prefect import flow, task
 from prefect.artifacts import create_progress_artifact, update_progress_artifact
 from prefect.cache_policies import INPUTS
+from prefect.exceptions import ObjectNotFound
 from prefect.tasks import exponential_backoff
 from sqlalchemy import delete, select, text
 
@@ -5136,8 +5137,15 @@ async def sync_due_sources() -> dict:
                 }
             )
         except Exception as e:
-            await _mark_scheduled_sync_failed(claim["sync_run_id"], str(e))
-            results.append({**claim, "error": str(e)})
+            logger.exception("Prefect scheduling failed for deployment %s", deployment)
+            error = str(e) or type(e).__name__
+            if isinstance(e, ObjectNotFound):
+                error = (
+                    f"Prefect deployment '{deployment}' not found. "
+                    "Check PREFECT_API_URL and that the worker registered its deployments."
+                )
+            await _mark_scheduled_sync_failed(claim["sync_run_id"], error)
+            results.append({**claim, "error": error})
 
     return {"scheduled": len(claims), "sources": results}
 

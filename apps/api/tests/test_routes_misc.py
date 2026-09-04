@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from app.routes.db import db_health_check, get_stats
 from app.routes.prefect import (
     _get_flow_run_progress,
     get_flow_runs,
     prefect_health,
+    start_source_sync,
 )
+from prefect.client.orchestration import PrefectClient
 from prefect.client.schemas.objects import StateType
+from prefect.deployments import arun_deployment
+from prefect.exceptions import ObjectNotFound
 
 pytestmark = pytest.mark.anyio
 
@@ -105,6 +111,7 @@ class TestPrefectHealth:
     @pytest.mark.anyio
     async def test_healthy(self) -> None:
         mock_client = AsyncMock()
+        mock_client.api_healthcheck.return_value = None
         client_context = MagicMock()
         client_context.__aenter__ = AsyncMock(return_value=mock_client)
         client_context.__aexit__ = AsyncMock(return_value=False)
@@ -120,6 +127,42 @@ class TestPrefectHealth:
         with patch("app.routes.prefect.get_client", return_value=client_context):
             result = await prefect_health()
         assert result["prefect"] == "error"
+
+    @pytest.mark.parametrize("error", [ConnectionError("refused"), TimeoutError()])
+    async def test_returned_error_is_unhealthy(self, error: Exception) -> None:
+        mock_client = AsyncMock()
+        mock_client.api_healthcheck.return_value = error
+        mock_client.__aenter__.return_value = mock_client
+        with patch("app.routes.prefect.get_client", return_value=mock_client):
+            result = await prefect_health()
+        assert result == {"prefect": "error", "detail": str(error) or type(error).__name__}
+
+
+async def test_missing_deployment_reports_name_and_logs_http_cause(caplog) -> None:
+    def missing(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/deployments/name/sync_single_source/default"
+        return httpx.Response(404, json={"detail": "Deployment not found"})
+
+    async with PrefectClient(
+        "http://prefect.test/api",
+        httpx_settings={"transport": httpx.MockTransport(missing)},
+    ) as client:
+        with (
+            patch("app.routes.prefect.run_deployment", partial(arun_deployment, client=client)),
+            patch(
+                "app.routes.prefect.get_settings",
+                return_value=SimpleNamespace(prefect_sync_deployment="sync_single_source/default"),
+            ),
+            pytest.raises(
+                RuntimeError, match="deployment 'sync_single_source/default' not found"
+            ) as raised,
+        ):
+            await start_source_sync("source-id", "https://example.test/repo", "sync-run-id")
+
+    assert "PREFECT_API_URL" in str(raised.value)
+    assert isinstance(raised.value.__cause__, ObjectNotFound)
+    assert raised.value.__cause__.http_exc.response.status_code == 404
+    assert any(record.exc_info for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
