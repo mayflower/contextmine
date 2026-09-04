@@ -235,7 +235,7 @@ jobs:
           printf '%s\n' "${classification}" >>"${GITHUB_OUTPUT}"
 
   model-free-system-smoke:
-    name: Model-free System & Live Web Smoke
+    name: Model-free System Smoke
     needs: [smoke-changes]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
