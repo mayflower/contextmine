@@ -319,6 +319,13 @@ def _scalars_all(values: list[Any]) -> MagicMock:
     return result
 
 
+def _rows_all(values: list[Any]) -> MagicMock:
+    """Result of a column-tuple select: ``.all()`` returns the rows directly."""
+    result = MagicMock()
+    result.all.return_value = values
+    return result
+
+
 # ── get_or_create_as_is_scenario ─────────────────────────────────────────
 
 
@@ -1028,8 +1035,8 @@ class TestGetScenarioGraph:
         node.meta = {}
 
         session.execute.side_effect = [
-            _scalars_all([node]),  # raw_nodes
-            _scalars_all([]),  # raw_edges
+            _rows_all([node]),  # node rows
+            _rows_all([]),  # edge rows
         ]
 
         result = await get_scenario_graph(session, scenario_id, layer=None, page=0, limit=50)
@@ -1046,16 +1053,15 @@ class TestGetScenarioGraph:
 
         session = _make_mock_session()
 
-        session.execute.side_effect = [
-            _scalars_all([]),
-            _scalars_all([]),
-        ]
+        session.execute.side_effect = [_rows_all([])]
 
         result = await get_scenario_graph(session, uuid4(), layer=None, page=0, limit=50)
 
         assert result["total_nodes"] == 0
         assert result["nodes"] == []
         assert result["edges"] == []
+        # Without nodes there is nothing to join edges to, so no edge query runs.
+        assert session.execute.await_count == 1
 
     @pytest.mark.anyio
     async def test_exposes_slice_metadata_and_hidden_cross_page_edges(self) -> None:
@@ -1079,17 +1085,12 @@ class TestGetScenarioGraph:
             name="b.py",
             meta={},
         )
-        edge = SimpleNamespace(
-            id=uuid4(),
-            source_node_id=node_a.id,
-            target_node_id=node_b.id,
-            kind="symbol_references_symbol",
-            meta={},
-        )
-
+        # The file projection is grouped in SQL: file rows, symbol counts per
+        # path, then edges folded to (source path, target path, kind, count).
         session.execute.side_effect = [
-            _scalars_all([node_a, node_b]),
-            _scalars_all([edge]),
+            _rows_all([node_a, node_b]),
+            _rows_all([]),
+            _rows_all([("a.py", "b.py", "symbol_references_symbol", 1)]),
         ]
 
         result = await get_scenario_graph(
@@ -1106,6 +1107,43 @@ class TestGetScenarioGraph:
         assert result["visible_nodes"] == 1
         assert result["dropped_cross_page_edges"] == 1
         assert result["warnings"]
+
+    def test_edge_aware_order_visits_components_in_sorted_order(self) -> None:
+        """Isolated nodes and separate components keep their natural-key order."""
+        from contextmine_core.twin.service import _edge_aware_node_order
+
+        nodes = [{"id": key, "natural_key": key} for key in ("a", "b", "c", "d", "e", "f")]
+        edges = [
+            {"source_node_id": "a", "target_node_id": "e"},
+            {"source_node_id": "c", "target_node_id": "f"},
+        ]
+
+        assert _edge_aware_node_order(nodes, edges) == ["a", "e", "b", "c", "f", "d"]
+
+    def test_edge_aware_order_scales_linearly_on_sparse_graphs(self) -> None:
+        """Anchor search must not rescan ordered nodes.
+
+        A 60k-node graph with mostly isolated nodes took ~40 s with the old
+        from-the-start anchor scan; linear behaviour finishes in well under a
+        second even on slow CI runners.
+        """
+        import time
+
+        from contextmine_core.twin.service import _edge_aware_node_order
+
+        count = 60_000
+        nodes = [{"id": f"n{index}", "natural_key": f"n{index:06d}"} for index in range(count)]
+        edges = [
+            {"source_node_id": f"n{index}", "target_node_id": f"n{index + 1}"}
+            for index in range(0, count - 1, 10)
+        ]
+
+        started = time.perf_counter()
+        ordered = _edge_aware_node_order(nodes, edges)
+        elapsed = time.perf_counter() - started
+
+        assert len(ordered) == count
+        assert elapsed < 5.0, f"edge-aware ordering took {elapsed:.1f}s for {count} nodes"
 
     def test_edge_aware_paging_preserves_bfs_frontier_across_pages(self) -> None:
         from contextmine_core.twin.service import paginate_graph_edge_aware
@@ -1157,8 +1195,8 @@ class TestGetFullScenarioGraph:
             meta={},
         )
         session.execute.side_effect = [
-            _scalars_all([node]),
-            _scalars_all([edge]),
+            _rows_all([node]),
+            _rows_all([edge]),
         ]
 
         with patch(
@@ -1190,8 +1228,8 @@ class TestGetFullScenarioGraph:
             for idx in range(34000)
         ]
         session.execute.side_effect = [
-            _scalars_all(raw_nodes),
-            _scalars_all([]),
+            _rows_all(raw_nodes),
+            _rows_all([]),
         ]
 
         with patch(
@@ -1211,3 +1249,197 @@ class TestGetFullScenarioGraph:
         assert "source_node_id IN" not in edge_sql
         assert "target_node_id IN" not in edge_sql
         assert "JOIN twin_node_layers" in edge_sql
+
+    @pytest.mark.anyio
+    async def test_symbol_projection_pushes_kind_filters_into_sql(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        session.execute.side_effect = [_rows_all([]), _rows_all([])]
+
+        await get_full_scenario_graph(
+            session,
+            uuid4(),
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+            include_kinds={"Symbol"},
+            include_edge_kinds={"symbol_calls_symbol"},
+        )
+
+        node_sql = str(session.execute.await_args_list[0].args[0])
+        assert "lower(twin_nodes.kind) IN" in node_sql
+        # The symbol builder always hides file nodes; that predicate moves to SQL too.
+        assert "lower(twin_nodes.kind) NOT IN" in node_sql
+        # No node survived, so the edge query is skipped entirely.
+        assert session.execute.await_count == 1
+
+    @pytest.mark.anyio
+    async def test_symbol_projection_filters_edges_by_kind_in_sql(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        node = SimpleNamespace(id=uuid4(), natural_key="symbol:a", kind="symbol", name="a", meta={})
+        session.execute.side_effect = [_rows_all([node]), _rows_all([])]
+
+        result = await get_full_scenario_graph(
+            session,
+            uuid4(),
+            layer=None,
+            projection=GraphProjection.CODE_SYMBOL,
+            include_edge_kinds={"symbol_contains_symbol"},
+        )
+
+        assert [n["natural_key"] for n in result["nodes"]] == ["symbol:a"]
+        edge_sql = str(session.execute.await_args_list[1].args[0])
+        assert "lower(twin_edges.kind) IN" in edge_sql
+        assert "twin_edges.meta" in edge_sql
+
+    @pytest.mark.anyio
+    async def test_architecture_projection_groups_in_sql_and_keeps_counts(self) -> None:
+        """Grouped rows carry counts; the projection must weight them, not count rows."""
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        billing = "services/billing/api/invoice.py"
+        payments = "services/payments/core/charge.py"
+        session.execute.side_effect = [
+            # (path, explicit domain, container, component, member count)
+            _rows_all(
+                [
+                    (billing, None, None, None, 3),
+                    (payments, "payments", "core", None, 2),
+                    (None, None, None, None, 7),  # nodes without a path are dropped
+                ]
+            ),
+            # (source path + arch, target path + arch, edge kind, raw edge count)
+            _rows_all(
+                [
+                    (billing, None, None, None, payments, "payments", "core", None, "calls", 4),
+                    (billing, None, None, None, billing, None, None, None, "contains", 9),
+                ]
+            ),
+        ]
+
+        result = await get_full_scenario_graph(
+            session,
+            uuid4(),
+            layer=None,
+            projection=GraphProjection.ARCHITECTURE,
+            entity_level="container",
+            exclude_kinds={"Test"},
+        )
+
+        node_sql = str(session.execute.await_args_list[0].args[0])
+        assert "GROUP BY" in node_sql
+        assert "count(*)" in node_sql
+        assert "lower(twin_nodes.kind) NOT IN" in node_sql
+        edge_sql = str(session.execute.await_args_list[1].args[0])
+        assert "GROUP BY" in edge_sql
+        assert "JOIN twin_nodes AS twin_nodes_1" in edge_sql
+
+        by_name = {node["name"]: node for node in result["nodes"]}
+        assert by_name["api"]["meta"]["member_count"] == 3
+        assert by_name["api"]["meta"]["provenance"] == "heuristic"
+        assert by_name["core"]["meta"]["member_count"] == 2
+        assert by_name["core"]["meta"]["provenance"] == "explicit"
+        assert result["grouping_strategy"] == "mixed"
+        assert "test" in result["excluded_kinds"]
+        assert "class" in result["excluded_kinds"]
+
+        assert len(result["edges"]) == 1  # the intra-group "contains" edges fold away
+        edge = result["edges"][0]
+        assert edge["source_node_id"] == by_name["api"]["id"]
+        assert edge["target_node_id"] == by_name["core"]["id"]
+        assert edge["meta"] == {
+            "weight": 4,
+            "sample_edge_kinds": ["calls"],
+            "raw_edge_count": 4,
+        }
+
+    @pytest.mark.anyio
+    async def test_architecture_projection_skips_edge_query_without_members(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        session.execute.side_effect = [_rows_all([])]
+
+        result = await get_full_scenario_graph(
+            session, uuid4(), layer=None, projection=GraphProjection.ARCHITECTURE
+        )
+
+        assert result["nodes"] == []
+        assert result["edges"] == []
+        assert session.execute.await_count == 1
+
+    @pytest.mark.anyio
+    async def test_code_file_projection_counts_symbols_and_folds_edges_in_sql(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        file_a = SimpleNamespace(
+            id=uuid4(), natural_key="file:a.py", kind="file", name="a.py", meta={"loc": 10}
+        )
+        file_b = SimpleNamespace(
+            id=uuid4(), natural_key="file:b.py", kind="file", name="b.py", meta={}
+        )
+        session.execute.side_effect = [
+            _rows_all([file_a, file_b]),
+            _rows_all([("a.py", 5), ("orphan.py", 2)]),
+            _rows_all(
+                [
+                    ("a.py", "b.py", "symbol_calls_symbol", 3),
+                    ("a.py", "b.py", "symbol_references_symbol", 1),
+                    ("a.py", "orphan.py", "symbol_calls_symbol", 8),  # no file node
+                ]
+            ),
+        ]
+
+        result = await get_full_scenario_graph(
+            session,
+            uuid4(),
+            layer=None,
+            projection=GraphProjection.CODE_FILE,
+            include_edge_kinds={"symbol_calls_symbol", "symbol_references_symbol"},
+        )
+
+        file_sql = str(session.execute.await_args_list[0].args[0])
+        assert "lower(twin_nodes.kind) = " in file_sql
+        count_sql = str(session.execute.await_args_list[1].args[0])
+        assert "GROUP BY" in count_sql
+        edge_sql = str(session.execute.await_args_list[2].args[0])
+        assert "twin_edges.kind !=" in edge_sql
+        assert "lower(twin_edges.kind) IN" in edge_sql
+        assert "GROUP BY" in edge_sql
+
+        by_name = {node["name"]: node for node in result["nodes"]}
+        assert by_name["a.py"]["meta"] == {"loc": 10, "symbol_count": 5}
+        assert by_name["b.py"]["meta"] == {"symbol_count": 0}
+        assert len(result["edges"]) == 1
+        assert result["edges"][0]["source_node_id"] == str(file_a.id)
+        assert result["edges"][0]["target_node_id"] == str(file_b.id)
+        assert result["edges"][0]["meta"] == {
+            "weight": 4,
+            "sample_edge_kinds": ["symbol_calls_symbol", "symbol_references_symbol"],
+            "raw_edge_count": 4,
+        }
+
+    @pytest.mark.anyio
+    async def test_code_file_projection_skips_aggregates_without_files(self) -> None:
+        from contextmine_core.twin.projections import GraphProjection
+        from contextmine_core.twin.service import get_full_scenario_graph
+
+        session = _make_mock_session()
+        session.execute.side_effect = [_rows_all([])]
+
+        result = await get_full_scenario_graph(
+            session, uuid4(), layer=None, projection=GraphProjection.CODE_FILE
+        )
+
+        assert result["nodes"] == []
+        assert result["edges"] == []
+        assert session.execute.await_count == 1
