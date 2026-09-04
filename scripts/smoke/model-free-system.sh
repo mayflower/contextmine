@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Index a pinned repository end to end and assert the resulting counts.
+#
+# The browser check against the web UI lives in live-web-smoke.sh, so that a
+# frontend change need not wait for an indexing run and an indexing change
+# need not build the web image.
+
 set -euo pipefail
 
 readonly FIXTURE_REPOSITORY="https://github.com/fastapi/full-stack-fastapi-template.git"
@@ -20,7 +26,6 @@ if [[ "${CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES:-false}" == "true" ]]; then
 
   for image in \
     "${CONTEXTMINE_SMOKE_API_IMAGE:?prebuilt API image is required}" \
-    "${CONTEXTMINE_SMOKE_WEB_IMAGE:?prebuilt web image is required}" \
     "${CONTEXTMINE_SMOKE_WORKER_IMAGE:?prebuilt analyzer image is required}"; do
     if ! docker image inspect "${image}" >/dev/null; then
       echo "Required prebuilt smoke image is unavailable: ${image}" >&2
@@ -57,7 +62,7 @@ docker compose \
   --project-name "${compose_project}" \
   --file "${compose_file}" \
   up "${compose_up_build_args[@]}" --detach --wait --wait-timeout 300 \
-  postgres prefect-server api web browser
+  postgres prefect-server api
 
 prefect_server_version="$(
   docker compose \
@@ -69,15 +74,6 @@ if [[ -z "${prefect_server_version}" ]]; then
   echo "Prefect server version could not be determined" >&2
   exit 1
 fi
-
-docker compose \
-  --project-name "${compose_project}" \
-  --file "${compose_file}" \
-  run --rm --no-deps \
-  --env CONTEXTMINE_SMOKE_WEB_URL=http://web:5173 \
-  --env CONTEXTMINE_SMOKE_BROWSER_URL=http://browser:9222 \
-  --volume "${repository_root}/scripts/smoke/live_web.mjs:/app/live_web.mjs:ro" \
-  web node /app/live_web.mjs
 
 docker compose \
   --project-name "${compose_project}" \

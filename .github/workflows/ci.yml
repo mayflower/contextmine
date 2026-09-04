@@ -203,6 +203,7 @@ jobs:
     outputs:
       model_free: ${{ steps.classify.outputs.model_free }}
       otel: ${{ steps.classify.outputs.otel }}
+      live_web: ${{ steps.classify.outputs.live_web }}
     steps:
       - name: Check out pull request history
         if: github.event_name == 'pull_request'
@@ -217,7 +218,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
-            printf 'model_free=false\notel=false\n' >>"${GITHUB_OUTPUT}"
+            printf 'model_free=false\notel=false\nlive_web=false\n' >>"${GITHUB_OUTPUT}"
             echo "System smokes are selected by the ${GITHUB_EVENT_NAME} schedule, not changed files."
             exit 0
           fi
@@ -241,7 +242,6 @@ jobs:
     timeout-minutes: 60
     env:
       CONTEXTMINE_SMOKE_API_IMAGE: contextmine-smoke-api:${{ github.sha }}
-      CONTEXTMINE_SMOKE_WEB_IMAGE: contextmine-smoke-web:${{ github.sha }}
       CONTEXTMINE_SMOKE_WORKER_IMAGE: contextmine-smoke-analyzer:${{ github.sha }}
       CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES: "true"
       RUN_SYSTEM_SMOKE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft && needs.smoke-changes.outputs.model_free == 'true') }}
@@ -275,18 +275,6 @@ jobs:
           cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-api' }}
           cache-to: type=gha,scope=contextmine-api,mode=max
 
-      - name: Build cached web smoke image
-        if: env.RUN_SYSTEM_SMOKE == 'true'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: ./apps/web
-          file: apps/web/Dockerfile
-          load: true
-          tags: ${{ env.CONTEXTMINE_SMOKE_WEB_IMAGE }}
-          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
-          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-web' }}
-          cache-to: type=gha,scope=contextmine-web,mode=max
-
       - name: Build cached analyzer smoke image
         if: env.RUN_SYSTEM_SMOKE == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -303,6 +291,63 @@ jobs:
       - name: Run pinned repository sync gate
         if: env.RUN_SYSTEM_SMOKE == 'true'
         run: ./scripts/smoke/model-free-system.sh
+
+  live-web-smoke:
+    name: Live Web Smoke
+    needs: [smoke-changes]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONTEXTMINE_SMOKE_API_IMAGE: contextmine-smoke-api:${{ github.sha }}
+      CONTEXTMINE_SMOKE_WEB_IMAGE: contextmine-smoke-web:${{ github.sha }}
+      CONTEXTMINE_SMOKE_USE_PREBUILT_IMAGES: "true"
+      RUN_LIVE_WEB_SMOKE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft && needs.smoke-changes.outputs.live_web == 'true') }}
+    steps:
+      - name: Require successful change classification
+        if: needs.smoke-changes.result != 'success'
+        run: |
+          echo "System smoke change classification did not succeed" >&2
+          exit 1
+
+      - name: Record intentional skip
+        if: env.RUN_LIVE_WEB_SMOKE != 'true'
+        run: echo "Live web smoke is not required for this event and change set."
+
+      - if: env.RUN_LIVE_WEB_SMOKE == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        if: env.RUN_LIVE_WEB_SMOKE == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build cached API smoke image
+        if: env.RUN_LIVE_WEB_SMOKE == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          load: true
+          tags: ${{ env.CONTEXTMINE_SMOKE_API_IMAGE }}
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-api' }}
+          cache-to: type=gha,scope=contextmine-api,mode=max
+
+      - name: Build cached web smoke image
+        if: env.RUN_LIVE_WEB_SMOKE == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./apps/web
+          file: apps/web/Dockerfile
+          load: true
+          tags: ${{ env.CONTEXTMINE_SMOKE_WEB_IMAGE }}
+          no-cache: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' }}
+          cache-from: ${{ env.CONTEXTMINE_SMOKE_COLD_BUILD == 'true' && '' || 'type=gha,scope=contextmine-web' }}
+          cache-to: type=gha,scope=contextmine-web,mode=max
+
+      - name: Drive the web UI in a real browser
+        if: env.RUN_LIVE_WEB_SMOKE == 'true'
+        run: ./scripts/smoke/live-web-smoke.sh
 
   otel-enabled-smoke:
     name: OpenTelemetry Enabled Smoke
