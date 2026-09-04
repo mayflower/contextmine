@@ -389,6 +389,8 @@ class TestEmbedDocument:
             "parse_embedding_model_spec",
             lambda spec: ("openai", "text-embedding-3-small"),
         )
+        # This path only runs when the provider's key is configured.
+        monkeypatch.setattr(flows, "embedding_credential_available", lambda _provider: True)
 
         mock_embedder = MagicMock()
         mock_embedder.dimension = 1536
@@ -424,6 +426,8 @@ class TestEmbedDocument:
             "parse_embedding_model_spec",
             lambda spec: ("openai", "text-embedding-3-small"),
         )
+        # This path only runs when the provider's key is configured.
+        monkeypatch.setattr(flows, "embedding_credential_available", lambda _provider: True)
 
         mock_embedder = MagicMock()
         mock_embedder.dimension = 1536

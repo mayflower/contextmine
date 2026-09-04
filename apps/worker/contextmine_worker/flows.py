@@ -12,6 +12,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ from contextmine_core import (
     get_session,
     get_settings,
 )
+from contextmine_core.embeddings import embedding_credential_available
 from git.exc import GitCommandError
 from prefect import flow, task
 from prefect.artifacts import create_progress_artifact, update_progress_artifact
@@ -815,6 +817,19 @@ async def get_embedding_model_for_collection(collection_id: str) -> str:
     return settings.default_embedding_model
 
 
+@lru_cache(maxsize=8)
+def _warn_missing_embedding_credential(provider: str, model_spec: str) -> None:
+    """Warn once per process rather than once per document."""
+    logger.warning(
+        "No API key configured for embedding provider %r (model spec %r); "
+        "skipping embeddings for this run. Configure the provider key, point "
+        "DEFAULT_EMBEDDING_MODEL at a provider you have a key for, or set "
+        "MODEL_CALLS_ENABLED=false to disable model calls entirely.",
+        provider,
+        model_spec,
+    )
+
+
 async def embed_document(document_id: str, collection_id: str | None = None) -> dict:
     """Embed all chunks for a document using the collection's or default embedding model.
 
@@ -845,6 +860,21 @@ async def embed_document(document_id: str, collection_id: str | None = None) -> 
         model_spec = settings.default_embedding_model
 
     provider, model_name = parse_embedding_model_spec(model_spec)
+
+    # Without the provider's key the embedder constructor raises, and the
+    # caller records that as a per-document processing failure. Skipping
+    # deliberately keeps the rest of the sync intact and reports one reason
+    # instead of one failure per document.
+    if not embedding_credential_available(provider):
+        provider_name = getattr(provider, "value", str(provider))
+        _warn_missing_embedding_credential(provider_name, model_spec)
+        return {
+            "chunks_embedded": 0,
+            "chunks_deduplicated": 0,
+            "tokens_used": 0,
+            "skipped": True,
+            "skip_reason": f"missing_api_key:{provider_name}",
+        }
 
     # Get embedder to determine dimension
     embedder = get_embedder(provider, model_name)
