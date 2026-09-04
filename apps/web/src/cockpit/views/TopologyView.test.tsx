@@ -191,7 +191,8 @@ describe('TopologyView rendering', () => {
   it('renders toolbar buttons', () => {
     render(<TopologyView {...makeProps()} />)
     expect(screen.getByText('Fit view')).toBeInTheDocument()
-    expect(screen.getByText('Show labels')).toBeInTheDocument()
+    // Labels are on by default, so the button offers to hide them.
+    expect(screen.getByText('Hide labels')).toBeInTheDocument()
     expect(screen.getByText('Display options')).toBeInTheDocument()
   })
 
@@ -205,10 +206,14 @@ describe('TopologyView rendering', () => {
     expect(screen.getByText(/cross-page edges are hidden/)).toBeInTheDocument()
   })
 
-  it('toggles show labels button text on click', async () => {
+  it('shows labels by default and toggles the button text on click', async () => {
     render(<TopologyView {...makeProps()} />)
-    const btn = screen.getByText('Show labels')
+    const btn = screen.getByText('Hide labels')
+
     await userEvent.click(btn)
+    expect(screen.getByText('Show labels')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByText('Show labels'))
     expect(screen.getByText('Hide labels')).toBeInTheDocument()
   })
 
