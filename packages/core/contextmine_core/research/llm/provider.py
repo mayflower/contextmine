@@ -12,6 +12,10 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from contextmine_core.model_policy import ensure_model_calls_enabled
+from contextmine_core.research.llm.structured import (
+    coerce_json_string_fields,
+    repair_structured_payload,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
@@ -257,8 +261,12 @@ class LangChainProvider(LLMProvider):
 
         # Try using LangChain's built-in structured output first
         try:
-            # Use default method - Anthropic uses tool calling, OpenAI uses json_schema
-            structured_model = self._model.with_structured_output(output_schema)
+            # Use default method - Anthropic uses tool calling, OpenAI uses json_schema.
+            # include_raw keeps the tool-call arguments available so a response
+            # that only fails schema validation can still be repaired below.
+            structured_model = self._model.with_structured_output(
+                output_schema, include_raw=True
+            )
             configured_model = structured_model.bind(
                 **self._generation_parameters(
                     max_tokens=max_tokens,
@@ -271,9 +279,24 @@ class LangChainProvider(LLMProvider):
             if isinstance(result, output_schema):
                 return result
 
+            if isinstance(result, dict) and "parsed" in result:
+                parsed = result["parsed"]
+                if isinstance(parsed, output_schema):
+                    return parsed
+                repaired = repair_structured_payload(result.get("raw"), output_schema)
+                if repaired is not None:
+                    return repaired
+                parsing_error = result.get("parsing_error")
+                if parsing_error is not None:
+                    raise parsing_error
+                msg = f"Model returned no usable {output_schema.__name__}"
+                raise ValueError(msg)
+
             # If we got a dict, try to parse it
             if isinstance(result, dict):
-                return output_schema.model_validate(result)
+                return output_schema.model_validate(
+                    coerce_json_string_fields(result, output_schema)
+                )
 
             # Raise a ValueError that will be caught and retried
             msg = f"Expected {output_schema.__name__}, got {type(result).__name__}"
