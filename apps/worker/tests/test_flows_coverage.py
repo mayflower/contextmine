@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import contextmine_worker.flows as flows
 import pytest
+from prefect.exceptions import ObjectNotFound
 
 pytestmark = pytest.mark.anyio
 
@@ -2114,8 +2115,19 @@ class TestSyncDueSourcesFlowExtended:
         assert result["scheduled"] == 1
         record.assert_awaited_once_with(claim["sync_run_id"], str(flow_run.id))
 
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (RuntimeError("prefect unavailable"), "prefect unavailable"),
+            (
+                ObjectNotFound(http_exc=RuntimeError("HTTP 404")),
+                "Prefect deployment 'sync_single_source/default' not found. "
+                "Check PREFECT_API_URL and that the worker registered its deployments.",
+            ),
+        ],
+    )
     async def test_deployment_failure_finishes_business_run(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str, caplog
     ) -> None:
         claim = {
             "source_id": str(uuid.uuid4()),
@@ -2126,7 +2138,7 @@ class TestSyncDueSourcesFlowExtended:
         monkeypatch.setattr(flows, "claim_due_source_runs", AsyncMock(return_value=[claim]))
         monkeypatch.setattr(
             "prefect.deployments.run_deployment",
-            AsyncMock(side_effect=RuntimeError("prefect unavailable")),
+            AsyncMock(side_effect=error),
         )
         monkeypatch.setattr(flows, "_mark_scheduled_sync_failed", mark_failed)
         monkeypatch.setattr(
@@ -2137,8 +2149,9 @@ class TestSyncDueSourcesFlowExtended:
 
         result = await flows.sync_due_sources.fn()
 
-        assert result["sources"][0]["error"] == "prefect unavailable"
-        mark_failed.assert_awaited_once_with(claim["sync_run_id"], "prefect unavailable")
+        assert result["sources"][0]["error"] == expected
+        mark_failed.assert_awaited_once_with(claim["sync_run_id"], expected)
+        assert any(record.exc_info for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -62,17 +62,27 @@ class FlowRunsResponse(BaseModel):
 
 async def start_source_sync(source_id: str, source_url: str, sync_run_id: str) -> str:
     """Start the configured single-source deployment idempotently."""
-    flow_run = await run_deployment(
-        get_settings().prefect_sync_deployment,
-        parameters={
-            "source_id": source_id,
-            "source_url": source_url,
-            "sync_run_id": sync_run_id,
-        },
-        timeout=0,
-        as_subflow=False,
-        idempotency_key=sync_run_id,
-    )
+    deployment = get_settings().prefect_sync_deployment
+    try:
+        flow_run = await run_deployment(
+            deployment,
+            parameters={
+                "source_id": source_id,
+                "source_url": source_url,
+                "sync_run_id": sync_run_id,
+            },
+            timeout=0,
+            as_subflow=False,
+            idempotency_key=sync_run_id,
+        )
+    except Exception as exc:
+        logger.exception("Prefect scheduling failed for deployment %s", deployment)
+        if isinstance(exc, ObjectNotFound):
+            raise RuntimeError(
+                f"Prefect deployment '{deployment}' not found. "
+                "Check PREFECT_API_URL and that the worker registered its deployments."
+            ) from exc
+        raise
     return str(flow_run.id)
 
 
@@ -212,7 +222,9 @@ async def prefect_health() -> dict[str, str]:
     """Check Prefect server connectivity through the supported client."""
     try:
         async with get_client() as client:
-            await client.api_healthcheck()
+            error = await client.api_healthcheck()
+            if error is not None:
+                raise error
         return {"prefect": "ok"}
     except Exception as e:
-        return {"prefect": "error", "detail": str(e)}
+        return {"prefect": "error", "detail": str(e) or type(e).__name__}
