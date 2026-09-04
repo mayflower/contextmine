@@ -3,20 +3,27 @@
  */
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OverlayState, TwinGraphResponse } from '../types'
 
 vi.mock('cytoscape', () => ({
-  default: vi.fn().mockReturnValue({
+  default: vi.fn(() => ({
     on: vi.fn(),
     destroy: vi.fn(),
     fit: vi.fn(),
     layout: vi.fn().mockReturnValue({ run: vi.fn() }),
-  }),
+    batch: vi.fn((mutate: () => void) => mutate()),
+    getElementById: vi.fn(() => ({ empty: () => false, data: vi.fn() })),
+    nodes: vi.fn(() => ({ toggleClass: vi.fn() })),
+  })),
 }))
 
+import cytoscape from 'cytoscape'
+
 import DeepDiveView from './DeepDiveView'
+
+const cytoscapeMock = vi.mocked(cytoscape)
 
 const noOverlay: OverlayState = {
   mode: 'none',
@@ -200,5 +207,84 @@ describe('DeepDiveView rendering', () => {
     })} />)
     await userEvent.click(screen.getByText('Switch to Code / Controlflow'))
     expect(onSwitchToCodeLayer).toHaveBeenCalledOnce()
+  })
+})
+
+
+describe('DeepDiveView graph lifecycle', () => {
+  beforeEach(() => {
+    cytoscapeMock.mockClear()
+  })
+
+  it('does not rebuild the graph when the selection changes', () => {
+    // Rebuilding tears down the instance and re-runs the layout over every
+    // node - doing that on each click makes the view unusable.
+    const props = makeProps()
+    const { rerender } = render(<DeepDiveView {...props} />)
+    expect(cytoscapeMock).toHaveBeenCalledTimes(1)
+
+    rerender(<DeepDiveView {...props} selectedNodeId="n1" />)
+    rerender(<DeepDiveView {...props} selectedNodeId="n2" />)
+
+    expect(cytoscapeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not rebuild the graph when the overlay or click handler changes', () => {
+    const props = makeProps()
+    const { rerender } = render(<DeepDiveView {...props} />)
+    expect(cytoscapeMock).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <DeepDiveView
+        {...props}
+        overlay={{ ...noOverlay, riskByNodeKey: { 'file:auth.py': { severity_score: 9 } } }}
+        onSelectNodeId={vi.fn()}
+      />,
+    )
+
+    expect(cytoscapeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rebuilds the graph when the graph data itself changes', () => {
+    const props = makeProps()
+    const { rerender } = render(<DeepDiveView {...props} />)
+
+    rerender(<DeepDiveView {...props} graph={{ ...populatedGraph, total_nodes: 3 }} />)
+
+    expect(cytoscapeMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('overrides the cose defaults that produce the dense clump', () => {
+    render(<DeepDiveView {...makeProps({ density: 3000 })} />)
+
+    const options = cytoscapeMock.mock.calls[0][0] as { layout: Record<string, unknown> }
+    expect(options.layout.name).toBe('cose')
+    // Defaults are idealEdgeLength 32 and nodeRepulsion 2048 - far too tight here.
+    expect(options.layout.idealEdgeLength).toBe(80)
+    expect(options.layout.nodeRepulsion).toBe(8000)
+  })
+
+  it('enables the WebGL renderer and viewport optimisations', () => {
+    render(<DeepDiveView {...makeProps()} />)
+
+    const options = cytoscapeMock.mock.calls[0][0] as Record<string, unknown>
+    expect(options.renderer).toEqual({ name: 'canvas', webgl: true })
+    expect(options.textureOnViewport).toBe(true)
+    expect(options.hideEdgesOnViewport).toBe(true)
+  })
+
+  it('places labels beside nodes and stops drawing them when too small', () => {
+    render(<DeepDiveView {...makeProps()} />)
+
+    const options = cytoscapeMock.mock.calls[0][0] as {
+      style: Array<{ selector: string; style: Record<string, unknown> }>
+    }
+    const nodeStyle = options.style.find((rule) => rule.selector === 'node')?.style
+    // A 10px label does not fit inside a 20px circle.
+    expect(nodeStyle?.['text-halign']).toBe('right')
+    expect(nodeStyle?.['min-zoomed-font-size']).toBe(8)
+
+    const edgeStyle = options.style.find((rule) => rule.selector === 'edge')?.style
+    expect(edgeStyle?.['curve-style']).toBe('straight')
   })
 })

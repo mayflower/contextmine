@@ -467,6 +467,33 @@ async def _build_arch_projection_leaf_items(
     return leaf_items
 
 
+# CodeCharta reverses its colour scale when a descriptor reports direction == 1,
+# so a metric where a high value is good must say so explicitly. Without these
+# descriptors every metric is treated as "higher is worse" and well-covered,
+# cohesive files are painted as if they were the problem.
+_HIGHER_IS_BETTER = 1
+_HIGHER_IS_WORSE = -1
+
+_ATTRIBUTE_DESCRIPTORS: dict[str, dict[str, object]] = {
+    "loc": {"title": "Lines of Code", "direction": _HIGHER_IS_WORSE},
+    "symbol_count": {"title": "Symbols", "direction": _HIGHER_IS_WORSE},
+    "coupling": {"title": "Coupling", "direction": _HIGHER_IS_WORSE},
+    "coverage": {"title": "Test coverage", "direction": _HIGHER_IS_BETTER},
+    "complexity": {"title": "Cyclomatic complexity", "direction": _HIGHER_IS_WORSE},
+    "cohesion": {"title": "Cohesion", "direction": _HIGHER_IS_BETTER},
+    "instability": {"title": "Instability", "direction": _HIGHER_IS_WORSE},
+    "fan_in": {"title": "Fan-in", "direction": _HIGHER_IS_WORSE},
+    "fan_out": {"title": "Fan-out", "direction": _HIGHER_IS_WORSE},
+    "cycle_participation": {"title": "Cycle participation", "direction": _HIGHER_IS_WORSE},
+    "cycle_size": {"title": "Cycle size", "direction": _HIGHER_IS_WORSE},
+    "duplication_ratio": {"title": "Duplication", "direction": _HIGHER_IS_WORSE},
+    "crap_score": {"title": "CRAP score", "direction": _HIGHER_IS_WORSE},
+    "change_frequency": {"title": "Change frequency", "direction": _HIGHER_IS_WORSE},
+    "churn": {"title": "Churn", "direction": _HIGHER_IS_WORSE},
+    "dependency_weight": {"title": "Dependency weight", "direction": _HIGHER_IS_WORSE},
+}
+
+
 async def export_codecharta_json(
     session: AsyncSession,
     scenario_id: UUID,
@@ -546,6 +573,7 @@ async def export_codecharta_json(
         "apiVersion": "1.5",
         "nodes": [root],
         "edges": cc_edges,
+        "attributeDescriptors": _ATTRIBUTE_DESCRIPTORS,
         "attributeTypes": {
             "nodes": {
                 "loc": "absolute",

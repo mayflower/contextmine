@@ -273,6 +273,27 @@ class GeminiEmbedder(Embedder):
         )
 
 
+def embedding_credential_available(provider: EmbeddingProvider | str) -> bool:
+    """Report whether the key this embedding provider needs is configured.
+
+    Constructing an embedder without its key raises, and callers that embed
+    document by document would hit that once per document. Asking up front
+    turns a storm of identical failures into one deliberate decision.
+    """
+    if isinstance(provider, str):
+        try:
+            provider = EmbeddingProvider(provider)
+        except ValueError:
+            return False
+
+    settings = get_settings()
+    if provider is EmbeddingProvider.OPENAI:
+        return bool(secret_value(settings.openai_api_key))
+    if provider is EmbeddingProvider.GEMINI:
+        return bool(secret_value(settings.gemini_api_key))
+    return False
+
+
 def get_embedder(
     provider: EmbeddingProvider | str,
     model_name: str | None = None,

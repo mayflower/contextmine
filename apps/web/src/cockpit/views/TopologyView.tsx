@@ -21,22 +21,33 @@ interface ElkLayoutParams {
   onPositions: (positions: Record<string, { x: number; y: number }>) => void
   onCompleted: (engine: LayoutEngine, durationMs: number, nodeCount: number) => void
   onFinish: () => void
+  onError: (reason: unknown) => void
 }
 
 /** Run ELK layout (in-thread or via worker), calling back with positions on completion. */
 async function applyElkLayout(params: Readonly<ElkLayoutParams>): Promise<void> {
-  const { nodes, edges, engine, columns, cancelled, startedAt, onPositions, onCompleted, onFinish } = params
+  const { nodes, edges, engine, columns, cancelled, startedAt, onPositions, onCompleted, onFinish, onError } = params
   try {
     if (nodes.length > 1000) {
       const worker = new Worker(new URL('../layout/layoutWorker.ts', import.meta.url), {
         type: 'module',
       })
-      worker.onmessage = (event: MessageEvent<{ ok: boolean; positions?: Record<string, { x: number; y: number }>; durationMs: number }>) => {
+      worker.onmessage = (event: MessageEvent<{ ok: boolean; positions?: Record<string, { x: number; y: number }>; durationMs: number; error?: string }>) => {
         worker.terminate()
-        if (cancelled.current || !event.data.ok || !event.data.positions) return
+        if (cancelled.current) return
+        if (!event.data.ok || !event.data.positions) {
+          onError(event.data.error ?? 'layout worker returned no positions')
+          return
+        }
         onPositions(event.data.positions)
         onFinish()
         onCompleted(engine, event.data.durationMs, nodes.length)
+      }
+      // Without this the worker failing leaves the status stuck on 'coarse'.
+      worker.onerror = (event) => {
+        worker.terminate()
+        if (cancelled.current) return
+        onError(event.message || 'layout worker failed')
       }
       worker.postMessage({ nodes, edges, engine, columns })
       return
@@ -47,9 +58,11 @@ async function applyElkLayout(params: Readonly<ElkLayoutParams>): Promise<void> 
     onPositions(positions)
     onFinish()
     onCompleted(engine, durationMs, nodes.length)
-  } catch {
+  } catch (reason) {
     if (cancelled.current) return
-    onFinish()
+    // Swallowing this used to leave the grid placeholder on screen while the
+    // view reported a finished layout, with nothing to diagnose from.
+    onError(reason)
   }
 }
 import { layerLabel } from '../types'
@@ -178,11 +191,13 @@ export default function TopologyView({
   onLayoutCompleted,
   onRetry,
 }: Readonly<TopologyViewProps>) {
-  const [showLabels, setShowLabels] = useState(false)
+  // Labels are what makes a topology readable; without them the nodes collapse
+  // to their minimum height and the view reads as unlabelled dots.
+  const [showLabels, setShowLabels] = useState(true)
   const [showMiniMap, setShowMiniMap] = useState(false)
   const [showDisplayOptions, setShowDisplayOptions] = useState(false)
   const [instance, setInstance] = useState<ReactFlowInstance | null>(null)
-  const [layoutStatus, setLayoutStatus] = useState<'idle' | 'coarse' | 'refined'>('idle')
+  const [layoutStatus, setLayoutStatus] = useState<'idle' | 'coarse' | 'refined' | 'degraded'>('idle')
   const [layoutPositions, setLayoutPositions] = useState<Record<string, { x: number; y: number }>>({})
 
   const densityToColumns: Record<number, number> = { 800: 4, 1200: 6 }
@@ -218,6 +233,10 @@ export default function TopologyView({
         onPositions: setLayoutPositions,
         onCompleted: onLayoutCompleted,
         onFinish: () => setLayoutStatus('refined'),
+        onError: (reason) => {
+          console.error('[cockpit] %s layout failed, showing grid placeholder', preferredEngine, reason)
+          setLayoutStatus('degraded')
+        },
       })
     }, 0)
     return () => {
@@ -278,6 +297,7 @@ export default function TopologyView({
           Nodes: {graph.visible_nodes ?? graph.nodes.length} / Total: {graph.candidate_nodes ?? graph.total_nodes} • Edges: {graph.visible_edges ?? graph.edges.length}
           {graph.slice_strategy ? ` • Slice: ${humanizeSliceStrategy(graph.slice_strategy)}` : ''}
           {layoutStatus === 'coarse' ? ' • Refining layout…' : ''}
+          {layoutStatus === 'degraded' ? ' • Layout failed, showing grid placeholder' : ''}
         </p>
       </div>
 

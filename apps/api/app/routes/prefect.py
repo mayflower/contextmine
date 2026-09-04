@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -15,6 +16,8 @@ from prefect.exceptions import ObjectNotFound
 from prefect.states import Cancelling
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["prefect"])
 
@@ -71,6 +74,40 @@ async def start_source_sync(source_id: str, source_url: str, sync_run_id: str) -
         idempotency_key=sync_run_id,
     )
     return str(flow_run.id)
+
+
+# Prefect states from which a flow run never leaves. A sync run still marked
+# active behind one of these is stale and must not keep blocking the source.
+_TERMINAL_FLOW_RUN_STATES = frozenset({"COMPLETED", "FAILED", "CRASHED", "CANCELLED"})
+
+# Reported when Prefect no longer knows the flow run at all, e.g. after its
+# database was reset. The sync run behind it can never complete either.
+FLOW_RUN_MISSING = "MISSING"
+
+
+async def terminal_flow_run_state(flow_run_id: str) -> str | None:
+    """Return the flow run's state when Prefect considers it finished.
+
+    Returns None while the run may still be in flight - including when Prefect
+    cannot be reached - so callers keep waiting rather than releasing a sync
+    that is genuinely still running.
+    """
+    try:
+        run_uuid = uuid.UUID(flow_run_id)
+    except ValueError:
+        return FLOW_RUN_MISSING
+
+    try:
+        async with get_client() as client:
+            flow_run = await client.read_flow_run(run_uuid)
+    except ObjectNotFound:
+        return FLOW_RUN_MISSING
+    except Exception:
+        logger.warning("Could not read flow run %s from Prefect", flow_run_id, exc_info=True)
+        return None
+
+    state_type = getattr(flow_run.state_type, "value", None) or str(flow_run.state_type or "")
+    return state_type if state_type in _TERMINAL_FLOW_RUN_STATES else None
 
 
 async def _get_flow_run_progress(
