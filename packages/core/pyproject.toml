@@ -13,7 +13,7 @@ dependencies = [
     "cryptography>=49.0.0",
     "httpx>=0.28.1",
     "openai>=3.6.0",
-    "anthropic==1.2.0",
+    "anthropic==1.4.0",
     "google-genai>=2.21.0",
     "tenacity>=9.1.4",
     # LangChain for LLM abstraction (stable 1.x)
