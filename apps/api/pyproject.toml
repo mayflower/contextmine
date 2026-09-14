@@ -12,7 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "slowapi>=0.1.10",
     "prometheus-fastapi-instrumentator>=8.1.0",
-    "prefect==3.8.4",
+    "prefect==3.8.5",
 ]
 
 [build-system]
