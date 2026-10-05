@@ -9,7 +9,7 @@ dependencies = [
     "gitpython>=3.1.50",
     "langchain-text-splitters>=1.1.2",
     "openai>=3.6.0",
-    "anthropic==1.2.0",
+    "anthropic==1.8.0",
     "google-genai>=2.21.0",
     "tenacity>=9.1.4",
     "lizard>=1.24.0",
