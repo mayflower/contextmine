@@ -60,10 +60,17 @@
             });
           };
 
+          # Workspace members and their directories, installed editable in the dev shell.
+          workspaceMembers = {
+            contextmine-api = "apps/api";
+            contextmine-core = "packages/core";
+            contextmine-worker = "apps/worker";
+          };
+
           # hatchling needs `editables` to build editable installs.
           editableOverrides =
             final: prev:
-            lib.genAttrs [ "contextmine-api" "contextmine-core" "contextmine-worker" ] (
+            lib.genAttrs (lib.attrNames workspaceMembers) (
               name:
               prev.${name}.overrideAttrs (old: {
                 nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
@@ -143,8 +150,12 @@
             };
 
             shellHook = ''
-              unset PYTHONPATH
               export REPO_ROOT=$(git rev-parse --show-toplevel)
+              # The editable .pth files expand $REPO_ROOT at runtime, which static tools
+              # like ty can't evaluate. PYTHONPATH makes the members visible to them too.
+              export PYTHONPATH=${
+                lib.concatMapStringsSep ":" (dir: "$REPO_ROOT/${dir}") (lib.attrValues workspaceMembers)
+              }
             '';
           };
         };
