@@ -1,10 +1,16 @@
 """Application settings using pydantic-settings."""
 
+import os
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SecretsSettingsSource,
+    SettingsConfigDict,
+)
 
 
 class Settings(BaseSettings):
@@ -15,6 +21,24 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Also read settings from one file per setting in CONTEXTMINE_SECRETS_DIR.
+
+        Environment variables and .env take precedence over secret files.
+        """
+        secrets_dir = os.environ.get("CONTEXTMINE_SECRETS_DIR")
+        if secrets_dir:
+            file_secret_settings = SecretsSettingsSource(settings_cls, secrets_dir=secrets_dir)
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     # API settings
     app_mode: Literal["development", "test", "production"] = "development"
@@ -36,6 +60,11 @@ class Settings(BaseSettings):
         default=120,
         description="Seconds to wait for a DB connection before raising PoolTimeout",
     )
+
+    # Authentication: "github" uses GitHub OAuth for the admin UI and MCP.
+    # "local" signs everyone in as one local user without any OAuth app and
+    # is meant for a single developer on localhost; production rejects it.
+    auth_mode: Literal["github", "local"] = "github"
 
     # GitHub OAuth
     github_client_id: str | None = None
@@ -490,6 +519,8 @@ class Settings(BaseSettings):
             return self
 
         errors: list[str] = []
+        if self.auth_mode == "local":
+            errors.append("AUTH_MODE must not be 'local'")
         if self.debug:
             errors.append("DEBUG must be disabled")
         if secret_value(self.session_secret).startswith("dev-"):

@@ -1,5 +1,7 @@
 """Behavioral tests for application settings safety."""
 
+from pathlib import Path
+
 import pytest
 from contextmine_core.settings import Settings, secret_value
 from pydantic import SecretStr, ValidationError
@@ -35,6 +37,21 @@ def test_development_defaults_remain_available() -> None:
     assert settings.cors_origins == ["http://localhost:8000"]
 
 
+def test_settings_are_read_from_secrets_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "openai_api_key").write_text("sk-from-file\n")
+    (tmp_path / "anthropic_api_key").write_text("sk-ant-from-file")
+    monkeypatch.setenv("CONTEXTMINE_SECRETS_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+
+    settings = _settings()
+
+    assert secret_value(settings.openai_api_key) == "sk-from-file"
+    assert secret_value(settings.anthropic_api_key) == "sk-ant-from-env"
+
+
 def test_secrets_are_masked_and_revealed_only_explicitly() -> None:
     settings = _settings(session_secret="not-for-logs")
 
@@ -47,6 +64,7 @@ def test_secrets_are_masked_and_revealed_only_explicitly() -> None:
     ("override", "message"),
     [
         ({"debug": True}, "DEBUG must be disabled"),
+        ({"auth_mode": "local"}, "AUTH_MODE"),
         ({"session_secret": "dev-session-secret"}, "SESSION_SECRET"),
         ({"token_encryption_key": "dev-encryption-key"}, "TOKEN_ENCRYPTION_KEY"),
         ({"mcp_allowed_origins": ""}, "MCP_ALLOWED_ORIGINS"),

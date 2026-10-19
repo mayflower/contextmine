@@ -38,6 +38,7 @@ from contextmine_core.embeddings import (
 from contextmine_core.identity import (
     github_profile_from_verified_claims,
     upsert_github_user,
+    upsert_local_user,
 )
 from contextmine_core.joern import JoernClient, JoernResponse, parse_joern_output
 from contextmine_core.model_policy import ModelCallsDisabledError, ensure_model_calls_enabled
@@ -175,6 +176,7 @@ __all__ = [
     "SearchResponse",
     "SearchResult",
     "upsert_github_user",
+    "upsert_local_user",
     "user_can_access_collection",
     "validate_ssh_private_key",
 ]

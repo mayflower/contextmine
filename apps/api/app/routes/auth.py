@@ -15,6 +15,7 @@ from contextmine_core import (
     get_github_user,
     get_settings,
     upsert_github_user,
+    upsert_local_user,
 )
 from contextmine_core import (
     get_session as get_db_session,
@@ -41,6 +42,18 @@ class UserResponse(BaseModel):
     avatar_url: str | None = None
 
 
+async def _sign_in_local_user(request: Request) -> str:
+    """Sign the request in as the AUTH_MODE=local user and return its id."""
+    async with get_db_session() as db:
+        user = await upsert_local_user(db)
+        await db.commit()
+        user_id = str(user.id)
+    session = get_session(request)
+    session["user_id"] = user_id
+    set_session(request, session)
+    return user_id
+
+
 @router.get(
     "/login",
     responses={500: {"description": "GitHub OAuth is not configured"}},
@@ -49,6 +62,9 @@ class UserResponse(BaseModel):
 async def login(request: Request) -> RedirectResponse:
     """Initiate GitHub OAuth login flow."""
     settings = get_settings()
+    if settings.auth_mode == "local":
+        await _sign_in_local_user(request)
+        return RedirectResponse(url="/", status_code=302)
     if not settings.github_client_id:
         raise HTTPException(status_code=500, detail="GitHub OAuth is not configured")
 
@@ -202,6 +218,8 @@ async def get_current_user(request: Request) -> UserResponse:
     session = get_session(request)
     user_id = session.get("user_id")
 
+    if not user_id and get_settings().auth_mode == "local":
+        user_id = await _sign_in_local_user(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 

@@ -52,3 +52,15 @@ async def upsert_github_user(session: AsyncSession, github_profile: Mapping[str,
         user.name = github_profile.get("name")
         user.avatar_url = github_profile.get("avatar_url")
     return user
+
+
+# GitHub user ids start at 1, so 0 can never collide with a real account.
+LOCAL_GITHUB_USER_ID = 0
+
+
+async def upsert_local_user(session: AsyncSession) -> User:
+    """Return the single user that AUTH_MODE=local signs everyone in as."""
+    return await upsert_github_user(
+        session,
+        {"id": LOCAL_GITHUB_USER_ID, "login": "local", "name": "Local user"},
+    )

@@ -124,3 +124,54 @@ class TestAuthRoutes:
         assert response.status_code == 302
         location = response.headers["location"]
         assert "error=access_denied" in location
+
+
+@pytest.mark.anyio
+class TestLocalAuthMode:
+    """AUTH_MODE=local signs everyone in as the local user without GitHub."""
+
+    @staticmethod
+    def _local_mode():
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        settings = MagicMock(auth_mode="local", github_client_id=None, debug=True)
+        local_user = SimpleNamespace(
+            id="00000000-0000-0000-0000-000000000001",
+            github_login="local",
+            name="Local user",
+            avatar_url=None,
+        )
+        db = MagicMock(commit=AsyncMock())
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=local_user))
+        )
+
+        @asynccontextmanager
+        async def db_session():
+            yield db
+
+        return (
+            patch("app.routes.auth.get_settings", return_value=settings),
+            patch("app.routes.auth.get_db_session", side_effect=db_session),
+            patch("app.routes.auth.upsert_local_user", new=AsyncMock(return_value=local_user)),
+        )
+
+    async def test_login_signs_in_without_github(self, client: AsyncClient) -> None:
+        settings_patch, db_patch, upsert_patch = self._local_mode()
+        with settings_patch, db_patch, upsert_patch as upsert:
+            response = await client.get("/api/auth/login", follow_redirects=False)
+
+        assert response.status_code == 302
+        assert response.headers["location"] == "/"
+        assert "contextmine_session=" in response.headers.get("set-cookie", "")
+        upsert.assert_awaited_once()
+
+    async def test_me_signs_in_the_local_user(self, client: AsyncClient) -> None:
+        settings_patch, db_patch, upsert_patch = self._local_mode()
+        with settings_patch, db_patch, upsert_patch:
+            response = await client.get("/api/auth/me")
+
+        assert response.status_code == 200
+        assert response.json()["github_login"] == "local"

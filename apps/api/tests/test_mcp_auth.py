@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.mcp_auth import UserMappingMiddleware, get_current_user_id
+from app.mcp_auth import LocalUserMiddleware, UserMappingMiddleware, get_current_user_id
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -70,3 +70,32 @@ async def test_mcp_identity_fails_closed_for_unusable_claims() -> None:
 
     assert response.status_code == 401
     downstream.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_local_mode_runs_mcp_requests_as_local_user() -> None:
+    user_id = uuid.uuid4()
+    db = MagicMock(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def db_session():
+        yield db
+
+    async def downstream(_request: Request) -> JSONResponse:
+        return JSONResponse({"user_id": str(get_current_user_id())})
+
+    middleware = LocalUserMiddleware(MagicMock())
+    with (
+        patch("app.mcp_auth.get_db_session", side_effect=db_session),
+        patch(
+            "app.mcp_auth.upsert_local_user",
+            new=AsyncMock(return_value=SimpleNamespace(id=user_id)),
+        ) as upsert,
+    ):
+        first = await middleware.dispatch(_request({}), downstream)
+        second = await middleware.dispatch(_request({}), downstream)
+
+    assert json.loads(first.body) == {"user_id": str(user_id)}
+    assert json.loads(second.body) == {"user_id": str(user_id)}
+    upsert.assert_awaited_once_with(db)
+    assert get_current_user_id() is None

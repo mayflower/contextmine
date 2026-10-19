@@ -2,8 +2,9 @@
 
 from contextmine_core import get_settings
 from fastmcp import FastMCP
+from starlette.middleware import Middleware
 
-from app.mcp_auth import ContextMineGitHubProvider
+from app.mcp_auth import ContextMineGitHubProvider, LocalUserMiddleware
 from app.mcp_domains.architecture import register_architecture_tools
 from app.mcp_domains.code import register_code_tools
 from app.mcp_domains.collections import register_collection_tools
@@ -12,15 +13,19 @@ from app.mcp_domains.twin import register_twin_tools
 from app.mcp_domains.validation import register_validation_tools
 
 settings = get_settings()
-try:
-    auth = ContextMineGitHubProvider()
-except ValueError as exc:
-    if not settings.debug:
-        raise RuntimeError(
-            "MCP authentication required in production. "
-            "Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or enable DEBUG mode for testing."
-        ) from exc
-    auth = None
+auth: ContextMineGitHubProvider | None = None
+middleware: list[Middleware] = []
+if settings.auth_mode == "local":
+    middleware.append(Middleware(LocalUserMiddleware))
+else:
+    try:
+        auth = ContextMineGitHubProvider()
+    except ValueError as exc:
+        if not settings.debug:
+            raise RuntimeError(
+                "MCP authentication required in production. "
+                "Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or enable DEBUG mode for testing."
+            ) from exc
 
 mcp = FastMCP(
     auth=auth,
@@ -40,5 +45,5 @@ register_architecture_tools(mcp)
 register_twin_tools(mcp)
 register_validation_tools(mcp)
 
-mcp_app = mcp.http_app(path="/", stateless_http=True)
+mcp_app = mcp.http_app(path="/", middleware=middleware, stateless_http=True)
 mcp_lifespan = mcp_app.lifespan

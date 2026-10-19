@@ -14,7 +14,11 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from contextmine_core import get_session as get_db_session
-from contextmine_core import github_profile_from_verified_claims, upsert_github_user
+from contextmine_core import (
+    github_profile_from_verified_claims,
+    upsert_github_user,
+    upsert_local_user,
+)
 from contextmine_core.settings import get_settings, secret_value
 from fastmcp.server.auth.providers.github import GitHubProvider
 from pydantic import AnyHttpUrl
@@ -85,6 +89,30 @@ class UserMappingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             # Clear user_id after request
+            set_current_user_id(None)
+
+
+class LocalUserMiddleware(BaseHTTPMiddleware):
+    """Run every MCP request as the AUTH_MODE=local user (no authentication)."""
+
+    _user_id: uuid.UUID | None = None
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """Set the local user for the tools of this request."""
+        if self._user_id is None:
+            async with get_db_session() as db:
+                user = await upsert_local_user(db)
+                await db.commit()
+                self._user_id = user.id
+
+        set_current_user_id(self._user_id)
+        try:
+            return await call_next(request)
+        finally:
             set_current_user_id(None)
 
 
