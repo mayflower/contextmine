@@ -10,7 +10,7 @@ clap = { version = "4", features = ["derive"] }
 spider = { version = "2", default-features = false, features = ["sync", "cookies", "ua_generator", "encoding", "reqwest_native_tls_native_roots", "cache_mem", "headers", "time"] }
 # http-global-cache 0.2 does not forward the middleware feature required by
 # http-cache-reqwest 1.0.0-alpha.8; enable it here while retaining Spider's cache.
-http-cache-reqwest = { version = "=1.0.0-alpha.8", default-features = false, features = ["reqwest-middleware"] }
+http-cache-reqwest = { version = "=1.0.0-alpha.9", default-features = false, features = ["reqwest-middleware"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sha2 = "0.11"
 hex = "0.4"
