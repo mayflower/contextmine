@@ -32,7 +32,7 @@ RUN npm install -g \
 
 FROM composer:2.10.2@sha256:d020706319701a44468968321dccd0fce6620190159a7a9ec195d78e6e971c71 AS composer-tools
 
-FROM python:3.14.7-slim@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS analyzer
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS analyzer
 
 ARG SCIP_JAVA_VERSION=0.12.3
 ARG SCIP_PHP_COMMIT=efaf87cd05cf174db8ac25ad4d07eb646d4883d1
@@ -133,7 +133,7 @@ CMD ["/app/.venv/bin/python", "-m", "contextmine_worker.sandbox_analyzer"]
 
 # The long-lived worker contains orchestration, crawling, and result-import
 # code only. Repository clone/index/build tools stay in the analyzer target.
-FROM python:3.14.7-slim@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS worker
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS worker
 
 WORKDIR /app
 

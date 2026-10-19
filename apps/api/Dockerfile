@@ -18,7 +18,7 @@ RUN npm install -g typescript@${TYPESCRIPT_VERSION} \
     && test "$(tsc --version)" = "Version ${TYPESCRIPT_VERSION}"
 
 # Stage 2: Python API with frontend
-FROM python:3.14.7-slim@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 WORKDIR /app
 
