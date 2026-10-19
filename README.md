@@ -60,9 +60,37 @@ cp .env.example .env
 # Start all services
 docker compose up -d
 
-# Run database migrations
-docker compose exec api sh -c "cd /app/packages/core && alembic upgrade head"
+# Database migrations run automatically when the api container starts.
 ```
+
+The admin UI and MCP endpoint are published on **http://localhost:8111**.
+
+### Local Mode (single developer, no OAuth app)
+
+For using ContextMine on your own machine, e.g. to index this repository and
+query it from Claude Code, you don't need a GitHub OAuth app or a `.env` file:
+
+```bash
+nix develop                    # selects docker-compose.local.yml, decrypts secrets
+contextmine-secrets edit       # once: model API keys, encrypted with sops to your age key
+docker compose up -d --build
+claude mcp add --transport http contextmine http://localhost:8111/mcp
+```
+
+- `AUTH_MODE=local` signs every admin UI and MCP request in as one local user.
+  Production rejects this mode, and `docker-compose.local.yml` publishes all
+  ports on `127.0.0.1` only.
+- `contextmine-secrets edit` opens `.secrets.sops.yaml` (git-ignored) as a flat
+  map of setting names, e.g. `openai_api_key: sk-...` and
+  `anthropic_api_key: sk-ant-...`. It encrypts to the age key in
+  `~/.config/sops/age/keys.txt` (or `$SOPS_AGE_KEY_FILE`). Entering the dev
+  shell decrypts it into one file per setting under `$XDG_RUNTIME_DIR`, which
+  the containers read through `CONTEXTMINE_SECRETS_DIR`.
+- The local worker is built from the `analyzer` image target, so syncs run
+  SCIP/LSP indexing and structural metrics.
+
+Without Nix, put one file per setting into a directory and run
+`CONTEXTMINE_SECRETS_HOST_DIR=<dir> docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`.
 
 ### Kubernetes (Helm)
 
@@ -98,8 +126,8 @@ See [deploy/helm/contextmine/README.md](deploy/helm/contextmine/README.md) for f
 
 ### 2. Create Your First Collection
 
-1. Open the admin UI at **http://localhost:8000**
-2. Log in with GitHub OAuth
+1. Open the admin UI at **http://localhost:8111**
+2. Log in with GitHub OAuth (automatic in local mode)
 3. Create a new **Collection** (e.g., "My Docs")
 4. Add a **Source**:
    - **Web**: Enter a documentation URL (e.g., `https://docs.python.org/3/`)
@@ -108,7 +136,13 @@ See [deploy/helm/contextmine/README.md](deploy/helm/contextmine/README.md) for f
 
 ### 3. Connect Your AI Assistant
 
-Configure your MCP client to connect to ContextMine. Authentication is handled via GitHub OAuth automatically.
+Configure your MCP client to connect to ContextMine. Authentication is handled via GitHub OAuth automatically (none in local mode).
+
+**Claude Code**:
+
+```bash
+claude mcp add --transport http contextmine http://localhost:8111/mcp
+```
 
 **Claude Desktop** (`~/.config/claude/claude_desktop_config.json` on Linux, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
@@ -116,7 +150,7 @@ Configure your MCP client to connect to ContextMine. Authentication is handled v
 {
   "mcpServers": {
     "contextmine": {
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8111/mcp"
     }
   }
 }
@@ -124,7 +158,7 @@ Configure your MCP client to connect to ContextMine. Authentication is handled v
 
 When you first connect, your MCP client will redirect to GitHub for authentication.
 
-**Cursor**: Settings → MCP → Add server with URL `http://localhost:8000/mcp`
+**Cursor**: Settings → MCP → Add server with URL `http://localhost:8111/mcp`
 
 ### 4. Start Using It
 
@@ -313,11 +347,11 @@ research agents, and generated architecture narratives remain unavailable.
 2. Click **New OAuth App**
 3. Fill in:
    - **Application name**: ContextMine (or your preferred name)
-   - **Homepage URL**: `http://localhost:8000`
-   - **Authorization callback URL**: `http://localhost:8000/api/auth/callback`
+   - **Homepage URL**: `http://localhost:8111`
+   - **Authorization callback URL**: `http://localhost:8111`
 4. Copy the **Client ID** and **Client Secret** to your `.env`
 
-> **Note**: Both the admin UI and MCP clients use the same callback URL. The server automatically routes OAuth flows to the appropriate handler.
+> **Note**: The admin UI returns to `/api/auth/callback`, MCP clients to `/mcp/auth/callback`. GitHub accepts any redirect below the registered callback URL, so register the bare origin to cover both.
 
 ### Generating Secure Keys
 

@@ -94,6 +94,63 @@
 
           # Same toolchain as rust/spider_md/rust-toolchain.toml and the worker image.
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust/spider_md/rust-toolchain.toml;
+
+          # Model API keys etc. live encrypted in .secrets.sops.yaml (flat map of
+          # setting name -> value, encrypted to the developer's age key) and are
+          # decrypted into one file per setting for the containers' secrets dir.
+          contextmine-secrets = pkgs.writeShellApplication {
+            name = "contextmine-secrets";
+            runtimeInputs = [
+              pkgs.sops
+              pkgs.age
+              pkgs.jq
+              pkgs.git
+            ];
+            text = ''
+              file="$(git rev-parse --show-toplevel)/.secrets.sops.yaml"
+              out="''${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop first}"
+
+              decrypt() {
+                # The parent stays private to the user; docker bind-mounts the
+                # inner directory, whose files the container user must read.
+                mkdir -p "$out"
+                chmod 700 "$(dirname "$out")"
+                chmod 755 "$out"
+                find "$out" -mindepth 1 -maxdepth 1 -type f -delete
+                if [ ! -f "$file" ]; then
+                  return 0
+                fi
+                local json key
+                json="$(sops decrypt --output-type json "$file")"
+                for key in $(jq -r 'keys[]' <<<"$json"); do
+                  if [[ ! "$key" =~ ^[a-z0-9_]+$ ]]; then
+                    echo "contextmine-secrets: skipping invalid setting name '$key'" >&2
+                    continue
+                  fi
+                  (umask 022 && jq -j --arg key "$key" '.[$key]' <<<"$json" >"$out/$key")
+                done
+              }
+
+              case "''${1:-}" in
+                edit)
+                  key_file="''${SOPS_AGE_KEY_FILE:-''${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt}"
+                  SOPS_AGE_RECIPIENTS="$(age-keygen -y "$key_file" | paste -sd, -)"
+                  export SOPS_AGE_RECIPIENTS
+                  sops edit "$file"
+                  decrypt
+                  ;;
+                decrypt)
+                  decrypt
+                  ;;
+                *)
+                  echo "usage: contextmine-secrets edit|decrypt" >&2
+                  echo "  edit     edit .secrets.sops.yaml (e.g. openai_api_key: sk-...)" >&2
+                  echo "  decrypt  write one file per setting to \$CONTEXTMINE_SECRETS_HOST_DIR" >&2
+                  exit 2
+                  ;;
+              esac
+            '';
+          };
         in
         {
           _module.args.pkgs = import inputs.nixpkgs {
@@ -139,6 +196,11 @@
               pkgs.postgresql_16
               pkgs.git
               config.treefmt.build.wrapper
+
+              # Secrets for docker-compose.local.yml
+              contextmine-secrets
+              pkgs.sops
+              pkgs.age
             ];
 
             env = {
@@ -156,6 +218,11 @@
               export PYTHONPATH=${
                 lib.concatMapStringsSep ":" (dir: "$REPO_ROOT/${dir}") (lib.attrValues workspaceMembers)
               }
+
+              # Local single-developer stack: AUTH_MODE=local, secrets from sops.
+              export COMPOSE_FILE="$REPO_ROOT/docker-compose.yml:$REPO_ROOT/docker-compose.local.yml"
+              export CONTEXTMINE_SECRETS_HOST_DIR="''${XDG_RUNTIME_DIR:-''${TMPDIR:-/tmp}}/contextmine/secrets"
+              contextmine-secrets decrypt || echo "contextmine-secrets: decryption failed" >&2
             '';
           };
         };

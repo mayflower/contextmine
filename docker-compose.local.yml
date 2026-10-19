@@ -1,0 +1,42 @@
+# Single-developer setup on localhost: no GitHub OAuth app, model API keys
+# from sops instead of .env. `nix develop` selects this file via COMPOSE_FILE
+# and decrypts .secrets.sops.yaml into CONTEXTMINE_SECRETS_HOST_DIR.
+#
+# AUTH_MODE=local signs everyone in as one local user, so every port is
+# published on 127.0.0.1 only.
+
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+
+  api:
+    ports: !override
+      - "127.0.0.1:8111:8000"
+    environment:
+      AUTH_MODE: local
+      PUBLIC_BASE_URL: http://localhost:8111
+      MCP_OAUTH_BASE_URL: http://localhost:8111
+      CORS_ALLOWED_ORIGINS: http://localhost:8111
+      CONTEXTMINE_SECRETS_DIR: /run/secrets/contextmine
+    volumes:
+      - ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}:/run/secrets/contextmine:ro
+
+  codecharta:
+    ports: !override
+      - "127.0.0.1:${CODECHARTA_PORT:-9001}:80"
+
+  prefect-server:
+    ports: !override
+      - "127.0.0.1:4200:4200"
+
+  worker:
+    # The default worker image only clones; SCIP/LSP indexing and metrics
+    # need the analyzer tools.
+    build:
+      target: analyzer
+    command: ["/app/.venv/bin/python", "-m", "contextmine_worker.main"]
+    environment:
+      CONTEXTMINE_SECRETS_DIR: /run/secrets/contextmine
+    volumes:
+      - ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}:/run/secrets/contextmine:ro

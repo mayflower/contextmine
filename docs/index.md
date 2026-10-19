@@ -129,8 +129,8 @@ research agents, and generated architecture narratives are disabled.
 2. Click **New OAuth App**
 3. Fill in:
    - **Application name**: ContextMine
-   - **Homepage URL**: `http://localhost:8000`
-   - **Authorization callback URL**: `http://localhost:8000/api/auth/callback`
+   - **Homepage URL**: `http://localhost:8111`
+   - **Authorization callback URL**: `http://localhost:8111`
 4. Copy the **Client ID** and **Client Secret** to your `.env`
 
 ## Tech Stack

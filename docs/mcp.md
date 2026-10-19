@@ -4,6 +4,14 @@ ContextMine exposes its functionality via the [Model Context Protocol (MCP)](htt
 
 ## Connecting to ContextMine
 
+### Claude Code
+
+```bash
+claude mcp add --transport http contextmine http://localhost:8111/mcp
+```
+
+Run `/mcp` in Claude Code to authenticate.
+
 ### Claude Desktop
 
 Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_config.json` on Linux, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
@@ -12,7 +20,7 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 {
   "mcpServers": {
     "contextmine": {
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8111/mcp"
     }
   }
 }
@@ -20,11 +28,13 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 
 ### Cursor
 
-Settings → MCP → Add server with URL `http://localhost:8000/mcp`
+Settings → MCP → Add server with URL `http://localhost:8111/mcp`
 
 ## Authentication
 
-MCP authentication uses GitHub OAuth. When you first connect, your MCP client will redirect to GitHub for authentication. The same OAuth flow is used for both the admin UI and MCP clients.
+MCP authentication uses GitHub OAuth. When you first connect, your MCP client will redirect to GitHub for authentication. The same OAuth app is used for both the admin UI and MCP clients.
+
+With `AUTH_MODE=local` (see "Local Mode" in the README) there is no authentication: every MCP request runs as the single local user.
 
 ## Available Tools
 

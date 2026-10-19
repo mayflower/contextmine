@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.secrets.sops.yaml
 
 # Python
 __pycache__/

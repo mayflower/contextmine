@@ -339,7 +339,7 @@ DEBUG=true uv run uvicorn apps.api.app.main:app --reload --port 8000
 
 ```bash
 # Run with verbose logging
-DEBUG=true uv run python -m contextmine_worker
+DEBUG=true uv run python -m contextmine_worker.main
 ```
 
 ### Database Queries

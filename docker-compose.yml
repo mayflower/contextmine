@@ -24,7 +24,8 @@ services:
     ports:
       - "8111:8000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       # Override DATABASE_URL for Docker network
       - DATABASE_URL=postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
@@ -84,7 +85,8 @@ services:
       context: .
       dockerfile: apps/worker/Dockerfile
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       # Override for Docker network
       DATABASE_URL: postgresql+asyncpg://contextmine:contextmine@postgres:5432/contextmine
