@@ -41,6 +41,7 @@ from contextmine_core.analyzer.extractors.graph_helpers import (
     upsert_node as _upsert_node,
 )
 from contextmine_core.analyzer.extractors.traceability import (
+    KnowledgeSymbolIndex,
     TwinScipGraph,
     resolve_symbol_refs_for_calls,
 )
@@ -1459,6 +1460,7 @@ async def build_tests_graph(
 
     # Loaded at most once for all test cases instead of once per test case.
     twin_graph = TwinScipGraph()
+    symbol_index = KnowledgeSymbolIndex()
     for extraction in extractions:
         suite_ids = await _persist_suites(session, collection_id, extraction, stats)
         fixture_ids = await _persist_fixtures(session, collection_id, extraction, stats)
@@ -1472,6 +1474,7 @@ async def build_tests_graph(
             rules_by_token,
             stats,
             twin_graph,
+            symbol_index,
         )
 
     return stats
@@ -1586,6 +1589,7 @@ async def _persist_cases(
     rules_by_token: dict[str, UUID],
     stats: dict[str, int],
     twin_graph: TwinScipGraph | None = None,
+    symbol_index: KnowledgeSymbolIndex | None = None,
 ) -> None:
     """Persist test case nodes, fixture edges, symbol resolution, and rule matching."""
     for case in extraction.cases:
@@ -1616,6 +1620,7 @@ async def _persist_cases(
             evidence_id,
             stats,
             twin_graph,
+            symbol_index,
         )
         await _persist_cases_rule_edges(
             session,
@@ -1722,6 +1727,7 @@ async def _resolve_and_link_symbols(
     evidence_id: str,
     stats: dict[str, int],
     twin_graph: TwinScipGraph | None = None,
+    symbol_index: KnowledgeSymbolIndex | None = None,
 ) -> None:
     """Resolve symbol references and create edges."""
     resolved_symbol_refs = await resolve_symbol_refs_for_calls(
@@ -1732,6 +1738,7 @@ async def _resolve_and_link_symbols(
         call_sites=case.call_sites,
         fallback_symbol_hints=case.symbol_hints,
         twin_graph=twin_graph,
+        symbol_index=symbol_index,
     )
     node_meta["resolved_symbol_refs"] = [
         {
