@@ -186,6 +186,14 @@ observed directly and what is only inferred from the code.
 
 ### 11. Behavioral layers reload all symbols for every test case
 
+- **Status:** Twin graph reload fixed on `fix/sync-time-sinks` (7b5ccb8): one
+  `TwinScipGraph` per tests/UI graph build. Compared on real data from this
+  repository (84 test cases from 13 files, each variant in a rolled-back
+  transaction): identical `resolved_symbol_refs` for every test case,
+  2278 symbol links in both, twin queries 168 → 2, 441.8 s → 122.7 s
+  (5.3 s → 1.5 s per test case). Still open: the knowledge-symbol reload per
+  test case (stage 2, needs the same comparison because candidate order can
+  change).
 - **Observed:** The sync phase "Materializing behavioral layers" ran for
   45+ minutes with the worker at ~100 % of one core in `_jsonb_decoder`,
   issuing about one `SELECT ... FROM knowledge_nodes WHERE collection_id = ...
