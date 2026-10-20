@@ -65,6 +65,7 @@ def test_secrets_are_masked_and_revealed_only_explicitly() -> None:
     [
         ({"debug": True}, "DEBUG must be disabled"),
         ({"auth_mode": "local"}, "AUTH_MODE"),
+        ({"local_repositories_dir": "/repositories"}, "LOCAL_REPOSITORIES_DIR"),
         ({"session_secret": "dev-session-secret"}, "SESSION_SECRET"),
         ({"token_encryption_key": "dev-encryption-key"}, "TOKEN_ENCRYPTION_KEY"),
         ({"mcp_allowed_origins": ""}, "MCP_ALLOWED_ORIGINS"),

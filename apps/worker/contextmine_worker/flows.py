@@ -2695,6 +2695,18 @@ def _default_scip_stats() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _local_repository_path(settings: Any, owner: str, repo: str) -> Path | None:
+    """Return LOCAL_REPOSITORIES_DIR/{owner}/{repo} if it is a Git repository."""
+    root = getattr(settings, "local_repositories_dir", None)
+    if not root:
+        return None
+    root_path = Path(root).resolve()
+    candidate = (root_path / owner / repo).resolve()
+    if not candidate.is_relative_to(root_path) or not (candidate / ".git").exists():
+        return None
+    return candidate
+
+
 async def _gh_phase_auth_and_clone(ctx: _SyncGitHubCtx) -> None:
     """Authenticate, clone/pull repository, resolve SHAs."""
     config = ctx.source.config or {}
@@ -2779,6 +2791,11 @@ async def _gh_phase_auth_and_clone(ctx: _SyncGitHubCtx) -> None:
     )  # type: ignore[misc]
 
     clone_url = f"https://github.com/{ctx.owner}/{ctx.repo}.git"
+    local_repository = _local_repository_path(settings, ctx.owner, ctx.repo)
+    if local_repository is not None:
+        logger.info("Cloning %s/%s from local repository %s", ctx.owner, ctx.repo, local_repository)
+        # A local path needs no credentials, and a deploy key would turn it into an SSH URL.
+        clone_url, token, deploy_key = str(local_repository), None, None
     ctx.git_repo = await _run_blocking_with_timeout(
         "git_clone_or_pull",
         _sync_blocking_step_timeout_seconds(),

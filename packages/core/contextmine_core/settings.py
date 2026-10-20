@@ -476,6 +476,13 @@ class Settings(BaseSettings):
         default="/data/repos",
         description="Filesystem root where GitHub sources are checked out for LSP analysis",
     )
+    local_repositories_dir: str | None = Field(
+        default=None,
+        description=(
+            "Development only: clone a GitHub source from {dir}/{owner}/{repo} instead of "
+            "github.com when that Git repository exists"
+        ),
+    )
 
     # OpenTelemetry Settings (disabled by default - no overhead when disabled)
     otel_enabled: bool = Field(
@@ -521,6 +528,8 @@ class Settings(BaseSettings):
         errors: list[str] = []
         if self.auth_mode == "local":
             errors.append("AUTH_MODE must not be 'local'")
+        if self.local_repositories_dir:
+            errors.append("LOCAL_REPOSITORIES_DIR must not be set")
         if self.debug:
             errors.append("DEBUG must be disabled")
         if secret_value(self.session_secret).startswith("dev-"):

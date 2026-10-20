@@ -458,3 +458,82 @@ async def test_production_refuses_unsandboxed_fallback(monkeypatch: pytest.Monke
 
     with pytest.raises(RuntimeError, match="no local analyzer fallback"):
         await flows._gh_phase_auth_and_clone(ctx)
+
+
+async def _clone_phase_with_local_repositories(
+    monkeypatch: pytest.MonkeyPatch, local_repositories_dir: Path, owner: str = "mayflower"
+) -> MagicMock:
+    from contextmine_worker import flows
+
+    source = MagicMock(
+        id=uuid.uuid4(),
+        collection_id=uuid.uuid4(),
+        cursor=None,
+        config={"owner": owner, "repo": "contextmine", "branch": "main"},
+    )
+    ctx = flows._SyncGitHubCtx(source=source, sync_run=MagicMock(), run_started_at=MagicMock())
+    clone = MagicMock(return_value=MagicMock())
+
+    async def run_blocking(_step: str, _timeout: int, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(flows, "create_progress_artifact", AsyncMock(return_value="progress"))
+    monkeypatch.setattr(flows, "update_progress_artifact", AsyncMock())
+    monkeypatch.setattr(flows, "get_deploy_key_for_source", AsyncMock(return_value="deploy-key"))
+    monkeypatch.setattr(flows, "get_github_token_for_source", AsyncMock(return_value="token"))
+    monkeypatch.setattr(flows, "ensure_repos_dir", MagicMock())
+    monkeypatch.setattr(flows, "get_repo_path", MagicMock(return_value=Path("/data/repos/x")))
+    monkeypatch.setattr(flows, "_sync_blocking_step_timeout_seconds", lambda: 60)
+    monkeypatch.setattr(flows, "_run_blocking_with_timeout", run_blocking)
+    monkeypatch.setattr(flows, "clone_or_pull_repo", clone)
+    monkeypatch.setattr(
+        flows,
+        "get_settings",
+        lambda: SimpleNamespace(
+            app_mode="development",
+            sandbox_api_url=None,
+            local_repositories_dir=str(local_repositories_dir),
+        ),
+    )
+
+    await flows._gh_phase_auth_and_clone(ctx)
+    return clone
+
+
+@pytest.mark.anyio
+async def test_local_repository_replaces_github_clone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_repository = tmp_path / "mayflower" / "contextmine"
+    (local_repository / ".git").mkdir(parents=True)
+
+    clone = await _clone_phase_with_local_repositories(monkeypatch, tmp_path)
+
+    clone.assert_called_once_with(
+        Path("/data/repos/x"),
+        str(local_repository.resolve()),
+        "main",
+        token=None,
+        ssh_private_key=None,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("owner", ["mayflower", ".."])
+async def test_github_clone_without_matching_local_repository(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owner: str
+) -> None:
+    # ".." would resolve outside LOCAL_REPOSITORIES_DIR and must not be used.
+    (tmp_path / "contextmine" / ".git").mkdir(parents=True)
+    root = tmp_path / "repositories"
+    root.mkdir()
+
+    clone = await _clone_phase_with_local_repositories(monkeypatch, root, owner=owner)
+
+    clone.assert_called_once_with(
+        Path("/data/repos/x"),
+        f"https://github.com/{owner}/contextmine.git",
+        "main",
+        token="token",
+        ssh_private_key="deploy-key",
+    )
