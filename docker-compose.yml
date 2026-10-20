@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: contextmine
       POSTGRES_DB: contextmine
     volumes:
-      - postgres_data:/var/lib/postgresql
+      # The image declares VOLUME /var/lib/postgresql/data (PGDATA); mounting
+      # anywhere else leaves the data in an anonymous volume that `down` drops.
+      - postgres_pgdata:/var/lib/postgresql/data
       - ./scripts/docker/init-db.sql:/docker-entrypoint-initdb.d/10-init-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U contextmine -d contextmine"]
@@ -121,5 +123,5 @@ services:
       retries: 3
 
 volumes:
-  postgres_data:
+  postgres_pgdata:
   worker_data:
