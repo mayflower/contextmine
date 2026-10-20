@@ -95,9 +95,16 @@
           # Same toolchain as rust/spider_md/rust-toolchain.toml and the worker image.
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust/spider_md/rust-toolchain.toml;
 
-          # Model API keys etc. live encrypted in .secrets.sops.yaml (flat map of
-          # setting name -> value, encrypted to the developer's age key) and are
-          # decrypted into one file per setting for the containers' secrets dir.
+          # Model API keys live encrypted in .secrets.sops.yaml (flat map of setting
+          # name -> value, encrypted to the developer's age key) and are decrypted
+          # into one file per secret for the Compose secrets in
+          # docker-compose.local.yml. Keep this list in sync with that file.
+          secretNames = [
+            "openai_api_key"
+            "anthropic_api_key"
+            "gemini_api_key"
+          ];
+
           contextmine-secrets = pkgs.writeShellApplication {
             name = "contextmine-secrets";
             runtimeInputs = [
@@ -110,24 +117,35 @@
               file="$(git rev-parse --show-toplevel)/.secrets.sops.yaml"
               out="''${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop first}"
 
+              names=(${lib.escapeShellArgs secretNames})
+
+              known() {
+                local name
+                for name in "''${names[@]}"; do
+                  [ "$name" = "$1" ] && return 0
+                done
+                return 1
+              }
+
               decrypt() {
-                # The parent stays private to the user; docker bind-mounts the
-                # inner directory, whose files the container user must read.
+                # The parent stays private to the user; Compose bind-mounts the
+                # files, which the container user must be able to read.
                 mkdir -p "$out"
                 chmod 700 "$(dirname "$out")"
                 chmod 755 "$out"
                 find "$out" -mindepth 1 -maxdepth 1 -type f -delete
-                if [ ! -f "$file" ]; then
-                  return 0
+                local json="{}" key
+                if [ -f "$file" ]; then
+                  json="$(sops decrypt --output-type json "$file")"
                 fi
-                local json key
-                json="$(sops decrypt --output-type json "$file")"
                 for key in $(jq -r 'keys[]' <<<"$json"); do
-                  if [[ ! "$key" =~ ^[a-z0-9_]+$ ]]; then
-                    echo "contextmine-secrets: skipping invalid setting name '$key'" >&2
-                    continue
+                  if ! known "$key"; then
+                    echo "contextmine-secrets: '$key' is not passed to the containers (known: ''${names[*]})" >&2
                   fi
-                  (umask 022 && jq -j --arg key "$key" '.[$key]' <<<"$json" >"$out/$key")
+                done
+                # Compose needs every declared secret file; empty means unset.
+                for key in "''${names[@]}"; do
+                  (umask 022 && jq -j --arg key "$key" '.[$key] // ""' <<<"$json" >"$out/$key")
                 done
               }
 
@@ -145,7 +163,7 @@
                 *)
                   echo "usage: contextmine-secrets edit|decrypt" >&2
                   echo "  edit     edit .secrets.sops.yaml (e.g. openai_api_key: sk-...)" >&2
-                  echo "  decrypt  write one file per setting to \$CONTEXTMINE_SECRETS_HOST_DIR" >&2
+                  echo "  decrypt  write one file per secret to \$CONTEXTMINE_SECRETS_HOST_DIR" >&2
                   exit 2
                   ;;
               esac

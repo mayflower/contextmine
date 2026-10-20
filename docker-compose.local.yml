@@ -1,6 +1,7 @@
 # Single-developer setup on localhost: no GitHub OAuth app, model API keys
 # from sops instead of .env. `nix develop` selects this file via COMPOSE_FILE
-# and decrypts .secrets.sops.yaml into CONTEXTMINE_SECRETS_HOST_DIR.
+# and decrypts .secrets.sops.yaml into CONTEXTMINE_SECRETS_HOST_DIR, one file
+# per secret below (empty when not set, since Compose needs every file).
 #
 # AUTH_MODE=local signs everyone in as one local user, so every port is
 # published on 127.0.0.1 only.
@@ -18,9 +19,11 @@ services:
       PUBLIC_BASE_URL: http://localhost:8111
       MCP_OAUTH_BASE_URL: http://localhost:8111
       CORS_ALLOWED_ORIGINS: http://localhost:8111
-      CONTEXTMINE_SECRETS_DIR: /run/secrets/contextmine
-    volumes:
-      - ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}:/run/secrets/contextmine:ro
+      CONTEXTMINE_SECRETS_DIR: /run/secrets
+    secrets: &model-api-keys
+      - openai_api_key
+      - anthropic_api_key
+      - gemini_api_key
 
   codecharta:
     ports: !override
@@ -37,6 +40,23 @@ services:
       target: analyzer
     command: ["/app/.venv/bin/python", "-m", "contextmine_worker.main"]
     environment:
-      CONTEXTMINE_SECRETS_DIR: /run/secrets/contextmine
+      CONTEXTMINE_SECRETS_DIR: /run/secrets
+      # A GitHub source mayflower/contextmine is cloned from this checkout
+      # (committed branches only) instead of from github.com.
+      LOCAL_REPOSITORIES_DIR: /local-repositories
+      # The checkout may belong to a different uid than the container user.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /local-repositories/mayflower/contextmine
+    secrets: *model-api-keys
     volumes:
-      - ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}:/run/secrets/contextmine:ro
+      - ${REPO_ROOT:?enter nix develop}:/local-repositories/mayflower/contextmine:ro
+
+# Keep in sync with secretNames in flake.nix.
+secrets:
+  openai_api_key:
+    file: ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}/openai_api_key
+  anthropic_api_key:
+    file: ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}/anthropic_api_key
+  gemini_api_key:
+    file: ${CONTEXTMINE_SECRETS_HOST_DIR:?enter nix develop to decrypt the secrets}/gemini_api_key

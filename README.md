@@ -81,15 +81,22 @@ claude mcp add --transport http contextmine http://localhost:8111/mcp
   Production rejects this mode, and `docker-compose.local.yml` publishes all
   ports on `127.0.0.1` only.
 - `contextmine-secrets edit` opens `.secrets.sops.yaml` (git-ignored) as a flat
-  map of setting names, e.g. `openai_api_key: sk-...` and
-  `anthropic_api_key: sk-ant-...`. It encrypts to the age key in
-  `~/.config/sops/age/keys.txt` (or `$SOPS_AGE_KEY_FILE`). Entering the dev
-  shell decrypts it into one file per setting under `$XDG_RUNTIME_DIR`, which
-  the containers read through `CONTEXTMINE_SECRETS_DIR`.
+  map of `openai_api_key`, `anthropic_api_key` and `gemini_api_key`. It
+  encrypts to the age key in `~/.config/sops/age/keys.txt` (or
+  `$SOPS_AGE_KEY_FILE`). Entering the dev shell decrypts it into one file per
+  key under `$XDG_RUNTIME_DIR`, which api and worker receive as
+  [Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/) in
+  `/run/secrets` and read through `CONTEXTMINE_SECRETS_DIR`.
 - The local worker is built from the `analyzer` image target, so syncs run
   SCIP/LSP indexing and structural metrics.
+- A GitHub source `https://github.com/mayflower/contextmine` is cloned from
+  your checkout instead of github.com (`LOCAL_REPOSITORIES_DIR`, mounted
+  read-only). Only commits are indexed, not uncommitted changes; unpushed
+  local branches work. To index another repository from disk, mount it at
+  `/local-repositories/<owner>/<repo>` in the worker.
 
-Without Nix, put one file per setting into a directory and run
+Without Nix, put the three key files (empty for unused providers) into a
+directory and run
 `CONTEXTMINE_SECRETS_HOST_DIR=<dir> docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`.
 
 ### Kubernetes (Helm)
