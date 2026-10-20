@@ -1043,6 +1043,10 @@ def cluster_component_candidates(
     component_entities: dict[str, RecoveredArchitectureEntity] = {}
     component_memberships: list[RecoveredArchitectureMembership] = []
     component_hypotheses: list[RecoveredArchitectureHypothesis] = []
+    # Merged into component_entities once per component after the loop: merging
+    # (and deduplicating the growing evidence list) per member symbol was cubic
+    # in the number of symbols of a file cluster.
+    selected_component_confidence: dict[str, float] = {}
 
     for subject_ref, node in symbol_nodes.items():
         candidates = component_candidate_map.get(subject_ref, {})
@@ -1066,14 +1070,9 @@ def cluster_component_candidates(
                 )
             )
             component_evidence_by_id[component_id].extend(payload["evidence"])
-            _merge_entity_candidate(
-                component_entities,
-                entity_id=component_id,
-                kind="component",
-                name=_component_display_name(_component_candidate_key(component_id)),
-                confidence=max(float(payload["score"]), _ENTITY_CONFIDENCE),
-                evidence=_dedupe_evidence(component_evidence_by_id[component_id]),
-                attributes={"component": _component_candidate_key(component_id)},
+            confidence = max(float(payload["score"]), _ENTITY_CONFIDENCE)
+            selected_component_confidence[component_id] = max(
+                selected_component_confidence.get(component_id, confidence), confidence
             )
 
         if status == "selected":
@@ -1099,6 +1098,17 @@ def cluster_component_candidates(
                 )
                 or _node_evidence(node),
             )
+        )
+
+    for component_id, confidence in selected_component_confidence.items():
+        _merge_entity_candidate(
+            component_entities,
+            entity_id=component_id,
+            kind="component",
+            name=_component_display_name(_component_candidate_key(component_id)),
+            confidence=confidence,
+            evidence=_dedupe_evidence(component_evidence_by_id[component_id]),
+            attributes={"component": _component_candidate_key(component_id)},
         )
 
     return (
