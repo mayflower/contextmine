@@ -61,6 +61,11 @@ observed directly and what is only inferred from the code.
 
 ### 2. LLM provider ignores keys from settings files
 
+- **Status:** Fixed on `fix/llm-keys-from-settings` (branched from `main`).
+  Not specific to local mode: on `main` it also breaks the README's host setup
+  (keys in `.env`, `uv run uvicorn`), because pydantic-settings reads `.env`
+  without exporting it to `os.environ`; Docker Compose hides it by turning
+  `.env` into environment variables.
 - **Observed:** With keys supplied through `CONTEXTMINE_SECRETS_DIR` (local
   mode), embeddings worked but the knowledge-graph LLM step failed:
   `ValueError: LLM provider configured but failed to initialize:
