@@ -195,9 +195,13 @@ observed directly and what is only inferred from the code.
   `resolve_symbol_refs_for_calls`; that creates a new `SymbolTraceResolver`
   every time (`analyzer/extractors/traceability.py:693`). Its caches are per
   instance, so each test case reloads every SYMBOL knowledge node with its
-  JSONB metadata (`_ensure_knowledge_symbols`, `traceability.py:399ff`) and,
-  when needed, the twin SCIP graph. Cost grows with test cases × symbols;
-  this repository has roughly 4,750 tests.
+  JSONB metadata (`_ensure_knowledge_symbols`, `traceability.py:399ff`).
+  Test cases that need SCIP resolution also reload the whole twin graph
+  (`_ensure_scip_graph`: all twin nodes and edges, here ~36k and ~138k):
+  sampled queries cycled knowledge_nodes → twin_nodes → twin_edges about every
+  5 s, with the worker at ~185 % CPU. Cost grows with test cases × graph size;
+  at the synced commit this repository has ~4,050 Python test functions and
+  ~490 JS/TS `it()`/`test()` calls (grep count, not the extractor's count).
 - **Fix idea:** One resolver per build, shared by all test cases (and
   possibly the UI extractor, not checked). Not yet verified to give an
   identical result: the resolver also creates SYMBOL nodes from SCIP and
