@@ -8,6 +8,11 @@ observed directly and what is only inferred from the code.
 
 ### 1. Architecture recovery is quadratic and hangs syncs of larger repositories
 
+- **Status:** Confirmed by the maintainer of the architecture recovery. Note
+  from the same conversation: quadratic behavior is intended at one place in
+  this code (not specified which; possibly the pairwise call check over the
+  symbols of one file, `recovery.py:924-928`). Clarify before changing
+  anything beyond the evidence accumulation described below.
 - **Observed:** A sync stayed at "Building digital twin..." (96 %) for over
   50 minutes with ~91 % CPU and no log output. Three py-spy dumps all showed
   `_dedupe_evidence` (`architecture/recovery.py:190`) called from
@@ -126,6 +131,7 @@ observed directly and what is only inferred from the code.
 
 ### 9. AGE graph sync rebuilds everything and matches edges without an index
 
+- **Status:** Confirmed by the maintainer.
 - **Observed:** After the twin rows were written, Postgres ran at ~100 % CPU
   while the worker sat idle; the active statement was a single
   `SELECT * FROM cypher('twin_<scenario>', $$ UNWIND [...] AS row MATCH ...`
