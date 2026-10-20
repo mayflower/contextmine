@@ -89,6 +89,9 @@ observed directly and what is only inferred from the code.
 
 ### 4. Missing embeddings are never backfilled
 
+- **Status:** Backfilled once by hand for this collection (4,613 chunks,
+  0 errors, with a guard that refuses fake embeddings). The missing
+  mechanism itself is still open.
 - **Observed:** After a model-free first sync and a second sync with model
   calls enabled, the UI showed "Embeddings 1605 / 6567": all 1603 chunks of
   changed documents were embedded, 4962 of the 4964 chunks from the first run
@@ -102,6 +105,15 @@ observed directly and what is only inferred from the code.
 
 ### 5. The twin is rewritten in full, row by row, on every sync
 
+- **Status:** Row-by-row writes fixed on `fix/sync-time-sinks` (65e3a37):
+  SCIP ingest and knowledge-graph seeding use multi-row upserts. Same real
+  data, rolled-back transactions, full twin + knowledge-graph state
+  identical (sha256 b5639a79d3dde546); ingest 399 s → 53 s, seed
+  537 s → 78 s. Still open: the twin is still rewritten in full on every
+  sync (not incremental), and seeding runs twice per sync.
+- **Note:** Much of the per-row time was Python building SQLAlchemy
+  statements (py-spy: `stmt.excluded` in `_upsert_twin_edge`), not
+  database round trips.
 - **Observed:** An incremental sync (155 changed documents) spent more than
   20 minutes in "Building digital twin..." inside a single transaction issuing
   individual `INSERT INTO twin_edge_layers ... ON CONFLICT DO NOTHING`
