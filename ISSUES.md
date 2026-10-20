@@ -191,9 +191,14 @@ observed directly and what is only inferred from the code.
   repository (84 test cases from 13 files, each variant in a rolled-back
   transaction): identical `resolved_symbol_refs` for every test case,
   2278 symbol links in both, twin queries 168 → 2, 441.8 s → 122.7 s
-  (5.3 s → 1.5 s per test case). Still open: the knowledge-symbol reload per
-  test case (stage 2, needs the same comparison because candidate order can
-  change).
+  (5.3 s → 1.5 s per test case). The knowledge-symbol reload is fixed in
+  a15bbe3 (shared `KnowledgeSymbolIndex`): same 84 test cases, identical
+  `resolved_symbol_refs`, 439.4 s → 8.8 s with both caches shared (symbol +
+  twin loads 254 → 5; run without LSP).
+- **Origin:** Both caches came with the resolver in de8a981 (2026-02-23), but
+  `resolve_symbol_refs_for_calls` creates a resolver per call, so they only
+  lived for one test case or view. The repository then had ~520 test
+  functions; the cost grows with test cases × graph size.
 - **Observed:** The sync phase "Materializing behavioral layers" ran for
   45+ minutes with the worker at ~100 % of one core in `_jsonb_decoder`,
   issuing about one `SELECT ... FROM knowledge_nodes WHERE collection_id = ...
