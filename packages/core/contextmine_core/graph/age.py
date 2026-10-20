@@ -91,27 +91,7 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
         .all()
     )
     for batch in _chunked(nodes, _NODE_BATCH_SIZE):
-        payload = ",".join(
-            (
-                "{"
-                f"id: '{_esc(str(node.id))}', "
-                f"natural_key: '{_esc(node.natural_key)}', "
-                f"kind: '{_esc(node.kind)}', "
-                f"name: '{_esc(node.name)}'"
-                "}"
-            )
-            for node in batch
-        )
-        cypher = (
-            f"UNWIND [{payload}] AS row "
-            "CREATE (n:Node {"
-            "id: row.id, "
-            "natural_key: row.natural_key, "
-            "kind: row.kind, "
-            "name: row.name"
-            "})"
-        )
-        await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
+        await conn.exec_driver_sql(_age_cypher_sql(graph_name, _node_batch_cypher(batch)))
 
     # Load edges in batches to avoid one SQL round-trip per relationship.
     edges = (
@@ -120,22 +100,53 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
         .all()
     )
     for batch in _chunked(edges, _EDGE_BATCH_SIZE):
-        payload = ",".join(
-            (
-                "{"
-                f"source_id: '{_esc(str(edge.source_node_id))}', "
-                f"target_id: '{_esc(str(edge.target_node_id))}', "
-                f"kind: '{_esc(edge.kind)}'"
-                "}"
-            )
-            for edge in batch
+        await conn.exec_driver_sql(_age_cypher_sql(graph_name, _edge_batch_cypher(batch)))
+
+
+def _node_batch_cypher(nodes: Iterable[TwinNode]) -> str:
+    payload = ",".join(
+        (
+            "{"
+            f"id: '{_esc(str(node.id))}', "
+            f"natural_key: '{_esc(node.natural_key)}', "
+            f"kind: '{_esc(node.kind)}', "
+            f"name: '{_esc(node.name)}'"
+            "}"
         )
-        cypher = (
-            f"UNWIND [{payload}] AS row "
-            "MATCH (s:Node {id: row.source_id}), (t:Node {id: row.target_id}) "
-            "CREATE (s)-[r:REL {kind: row.kind}]->(t)"
+        for node in nodes
+    )
+    return (
+        f"UNWIND [{payload}] AS row "
+        "CREATE (n:Node {"
+        "id: row.id, "
+        "natural_key: row.natural_key, "
+        "kind: row.kind, "
+        "name: row.name"
+        "})"
+    )
+
+
+def _edge_batch_cypher(edges: Iterable[TwinEdge]) -> str:
+    payload = ",".join(
+        (
+            "{"
+            f"source_id: '{_esc(str(edge.source_node_id))}', "
+            f"target_id: '{_esc(str(edge.target_node_id))}', "
+            f"kind: '{_esc(edge.kind)}'"
+            "}"
         )
-        await conn.exec_driver_sql(_age_cypher_sql(graph_name, cypher))
+        for edge in edges
+    )
+    # Match the endpoints in WHERE, not as a property map: AGE 1.5 plans
+    # `(s:Node {id: row.source_id})` as a nested loop with a containment filter
+    # over all nodes per row (51 s for 600 edges on 36k nodes), while the WHERE
+    # form becomes a hash join (0.7 s), without needing an index.
+    return (
+        f"UNWIND [{payload}] AS row "
+        "MATCH (s:Node), (t:Node) "
+        "WHERE s.id = row.source_id AND t.id = row.target_id "
+        "CREATE (s)-[r:REL {kind: row.kind}]->(t)"
+    )
 
 
 async def run_read_only_cypher(
