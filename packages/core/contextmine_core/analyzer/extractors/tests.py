@@ -40,7 +40,10 @@ from contextmine_core.analyzer.extractors.graph_helpers import (
 from contextmine_core.analyzer.extractors.graph_helpers import (
     upsert_node as _upsert_node,
 )
-from contextmine_core.analyzer.extractors.traceability import resolve_symbol_refs_for_calls
+from contextmine_core.analyzer.extractors.traceability import (
+    TwinScipGraph,
+    resolve_symbol_refs_for_calls,
+)
 from contextmine_core.models import (
     KnowledgeEdgeKind,
     KnowledgeNode,
@@ -1454,6 +1457,8 @@ async def build_tests_graph(
         if natural:
             rules_by_token[natural] = row.id
 
+    # Loaded at most once for all test cases instead of once per test case.
+    twin_graph = TwinScipGraph()
     for extraction in extractions:
         suite_ids = await _persist_suites(session, collection_id, extraction, stats)
         fixture_ids = await _persist_fixtures(session, collection_id, extraction, stats)
@@ -1466,6 +1471,7 @@ async def build_tests_graph(
             fixture_ids,
             rules_by_token,
             stats,
+            twin_graph,
         )
 
     return stats
@@ -1579,6 +1585,7 @@ async def _persist_cases(
     fixture_ids: dict[str, UUID],
     rules_by_token: dict[str, UUID],
     stats: dict[str, int],
+    twin_graph: TwinScipGraph | None = None,
 ) -> None:
     """Persist test case nodes, fixture edges, symbol resolution, and rule matching."""
     for case in extraction.cases:
@@ -1608,6 +1615,7 @@ async def _persist_cases(
             node_meta,
             evidence_id,
             stats,
+            twin_graph,
         )
         await _persist_cases_rule_edges(
             session,
@@ -1713,6 +1721,7 @@ async def _resolve_and_link_symbols(
     node_meta: dict[str, Any],
     evidence_id: str,
     stats: dict[str, int],
+    twin_graph: TwinScipGraph | None = None,
 ) -> None:
     """Resolve symbol references and create edges."""
     resolved_symbol_refs = await resolve_symbol_refs_for_calls(
@@ -1722,6 +1731,7 @@ async def _resolve_and_link_symbols(
         file_path=case.file_path,
         call_sites=case.call_sites,
         fallback_symbol_hints=case.symbol_hints,
+        twin_graph=twin_graph,
     )
     node_meta["resolved_symbol_refs"] = [
         {
