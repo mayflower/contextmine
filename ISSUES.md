@@ -129,6 +129,10 @@ observed directly and what is only inferred from the code.
   which costs ~10 s of a full core for ~0.4 s of work, i.e. roughly a sixth of
   a core while idle. After downtime, Prefect replays all pre-scheduled runs
   (observed: ~130 runs, two at a time).
+- After an unclean shutdown (host lost power), a manual "Sync now" waited
+  8 minutes as `Late`: the worker picks runs by expected start time, so it
+  first worked through the overdue due-checks scheduled before the outage.
+  Due-check runs left `PENDING` by the dead worker stay `PENDING`.
 - **Fix idea:** Longer interval for local setups, or run the due-check inside
   the long-lived worker process instead of as a deployment.
 
