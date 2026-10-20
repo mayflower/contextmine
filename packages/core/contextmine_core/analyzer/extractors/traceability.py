@@ -146,6 +146,22 @@ class TwinScipGraph:
     refs: dict[UUID, list[UUID]] = field(default_factory=dict)
 
 
+@dataclass
+class KnowledgeSymbolIndex:
+    """SYMBOL knowledge nodes of the collection, indexed for call resolution.
+
+    Like TwinScipGraph, share one instance across the resolvers of a tests/UI
+    graph build. Resolvers append the SYMBOL nodes they create from SCIP, so
+    later resolvers see them without reloading every symbol.
+    """
+
+    loaded: bool = False
+    by_name: dict[str, list[_KnowledgeSymbolRow]] = field(default_factory=dict)
+    by_file: dict[str, list[_KnowledgeSymbolRow]] = field(default_factory=dict)
+    by_def_id: dict[str, _KnowledgeSymbolRow] = field(default_factory=dict)
+    by_node_id: dict[UUID, _KnowledgeSymbolRow] = field(default_factory=dict)
+
+
 class SymbolTraceResolver:
     """Resolve call sites to symbol nodes using SCIP/LSP/Joern."""
 
@@ -156,16 +172,17 @@ class SymbolTraceResolver:
         collection_id: UUID,
         source_id: UUID | None = None,
         twin_graph: TwinScipGraph | None = None,
+        symbol_index: KnowledgeSymbolIndex | None = None,
     ) -> None:
         self._session = session
         self._collection_id = collection_id
         self._source_id = source_id
 
-        self._kg_loaded = False
-        self._kg_by_name: dict[str, list[_KnowledgeSymbolRow]] = {}
-        self._kg_by_file: dict[str, list[_KnowledgeSymbolRow]] = {}
-        self._kg_by_def_id: dict[str, _KnowledgeSymbolRow] = {}
-        self._kg_by_node_id: dict[UUID, _KnowledgeSymbolRow] = {}
+        self._symbol_index = symbol_index if symbol_index is not None else KnowledgeSymbolIndex()
+        self._kg_by_name = self._symbol_index.by_name
+        self._kg_by_file = self._symbol_index.by_file
+        self._kg_by_def_id = self._symbol_index.by_def_id
+        self._kg_by_node_id = self._symbol_index.by_node_id
 
         self._twin_graph = twin_graph if twin_graph is not None else TwinScipGraph()
         self._twin_by_id = self._twin_graph.by_id
@@ -183,6 +200,10 @@ class SymbolTraceResolver:
     @property
     def _scip_loaded(self) -> bool:
         return self._twin_graph.loaded
+
+    @property
+    def _kg_loaded(self) -> bool:
+        return self._symbol_index.loaded
 
     async def _resolve_batch(
         self,
@@ -419,7 +440,7 @@ class SymbolTraceResolver:
         return refs
 
     async def _ensure_knowledge_symbols(self) -> None:
-        if self._kg_loaded:
+        if self._symbol_index.loaded:
             return
 
         rows = (
@@ -455,7 +476,7 @@ class SymbolTraceResolver:
                 self._kg_by_file.setdefault(file_path, []).append(symbol)
             if def_id:
                 self._kg_by_def_id[def_id] = symbol
-        self._kg_loaded = True
+        self._symbol_index.loaded = True
 
     @staticmethod
     def _twin_row_to_symbol(row: Any) -> _TwinSymbolRow:
@@ -711,6 +732,7 @@ async def resolve_symbol_refs_for_calls(
     call_sites: list[dict[str, Any]],
     fallback_symbol_hints: list[str],
     twin_graph: TwinScipGraph | None = None,
+    symbol_index: KnowledgeSymbolIndex | None = None,
 ) -> list[ResolvedSymbolRef]:
     """Resolve extracted call sites to symbol nodes."""
     resolver = SymbolTraceResolver(
@@ -718,6 +740,7 @@ async def resolve_symbol_refs_for_calls(
         collection_id=collection_id,
         source_id=source_id,
         twin_graph=twin_graph,
+        symbol_index=symbol_index,
     )
     normalized_sites: list[CallSite] = []
     for item in call_sites:
