@@ -8,8 +8,11 @@ observed directly and what is only inferred from the code.
 
 ### 1. Architecture recovery is quadratic and hangs syncs of larger repositories
 
-- **Status:** Confirmed by the maintainer of the architecture recovery. Note
-  from the same conversation: quadratic behavior is intended at one place in
+- **Status:** Confirmed by the maintainer of the architecture recovery. The
+  cubic evidence merge is fixed on `fix/sync-time-sinks` (3d73670): one file
+  with 800 symbols 51 s → 0.84 s, output byte-identical for 60 random graphs.
+  Still open: the amplifiers below (recovery computed several times per
+  build, CPU-bound code on the event loop). Note from the same conversation: quadratic behavior is intended at one place in
   this code (not specified which; possibly the pairwise call check over the
   symbols of one file, `recovery.py:924-928`). Clarify before changing
   anything beyond the evidence accumulation described below.
@@ -131,7 +134,11 @@ observed directly and what is only inferred from the code.
 
 ### 9. AGE graph sync rebuilds everything and matches edges without an index
 
-- **Status:** Confirmed by the maintainer.
+- **Status:** Confirmed by the maintainer. Edge matching fixed on
+  `fix/sync-time-sinks` (049e37c): matching in `WHERE` instead of a property
+  map turns the plan into a hash join, 51 s → 0.66 s per batch of 600 edges on
+  36k nodes (PostgreSQL 16.12, AGE 1.5.0). Still open: the full rebuild on
+  every sync.
 - **Observed:** After the twin rows were written, Postgres ran at ~100 % CPU
   while the worker sat idle; the active statement was a single
   `SELECT * FROM cypher('twin_<scenario>', $$ UNWIND [...] AS row MATCH ...`
@@ -144,12 +151,24 @@ observed directly and what is only inferred from the code.
   index exists on the `id` property (the code creates none; AGE only indexes
   its internal graph ids), so every row scans all nodes: O(edges × nodes).
   On this repo, ~36k nodes and ~138k edges (counts from the first run) give
-  ~230 batches of roughly 600 × 2 × 36k comparisons each. The duration of the
-  whole step was not measured; at the observed 7+ s per batch it would be
-  roughly 30-40 minutes.
+  ~230 batches. A synthetic benchmark of the same shape measured 51 s per
+  batch, i.e. roughly 3 hours for the step (the 7+ s seen during the sync was
+  the age of a still-running statement).
 - **Fix idea:** Create an index on the `id` property of the `Node` label
   table, or map twin node ids to AGE graph ids while creating nodes and create
   edges from those ids; sync only changed nodes and edges instead of rebuilding.
+
+### 10. Architecture recovery output depends on the Python hash seed
+
+- **Observed:** The same input produced a different evidence order in
+  recovered hypotheses under different `PYTHONHASHSEED` values (found while
+  verifying the fix for issue 1; independent of it).
+- **Cause:** Candidate components are iterated from sets
+  (e.g. `selected_seed_components_by_subject` in
+  `cluster_component_candidates`), and string hashing is randomized per process.
+- **Impact:** Recovered models, and anything rendered or stored from them,
+  can differ between runs without any change in the input.
+- **Fix idea:** Iterate sorted, or use insertion-ordered dicts instead of sets.
 
 ## Fixed on `feat/local-dev-mode`
 
