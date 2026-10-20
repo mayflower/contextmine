@@ -13,8 +13,16 @@ observed directly and what is only inferred from the code.
   with 800 symbols 51 s → 0.84 s, output byte-identical for 60 random graphs.
   Still open: the amplifiers below (recovery computed several times per
   build, CPU-bound code on the event loop). Note from the same conversation: quadratic behavior is intended at one place in
-  this code (not specified which; possibly the pairwise call check over the
-  symbols of one file, `recovery.py:924-928`). Clarify before changing
+  this code, and the recovery is not finished yet. Likely reading, not yet
+  confirmed: `docs/design/grounded-llm-detection.md` plans to make constrained
+  LLM adjudication the primary clustering (phase B2: deterministic code
+  generates candidates + evidence, the LLM decides closed-world and must cite
+  evidence, code validates). The deterministic part then is candidate
+  generation: the pairwise call check over the symbols of one file
+  (`recovery.py:924-928`) forms the seeds, and every membership carries the
+  whole file's evidence (O(k²) output) so a decision can cite it. Today only
+  ambiguous cases go to the LLM (915891b), and only with
+  `ARCH_DOCS_LLM_ENRICH=true` (default false). Clarify before changing
   anything beyond the evidence accumulation described below.
 - **Observed:** A sync stayed at "Building digital twin..." (96 %) for over
   50 minutes with ~91 % CPU and no log output. Three py-spy dumps all showed
@@ -171,7 +179,9 @@ observed directly and what is only inferred from the code.
   (e.g. `selected_seed_components_by_subject` in
   `cluster_component_candidates`), and string hashing is randomized per process.
 - **Impact:** Recovered models, and anything rendered or stored from them,
-  can differ between runs without any change in the input.
+  can differ between runs without any change in the input. This contradicts
+  rule 5 of `docs/design/grounded-llm-detection.md` ("Same input -> same
+  output").
 - **Fix idea:** Iterate sorted, or use insertion-ordered dicts instead of sets.
 
 ## Fixed on `feat/local-dev-mode`
