@@ -184,6 +184,30 @@ observed directly and what is only inferred from the code.
   output").
 - **Fix idea:** Iterate sorted, or use insertion-ordered dicts instead of sets.
 
+### 11. Behavioral layers reload all symbols for every test case
+
+- **Observed:** The sync phase "Materializing behavioral layers" ran for
+  45+ minutes with the worker at ~100 % of one core in `_jsonb_decoder`,
+  issuing about one `SELECT ... FROM knowledge_nodes WHERE collection_id = ...
+  AND kind = ...` per second.
+- **Cause:** `build_tests_graph` calls `_resolve_and_link_symbols`
+  (`analyzer/extractors/tests.py:1707`) per test case, which calls
+  `resolve_symbol_refs_for_calls`; that creates a new `SymbolTraceResolver`
+  every time (`analyzer/extractors/traceability.py:693`). Its caches are per
+  instance, so each test case reloads every SYMBOL knowledge node with its
+  JSONB metadata (`_ensure_knowledge_symbols`, `traceability.py:399ff`) and,
+  when needed, the twin SCIP graph. Cost grows with test cases × symbols;
+  this repository has roughly 4,750 tests.
+- **Fix idea:** One resolver per build, shared by all test cases (and
+  possibly the UI extractor, not checked). Not yet verified to give an
+  identical result: the resolver also creates SYMBOL nodes from SCIP and
+  appends them to its cache, while a fresh resolver reloads them without
+  `ORDER BY`, so candidate order for same-named symbols can differ. Compare
+  the test-to-symbol edges of both variants on real data before changing it.
+- **Note:** Long runtime is expected here to some degree (test extraction and
+  SCIP/LSP/Joern call resolution); the reload per test case is the avoidable
+  part.
+
 ## Fixed on `feat/local-dev-mode`
 
 - **Postgres data lost on `docker compose down`:** the named volume was
