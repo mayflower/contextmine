@@ -1831,7 +1831,6 @@ async def build_twin_graph(
     del changed_doc_ids
     import uuid as uuid_module
 
-    from contextmine_core.graph.age import sync_scenario_to_age
     from contextmine_core.semantic_snapshot.models import Snapshot
     from contextmine_core.twin import (
         evaluate_and_store_fitness_findings,
@@ -1942,8 +1941,8 @@ async def build_twin_graph(
         elif settings.arch_docs_enabled:
             stats["arch_docs_sync_generation"] = "skipped_requires_explicit_trigger"
 
-        # Keep AGE in sync as a mandatory M1 requirement.
-        await sync_scenario_to_age(session, as_is.id)
+        # The AGE graph is updated once at the end of the sync
+        # (_sync_scenario_age_graph), after the behavioral layers.
         await session.commit()
 
     return stats
@@ -2099,7 +2098,6 @@ async def _materialize_behavioral_layers_impl(
     """Build deep behavioral layers (tests/ui/flows) and append twin status metadata."""
     import uuid as uuid_module
 
-    from contextmine_core.graph.age import sync_scenario_to_age
     from contextmine_core.models import Document
     from contextmine_core.twin import record_twin_event, seed_scenario_from_knowledge_graph
 
@@ -2161,7 +2159,6 @@ async def _materialize_behavioral_layers_impl(
                 collection_uuid,
                 clear_existing=False,
             )
-            await sync_scenario_to_age(session, scenario_uuid)
 
         if source_version_uuid:
             await _finalize_behavioral_version(
@@ -2249,6 +2246,24 @@ async def materialize_behavioral_layers(
                 )
                 await session.commit()
         raise
+
+
+async def _sync_scenario_age_graph(scenario_id: str) -> bool:
+    """Bring the scenario's Apache AGE graph up to date once per sync.
+
+    Runs after the behavioral layers, which add test/UI/flow nodes to the twin,
+    and also when they fail. Rebuilds only if the twin changed since the graph
+    was last built, and commits so Cypher queries can use it directly.
+    Returns whether the graph was rebuilt.
+    """
+    import uuid as uuid_module
+
+    from contextmine_core.graph.age import ensure_scenario_age_graph
+
+    async with get_session() as session:
+        rebuilt = await ensure_scenario_age_graph(session, uuid_module.UUID(scenario_id))
+        await session.commit()
+    return rebuilt
 
 
 async def _run_behavioral_materialization(
@@ -3887,6 +3902,7 @@ def _build_source_version_stats(
         "evolution_warnings": list(ctx.scip_stats.get("evolution_warnings", []) or []),
         "twin_nodes_upserted": int(ctx.twin_stats.get("twin_nodes_upserted", 0)),
         "twin_edges_upserted": int(ctx.twin_stats.get("twin_edges_upserted", 0)),
+        "age_graph_rebuilt": ctx.twin_stats.get("age_graph_rebuilt"),
         "evolution_ownership_rows": int(ctx.twin_stats.get("evolution_ownership_rows", 0)),
         "evolution_coupling_rows": int(ctx.twin_stats.get("evolution_coupling_rows", 0)),
         "fitness_findings_written": int(ctx.twin_stats.get("fitness_findings_written", 0)),
@@ -4024,6 +4040,12 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
             scenario_id=scenario_for_behavioral,
             source_version_id=(str(ctx.source_version_id) if ctx.source_version_id else None),
             deleted_file_paths=ctx.deleted_file_paths,
+        )
+        await update_progress_artifact(  # type: ignore[misc]
+            ctx.progress_id, progress=97, description="Updating graph query store..."
+        )
+        ctx.twin_stats["age_graph_rebuilt"] = await _sync_scenario_age_graph(
+            scenario_for_behavioral
         )
 
     await update_progress_artifact(ctx.progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
@@ -4390,6 +4412,10 @@ async def sync_web_source(
             source_version_id=None,
             deleted_file_paths=None,
         )
+        await update_progress_artifact(  # type: ignore[misc]
+            progress_id, progress=97, description="Updating graph query store..."
+        )
+        twin_stats["age_graph_rebuilt"] = await _sync_scenario_age_graph(scenario_for_behavioral)
 
     await update_progress_artifact(progress_id, progress=98, description="Saving results...")  # type: ignore[misc]
 
@@ -4425,6 +4451,7 @@ async def sync_web_source(
             "twin_metrics_snapshots": twin_stats.get("twin_metrics_snapshots", 0),
             "twin_validation_snapshots": twin_stats.get("twin_validation_snapshots", 0),
             "twin_asis_scenario_id": twin_stats.get("twin_asis_scenario_id"),
+            "age_graph_rebuilt": twin_stats.get("age_graph_rebuilt"),
             # Surface extraction stats
             "surface_files_scanned": surface_stats.get("surface_files_scanned", 0),
             "surface_files_recognized": surface_stats.get("surface_files_recognized", 0),
