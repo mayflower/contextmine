@@ -215,12 +215,14 @@ async def query_twin_cypher(
     ],
 ) -> TwinQueryResult:
     """Run the existing guarded read-only Cypher implementation."""
-    from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
+    from contextmine_core.graph.age import ensure_scenario_age_graph, run_read_only_cypher
 
     scenario_uuid = _uuid(scenario_id, "scenario_id")
     try:
         async with get_db_session() as db:
-            await sync_scenario_to_age(db, scenario_uuid)
+            # Rebuilds and persists the graph only if the twin changed since.
+            if await ensure_scenario_age_graph(db, scenario_uuid):
+                await db.commit()
             rows = await run_read_only_cypher(db, scenario_uuid, query)
     except Exception as exc:
         raise ToolError(f"Cypher query failed: {exc}") from exc

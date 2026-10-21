@@ -1025,6 +1025,7 @@ class TestSyncGithubSourceHappyPath:
                 }
             ),
         )
+        monkeypatch.setattr(flows, "_sync_scenario_age_graph", AsyncMock(return_value=True))
         behavioral_materialization = AsyncMock(return_value={})
         monkeypatch.setattr(
             flows,
