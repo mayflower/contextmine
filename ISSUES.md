@@ -308,6 +308,15 @@ observed directly and what is only inferred from the code.
 - **Fix idea:** Triage before the LLM (the deterministic rule candidates from
   `rules.py` / the design doc's cost model), a per-sync cap, exclude tests by
   default, and tolerate stringified JSON in structured output.
+- **Semantic entities, same pattern:** `_kg_step_semantic_entities` →
+  `extract_from_documents` (`knowledge/extraction.py`) calls the default LLM
+  (`gpt-5-mini`) once per chunk, sequentially (about one call every 2 s
+  observed); 21 changed documents meant 1,029 chunks. Results are persisted
+  only after all chunks, so an interrupted sync loses them, and those
+  documents never get entities later (they no longer count as changed). With
+  no changed documents and no entities yet, it processes all chunks (6,594
+  here, over 3.5 hours). `SEMANTIC_EXTRACTION_MAX_CHUNKS` caps it but
+  defaults to 0 (unlimited).
 
 ## Fixed on `feat/local-dev-mode`
 
