@@ -242,6 +242,30 @@ observed directly and what is only inferred from the code.
   SCIP/LSP/Joern call resolution); the reload per test case is the avoidable
   part.
 
+### 12. AGE is rebuilt twice per sync, and every Cypher query rebuilds it again
+
+- **Observed:** Each sync rebuilds the whole AGE graph twice: at the end of
+  `build_twin_graph` (`flows.py:1946`, "Keep AGE in sync as a mandatory M1
+  requirement", b97f81f) and at the end of the behavioral layers
+  (`flows.py:2164`, de8a981), which re-seed the twin and rebuild again so the
+  new test/UI/flow nodes are included. The first build is superseded minutes
+  later; it only matters if the behavioral layers fail (their errors are
+  caught). Web sources (`sync_web_source`) follow the same order.
+- **Readers:** The only readers of AGE are the MCP tool `query_twin_cypher`
+  (`apps/api/app/mcp_domains/twin.py:211`) and `POST .../cypher`
+  (`apps/api/app/routes/twin.py:5616`). Both call `sync_scenario_to_age`
+  before every query and never commit (`get_session` does not commit,
+  `database.py:80`), so each query rebuilds the graph and rolls it back.
+  Before the fix for issue 9 that was roughly 3 hours per query on this
+  repository; it is still minutes. The two builds in the sync are never read.
+  A plausible reason for the per-query rebuild: queries can target TO-BE
+  scenarios, which no sync builds into AGE.
+- **Fix idea:** One build per sync, committed, plus a record of which
+  scenario version is in AGE; queries rebuild (and commit) only when the
+  scenario changed since. Quick win without changing query behavior: drop
+  both builds from the sync (~20 minutes per sync). Clarify the intended role
+  of AGE (persistent query store vs. per-query working graph) first.
+
 ## Fixed on `feat/local-dev-mode`
 
 - **Postgres data lost on `docker compose down`:** the named volume was
