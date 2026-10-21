@@ -244,6 +244,11 @@ observed directly and what is only inferred from the code.
 
 ### 12. AGE is rebuilt twice per sync, and every Cypher query rebuilds it again
 
+- **Status:** Fixed on `fix/age-graph-freshness` (f57c3f0): one committed
+  build per sync, a fingerprint per scenario (`twin_age_graphs`, migration
+  024), queries rebuild only when the twin changed. Real data: unchanged
+  twin 0.27 s instead of a full rebuild per query; a full rebuild still takes
+  11-13 minutes (batch size and `TRUNCATE` are the next levers).
 - **Observed:** Each sync rebuilds the whole AGE graph twice: at the end of
   `build_twin_graph` (`flows.py:1946`, "Keep AGE in sync as a mandatory M1
   requirement", b97f81f) and at the end of the behavioral layers
@@ -265,6 +270,14 @@ observed directly and what is only inferred from the code.
   scenario changed since. Quick win without changing query behavior: drop
   both builds from the sync (~20 minutes per sync). Clarify the intended role
   of AGE (persistent query store vs. per-query working graph) first.
+
+### 13. The MCP endpoint only answers with a trailing slash
+
+- **Observed:** `POST /mcp` returns 405 Method Not Allowed; only `POST /mcp/`
+  works, so `claude mcp add --transport http contextmine http://localhost:8111/mcp`
+  fails to connect. README and `docs/mcp.md` show the URL without the slash.
+- **Fix idea:** Accept `/mcp` as well (route or redirect that keeps POST), or
+  document `/mcp/`.
 
 ## Fixed on `feat/local-dev-mode`
 

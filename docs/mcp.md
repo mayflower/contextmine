@@ -7,7 +7,7 @@ ContextMine exposes its functionality via the [Model Context Protocol (MCP)](htt
 ### Claude Code
 
 ```bash
-claude mcp add --transport http contextmine http://localhost:8111/mcp
+claude mcp add --transport http contextmine http://localhost:8111/mcp/
 ```
 
 Run `/mcp` in Claude Code to authenticate.

@@ -74,7 +74,7 @@ query it from Claude Code, you don't need a GitHub OAuth app or a `.env` file:
 nix develop                    # selects docker-compose.local.yml, decrypts secrets
 contextmine-secrets edit       # once: model API keys, encrypted with sops to your age key
 docker compose up -d --build
-claude mcp add --transport http contextmine http://localhost:8111/mcp
+claude mcp add --transport http contextmine http://localhost:8111/mcp/
 ```
 
 - `AUTH_MODE=local` signs every admin UI and MCP request in as one local user.
@@ -148,7 +148,7 @@ Configure your MCP client to connect to ContextMine. Authentication is handled v
 **Claude Code**:
 
 ```bash
-claude mcp add --transport http contextmine http://localhost:8111/mcp
+claude mcp add --transport http contextmine http://localhost:8111/mcp/
 ```
 
 **Claude Desktop** (`~/.config/claude/claude_desktop_config.json` on Linux, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
