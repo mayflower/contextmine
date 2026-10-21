@@ -12,18 +12,25 @@ observed directly and what is only inferred from the code.
   cubic evidence merge is fixed on `fix/sync-time-sinks` (3d73670): one file
   with 800 symbols 51 s → 0.84 s, output byte-identical for 60 random graphs.
   Still open: the amplifiers below (recovery computed several times per
-  build, CPU-bound code on the event loop). Note from the same conversation: quadratic behavior is intended at one place in
-  this code, and the recovery is not finished yet. Likely reading, not yet
-  confirmed: `docs/design/grounded-llm-detection.md` plans to make constrained
-  LLM adjudication the primary clustering (phase B2: deterministic code
-  generates candidates + evidence, the LLM decides closed-world and must cite
-  evidence, code validates). The deterministic part then is candidate
-  generation: the pairwise call check over the symbols of one file
-  (`recovery.py:924-928`) forms the seeds, and every membership carries the
-  whole file's evidence (O(k²) output) so a decision can cite it. Today only
-  ambiguous cases go to the LLM (915891b), and only with
-  `ARCH_DOCS_LLM_ENRICH=true` (default false). Clarify before changing
-  anything beyond the evidence accumulation described below.
+  build, CPU-bound code on the event loop).
+- **Intended quadratic part (investigated through ContextMine's own MCP
+  tools, consistent with the maintainer's note):** constrained LLM
+  adjudication works on self-contained packets. `build_adjudication_packet`
+  (`architecture/recovery_llm.py:191-236`, "only packet-local evidence and
+  candidate IDs") gets its evidence from `build_snippet_bundle`
+  (`recovery_llm.py:120-188`): the hypothesis evidence, the evidence of every
+  membership of the symbol and the full evidence of every candidate
+  component. Only those evidence ids are allowed; answers citing others are
+  rejected (`test_apply_adjudication_rejects_outputs_referencing_unknown_evidence_ids`).
+  A component built from a file with k symbols carries that file's evidence,
+  and so does every membership, so the packets of up to k ambiguous symbols
+  hold ~k² evidence items in total. That is deliberate (rules 1 and 2 of
+  `docs/design/grounded-llm-detection.md`, phase B2 makes this the primary
+  clustering); `llm_hypothesis_limit` (`ARCH_DOCS_LLM_MAX_HYPOTHESES`,
+  default 12) bounds how many packets reach the LLM. The pairwise call check
+  per file (`recovery.py:924-928`) produces the candidate seeds for it. Not
+  intended was re-deduplicating the growing evidence list per member (k³),
+  which 3d73670 removed with byte-identical output.
 - **Observed:** A sync stayed at "Building digital twin..." (96 %) for over
   50 minutes with ~91 % CPU and no log output. Three py-spy dumps all showed
   `_dedupe_evidence` (`architecture/recovery.py:190`) called from
@@ -34,7 +41,8 @@ observed directly and what is only inferred from the code.
   component extends `component_evidence_by_id[component_id]` (never
   deduplicated), then deduplicates the whole accumulated list, and
   `_merge_entity_candidate` deduplicates existing plus new evidence again
-  (`recovery.py:280`). O(n²) per component. Introduced in 7dc2b0d.
+  (`recovery.py:280`). For a file cluster of k symbols that is ~k³ work
+  (measured: doubling k multiplies the time by 8). Introduced in 7dc2b0d.
 - **Amplifiers (from code, not measured):**
   - One arch-docs build runs the full recovery at least three times without
     caching: C4 context and deployment views (`facts.py:575`,
