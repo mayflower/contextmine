@@ -287,6 +287,28 @@ observed directly and what is only inferred from the code.
 - **Fix idea:** Accept `/mcp` as well (route or redirect that keeps POST), or
   document `/mcp/`.
 
+### 14. Business rule extraction: one LLM call per code unit, unbounded
+
+- **Observed:** The first sync with working LLM keys spent its knowledge-graph
+  phase waiting on the LLM: `extract_rules_from_file`
+  (`analyzer/extractors/rules.py`) splits each changed code file into
+  functions/classes with Tree-sitter and sends every unit to the research
+  model (`RESEARCH_MODEL`, default `claude-sonnet-4-5`) in its own call;
+  files run one after another, units of a file concurrently. 15 changed code
+  files meant roughly 900 calls, test files included.
+- **Unbounded full run:** `_kg_extract_business_rules` (`flows.py`) runs a full
+  extraction over all code files when a sync has no changed documents and no
+  business rules exist yet ("running initial extraction"); for this
+  repository (~470 code files) that is several thousand calls. There is no
+  cap, no triage step before the LLM, and tests are not excluded.
+- **Parse failures:** Some answers fail validation, e.g. `1 validation error
+  for ExtractionOutput rules: Input should be a valid list` with the list
+  returned as a JSON string, sometimes with a trailing comma; that unit is
+  skipped with a warning (4 in the first minutes).
+- **Fix idea:** Triage before the LLM (the deterministic rule candidates from
+  `rules.py` / the design doc's cost model), a per-sync cap, exclude tests by
+  default, and tolerate stringified JSON in structured output.
+
 ## Fixed on `feat/local-dev-mode`
 
 - **Postgres data lost on `docker compose down`:** the named volume was
