@@ -42,6 +42,8 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "default_llm_provider": "openai",
         "semantic_extraction_llm_provider": "",
         "semantic_extraction_llm_model": "",
+        "semantic_extraction_batch_size": 25,
+        "semantic_extraction_concurrency": 1,
         "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",

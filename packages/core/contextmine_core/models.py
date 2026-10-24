@@ -1170,6 +1170,33 @@ class CommunityMember(Base):
     node: Mapped[KnowledgeNode] = relationship()
 
 
+class SemanticExtractionChunk(Base):
+    """Marks a chunk whose semantic entities were extracted.
+
+    Chunks without a row form the extraction backlog, so an aborted or budgeted
+    run resumes where it stopped. Rows go away with their chunk.
+    """
+
+    __tablename__ = "semantic_extraction_chunks"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chunks.id", ondelete=_ON_DELETE_CASCADE),
+        primary_key=True,
+    )
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(_FK_COLLECTIONS, ondelete=_ON_DELETE_CASCADE),
+        nullable=False,
+        index=True,
+    )
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    entity_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class KnowledgeEmbedding(Base):
     """Embedding vector for a knowledge node or community.
 
