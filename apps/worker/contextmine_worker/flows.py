@@ -3885,7 +3885,6 @@ def _build_source_version_stats(
         "evolution_warnings": list(ctx.scip_stats.get("evolution_warnings", []) or []),
         "twin_nodes_upserted": int(ctx.twin_stats.get("twin_nodes_upserted", 0)),
         "twin_edges_upserted": int(ctx.twin_stats.get("twin_edges_upserted", 0)),
-        "age_graph_rebuilt": ctx.twin_stats.get("age_graph_rebuilt"),
         "evolution_ownership_rows": int(ctx.twin_stats.get("evolution_ownership_rows", 0)),
         "evolution_coupling_rows": int(ctx.twin_stats.get("evolution_coupling_rows", 0)),
         "fitness_findings_written": int(ctx.twin_stats.get("fitness_findings_written", 0)),
@@ -3942,6 +3941,7 @@ def _build_sync_run_stats(ctx: _SyncGitHubCtx) -> dict[str, Any]:
         # Twin stats
         "twin_nodes_upserted": ctx.twin_stats.get("twin_nodes_upserted", 0),
         "twin_edges_upserted": ctx.twin_stats.get("twin_edges_upserted", 0),
+        "age_graph_rebuilt": ctx.twin_stats.get("age_graph_rebuilt"),
         "twin_metric_nodes_enriched": ctx.twin_stats.get("twin_metric_nodes_enriched", 0),
         "metrics_requested_files": ctx.twin_stats.get("metrics_requested_files", 0),
         "metrics_mapped_files": ctx.twin_stats.get("metrics_mapped_files", 0),
