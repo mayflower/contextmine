@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 if TYPE_CHECKING:
     from contextmine_core.research.llm import LLMProvider
@@ -1293,7 +1294,22 @@ def _relationship_edge_meta(rel: SemanticRelationship) -> dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 
-def _create_file_mention_edges(
+def _merge_entity_meta(meta: dict[str, Any], entity: SemanticEntity) -> dict[str, Any]:
+    """Merge a re-extracted entity into an existing node's meta (lists are unioned)."""
+    merged = dict(meta)
+    for key, values in (
+        ("aliases", entity.aliases),
+        ("source_symbols", entity.source_symbols),
+        ("source_files", entity.source_files),
+    ):
+        merged[key] = list(dict.fromkeys([*(merged.get(key) or []), *values]))
+    merged.setdefault("type", entity.entity_type)
+    if not merged.get("description"):
+        merged["description"] = entity.description
+    return merged
+
+
+async def _create_file_mention_edges(
     session: Any,
     collection_id: UUID,
     entity_name_to_id: dict[str, UUID],
@@ -1310,17 +1326,22 @@ def _create_file_mention_edges(
             file_id = file_node_by_uri.get(uri)
             if not file_id or (file_id, entity_id) in created:
                 continue
-            session.add(
-                edge_cls(
+            created.add((file_id, entity_id))
+            # The edge may survive from an earlier run when the entity was reused.
+            inserted = await session.execute(
+                pg_insert(edge_cls)
+                .values(
                     collection_id=collection_id,
                     source_node_id=file_id,
                     target_node_id=entity_id,
                     kind=edge_kind_cls.FILE_MENTIONS_ENTITY,
                     meta={"source_uri": uri},
                 )
+                .on_conflict_do_nothing(constraint="uq_knowledge_edge_unique")
+                .returning(edge_cls.id)
             )
-            created.add((file_id, entity_id))
-            stats["file_edges_created"] += 1
+            if inserted.first() is not None:
+                stats["file_edges_created"] += 1
 
 
 def _file_node_lookup_keys(natural_key: str) -> set[str]:
@@ -1382,6 +1403,7 @@ async def persist_semantic_entities(
 
     stats = {
         "entities_created": 0,
+        "entities_merged": 0,
         "relationships_created": 0,
         "file_edges_created": 0,
         "evidence_created": 0,
@@ -1437,26 +1459,50 @@ async def persist_semantic_entities(
         for lookup_key in _file_node_lookup_keys(natural_key):
             file_node_by_uri[lookup_key] = node_id
 
+    # Entities from unchanged documents survive an incremental run, and names
+    # that differ only in case or spacing share a natural key, so reuse the
+    # node with the same natural key instead of inserting a duplicate.
+    nodes_by_key: dict[str, Any] = {
+        node.natural_key: node
+        for node in (
+            await session.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.collection_id == collection_id,
+                    KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
     # Create entity nodes
     entity_name_to_id: dict[str, UUID] = {}
     entity_source_files: dict[str, list[str]] = {}  # entity_name -> list of source URIs
 
     for entity in batch.entities:
-        node = KnowledgeNode(
-            collection_id=collection_id,
-            kind=KnowledgeNodeKind.SEMANTIC_ENTITY,
-            natural_key=entity.natural_key,
-            name=entity.name,
-            meta={
-                "type": entity.entity_type,
-                "description": entity.description,
-                "aliases": entity.aliases,
-                "source_symbols": entity.source_symbols,
-                "source_files": entity.source_files,
-            },
-        )
-        session.add(node)
-        await session.flush()
+        node = nodes_by_key.get(entity.natural_key)
+        if node is None:
+            node = KnowledgeNode(
+                collection_id=collection_id,
+                kind=KnowledgeNodeKind.SEMANTIC_ENTITY,
+                natural_key=entity.natural_key,
+                name=entity.name,
+                meta={
+                    "type": entity.entity_type,
+                    "description": entity.description,
+                    "aliases": entity.aliases,
+                    "source_symbols": entity.source_symbols,
+                    "source_files": entity.source_files,
+                },
+            )
+            session.add(node)
+            await session.flush()
+            nodes_by_key[entity.natural_key] = node
+            stats["entities_created"] += 1
+        else:
+            node.meta = _merge_entity_meta(node.meta or {}, entity)
+            stats["entities_merged"] += 1
         entity_name_to_id[entity.name.lower()] = node.id
         # Track source files for this entity
         entity_source_files[entity.name.lower()] = list(entity.source_files)
@@ -1472,7 +1518,6 @@ async def persist_semantic_entities(
             await session.flush()
             session.add(KnowledgeNodeEvidence(node_id=node.id, evidence_id=evidence.id))
             stats["evidence_created"] += 1
-        stats["entities_created"] += 1
 
     # Create semantic relationship edges
     for rel in batch.relationships:
@@ -1482,18 +1527,25 @@ async def persist_semantic_entities(
         if not source_id or not target_id:
             continue
 
-        edge = KnowledgeEdge(
-            collection_id=collection_id,
-            source_node_id=source_id,
-            target_node_id=target_id,
-            kind=KnowledgeEdgeKind.SEMANTIC_RELATIONSHIP,
-            meta=_relationship_edge_meta(rel),
+        # Merged entities can yield the same edge twice, or one that survived
+        # from an earlier run; keep the first.
+        inserted = await session.execute(
+            pg_insert(KnowledgeEdge)
+            .values(
+                collection_id=collection_id,
+                source_node_id=source_id,
+                target_node_id=target_id,
+                kind=KnowledgeEdgeKind.SEMANTIC_RELATIONSHIP,
+                meta=_relationship_edge_meta(rel),
+            )
+            .on_conflict_do_nothing(constraint="uq_knowledge_edge_unique")
+            .returning(KnowledgeEdge.id)
         )
-        session.add(edge)
-        stats["relationships_created"] += 1
+        if inserted.first() is not None:
+            stats["relationships_created"] += 1
 
     # Create FILE_MENTIONS_ENTITY edges to connect the code graph to semantic graph
-    _create_file_mention_edges(
+    await _create_file_mention_edges(
         session,
         collection_id,
         entity_name_to_id,
