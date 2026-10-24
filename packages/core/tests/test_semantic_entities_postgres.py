@@ -426,3 +426,25 @@ async def test_changed_document_is_reset_and_extracted_again(monkeypatch) -> Non
                 "Beta Module",
                 "Gamma Module",
             ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@_needs_db
+async def test_backlog_counts_unfinished_chunks_the_provider_would_extract(monkeypatch) -> None:  # noqa: ANN001
+    from contextmine_core.knowledge.extraction import semantic_extraction_backlog
+
+    async with _schema() as factory:
+        monkeypatch.setattr(contextmine_core, "get_session", factory)
+        async with factory() as session:
+            collection_id = await _collection(session)
+            await _documents(session, collection_id, [*PATHS, "tests/test_alpha.py"])
+
+        # Tests only count for the local (Ollama) profile, which extracts them.
+        assert await semantic_extraction_backlog(collection_id, provider_name="openai") == 3
+        assert await semantic_extraction_backlog(collection_id, provider_name="ollama") == 4
+
+        await extract_and_persist_semantic_entities(
+            collection_id, _FakeLlm(), _FakeEmbedder(), changed_doc_ids=None, max_chunks=2
+        )
+        assert await semantic_extraction_backlog(collection_id, provider_name="openai") == 1
