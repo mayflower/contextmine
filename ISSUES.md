@@ -339,6 +339,59 @@ observed directly and what is only inferred from the code.
 - **Status:** Fixed on `fix/semantic-entity-duplicates` (24bd984): reuse and
   merge by natural key, conflict-safe edges, PostgreSQL regression test.
 
+### 16. A chunk budget fills up alphabetically, not by importance
+
+- **Observed:** With `SEMANTIC_EXTRACTION_MAX_CHUNKS=150`, all extracted
+  entities came from `apps/web`, `apps/api`, `apps/api/tests` and
+  `apps/worker`; none from `packages/core`, where knowledge graph, twin,
+  architecture recovery and GraphRAG live.
+- **Cause:** `_chunk_priority_tuple` (`knowledge/extraction.py`) sorts by
+  chunk kind, path penalty, chunk index, path. Nearly all chunks share kind
+  and penalty, so the budget takes the first chunk of each file in
+  alphabetical path order.
+- **Status:** Fixed on `fix/semantic-budget-and-summaries`: under a budget,
+  chunks are taken one per directory per round (78 directories here).
+
+### 17. Community summaries are wiped and never regenerated
+
+- **Observed:** After a knowledge-graph pass that extracted 176 entities into
+  191 communities, none of the communities had a summary.
+- **Cause:** `persist_communities` deletes and recreates every community on
+  each pass, without summary. `_kg_step_summaries` skipped generation when
+  no documents changed and semantic entities existed, using entities as a
+  proxy for "summaries exist". Entities created earlier in the same pass,
+  or summaries lost by an aborted pass, therefore left communities without
+  summaries. The membership-hash cache in `generate_community_summaries`
+  never hit, because the summaries it compares were always gone, so passes
+  with changes re-summarized every community with the LLM. Its cache branch
+  also referenced `EmbeddingTargetType.COMMUNITY_SUMMARY`, which does not
+  exist. Community embeddings have no foreign key and were left orphaned.
+- **Status:** Fixed on `fix/semantic-budget-and-summaries`: communities with
+  the same members keep summary, title, hash and embedding; the summaries
+  step always runs and skips unchanged communities; enum fixed; embeddings
+  of dropped communities are deleted.
+
+### 18. A sync without file changes skips the knowledge graph entirely
+
+- **Observed:** A sync after an aborted extraction finished in 3 minutes
+  without any LLM call; semantic entities stayed empty.
+- **Cause:** `sync_github_source` exits early when no files changed
+  (`flows.py`, "Early exit: skip expensive LLM/embedding phases"), before
+  the knowledge-graph phase. That phase has its own catch-up logic (initial
+  extraction when no entities exist), which this exit bypasses.
+- **Fix idea:** Let the early exit still run knowledge-graph steps that are
+  missing their output, or offer a way to trigger the knowledge-graph build
+  for a source on its own.
+
+### 19. Worker application logs are hard to follow
+
+- **Observed:** `docker compose logs worker` is empty with the journald log
+  driver (`journalctl CONTAINER_NAME=contextmine-worker-1` works), and the
+  flow subprocess only emits warnings; step progress (`logger.info`) is not
+  visible anywhere, and Prefect only stores its own messages.
+- **Fix idea:** Configure INFO logging for the flow process and forward
+  `contextmine_*` loggers to Prefect.
+
 ## Fixed on `feat/local-dev-mode`
 
 - **Postgres data lost on `docker compose down`:** the named volume was
