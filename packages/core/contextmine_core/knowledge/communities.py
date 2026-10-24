@@ -182,14 +182,16 @@ async def detect_communities(
 
     result = HierarchicalCommunities()
 
-    # Load semantic entities (LLM-extracted) - required for proper GraphRAG
+    # Load semantic entities (LLM-extracted) - required for proper GraphRAG.
+    # Nodes and edges are ordered: Leiden's result depends on vertex and edge order,
+    # so the fixed seed alone does not make it reproducible across passes.
     node_result = await session.execute(
-        select(
-            KnowledgeNode.id, KnowledgeNode.natural_key, KnowledgeNode.kind, KnowledgeNode.name
-        ).where(
+        select(KnowledgeNode.id, KnowledgeNode.natural_key, KnowledgeNode.kind, KnowledgeNode.name)
+        .where(
             KnowledgeNode.collection_id == collection_id,
             KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
         )
+        .order_by(KnowledgeNode.natural_key)
     )
     nodes = node_result.all()
     edge_kinds = SEMANTIC_EDGE_KINDS
@@ -225,10 +227,12 @@ async def detect_communities(
             KnowledgeEdge.target_node_id,
             KnowledgeEdge.kind,
             KnowledgeEdge.meta,
-        ).where(
+        )
+        .where(
             KnowledgeEdge.collection_id == collection_id,
             KnowledgeEdge.kind.in_(edge_kinds),
         )
+        .order_by(KnowledgeEdge.source_node_id, KnowledgeEdge.target_node_id, KnowledgeEdge.kind)
     )
     edges = edge_result.all()
 
