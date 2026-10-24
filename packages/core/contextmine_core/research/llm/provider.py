@@ -11,6 +11,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from contextmine_core.model_policy import ensure_model_calls_enabled
 from contextmine_core.research.llm.structured import (
     coerce_json_string_fields,
@@ -346,6 +347,102 @@ class LangChainProvider(LLMProvider):
         return parser.parse(text_response)
 
 
+class OllamaProvider(LLMProvider):
+    """LLM provider for local models served by Ollama.
+
+    Talks to the native /api/chat endpoint instead of the OpenAI-compatible one,
+    because only the native endpoint accepts a per-request context size (num_ctx)
+    and lets thinking be switched off. Without both, long chunks get truncated and
+    thinking models spend the token budget before writing the JSON answer.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model_name: str,
+        num_ctx: int = 8192,
+        timeout: float = 600.0,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._model_name = model_name
+        self._num_ctx = num_ctx
+        self._timeout = timeout
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def provider_name(self) -> str:
+        return "ollama"
+
+    @retry(
+        retry=retry_if_exception_type(httpx.TransportError),
+        wait=wait_exponential_jitter(initial=1, max=10, jitter=2),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _chat(
+        self,
+        *,
+        system: str,
+        messages: Sequence[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        output_format: dict[str, Any] | None = None,
+    ) -> str:
+        ensure_model_calls_enabled()
+        payload: dict[str, Any] = {
+            "model": self._model_name,
+            "stream": False,
+            "think": False,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "options": {
+                "num_ctx": self._num_ctx,
+                "num_predict": max_tokens,
+                "temperature": temperature,
+            },
+        }
+        if output_format is not None:
+            payload["format"] = output_format
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(f"{self._base_url}/api/chat", json=payload)
+            response.raise_for_status()
+        return response.json()["message"]["content"]
+
+    async def generate_text(
+        self,
+        *,
+        system: str,
+        messages: Sequence[dict[str, str]],
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> str:
+        return await self._chat(
+            system=system, messages=messages, max_tokens=max_tokens, temperature=temperature
+        )
+
+    async def generate_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        messages: Sequence[dict[str, str]],
+        output_schema: type[T],
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> T:
+        # Ollama constrains decoding to the JSON schema, so the reply parses directly.
+        content = await self._chat(
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            output_format=output_schema.model_json_schema(),
+        )
+        return output_schema.model_validate_json(content)
+
+
 def get_llm_provider(
     provider: str = "anthropic",
     model: str | None = None,
@@ -356,7 +453,7 @@ def get_llm_provider(
     """Factory function to create an LLM provider.
 
     Args:
-        provider: Provider name ('anthropic', 'openai')
+        provider: Provider name ('anthropic', 'openai', 'ollama')
         model: Model name (defaults to provider's default)
         api_key: API key (defaults to environment variable)
         max_retries: Maximum retry attempts
@@ -417,8 +514,17 @@ def get_llm_provider(
             max_retries=max_retries,
         )
 
+    elif provider == "ollama":
+        return OllamaProvider(
+            base_url=settings.ollama_base_url,
+            model_name=model or settings.ollama_llm_model,
+            num_ctx=settings.ollama_num_ctx,
+        )
+
     else:
-        raise ValueError(f"Unsupported provider: {provider}. Use 'anthropic' or 'openai'.")
+        raise ValueError(
+            f"Unsupported provider: {provider}. Use 'anthropic', 'openai' or 'ollama'."
+        )
 
 
 def get_research_llm_provider() -> LLMProvider:

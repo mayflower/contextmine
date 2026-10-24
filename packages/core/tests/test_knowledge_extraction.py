@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 from contextmine_core.knowledge.extraction import (
     EntityEvidenceRecord,
+    EntityExtractionResult,
     ExtractedEntity,
     ExtractedRelationship,
     ExtractionBatch,
@@ -101,6 +102,12 @@ class TestExtractedRelationship:
             ExtractedRelationship(
                 source="A", target="B", relationship="R", description="D", strength=-0.1
             )
+
+
+class TestExtractedEntityType:
+    def test_rejects_types_outside_the_closed_set(self) -> None:
+        with pytest.raises(ValidationError):
+            ExtractedEntity(name="Ingest", type="WORKFLOW", description="d")
 
 
 class TestExtractionResult:
@@ -266,14 +273,14 @@ class TestCanonicalizeRelationships:
 class TestSemanticChunkFiltering:
     """Tests for low-signal semantic chunk filtering."""
 
-    def test_skips_test_artifacts(self) -> None:
+    def test_keeps_tests_as_evidence(self) -> None:
         assert (
             _should_skip_semantic_chunk(
                 "src/__tests__/auth.test.ts",
                 {"start_line": 1, "end_line": 10},
                 "describe('auth', () => { it('logs in') })",
             )
-            == "test_artifact"
+            is None
         )
 
     def test_skips_generated_content(self) -> None:
@@ -321,16 +328,21 @@ class TestExtractEntitiesFromChunk:
     @pytest.mark.anyio
     async def test_returns_entities_from_llm(self) -> None:
         mock_llm = AsyncMock()
-        mock_llm.generate_structured.return_value = ExtractionResult(
+        mock_llm.generate_structured.return_value = EntityExtractionResult(
+            reasoning="Login handling backed by a database layer.",
             entities=[
                 ExtractedEntity(name="Auth", type="CONCEPT", description="Handles auth"),
                 ExtractedEntity(name="DB", type="COMPONENT", description="Database layer"),
-            ]
+            ],
         )
 
         result = await extract_entities_from_chunk(mock_llm, "def login(): pass", "auth.py")
         assert len(result) == 2
         assert result[0].name == "Auth"
+        # The reasoning field is requested before the entities.
+        schema = mock_llm.generate_structured.call_args.kwargs["output_schema"]
+        assert schema is EntityExtractionResult
+        assert list(schema.model_fields)[0] == "reasoning"
 
     @pytest.mark.anyio
     async def test_passes_full_content_to_llm(self) -> None:
@@ -355,7 +367,7 @@ class TestExtractEntitiesFromChunk:
         assert "FILE PATH: big.py" in prompt
         assert "LANGUAGE: python" in prompt
         assert "LINES: 11-42" in prompt
-        assert "ignore tests, mocks, generated code" in prompt.lower()
+        assert "ignore mocks, generated code" in prompt.lower()
 
     @pytest.mark.anyio
     async def test_llm_exception_returns_empty(self) -> None:
@@ -463,8 +475,8 @@ class TestExtractRelationshipsFromChunk:
         mock_llm.generate_structured.side_effect = RuntimeError("LLM error")
 
         entities = [
-            ExtractedEntity(name="A", type="C", description="D1"),
-            ExtractedEntity(name="B", type="C", description="D2"),
+            ExtractedEntity(name="A", type="CONCEPT", description="D1"),
+            ExtractedEntity(name="B", type="CONCEPT", description="D2"),
         ]
         result = await extract_relationships_from_chunk(mock_llm, entities, "code")
         assert result == []
@@ -531,7 +543,7 @@ class TestMergeEntityGroups:
         assert merged[0].entity_type == "CONCEPT"
 
     def test_empty_group_skipped(self) -> None:
-        groups = {0: [], 1: [ExtractedEntity(name="A", type="C", description="D")]}
+        groups = {0: [], 1: [ExtractedEntity(name="A", type="CONCEPT", description="D")]}
         merged = _merge_entity_groups(groups)
         assert len(merged) == 1
 
@@ -747,7 +759,7 @@ class TestResolveEntitiesWithEmbeddings:
     async def test_no_embed_interface_raises(self) -> None:
         mock_embedder = MagicMock(spec=[])
         entities = [
-            ExtractedEntity(name="A", type="C", description="D"),
+            ExtractedEntity(name="A", type="CONCEPT", description="D"),
         ]
         with pytest.raises(ValueError, match="embed_batch"):
             await _resolve_entities_with_embeddings(entities, mock_embedder)
@@ -758,7 +770,7 @@ class TestResolveEntitiesWithEmbeddings:
         mock_embedder.embed_batch.return_value = MagicMock(embeddings=[])
 
         entities = [
-            ExtractedEntity(name="A", type="C", description="D"),
+            ExtractedEntity(name="A", type="CONCEPT", description="D"),
         ]
         with pytest.raises(ValueError, match="no embeddings"):
             await _resolve_entities_with_embeddings(entities, mock_embedder)
@@ -1080,9 +1092,9 @@ class TestExtractFromDocuments:
             (
                 uuid4(),
                 uuid4(),
-                "describe('auth', () => { it('logs in') })",
+                "exports[`auth logs in 1`] = `<LoginForm />`;",
                 {"start_line": 1, "end_line": 5},
-                "src/__tests__/auth.test.ts",
+                "src/__snapshots__/auth.test.ts.snap",
                 0,
             ),
         ]
