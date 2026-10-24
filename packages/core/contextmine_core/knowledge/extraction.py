@@ -399,6 +399,11 @@ class ExtractionBatch:
     # canonical entity name -> chunk/file evidence records
     entity_evidence: dict[str, list[EntityEvidenceRecord]] = field(default_factory=dict)
     quality_report: dict[str, Any] = field(default_factory=dict)
+    # chunk id -> raw entity count, for chunks whose entity extraction succeeded
+    processed_chunks: dict[UUID, int] = field(default_factory=dict)
+    failed_chunk_ids: list[UUID] = field(default_factory=list)
+    raw_entity_count: int = 0
+    resolution_audit: dict[str, Any] = field(default_factory=dict)
 
 
 # -----------------------------------------------------------------------------
@@ -415,6 +420,7 @@ async def extract_entities_from_chunk(
     start_line: int | None = None,
     end_line: int | None = None,
     chunk_kind: str | None = None,
+    raise_errors: bool = False,
 ) -> list[ExtractedEntity]:
     """Extract semantic entities from a code chunk using LLM.
 
@@ -422,6 +428,8 @@ async def extract_entities_from_chunk(
         llm_provider: LLM provider for extraction
         code: Source code text
         file_path: Path to the source file
+        raise_errors: Re-raise LLM failures instead of returning no entities, so a
+            caller can tell "nothing found" from "not extracted".
 
     Returns:
         List of extracted entities
@@ -452,6 +460,8 @@ async def extract_entities_from_chunk(
         return result.entities
     except Exception as e:
         logger.warning("Entity extraction failed for %s: %s", file_path, e)
+        if raise_errors:
+            raise
         return []
 
 
@@ -763,6 +773,249 @@ def _should_skip_semantic_chunk(
     return None
 
 
+@dataclass
+class _SemanticCandidates:
+    """Chunks eligible for semantic extraction, in priority order."""
+
+    candidates: list[tuple[tuple[int, int, int, str], Any]] = field(default_factory=list)
+    total_chunks_loaded: int = 0
+    skipped_low_signal: int = 0
+    skipped_reasons: dict[str, int] = field(default_factory=dict)
+    chunk_kind_counts: dict[str, int] = field(default_factory=dict)
+
+    def select(self, max_chunks: int | None) -> list[tuple[tuple[int, int, int, str], Any]]:
+        if max_chunks is not None and max_chunks > 0:
+            return _spread_across_directories(self.candidates)[:max_chunks]
+        return self.candidates
+
+
+async def _load_semantic_candidates(
+    collection_id: UUID,
+    llm_provider: LLMProvider,
+    changed_doc_ids: list[str] | None,
+    *,
+    unprocessed_only: bool = False,
+) -> _SemanticCandidates:
+    """Load the chunks to extract from, filtered for low-signal content and sorted."""
+    import uuid as uuid_module
+
+    from contextmine_core import get_session
+    from contextmine_core.models import Chunk, Document, SemanticExtractionChunk, Source
+    from sqlalchemy import select
+
+    # Load pre-split chunks instead of whole documents.  Documents can be
+    # much larger than an LLM context window; the Chunk table already
+    # contains retrieval-sized pieces, so we use those directly.
+    # When changed_doc_ids is provided, scope to only those documents.
+    async with get_session() as session:
+        stmt = (
+            select(
+                Chunk.id,
+                Chunk.document_id,
+                Chunk.content,
+                Chunk.meta,
+                Document.uri,
+                Chunk.chunk_index,
+            )
+            .join(Document, Chunk.document_id == Document.id)
+            .join(Source, Document.source_id == Source.id)
+            .where(Source.collection_id == collection_id)
+        )
+        if changed_doc_ids:
+            changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
+            stmt = stmt.where(Chunk.document_id.in_(changed_uuids))
+        if unprocessed_only:
+            stmt = stmt.outerjoin(
+                SemanticExtractionChunk, SemanticExtractionChunk.chunk_id == Chunk.id
+            ).where(SemanticExtractionChunk.chunk_id.is_(None))
+        stmt = stmt.order_by(Document.uri, Chunk.chunk_index)
+        result = await session.execute(stmt)
+        chunks = result.all()
+
+    loaded = _SemanticCandidates(total_chunks_loaded=len(chunks))
+    for chunk_id, _doc_id, chunk_content, chunk_meta, doc_uri_raw, chunk_index in chunks:
+        if not chunk_content or not chunk_content.strip():
+            continue
+
+        doc_uri = doc_uri_raw or str(_doc_id)
+        skip_reason = _should_skip_semantic_chunk(
+            doc_uri, chunk_meta, chunk_content, keep_tests=_is_local_model(llm_provider)
+        )
+        if skip_reason:
+            loaded.skipped_low_signal += 1
+            loaded.skipped_reasons[skip_reason] = loaded.skipped_reasons.get(skip_reason, 0) + 1
+            logger.debug("Skipping semantic extraction for %s (%s)", doc_uri, skip_reason)
+            continue
+
+        start_line, end_line = _resolve_chunk_line_range(chunk_meta, chunk_content)
+        language = _infer_chunk_language(doc_uri, chunk_meta)
+        chunk_kind = _semantic_chunk_kind(doc_uri, language)
+        loaded.chunk_kind_counts[chunk_kind] = loaded.chunk_kind_counts.get(chunk_kind, 0) + 1
+        loaded.candidates.append(
+            (
+                _chunk_priority_tuple(doc_uri, int(chunk_index or 0), start_line, chunk_kind),
+                (
+                    chunk_id,
+                    doc_uri,
+                    chunk_content,
+                    start_line,
+                    end_line,
+                    language,
+                    chunk_kind,
+                ),
+            )
+        )
+
+    loaded.candidates.sort(key=lambda item: item[0])
+    return loaded
+
+
+async def _extract_candidates(
+    selected: list[tuple[tuple[int, int, int, str], Any]],
+    llm_provider: LLMProvider,
+    embedder: Any,
+    similarity_threshold: float,
+    *,
+    concurrency: int = 1,
+    record_failures: bool = False,
+) -> ExtractionBatch:
+    """Run LLM extraction over chunks, then resolve entities and relationships.
+
+    With ``record_failures`` a chunk whose entity extraction raised is listed in
+    ``failed_chunk_ids`` instead of counting as processed with no entities.
+    """
+    import anyio
+
+    batch = ExtractionBatch()
+    limiter = anyio.CapacityLimiter(max(1, concurrency))
+
+    async def extract_one(candidate: Any) -> tuple[Any, list[ExtractedEntity] | None, list]:
+        chunk_id, doc_uri, chunk_content, start_line, end_line, language, chunk_kind = candidate
+        async with limiter:
+            try:
+                entities = await extract_entities_from_chunk(
+                    llm_provider=llm_provider,
+                    code=chunk_content,
+                    file_path=doc_uri,
+                    language=language,
+                    start_line=start_line,
+                    end_line=end_line,
+                    chunk_kind=chunk_kind,
+                    raise_errors=record_failures,
+                )
+            except Exception:
+                return candidate, None, []
+            relationships = []
+            if entities:
+                # Extract relationships within this chunk
+                relationships = await extract_relationships_from_chunk(
+                    llm_provider=llm_provider,
+                    entities=entities,
+                    code=chunk_content,
+                    file_path=doc_uri,
+                    language=language,
+                    start_line=start_line,
+                    end_line=end_line,
+                    chunk_kind=chunk_kind,
+                )
+        return candidate, entities, relationships
+
+    results: list[Any] = [None] * len(selected)
+
+    async def run(index: int, candidate: Any) -> None:
+        results[index] = await extract_one(candidate)
+
+    async with anyio.create_task_group() as task_group:
+        for index, (_priority, candidate) in enumerate(selected):
+            task_group.start_soon(run, index, candidate)
+
+    all_entities: list[ExtractedEntity] = []
+    raw_entity_evidence: dict[str, list[EntityEvidenceRecord]] = {}
+    # Accumulate per-document entities for cross-doc relationship inference.
+    # Multiple chunks may belong to the same document.
+    doc_entities: dict[str, list[str]] = {}
+
+    for candidate, entities, relationships in results:
+        chunk_id, doc_uri, chunk_content, start_line, end_line, _language, _kind = candidate
+        if entities is None:
+            batch.failed_chunk_ids.append(chunk_id)
+            continue
+        batch.processed_chunks[chunk_id] = len(entities)
+        batch.chunks_processed += 1
+        if not entities:
+            continue
+        for entity in entities:
+            entity.source_files.append(doc_uri)
+            raw_entity_evidence.setdefault(entity.name.lower(), []).append(
+                EntityEvidenceRecord(
+                    file_path=doc_uri,
+                    chunk_id=chunk_id,
+                    start_line=start_line,
+                    end_line=end_line,
+                    snippet=chunk_content[:500],
+                )
+            )
+        doc_entities.setdefault(doc_uri, []).extend(e.name for e in entities)
+        all_entities.extend(entities)
+        for rel in relationships:
+            batch.relationships.append(
+                SemanticRelationship(
+                    source_entity=rel.source,
+                    target_entity=rel.target,
+                    relationship_type=rel.relationship,
+                    description=rel.description,
+                    strength=rel.strength,
+                )
+            )
+
+    batch.entity_occurrences = doc_entities
+    batch.raw_entity_count = len(all_entities)
+
+    # Resolve and merge entities across documents using embedding similarity
+    # This handles multi-language, naming conventions, abbreviations, synonyms
+    batch.entities, batch.resolution_audit = await _resolve_entities_with_embeddings_audited(
+        all_entities, embedder, similarity_threshold
+    )
+    name_to_resolved = _build_entity_name_resolver(batch.entities)
+    batch.relationships = _canonicalize_relationships(batch.relationships, name_to_resolved)
+    resolved_evidence: dict[str, list[EntityEvidenceRecord]] = {}
+    for raw_name, records in raw_entity_evidence.items():
+        resolved_name = name_to_resolved.get(raw_name)
+        if not resolved_name:
+            continue
+        bucket = resolved_evidence.setdefault(resolved_name.lower(), [])
+        seen = {(r.file_path, r.chunk_id, r.start_line, r.end_line, r.snippet) for r in bucket}
+        for record in records:
+            key = (
+                record.file_path,
+                record.chunk_id,
+                record.start_line,
+                record.end_line,
+                record.snippet,
+            )
+            if key not in seen:
+                bucket.append(record)
+                seen.add(key)
+    batch.entity_evidence = resolved_evidence
+    logger.info(
+        "Entity resolution: %d entities merged to %d using embedding similarity (threshold=%.2f)",
+        len(all_entities),
+        len(batch.entities),
+        similarity_threshold,
+    )
+
+    # Create cross-document relationships based on co-occurrence
+    # Entities that appear in the same document are implicitly related
+    cross_doc_relationships = _extract_cross_document_relationships(
+        batch.entities,
+        batch.entity_occurrences,
+        batch.relationships,
+    )
+    batch.relationships.extend(cross_doc_relationships)
+    batch.quality_report = {"cross_doc_relationships": len(cross_doc_relationships)}
+    return batch
+
+
 async def extract_from_documents(
     collection_id: UUID,
     llm_provider: LLMProvider,
@@ -799,6 +1052,37 @@ async def extract_from_documents(
     Raises:
         ValueError: If embedder is not provided
     """
+    _require_embedder(embedder)
+    loaded = await _load_semantic_candidates(collection_id, llm_provider, changed_doc_ids)
+    selected = loaded.select(max_chunks)
+    batch = await _extract_candidates(selected, llm_provider, embedder, similarity_threshold)
+    cross_doc = batch.quality_report.get("cross_doc_relationships", 0)
+    batch.quality_report = _build_quality_report(
+        total_chunks_loaded=loaded.total_chunks_loaded,
+        selected_chunks=batch.chunks_processed,
+        chunk_budget_deferred=max(0, len(loaded.candidates) - len(selected)),
+        skipped_reasons=loaded.skipped_reasons,
+        chunk_kind_counts=loaded.chunk_kind_counts,
+        raw_entity_count=batch.raw_entity_count,
+        resolved_entity_count=len(batch.entities),
+        relationship_count=len(batch.relationships),
+        unique_source_files=_count_evidence_files(batch.entity_evidence),
+        resolution_audit=batch.resolution_audit,
+    )
+
+    logger.info(
+        "Extracted %d entities, %d relationships (%d cross-doc) from %d chunks (%d skipped low-signal)",
+        len(batch.entities),
+        len(batch.relationships),
+        cross_doc,
+        batch.chunks_processed,
+        loaded.skipped_low_signal,
+    )
+
+    return batch
+
+
+def _require_embedder(embedder: Any) -> None:
     if embedder is None:
         raise ValueError(
             "embedder is required for GraphRAG entity extraction. "
@@ -806,218 +1090,222 @@ async def extract_from_documents(
             "languages, naming conventions, and synonyms."
         )
 
+
+def _count_evidence_files(evidence: dict[str, list[EntityEvidenceRecord]]) -> int:
+    return len({record.file_path for records in evidence.values() for record in records})
+
+
+async def extract_and_persist_semantic_entities(
+    collection_id: UUID,
+    llm_provider: LLMProvider,
+    embedder: Any,
+    *,
+    changed_doc_ids: list[str] | None,
+    max_chunks: int | None = None,
+    batch_size: int = 25,
+    concurrency: int = 1,
+    similarity_threshold: float = 0.85,
+) -> dict[str, Any]:
+    """Extract semantic entities batch by batch, committing after each batch.
+
+    Every chunk whose entity extraction succeeded is recorded in
+    ``semantic_extraction_chunks`` in the same transaction as its entities, so
+    an aborted or budgeted run loses at most the batch in flight and the next
+    run continues with the chunks that are still unrecorded.
+
+    ``changed_doc_ids`` decides what is reset first: ``None`` resets the whole
+    collection, a list resets the entities and records of those documents, and
+    an empty list resets nothing. Each run then extracts unrecorded chunks, up
+    to ``max_chunks``.
+
+    Entities are resolved by embedding similarity within a batch; across batches
+    they merge when their names map to the same natural key.
+    """
+    from contextmine_core import get_session
+
+    _require_embedder(embedder)
+
+    async with get_session() as session:
+        await _reset_semantic_extraction(session, collection_id, changed_doc_ids)
+        await session.commit()
+
+    loaded = await _load_semantic_candidates(
+        collection_id, llm_provider, None, unprocessed_only=True
+    )
+    selected = loaded.select(max_chunks)
+    model_name = f"{llm_provider.provider_name}:{llm_provider.model_name}"
+
+    stats: dict[str, Any] = {
+        "entities_created": 0,
+        "entities_merged": 0,
+        "relationships_created": 0,
+        "file_edges_created": 0,
+        "evidence_created": 0,
+        "chunks_processed": 0,
+        "chunks_failed": 0,
+        "chunks_remaining": len(loaded.candidates) - len(selected),
+        "raw_entity_count": 0,
+        "resolved_entity_count": 0,
+        "relationship_count": 0,
+        "batches": 0,
+    }
+    audits: list[dict[str, Any]] = []
+    evidence_files: set[str] = set()
+
+    for offset in range(0, len(selected), max(1, batch_size)):
+        part = selected[offset : offset + max(1, batch_size)]
+        batch = await _extract_candidates(
+            part,
+            llm_provider,
+            embedder,
+            similarity_threshold,
+            concurrency=concurrency,
+            record_failures=True,
+        )
+        async with get_session() as session:
+            persisted = await persist_semantic_entities(
+                session, collection_id, batch, delete_existing=False
+            )
+            await _record_extracted_chunks(
+                session, collection_id, batch.processed_chunks, model_name
+            )
+            await session.commit()
+
+        for key in (
+            "entities_created",
+            "entities_merged",
+            "relationships_created",
+            "file_edges_created",
+            "evidence_created",
+        ):
+            stats[key] += persisted.get(key, 0)
+        stats["chunks_processed"] += batch.chunks_processed
+        stats["chunks_failed"] += len(batch.failed_chunk_ids)
+        stats["raw_entity_count"] += batch.raw_entity_count
+        stats["resolved_entity_count"] += len(batch.entities)
+        stats["relationship_count"] += len(batch.relationships)
+        stats["batches"] += 1
+        audits.append(batch.resolution_audit)
+        evidence_files.update(
+            record.file_path for records in batch.entity_evidence.values() for record in records
+        )
+        logger.info(
+            "Semantic extraction batch %d: %d chunks, %d failed, %d entities (%d/%d selected)",
+            stats["batches"],
+            batch.chunks_processed,
+            len(batch.failed_chunk_ids),
+            len(batch.entities),
+            offset + len(part),
+            len(selected),
+        )
+        if part and len(batch.failed_chunk_ids) == len(part):
+            # Every chunk failed: the provider is likely down. Stop instead of
+            # sending the rest of the backlog into the same failure.
+            logger.warning("Semantic extraction stopped: every chunk of the last batch failed")
+            stats["chunks_remaining"] += len(selected) - offset - len(part)
+            break
+
+    stats["chunks_remaining"] += stats["chunks_failed"]
+    stats["quality_report"] = _build_quality_report(
+        total_chunks_loaded=loaded.total_chunks_loaded,
+        selected_chunks=stats["chunks_processed"],
+        chunk_budget_deferred=stats["chunks_remaining"],
+        skipped_reasons=loaded.skipped_reasons,
+        chunk_kind_counts=loaded.chunk_kind_counts,
+        raw_entity_count=stats["raw_entity_count"],
+        resolved_entity_count=stats["resolved_entity_count"],
+        relationship_count=stats["relationship_count"],
+        unique_source_files=len(evidence_files),
+        resolution_audit=_combine_resolution_audits(audits),
+    )
+    return stats
+
+
+async def _reset_semantic_extraction(
+    session: AsyncSession, collection_id: UUID, changed_doc_ids: list[str] | None
+) -> None:
+    """Delete entities and extraction records that a run must rebuild."""
     import uuid as uuid_module
 
-    from contextmine_core import get_session
-    from contextmine_core.models import Chunk, Document, Source
-    from sqlalchemy import select
+    from contextmine_core.models import Chunk, SemanticExtractionChunk
+    from sqlalchemy import delete, select
 
-    batch = ExtractionBatch()
-
-    # Load pre-split chunks instead of whole documents.  Documents can be
-    # much larger than an LLM context window; the Chunk table already
-    # contains retrieval-sized pieces, so we use those directly.
-    # When changed_doc_ids is provided, scope to only those documents.
-    async with get_session() as session:
-        stmt = (
-            select(
-                Chunk.id,
-                Chunk.document_id,
-                Chunk.content,
-                Chunk.meta,
-                Document.uri,
-                Chunk.chunk_index,
-            )
-            .join(Document, Chunk.document_id == Document.id)
-            .join(Source, Document.source_id == Source.id)
-            .where(Source.collection_id == collection_id)
-        )
-        if changed_doc_ids:
-            changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
-            stmt = stmt.where(Chunk.document_id.in_(changed_uuids))
-        stmt = stmt.order_by(Document.uri, Chunk.chunk_index)
-        result = await session.execute(stmt)
-        chunks = result.all()
-
-    all_entities: list[ExtractedEntity] = []
-    raw_entity_evidence: dict[str, list[EntityEvidenceRecord]] = {}
-    skipped_low_signal = 0
-    skipped_reasons: dict[str, int] = {}
-    chunk_kind_counts: dict[str, int] = {}
-    candidates: list[tuple[tuple[int, int, int, str], Any]] = []
-
-    # Accumulate per-document entities for cross-doc relationship inference.
-    # Multiple chunks may belong to the same document.
-    doc_entities: dict[str, list[str]] = {}
-
-    for chunk_id, _doc_id, chunk_content, chunk_meta, doc_uri_raw, chunk_index in chunks:
-        if not chunk_content or not chunk_content.strip():
-            continue
-
-        doc_uri = doc_uri_raw or str(_doc_id)
-        skip_reason = _should_skip_semantic_chunk(
-            doc_uri, chunk_meta, chunk_content, keep_tests=_is_local_model(llm_provider)
-        )
-        if skip_reason:
-            skipped_low_signal += 1
-            skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
-            logger.debug("Skipping semantic extraction for %s (%s)", doc_uri, skip_reason)
-            continue
-
-        start_line, end_line = _resolve_chunk_line_range(chunk_meta, chunk_content)
-        language = _infer_chunk_language(doc_uri, chunk_meta)
-        chunk_kind = _semantic_chunk_kind(doc_uri, language)
-        chunk_kind_counts[chunk_kind] = chunk_kind_counts.get(chunk_kind, 0) + 1
-        candidates.append(
-            (
-                _chunk_priority_tuple(doc_uri, int(chunk_index or 0), start_line, chunk_kind),
-                (
-                    chunk_id,
-                    doc_uri,
-                    chunk_content,
-                    start_line,
-                    end_line,
-                    language,
-                    chunk_kind,
-                ),
+    if changed_doc_ids is not None and not changed_doc_ids:
+        return
+    await _delete_semantic_entities(session, collection_id, changed_doc_ids)
+    records = delete(SemanticExtractionChunk).where(
+        SemanticExtractionChunk.collection_id == collection_id
+    )
+    if changed_doc_ids:
+        changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
+        records = records.where(
+            SemanticExtractionChunk.chunk_id.in_(
+                select(Chunk.id).where(Chunk.document_id.in_(changed_uuids))
             )
         )
+    await session.execute(records)
 
-    candidates.sort(key=lambda item: item[0])
-    if max_chunks is not None and max_chunks > 0:
-        selected_candidates = _spread_across_directories(candidates)[:max_chunks]
-    else:
-        selected_candidates = candidates
-    chunk_budget_deferred = max(0, len(candidates) - len(selected_candidates))
 
-    for _priority, (
-        chunk_id,
-        doc_uri,
-        chunk_content,
-        start_line,
-        end_line,
-        language,
-        chunk_kind,
-    ) in selected_candidates:
-        entities = await extract_entities_from_chunk(
-            llm_provider=llm_provider,
-            code=chunk_content,
-            file_path=doc_uri,
-            language=language,
-            start_line=start_line,
-            end_line=end_line,
-            chunk_kind=chunk_kind,
+async def _record_extracted_chunks(
+    session: AsyncSession,
+    collection_id: UUID,
+    processed_chunks: dict[UUID, int],
+    model_name: str,
+) -> None:
+    """Record chunks whose entity extraction succeeded, including empty results."""
+    from contextmine_core.models import SemanticExtractionChunk
+
+    if not processed_chunks:
+        return
+    statement = pg_insert(SemanticExtractionChunk).values(
+        [
+            {
+                "chunk_id": chunk_id,
+                "collection_id": collection_id,
+                "model_name": model_name,
+                "entity_count": count,
+            }
+            for chunk_id, count in processed_chunks.items()
+        ]
+    )
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[SemanticExtractionChunk.chunk_id],
+            set_={
+                "model_name": statement.excluded.model_name,
+                "entity_count": statement.excluded.entity_count,
+                "extracted_at": statement.excluded.extracted_at,
+            },
         )
-
-        if entities:
-            for entity in entities:
-                entity.source_files.append(doc_uri)
-                raw_entity_evidence.setdefault(entity.name.lower(), []).append(
-                    EntityEvidenceRecord(
-                        file_path=doc_uri,
-                        chunk_id=chunk_id,
-                        start_line=start_line,
-                        end_line=end_line,
-                        snippet=chunk_content[:500],
-                    )
-                )
-
-            doc_entities.setdefault(doc_uri, []).extend(e.name for e in entities)
-            all_entities.extend(entities)
-
-            # Extract relationships within this chunk
-            relationships = await extract_relationships_from_chunk(
-                llm_provider=llm_provider,
-                entities=entities,
-                code=chunk_content,
-                file_path=doc_uri,
-                language=language,
-                start_line=start_line,
-                end_line=end_line,
-                chunk_kind=chunk_kind,
-            )
-
-            for rel in relationships:
-                batch.relationships.append(
-                    SemanticRelationship(
-                        source_entity=rel.source,
-                        target_entity=rel.target,
-                        relationship_type=rel.relationship,
-                        description=rel.description,
-                        strength=rel.strength,
-                    )
-                )
-
-        batch.chunks_processed += 1
-
-    batch.entity_occurrences = doc_entities
-
-    # Resolve and merge entities across documents using embedding similarity
-    # This handles multi-language, naming conventions, abbreviations, synonyms
-    batch.entities, resolution_audit = await _resolve_entities_with_embeddings_audited(
-        all_entities, embedder, similarity_threshold
-    )
-    name_to_resolved = _build_entity_name_resolver(batch.entities)
-    batch.relationships = _canonicalize_relationships(batch.relationships, name_to_resolved)
-    resolved_evidence: dict[str, list[EntityEvidenceRecord]] = {}
-    for raw_name, records in raw_entity_evidence.items():
-        resolved_name = name_to_resolved.get(raw_name)
-        if not resolved_name:
-            continue
-        bucket = resolved_evidence.setdefault(resolved_name.lower(), [])
-        seen = {(r.file_path, r.chunk_id, r.start_line, r.end_line, r.snippet) for r in bucket}
-        for record in records:
-            key = (
-                record.file_path,
-                record.chunk_id,
-                record.start_line,
-                record.end_line,
-                record.snippet,
-            )
-            if key not in seen:
-                bucket.append(record)
-                seen.add(key)
-    batch.entity_evidence = resolved_evidence
-    batch.quality_report = _build_quality_report(
-        total_chunks_loaded=len(chunks),
-        selected_chunks=batch.chunks_processed,
-        chunk_budget_deferred=chunk_budget_deferred,
-        skipped_reasons=skipped_reasons,
-        chunk_kind_counts=chunk_kind_counts,
-        raw_entity_count=len(all_entities),
-        resolved_entity_count=len(batch.entities),
-        relationship_count=len(batch.relationships),
-        unique_source_files=len(
-            {record.file_path for records in resolved_evidence.values() for record in records}
-        ),
-        resolution_audit=resolution_audit,
-    )
-    logger.info(
-        "Entity resolution: %d entities merged to %d using embedding similarity (threshold=%.2f)",
-        len(all_entities),
-        len(batch.entities),
-        similarity_threshold,
     )
 
-    # Create cross-document relationships based on co-occurrence
-    # Entities that appear in the same document are implicitly related
-    cross_doc_relationships = _extract_cross_document_relationships(
-        batch.entities,
-        batch.entity_occurrences,
-        batch.relationships,
-    )
-    batch.relationships.extend(cross_doc_relationships)
 
-    logger.info(
-        "Extracted %d entities, %d relationships (%d cross-doc) from %d chunks (%d skipped low-signal)",
-        len(batch.entities),
-        len(batch.relationships),
-        len(cross_doc_relationships),
-        batch.chunks_processed,
-        skipped_low_signal,
-    )
-
-    return batch
+def _combine_resolution_audits(audits: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum per-batch resolution audits into one run-level audit."""
+    combined: dict[str, Any] = {
+        "input_entities": 0,
+        "resolved_entities": 0,
+        "merged_groups": 0,
+        "max_group_size": 0,
+        "incompatible_pairs_blocked": 0,
+        "suspicious_group_count": 0,
+        "suspicious_groups": [],
+    }
+    for audit in audits:
+        for key in (
+            "input_entities",
+            "resolved_entities",
+            "merged_groups",
+            "incompatible_pairs_blocked",
+            "suspicious_group_count",
+        ):
+            combined[key] += int(audit.get(key, 0) or 0)
+        combined["max_group_size"] = max(
+            combined["max_group_size"], int(audit.get("max_group_size", 0) or 0)
+        )
+        combined["suspicious_groups"].extend(audit.get("suspicious_groups", []))
+    combined["suspicious_groups"] = combined["suspicious_groups"][:10]
+    return combined
 
 
 async def _get_entity_embeddings(embedder: Any, embed_texts: list[str]) -> list:
@@ -1440,38 +1728,15 @@ def _file_node_lookup_keys(natural_key: str) -> set[str]:
     return keys
 
 
-async def persist_semantic_entities(
-    session: AsyncSession,
-    collection_id: UUID,
-    batch: ExtractionBatch,
-    changed_doc_ids: list[str] | None = None,
-) -> dict:
-    """Persist extracted entities and relationships to the knowledge graph.
-
-    Creates SEMANTIC_ENTITY nodes, SEMANTIC_RELATIONSHIP edges, and
-    FILE_MENTIONS_ENTITY edges to connect semantic entities to their
-    source files (for graph connectivity in retrieval).
-
-    When ``changed_doc_ids`` is provided, only entities whose evidence
-    references those documents are deleted before re-creation.  Entities
-    from unchanged documents are preserved.
-
-    Args:
-        session: Database session
-        collection_id: Collection UUID
-        batch: Extraction batch to persist
-        changed_doc_ids: Scope deletion to entities linked to these docs.
-                         ``None`` deletes all entities (full rebuild).
-
-    Returns:
-        Stats dict
-    """
+async def _delete_semantic_entities(
+    session: AsyncSession, collection_id: UUID, changed_doc_ids: list[str] | None
+) -> None:
+    """Delete semantic entities, scoped to those with evidence in changed docs when given."""
     import uuid as uuid_module
 
     from contextmine_core.models import (
         Chunk,
         KnowledgeEdge,
-        KnowledgeEdgeKind,
         KnowledgeEvidence,
         KnowledgeNode,
         KnowledgeNodeEvidence,
@@ -1479,15 +1744,6 @@ async def persist_semantic_entities(
     )
     from sqlalchemy import delete, select
 
-    stats = {
-        "entities_created": 0,
-        "entities_merged": 0,
-        "relationships_created": 0,
-        "file_edges_created": 0,
-        "evidence_created": 0,
-    }
-
-    # Delete existing semantic entities — scoped to changed docs when possible
     if changed_doc_ids:
         # Only remove entities whose evidence references changed documents
         changed_uuids = [uuid_module.UUID(d) for d in changed_doc_ids]
@@ -1523,6 +1779,59 @@ async def persist_semantic_entities(
             )
         )
         await session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(existing_ids)))
+
+
+async def persist_semantic_entities(
+    session: AsyncSession,
+    collection_id: UUID,
+    batch: ExtractionBatch,
+    changed_doc_ids: list[str] | None = None,
+    *,
+    delete_existing: bool = True,
+) -> dict:
+    """Persist extracted entities and relationships to the knowledge graph.
+
+    Creates SEMANTIC_ENTITY nodes, SEMANTIC_RELATIONSHIP edges, and
+    FILE_MENTIONS_ENTITY edges to connect semantic entities to their
+    source files (for graph connectivity in retrieval).
+
+    When ``changed_doc_ids`` is provided, only entities whose evidence
+    references those documents are deleted before re-creation.  Entities
+    from unchanged documents are preserved.
+
+    Args:
+        session: Database session
+        collection_id: Collection UUID
+        batch: Extraction batch to persist
+        changed_doc_ids: Scope deletion to entities linked to these docs.
+                         ``None`` deletes all entities (full rebuild).
+        delete_existing: Set to False when the caller already reset the
+                         collection and persists one batch of a larger run.
+
+    Returns:
+        Stats dict
+    """
+
+    from contextmine_core.models import (
+        KnowledgeEdge,
+        KnowledgeEdgeKind,
+        KnowledgeEvidence,
+        KnowledgeNode,
+        KnowledgeNodeEvidence,
+        KnowledgeNodeKind,
+    )
+    from sqlalchemy import select
+
+    stats = {
+        "entities_created": 0,
+        "entities_merged": 0,
+        "relationships_created": 0,
+        "file_edges_created": 0,
+        "evidence_created": 0,
+    }
+
+    if delete_existing:
+        await _delete_semantic_entities(session, collection_id, changed_doc_ids)
 
     # Build lookup of FILE nodes by URI for graph connectivity
     # This enables neighborhood traversal from search results to semantic entities

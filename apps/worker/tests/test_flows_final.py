@@ -41,6 +41,8 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "default_llm_provider": "openai",
         "semantic_extraction_llm_provider": "",
         "semantic_extraction_llm_model": "",
+        "semantic_extraction_batch_size": 25,
+        "semantic_extraction_concurrency": 1,
         "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
@@ -537,10 +539,10 @@ class TestBuildKGSurface:
 
 
 class TestBuildKGSemanticCommunity:
-    async def test_skip_semantic_when_no_changed_docs_and_entities_exist(
+    async def test_no_changed_docs_still_works_off_the_extraction_backlog(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Empty changed_doc_ids skips semantic extraction when entities already exist."""
+        """Empty changed_doc_ids resets nothing but extracts chunks no run finished."""
         source_id = str(uuid.uuid4())
         collection_id = str(uuid.uuid4())
 
@@ -552,26 +554,28 @@ class TestBuildKGSemanticCommunity:
 
         mock_session = AsyncMock()
 
-        # Return a non-None value for _kg_has_semantic_entities check
-        existing_node_id = uuid.uuid4()
-
         async def mock_exec(stmt):
             r = MagicMock()
             r.all.return_value = []
-            r.scalar_one_or_none.return_value = existing_node_id
             return r
 
         mock_session.execute = mock_exec
         mock_session.commit = AsyncMock()
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
-        extract_mock = AsyncMock()
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents", extract_mock
+        extract_mock = AsyncMock(
+            return_value={
+                "entities_created": 0,
+                "relationships_created": 0,
+                "chunks_processed": 3,
+                "chunks_failed": 0,
+                "chunks_remaining": 0,
+                "quality_report": {},
+            }
         )
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            extract_mock,
         )
 
         mock_community = MagicMock()
@@ -597,8 +601,8 @@ class TestBuildKGSemanticCommunity:
             collection_id=collection_id,
             changed_doc_ids=[],
         )
-        # Skips extraction because semantic entities already exist
-        extract_mock.assert_not_called()
+        extract_mock.assert_awaited_once()
+        assert extract_mock.await_args.kwargs["changed_doc_ids"] == []
 
     async def test_deleted_files_force_semantic_and_summary_regeneration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -626,15 +630,19 @@ class TestBuildKGSemanticCommunity:
         mock_session.commit = AsyncMock()
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
-        extract_mock = AsyncMock(return_value=MagicMock())
-        persist_mock = AsyncMock(return_value={"entities_created": 2, "relationships_created": 1})
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            extract_mock,
+        extract_mock = AsyncMock(
+            return_value={
+                "entities_created": 2,
+                "relationships_created": 1,
+                "chunks_processed": 3,
+                "chunks_failed": 0,
+                "chunks_remaining": 0,
+                "quality_report": {},
+            }
         )
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            persist_mock,
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            extract_mock,
         )
 
         mock_community = MagicMock()
@@ -692,20 +700,23 @@ class TestBuildKGSemanticCommunity:
         mock_session.commit = AsyncMock()
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
-        extraction_batch = MagicMock(
-            quality_report={
-                "status": "degraded",
-                "warnings": ["no_semantic_relationships_extracted", "chunk_budget_applied"],
-                "selected_chunks": 10,
-            }
-        )
+        quality_report = {
+            "status": "degraded",
+            "warnings": ["no_semantic_relationships_extracted", "chunk_budget_applied"],
+            "selected_chunks": 10,
+        }
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=extraction_batch),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 2, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(
+                return_value={
+                    "entities_created": 2,
+                    "relationships_created": 0,
+                    "chunks_processed": 3,
+                    "chunks_failed": 0,
+                    "chunks_remaining": 0,
+                    "quality_report": quality_report,
+                }
+            ),
         )
 
         mock_community = MagicMock()
