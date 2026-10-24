@@ -128,7 +128,7 @@ async def generate_community_summaries(
                 await session.execute(
                     select(KnowledgeEmbedding.id)
                     .where(
-                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY_SUMMARY,
+                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
                         KnowledgeEmbedding.target_id == community.id,
                     )
                     .limit(1)
