@@ -47,6 +47,27 @@ class TestDetectCommunities:
     """Tests for detect_communities with mocked session."""
 
     @pytest.mark.anyio
+    async def test_loads_nodes_and_edges_in_a_stable_order(self) -> None:
+        # Leiden's partition depends on input order; unordered rows made the
+        # communities drift between passes over unchanged data.
+        statements = []
+        node = _make_node_row(natural_key="entity:auth", name="Auth")
+
+        async def mock_execute(stmt):
+            statements.append(str(stmt))
+            result = MagicMock()
+            result.all.return_value = [node] if len(statements) == 1 else []
+            return result
+
+        session = _mock_session()
+        session.execute = mock_execute
+
+        await detect_communities(session, uuid4())
+
+        assert "ORDER BY knowledge_nodes.natural_key" in statements[0]
+        assert "ORDER BY knowledge_edges.source_node_id" in statements[1]
+
+    @pytest.mark.anyio
     async def test_no_semantic_entities_returns_empty(self) -> None:
         session = _mock_session()
         mock_result = MagicMock()
