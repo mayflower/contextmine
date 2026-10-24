@@ -295,6 +295,8 @@ def _make_mock_session() -> MagicMock:
     session.execute = AsyncMock()
     session.flush = AsyncMock()
     session.add = MagicMock()
+    # Bulk writes run on the session's connection; share one result sequence.
+    session.connection = AsyncMock(return_value=MagicMock(execute=session.execute))
     return session
 
 
@@ -517,7 +519,16 @@ class TestIngestSnapshotIntoAsIs:
                     ),
                 ]
             ),
-            _rows_all([SimpleNamespace(id=edge_id, kind="file_defines_symbol")]),
+            _rows_all(
+                [
+                    SimpleNamespace(
+                        id=edge_id,
+                        source_node_id=file_node_id,
+                        target_node_id=symbol_node_id,
+                        kind="file_defines_symbol",
+                    )
+                ]
+            ),
             MagicMock(),  # edge layers
             MagicMock(),  # knowledge edges
         ]

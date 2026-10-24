@@ -290,3 +290,32 @@ def test_component_evidence_work_stays_quadratic_for_large_file_clusters(
     components = [entity for entity in model.entities if entity.kind == "component"]
     assert [len(component.evidence) for component in components] == [k + 1]
     assert processed < 10 * k * k
+
+
+@pytest.mark.anyio
+async def test_shared_recovery_reuses_the_model_for_identical_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One build recovered the same model three times; equal inputs must share it."""
+    import contextmine_core.architecture.recovery as recovery
+
+    calls = 0
+    real = recovery.recover_architecture_model
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(recovery, "_RECOVERY_CACHE", type(recovery._RECOVERY_CACHE)())
+    nodes = [_symbol(node_id="symbol:a", name="A", file_path="pkg/a.py")]
+
+    first = await recovery.recover_architecture_model_shared(nodes, [], None, counting)
+    again = await recovery.recover_architecture_model_shared(list(nodes), [], [], counting)
+    other = await recovery.recover_architecture_model_shared(
+        [*nodes, _symbol(node_id="symbol:b", name="B", file_path="pkg/a.py")], [], None, counting
+    )
+
+    assert again is first
+    assert other is not first
+    assert calls == 2

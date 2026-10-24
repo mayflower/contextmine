@@ -8,6 +8,7 @@ its own private copy.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -19,6 +20,8 @@ from contextmine_core.models import (
     KnowledgeNodeEvidence,
     KnowledgeNodeKind,
 )
+from sqlalchemy import cast, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 if TYPE_CHECKING:
@@ -101,7 +104,7 @@ async def upsert_edge(
     return (await session.execute(stmt)).scalar_one()
 
 
-# Rows per multi-row INSERT; stays well below PostgreSQL's 32767 bind parameters.
+# Rows per executemany batch (SQLAlchemy sends them as multi-row INSERTs).
 BULK_UPSERT_BATCH_SIZE = 1000
 
 
@@ -123,24 +126,42 @@ async def bulk_upsert_nodes(
     items = list(latest.items())
     for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
         batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
-        stmt = pg_insert(KnowledgeNode).values(
-            [
-                {
-                    "collection_id": collection_id,
-                    "kind": kind,
-                    "natural_key": natural_key,
-                    "name": name,
-                    "meta": meta,
-                }
-                for (kind, natural_key), (name, meta) in batch
-            ]
-        )
+        stmt = pg_insert(KnowledgeNode.__table__)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_knowledge_node_natural",
             set_={"name": stmt.excluded.name, "meta": stmt.excluded.meta},
+            # Rows that already hold these values are left alone (no new row
+            # version); they are not returned and are looked up below.
+            where=or_(
+                KnowledgeNode.name.is_distinct_from(stmt.excluded.name),
+                cast(KnowledgeNode.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+            ),
         ).returning(KnowledgeNode.id, KnowledgeNode.kind, KnowledgeNode.natural_key)
-        for row in (await session.execute(stmt)).all():
+        params = [
+            {
+                "id": uuid.uuid4(),
+                "collection_id": collection_id,
+                "kind": kind,
+                "natural_key": natural_key,
+                "name": name,
+                "meta": meta,
+            }
+            for (kind, natural_key), (name, meta) in batch
+        ]
+        connection = await session.connection()
+        for row in (await connection.execute(stmt, params)).all():
             ids[(row.kind, row.natural_key)] = row.id
+        unchanged = [key for key, _values in batch if key not in ids]
+        if unchanged:
+            for row in (
+                await session.execute(
+                    select(KnowledgeNode.id, KnowledgeNode.kind, KnowledgeNode.natural_key).where(
+                        KnowledgeNode.collection_id == collection_id,
+                        tuple_(KnowledgeNode.kind, KnowledgeNode.natural_key).in_(unchanged),
+                    )
+                )
+            ).all():
+                ids[(row.kind, row.natural_key)] = row.id
     return ids
 
 
@@ -157,9 +178,18 @@ async def bulk_upsert_edges(
     items = list(latest.items())
     for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
         batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
-        stmt = pg_insert(KnowledgeEdge).values(
+        stmt = pg_insert(KnowledgeEdge.__table__)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_knowledge_edge_unique",
+            set_={"meta": stmt.excluded.meta},
+            where=cast(KnowledgeEdge.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+        )
+        connection = await session.connection()
+        await connection.execute(
+            stmt,
             [
                 {
+                    "id": uuid.uuid4(),
                     "collection_id": collection_id,
                     "source_node_id": source_node_id,
                     "target_node_id": target_node_id,
@@ -167,13 +197,8 @@ async def bulk_upsert_edges(
                     "meta": meta,
                 }
                 for (source_node_id, target_node_id, kind), meta in batch
-            ]
+            ],
         )
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_knowledge_edge_unique",
-            set_={"meta": stmt.excluded.meta},
-        )
-        await session.execute(stmt)
 
 
 async def create_node_evidence(
