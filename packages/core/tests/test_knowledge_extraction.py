@@ -25,6 +25,8 @@ from contextmine_core.knowledge.extraction import (
     ExtractedRelationship,
     ExtractionBatch,
     ExtractionResult,
+    LocalEntityExtractionResult,
+    LocalExtractedEntity,
     SemanticEntity,
     SemanticRelationship,
     _canonicalize_relationships,
@@ -296,6 +298,17 @@ class TestChunkBudgetSpread:
 class TestSemanticChunkFiltering:
     """Tests for low-signal semantic chunk filtering."""
 
+    def test_keeps_tests_for_local_models(self) -> None:
+        assert (
+            _should_skip_semantic_chunk(
+                "src/__tests__/auth.test.ts",
+                {"start_line": 1, "end_line": 10},
+                "describe('auth', () => { it('logs in') })",
+                keep_tests=True,
+            )
+            is None
+        )
+
     def test_skips_test_artifacts(self) -> None:
         assert (
             _should_skip_semantic_chunk(
@@ -330,6 +343,50 @@ class TestSemanticChunkFiltering:
 # ===========================================================================
 # extract_entities_from_chunk tests
 # ===========================================================================
+
+
+class TestLocalModelProfile:
+    """Ollama gets its own schema and prompt; other providers keep the defaults."""
+
+    def test_local_entity_rejects_types_outside_the_closed_set(self) -> None:
+        with pytest.raises(ValidationError):
+            LocalExtractedEntity(name="Ingest", type="WORKFLOW", description="d")
+        # The shared schema stays open for other providers.
+        assert ExtractedEntity(name="Ingest", type="WORKFLOW", description="d").type == "WORKFLOW"
+
+    @pytest.mark.anyio
+    async def test_ollama_uses_reasoning_schema_and_counts_tests_as_evidence(self) -> None:
+        mock_llm = AsyncMock()
+        mock_llm.provider_name = "ollama"
+        mock_llm.generate_structured.return_value = LocalEntityExtractionResult(
+            reasoning="Tests for the login flow.",
+            entities=[LocalExtractedEntity(name="Auth", type="CONCEPT", description="d")],
+        )
+
+        result = await extract_entities_from_chunk(mock_llm, "def test_login(): ...", "x.py")
+
+        assert [e.name for e in result] == ["Auth"]
+        kwargs = mock_llm.generate_structured.call_args.kwargs
+        assert kwargs["output_schema"] is LocalEntityExtractionResult
+        assert list(LocalEntityExtractionResult.model_fields)[0] == "reasoning"
+        assert "Tests are evidence, not noise" in kwargs["system"]
+        assert "- tests, mocks, fixtures" not in kwargs["system"]
+        prompt = kwargs["messages"][0]["content"]
+        assert "'reasoning' first" in prompt
+        assert "ignore mocks, generated code" in prompt
+
+    @pytest.mark.anyio
+    async def test_other_providers_keep_the_default_prompt(self) -> None:
+        mock_llm = AsyncMock()
+        mock_llm.provider_name = "openai"
+        mock_llm.generate_structured.return_value = ExtractionResult()
+
+        await extract_entities_from_chunk(mock_llm, "def login(): ...", "x.py")
+
+        kwargs = mock_llm.generate_structured.call_args.kwargs
+        assert kwargs["output_schema"] is ExtractionResult
+        assert "- tests, mocks, fixtures" in kwargs["system"]
+        assert "Tests are evidence" not in kwargs["system"]
 
 
 class TestExtractEntitiesFromChunk:
