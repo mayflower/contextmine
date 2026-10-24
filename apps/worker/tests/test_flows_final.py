@@ -145,15 +145,21 @@ def _setup_kg_step4_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+_NO_EXTRACTION = {
+    "entities_created": 0,
+    "relationships_created": 0,
+    "chunks_processed": 0,
+    "chunks_failed": 0,
+    "chunks_remaining": 0,
+    "quality_report": {},
+}
+
+
 def _setup_kg_steps567_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock steps 5-7 (semantic entities, communities, summaries)."""
     monkeypatch.setattr(
-        "contextmine_core.knowledge.extraction.extract_from_documents",
-        AsyncMock(return_value=MagicMock()),
-    )
-    monkeypatch.setattr(
-        "contextmine_core.knowledge.extraction.persist_semantic_entities",
-        AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+        "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+        AsyncMock(return_value=_NO_EXTRACTION),
     )
     mock_community = MagicMock()
     mock_community.community_count = lambda level: 0
@@ -770,7 +776,7 @@ class TestBuildKGSemanticCommunity:
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
             AsyncMock(side_effect=RuntimeError("extraction boom")),
         )
         mock_community = MagicMock()
@@ -821,12 +827,8 @@ class TestBuildKGSemanticCommunity:
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=MagicMock()),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(return_value=_NO_EXTRACTION),
         )
         monkeypatch.setattr(
             "contextmine_core.knowledge.communities.detect_communities",
@@ -870,12 +872,8 @@ class TestBuildKGSemanticCommunity:
         monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
 
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=MagicMock()),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(return_value=_NO_EXTRACTION),
         )
         mock_community = MagicMock()
         mock_community.community_count = lambda level: 0
