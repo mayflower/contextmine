@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
+import anyio
 from contextmine_core.exports import export_mermaid_c4_result
 from contextmine_core.models import (
     KnowledgeEdge,
@@ -714,10 +715,9 @@ async def build_architecture_facts(
     recovery_nodes, recovery_subject_refs = _kg_nodes_to_recovery_inputs(kg_nodes)
     recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, recovery_subject_refs)
     recovery_docs = await load_recovery_docs(session, kg_nodes)
-    recovered_model = recover_architecture_model(
-        recovery_nodes,
-        recovery_edges,
-        docs=recovery_docs,
+    # CPU-bound on plain dicts; in a thread so it does not block the event loop.
+    recovered_model = await anyio.to_thread.run_sync(
+        lambda: recover_architecture_model(recovery_nodes, recovery_edges, docs=recovery_docs)
     )
     if enable_llm_enrich and llm_provider is not None:
         # Real (async) LLM adjudication; selections are validated closed-world.

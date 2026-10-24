@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import anyio
 from contextmine_core.architecture.recovery import recover_architecture_model
 from contextmine_core.architecture.recovery_docs import load_recovery_docs
 from contextmine_core.architecture.recovery_model import RecoveredArchitectureModel
@@ -239,7 +240,10 @@ async def _load_recovered_architecture_model(
     recovery_nodes, subject_ref_by_id = _kg_nodes_to_recovery_inputs(kg_nodes)
     recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, subject_ref_by_id)
     recovery_docs = await load_recovery_docs(session, kg_nodes)
-    return recover_architecture_model(recovery_nodes, recovery_edges, docs=recovery_docs)
+    # CPU-bound on plain dicts; in a thread so it does not block the event loop.
+    return await anyio.to_thread.run_sync(
+        lambda: recover_architecture_model(recovery_nodes, recovery_edges, docs=recovery_docs)
+    )
 
 
 def _append_recovery_diagnostics(
