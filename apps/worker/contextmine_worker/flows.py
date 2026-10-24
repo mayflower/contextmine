@@ -1426,10 +1426,12 @@ async def _kg_step_summaries(
             )
             await session.commit()
             stats["kg_summaries_created"] = summary_stats.communities_summarized
+            stats["kg_summaries_failed"] = summary_stats.communities_failed
             stats["kg_embeddings_created"] = summary_stats.embeddings_created
             logger.info(
-                "Generated %d community summaries, %d embeddings",
+                "Generated %d community summaries (%d failed), %d embeddings",
                 stats["kg_summaries_created"],
+                stats["kg_summaries_failed"],
                 stats["kg_embeddings_created"],
             )
     except Exception as e:

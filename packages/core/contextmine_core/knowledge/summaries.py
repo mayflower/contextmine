@@ -67,6 +67,7 @@ class SummaryStats:
 
     communities_summarized: int = 0
     communities_skipped: int = 0
+    communities_failed: int = 0
     embeddings_created: int = 0
     embeddings_skipped: int = 0
 
@@ -144,8 +145,14 @@ async def generate_community_summaries(
                     stats.embeddings_created += 1
             continue
 
-        # Generate LLM summary (required, no fallback)
-        summary = await _llm_summarize_community(provider, context)
+        # Generate LLM summary (required, no fallback). One unusable answer must not
+        # discard the other summaries; the community is retried on the next pass.
+        try:
+            summary = await _llm_summarize_community(provider, context)
+        except Exception as e:
+            stats.communities_failed += 1
+            logger.warning("Failed to summarize community %s: %s", community.natural_key, e)
+            continue
         summary_text = _format_llm_summary(summary)
 
         # Update community summary/title and store membership hash. The LLM-generated
