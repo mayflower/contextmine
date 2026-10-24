@@ -673,3 +673,27 @@ class TestGenerateCommunitySummariesValidation:
                 provider=llm_provider,
                 embed_provider=None,
             )
+
+
+class TestEmbedCommunitySummary:
+    @pytest.mark.anyio
+    async def test_stores_provider_enum_as_its_string_value(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from contextmine_core.embeddings import EmbeddingProvider
+        from contextmine_core.knowledge.summaries import _embed_community_summary
+
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        embedder = MagicMock(spec=["provider", "model_name", "embed_batch"])
+        embedder.provider = EmbeddingProvider.OPENAI
+        embedder.model_name = "text-embedding-3-small"
+        embedder.embed_batch = AsyncMock(return_value=MagicMock(embeddings=[[0.1, 0.2]]))
+
+        created = await _embed_community_summary(session, uuid4(), uuid4(), "summary", embedder)
+
+        assert created is True
+        stored = session.add.call_args.args[0]
+        assert stored.provider == "openai"
+        assert stored.model_name == "text-embedding-3-small"
