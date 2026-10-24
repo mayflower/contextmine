@@ -499,15 +499,13 @@ async def _embed_community_summary(
 
     # Get model info from provider
     model_name = getattr(embed_provider, "model_name", "unknown")
-    provider_name = getattr(embed_provider, "provider", "unknown")
+    provider = getattr(embed_provider, "provider", "unknown")
     if hasattr(embed_provider, "_model_name"):
         model_name = embed_provider._model_name
     if hasattr(embed_provider, "_provider"):
-        provider_name = str(
-            embed_provider._provider.value
-            if hasattr(embed_provider._provider, "value")
-            else embed_provider._provider
-        )
+        provider = embed_provider._provider
+    # Embedders expose the provider as an EmbeddingProvider enum; the column is a string.
+    provider_name = str(getattr(provider, "value", provider))
 
     # Create new embedding
     embedding = KnowledgeEmbedding(
