@@ -1030,3 +1030,73 @@ class TestSemanticExtractionLlm:
         )
         assert flows._semantic_extraction_llm(settings) == ("ollama", "qwen3-coder:30b")
         assert settings.default_llm_provider == "openai"
+
+
+class TestFinishWithoutChanges:
+    def _ctx(self) -> MagicMock:
+        ctx = MagicMock()
+        ctx.source.collection_id = uuid.uuid4()
+        return ctx
+
+    async def test_builds_knowledge_graph_when_extraction_has_a_backlog(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        build = AsyncMock()
+        finalize = AsyncMock()
+        monkeypatch.setattr(flows, "_semantic_extraction_backlog", AsyncMock(return_value=12))
+        monkeypatch.setattr(flows, "_gh_phase_build_knowledge_graph", build)
+        monkeypatch.setattr(flows, "_gh_phase_finalize", finalize)
+        ctx = self._ctx()
+
+        await flows._gh_finish_without_changes(ctx)
+
+        build.assert_awaited_once_with(ctx)
+        finalize.assert_awaited_once_with(ctx)
+        assert ctx.doc_acc._changed_doc_ids == []
+
+    async def test_skips_knowledge_graph_without_backlog(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        build = AsyncMock()
+        finalize = AsyncMock()
+        monkeypatch.setattr(flows, "_semantic_extraction_backlog", AsyncMock(return_value=0))
+        monkeypatch.setattr(flows, "_gh_phase_build_knowledge_graph", build)
+        monkeypatch.setattr(flows, "_gh_phase_finalize", finalize)
+
+        await flows._gh_finish_without_changes(self._ctx())
+
+        build.assert_not_awaited()
+        finalize.assert_awaited_once()
+
+    async def test_no_backlog_when_model_calls_are_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            flows, "get_settings", lambda: _make_settings(model_calls_enabled=False)
+        )
+        count = AsyncMock(return_value=5)
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.semantic_extraction_backlog", count
+        )
+
+        assert await flows._semantic_extraction_backlog(uuid.uuid4()) == 0
+        count.assert_not_awaited()
+
+    async def test_backlog_is_counted_for_the_extraction_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            flows,
+            "get_settings",
+            lambda: _make_settings(
+                default_llm_provider="openai", semantic_extraction_llm_provider="ollama"
+            ),
+        )
+        count = AsyncMock(return_value=5)
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.semantic_extraction_backlog", count
+        )
+        collection_id = uuid.uuid4()
+
+        assert await flows._semantic_extraction_backlog(collection_id) == 5
+        count.assert_awaited_once_with(collection_id, provider_name="ollama")

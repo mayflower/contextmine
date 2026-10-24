@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 from contextmine_core import (
     Chunk,
@@ -4102,6 +4103,48 @@ async def _gh_phase_finalize(ctx: _SyncGitHubCtx) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _gh_finish_without_changes(ctx: _SyncGitHubCtx) -> None:
+    """Finish a sync without file changes, skipping the expensive phases.
+
+    The knowledge graph still runs when semantic extraction has a backlog
+    (initial extraction, an aborted run, a chunk budget): without file changes
+    no later sync would otherwise work it off.
+    """
+    acc = _DocProcessingAccumulator()
+    acc._docs_deferred = 0  # type: ignore[attr-defined]
+    acc._total_candidate = 0  # type: ignore[attr-defined]
+    acc._changed_doc_ids = []  # type: ignore[attr-defined]
+    ctx.doc_acc = acc
+    backlog = await _semantic_extraction_backlog(ctx.source.collection_id)
+    if backlog:
+        logger.info(
+            "No file changes detected for source %s (sha %s); building the knowledge graph "
+            "for %d chunks without semantic extraction",
+            ctx.source.id,
+            ctx.new_sha,
+            backlog,
+        )
+        await _gh_phase_build_knowledge_graph(ctx)
+    else:
+        logger.info(
+            "No file changes detected for source %s (sha %s), skipping expensive phases",
+            ctx.source.id,
+            ctx.new_sha,
+        )
+    await _gh_phase_finalize(ctx)
+
+
+async def _semantic_extraction_backlog(collection_id: UUID) -> int:
+    """Chunks semantic extraction still has to process; 0 when it cannot run."""
+    settings = get_settings()
+    provider, _model = _semantic_extraction_llm(settings)
+    if not settings.model_calls_enabled or not provider:
+        return 0
+    from contextmine_core.knowledge.extraction import semantic_extraction_backlog
+
+    return await semantic_extraction_backlog(collection_id, provider_name=provider)
+
+
 @traced_task()
 @task(
     retries=GITHUB_API_RETRIES,
@@ -4133,17 +4176,7 @@ async def sync_github_source(
 
     # Early exit: skip expensive LLM/embedding phases when nothing changed
     if not ctx.docs_to_chunk and not ctx.deleted_file_paths:
-        logger.info(
-            "No file changes detected for source %s (sha %s), skipping expensive phases",
-            ctx.source.id,
-            ctx.new_sha,
-        )
-        acc = _DocProcessingAccumulator()
-        acc._docs_deferred = 0  # type: ignore[attr-defined]
-        acc._total_candidate = 0  # type: ignore[attr-defined]
-        acc._changed_doc_ids = []  # type: ignore[attr-defined]
-        ctx.doc_acc = acc
-        await _gh_phase_finalize(ctx)
+        await _gh_finish_without_changes(ctx)
         return ctx.stats
 
     await _gh_phase_chunk_and_embed(ctx)
