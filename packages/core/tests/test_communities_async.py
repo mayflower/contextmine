@@ -25,7 +25,10 @@ from contextmine_core.models import KnowledgeEdgeKind, KnowledgeNodeKind
 
 
 def _mock_session() -> AsyncMock:
-    return AsyncMock()
+    session = AsyncMock()
+    # Plain result for selects that tests do not configure (no previous communities).
+    session.execute.return_value = MagicMock(all=MagicMock(return_value=[]))
+    return session
 
 
 def _make_node_row(node_id=None, natural_key="entity:auth", kind=None, name="Auth"):
@@ -219,6 +222,45 @@ class TestPersistCommunities:
     """Tests for persist_communities with mocked session."""
 
     @pytest.mark.anyio
+    async def test_keeps_summary_of_community_with_same_members(self) -> None:
+        session = _mock_session()
+        coll_id = uuid4()
+        nid1, nid2, nid3 = uuid4(), uuid4(), uuid4()
+        old_same, old_changed = uuid4(), uuid4()
+        previous = MagicMock()
+        previous.all.return_value = [
+            (old_same, 0, "Auth summary", "Authentication", {"membership_hash": "h1"}, nid1),
+            (old_same, 0, "Auth summary", "Authentication", {"membership_hash": "h1"}, nid2),
+            (old_changed, 0, "Old summary", "Old", {"membership_hash": "h2"}, nid3),
+        ]
+        session.execute.side_effect = [previous, None, None, None]
+
+        same = Community(id=5, level=0, size=2)
+        same.node_ids = [nid2, nid1]
+        same.node_keys = ["entity:user", "entity:auth"]
+        grown = Community(id=0, level=0, size=2)
+        grown.node_ids = [nid3, uuid4()]
+        grown.node_keys = ["entity:billing", "entity:invoice"]
+        hier = HierarchicalCommunities()
+        hier.levels[0] = [grown, same]
+
+        stats = await persist_communities(session, coll_id, hier)
+
+        assert stats["summaries_kept"] == 1
+        added = [call.args[0] for call in session.add.call_args_list]
+        kept = next(c for c in added if getattr(c, "natural_key", "") == "community:L0:C5")
+        assert kept.summary == "Auth summary"
+        assert kept.title == "Authentication"
+        assert kept.meta["membership_hash"] == "h1"
+        changed = next(c for c in added if getattr(c, "natural_key", "") == "community:L0:C0")
+        assert changed.summary is None
+        assert "membership_hash" not in changed.meta
+        # The kept summary's embedding moves to the new community instead of being redone.
+        statements = [str(call.args[0]) for call in session.execute.call_args_list]
+        assert statements[1].startswith("DELETE FROM knowledge_embeddings")
+        assert statements[3].startswith("UPDATE knowledge_embeddings")
+
+    @pytest.mark.anyio
     async def test_empty_result_creates_nothing(self) -> None:
         session = _mock_session()
         coll_id = uuid4()
@@ -228,8 +270,8 @@ class TestPersistCommunities:
 
         assert stats["communities_created"] == 0
         assert stats["members_created"] == 0
-        # Should still delete existing
-        session.execute.assert_called_once()
+        # Reads summaries to keep, then deletes embeddings and communities
+        assert session.execute.call_count == 3
 
     @pytest.mark.anyio
     async def test_creates_communities_and_members(self) -> None:

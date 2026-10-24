@@ -1400,25 +1400,13 @@ async def _kg_step_summaries(
     collection_uuid: object,
     research_llm: object,
     embedder: object,
-    changed_doc_ids: list[str] | None,
-    deleted_file_paths: list[str] | None = None,
 ) -> None:
     """Step 7: Generate community summaries and embeddings."""
     try:
         from contextmine_core.knowledge.summaries import generate_community_summaries
 
-        has_deleted_files = bool(deleted_file_paths)
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0 and not has_deleted_files:
-            # No docs changed — skip only if semantic entities (and thus summaries)
-            # already exist from a prior run
-            if await _kg_has_semantic_entities(collection_uuid):
-                logger.info(
-                    "No changed documents and semantic entities exist - skipping summary regeneration"
-                )
-                return
-            logger.info(
-                "No changed documents but no semantic entities found - running initial summary generation"
-            )
+        # Always run: communities are rebuilt on every pass, and summary generation
+        # skips communities whose members (and thus summary) did not change.
         async with get_session() as session:
             summary_stats = await generate_community_summaries(
                 session,
@@ -1617,9 +1605,7 @@ async def build_knowledge_graph(
 
     # Step 7: Generate community summaries and embeddings
     if settings.model_calls_enabled:
-        await _kg_step_summaries(
-            stats, collection_uuid, research_llm, embedder, changed_doc_ids, deleted_file_paths
-        )
+        await _kg_step_summaries(stats, collection_uuid, research_llm, embedder)
 
     return stats
 

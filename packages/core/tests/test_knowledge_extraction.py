@@ -31,6 +31,7 @@ from contextmine_core.knowledge.extraction import (
     _merge_entity_groups,
     _resolve_entities_with_embeddings,
     _should_skip_semantic_chunk,
+    _spread_across_directories,
     extract_entities_from_chunk,
     extract_from_documents,
     extract_relationships_from_chunk,
@@ -261,6 +262,34 @@ class TestCanonicalizeRelationships:
                 strength=0.8,
             )
         ]
+
+
+class TestChunkBudgetSpread:
+    def test_budget_takes_one_chunk_per_directory_before_going_deeper(self) -> None:
+        paths = [
+            "apps/api/a.py",
+            "apps/api/b.py",
+            "apps/api/c.py",
+            "apps/web/x.ts",
+            "packages/core/knowledge/graph.py",
+        ]
+        candidates = sorted(((0, 0, 0, f"{path}:1"), path) for path in paths)
+
+        selected = [path for _priority, path in _spread_across_directories(candidates)[:3]]
+
+        assert selected == ["apps/api/a.py", "apps/web/x.ts", "packages/core/knowledge/graph.py"]
+
+    def test_spread_keeps_kind_tiers(self) -> None:
+        candidates = [
+            ((0, 0, 0, "src/a.py:1"), "src/a.py"),
+            ((0, 0, 0, "src/b.py:1"), "src/b.py"),
+            ((3, 0, 0, "docs/readme.md:1"), "docs/readme.md"),
+        ]
+
+        selected = [path for _priority, path in _spread_across_directories(candidates)]
+
+        # Documentation stays behind all core code, even from a fresh directory.
+        assert selected == ["src/a.py", "src/b.py", "docs/readme.md"]
 
 
 class TestSemanticChunkFiltering:
