@@ -67,6 +67,7 @@ class SummaryStats:
 
     communities_summarized: int = 0
     communities_skipped: int = 0
+    communities_failed: int = 0
     embeddings_created: int = 0
     embeddings_skipped: int = 0
 
@@ -128,7 +129,7 @@ async def generate_community_summaries(
                 await session.execute(
                     select(KnowledgeEmbedding.id)
                     .where(
-                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY_SUMMARY,
+                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
                         KnowledgeEmbedding.target_id == community.id,
                     )
                     .limit(1)
@@ -144,8 +145,14 @@ async def generate_community_summaries(
                     stats.embeddings_created += 1
             continue
 
-        # Generate LLM summary (required, no fallback)
-        summary = await _llm_summarize_community(provider, context)
+        # Generate LLM summary (required, no fallback). One unusable answer must not
+        # discard the other summaries; the community is retried on the next pass.
+        try:
+            summary = await _llm_summarize_community(provider, context)
+        except Exception as e:
+            stats.communities_failed += 1
+            logger.warning("Failed to summarize community %s: %s", community.natural_key, e)
+            continue
         summary_text = _format_llm_summary(summary)
 
         # Update community summary/title and store membership hash. The LLM-generated
@@ -499,15 +506,13 @@ async def _embed_community_summary(
 
     # Get model info from provider
     model_name = getattr(embed_provider, "model_name", "unknown")
-    provider_name = getattr(embed_provider, "provider", "unknown")
+    provider = getattr(embed_provider, "provider", "unknown")
     if hasattr(embed_provider, "_model_name"):
         model_name = embed_provider._model_name
     if hasattr(embed_provider, "_provider"):
-        provider_name = str(
-            embed_provider._provider.value
-            if hasattr(embed_provider._provider, "value")
-            else embed_provider._provider
-        )
+        provider = embed_provider._provider
+    # Embedders expose the provider as an EmbeddingProvider enum; the column is a string.
+    provider_name = str(getattr(provider, "value", provider))
 
     # Create new embedding
     embedding = KnowledgeEmbedding(

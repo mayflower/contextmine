@@ -22,13 +22,15 @@ import igraph as ig
 import leidenalg
 from contextmine_core.models import (
     CommunityMember,
+    EmbeddingTargetType,
     KnowledgeCommunity,
     KnowledgeEdge,
     KnowledgeEdgeKind,
+    KnowledgeEmbedding,
     KnowledgeNode,
     KnowledgeNodeKind,
 )
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,14 +182,16 @@ async def detect_communities(
 
     result = HierarchicalCommunities()
 
-    # Load semantic entities (LLM-extracted) - required for proper GraphRAG
+    # Load semantic entities (LLM-extracted) - required for proper GraphRAG.
+    # Nodes and edges are ordered: Leiden's result depends on vertex and edge order,
+    # so the fixed seed alone does not make it reproducible across passes.
     node_result = await session.execute(
-        select(
-            KnowledgeNode.id, KnowledgeNode.natural_key, KnowledgeNode.kind, KnowledgeNode.name
-        ).where(
+        select(KnowledgeNode.id, KnowledgeNode.natural_key, KnowledgeNode.kind, KnowledgeNode.name)
+        .where(
             KnowledgeNode.collection_id == collection_id,
             KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
         )
+        .order_by(KnowledgeNode.natural_key)
     )
     nodes = node_result.all()
     edge_kinds = SEMANTIC_EDGE_KINDS
@@ -223,10 +227,12 @@ async def detect_communities(
             KnowledgeEdge.target_node_id,
             KnowledgeEdge.kind,
             KnowledgeEdge.meta,
-        ).where(
+        )
+        .where(
             KnowledgeEdge.collection_id == collection_id,
             KnowledgeEdge.kind.in_(edge_kinds),
         )
+        .order_by(KnowledgeEdge.source_node_id, KnowledgeEdge.target_node_id, KnowledgeEdge.kind)
     )
     edges = edge_result.all()
 
@@ -273,7 +279,10 @@ async def persist_communities(
 ) -> dict:
     """Persist hierarchical community structure to database.
 
-    Replaces all existing communities for the collection.
+    Replaces all existing communities for the collection. A community whose members
+    are exactly those of an existing summarized community keeps that summary, title,
+    membership hash and summary embedding, so a pass without changes costs no LLM
+    or embedding calls.
 
     Args:
         session: Database session
@@ -283,9 +292,26 @@ async def persist_communities(
     Returns:
         Stats dict with counts
     """
-    stats = {"communities_created": 0, "members_created": 0}
+    stats = {"communities_created": 0, "members_created": 0, "summaries_kept": 0}
 
-    # Delete existing communities for this collection
+    # Community keys are positional (L{level}:C{index}), so match by member set.
+    previous = await _summarized_communities_by_members(session, collection_id)
+    kept = {
+        (level, comm.id): previous[(level, frozenset(comm.node_ids))]
+        for level, communities in result.levels.items()
+        for comm in communities
+        if (level, frozenset(comm.node_ids)) in previous
+    }
+
+    # Delete existing communities for this collection. Summary embeddings reference
+    # them without a foreign key: drop those of communities that are not kept.
+    await session.execute(
+        delete(KnowledgeEmbedding).where(
+            KnowledgeEmbedding.collection_id == collection_id,
+            KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
+            KnowledgeEmbedding.target_id.not_in([old_id for old_id, *_ in kept.values()]),
+        )
+    )
     await session.execute(
         delete(KnowledgeCommunity).where(KnowledgeCommunity.collection_id == collection_id)
     )
@@ -295,22 +321,38 @@ async def persist_communities(
         for comm in communities:
             # Generate title from top members
             title = _generate_title(comm.node_keys, comm.size)
+            meta = {
+                "size": comm.size,
+                "member_count": comm.size,
+                "modularity": result.modularity.get(level, 0.0),
+                "top_members": comm.node_keys[:10],
+            }
+            summary = None
+            previous_id = None
+            if (level, comm.id) in kept:
+                previous_id, summary, title, meta["membership_hash"] = kept[(level, comm.id)]
+                stats["summaries_kept"] += 1
 
             db_community = KnowledgeCommunity(
                 collection_id=collection_id,
                 level=level,
                 natural_key=comm.natural_key,
                 title=title,
-                meta={
-                    "size": comm.size,
-                    "member_count": comm.size,
-                    "modularity": result.modularity.get(level, 0.0),
-                    "top_members": comm.node_keys[:10],
-                },
+                summary=summary,
+                meta=meta,
             )
             session.add(db_community)
             await session.flush()
             stats["communities_created"] += 1
+            if previous_id is not None:
+                await session.execute(
+                    update(KnowledgeEmbedding)
+                    .where(
+                        KnowledgeEmbedding.target_type == EmbeddingTargetType.COMMUNITY,
+                        KnowledgeEmbedding.target_id == previous_id,
+                    )
+                    .values(target_id=db_community.id)
+                )
 
             # Create memberships
             for node_id in comm.node_ids:
@@ -325,6 +367,41 @@ async def persist_communities(
                 stats["members_created"] += 1
 
     return stats
+
+
+async def _summarized_communities_by_members(
+    session: AsyncSession, collection_id: UUID
+) -> dict[tuple[int, frozenset[UUID]], tuple[UUID, str, str, str]]:
+    """Map (level, member ids) to (id, summary, title, membership hash) of summarized communities."""
+    rows = (
+        await session.execute(
+            select(
+                KnowledgeCommunity.id,
+                KnowledgeCommunity.level,
+                KnowledgeCommunity.summary,
+                KnowledgeCommunity.title,
+                KnowledgeCommunity.meta,
+                CommunityMember.node_id,
+            )
+            .join(CommunityMember, CommunityMember.community_id == KnowledgeCommunity.id)
+            .where(
+                KnowledgeCommunity.collection_id == collection_id,
+                KnowledgeCommunity.summary.is_not(None),
+            )
+        )
+    ).all()
+    members: dict[UUID, set[UUID]] = {}
+    details: dict[UUID, tuple[int, UUID, str, str, str]] = {}
+    for community_id, level, summary, title, meta, node_id in rows:
+        membership_hash = (meta or {}).get("membership_hash")
+        if not membership_hash:
+            continue
+        members.setdefault(community_id, set()).add(node_id)
+        details[community_id] = (level, community_id, summary, title, membership_hash)
+    return {
+        (details[cid][0], frozenset(node_ids)): details[cid][1:]
+        for cid, node_ids in members.items()
+    }
 
 
 def _generate_title(node_keys: list[str], size: int) -> str:
