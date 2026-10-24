@@ -39,6 +39,8 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "joern_parse_timeout_seconds": 120,
         "default_embedding_model": "openai:text-embedding-3-small",
         "default_llm_provider": "openai",
+        "semantic_extraction_llm_provider": "",
+        "semantic_extraction_llm_model": "",
         "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
@@ -1004,3 +1006,18 @@ class TestDocumentProcessingHelpers:
             if len(samples) < 100:
                 samples.append(f"error_{i}")
         assert len(samples) == 100
+
+
+class TestSemanticExtractionLlm:
+    def test_falls_back_to_default_provider(self) -> None:
+        settings = _make_settings(default_llm_provider="openai")
+        assert flows._semantic_extraction_llm(settings) == ("openai", None)
+
+    def test_override_applies_to_semantic_extraction_only(self) -> None:
+        settings = _make_settings(
+            default_llm_provider="openai",
+            semantic_extraction_llm_provider="ollama",
+            semantic_extraction_llm_model="qwen3-coder:30b",
+        )
+        assert flows._semantic_extraction_llm(settings) == ("ollama", "qwen3-coder:30b")
+        assert settings.default_llm_provider == "openai"
