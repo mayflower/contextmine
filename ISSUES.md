@@ -11,8 +11,10 @@ observed directly and what is only inferred from the code.
 - **Status:** Confirmed by the maintainer of the architecture recovery. The
   cubic evidence merge is fixed on `fix/sync-time-sinks` (3d73670): one file
   with 800 symbols 51 s → 0.84 s, output byte-identical for 60 random graphs.
-  Still open: the amplifiers below (recovery computed several times per
-  build, CPU-bound code on the event loop).
+  The event-loop blocking is fixed in eb73244 (recovery runs in a worker
+  thread; observed before: the web UI's arc42 drift view made the API
+  unresponsive for minutes, health 503, MCP timeouts). Still open: the
+  recovery is computed several times per build.
 - **Intended quadratic part (investigated through ContextMine's own MCP
   tools, consistent with the maintainer's note):** constrained LLM
   adjudication works on self-contained packets. `build_adjudication_packet`
@@ -317,6 +319,20 @@ observed directly and what is only inferred from the code.
   no changed documents and no entities yet, it processes all chunks (6,594
   here, over 3.5 hours). `SEMANTIC_EXTRACTION_MAX_CHUNKS` caps it but
   defaults to 0 (unlimited).
+
+### 15. Semantic entities: duplicate natural keys abort the whole step
+
+- **Observed:** An incremental sync's semantic-entity step failed with
+  `duplicate key value violates unique constraint "uq_knowledge_node_natural"`
+  for `entity:architecture_recovery`; no entities were stored. On the run
+  before, the knowledge-graph pipeline hit its 3600 s timeout during the
+  same step (`kg_errors: pipeline: timeout_after_3600s`), see issue 14.
+- **Cause:** `persist_semantic_entities` inserted a new node per extracted
+  entity although the natural key is unique per collection: entities from
+  unchanged documents survive incremental runs, and names differing only in
+  case or spacing share a key.
+- **Status:** Fixed on `fix/semantic-entity-duplicates` (24bd984): reuse and
+  merge by natural key, conflict-safe edges, PostgreSQL regression test.
 
 ## Fixed on `feat/local-dev-mode`
 
