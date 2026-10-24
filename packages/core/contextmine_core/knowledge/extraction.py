@@ -48,6 +48,16 @@ LOW_SIGNAL_REPO_PATH_PARTS = frozenset(
     }
 )
 
+LOW_SIGNAL_TEST_PATH_PARTS = frozenset(
+    {
+        "test",
+        "tests",
+        "__tests__",
+        "spec",
+        "specs",
+    }
+)
+
 LOW_SIGNAL_FILE_SUFFIXES = (
     ".min.js",
     ".min.css",
@@ -142,17 +152,13 @@ CONFIG_PATH_MARKERS = frozenset(
 # -----------------------------------------------------------------------------
 
 
-EntityType = Literal["CONCEPT", "COMPONENT", "DATA_MODEL", "PATTERN", "SERVICE", "OTHER"]
-
-
 class ExtractedEntity(BaseModel):
     """An entity extracted from code by LLM."""
 
     name: str = Field(
         description="Canonical name for this entity (e.g., 'User Authentication', 'Payment Processing')"
     )
-    # A closed set keeps models from inventing types such as WORKFLOW.
-    type: EntityType = Field(
+    type: str = Field(
         description="Entity type: CONCEPT, COMPONENT, DATA_MODEL, PATTERN, SERVICE, or OTHER"
     )
     description: str = Field(description="Brief description of what this entity represents")
@@ -189,17 +195,31 @@ class ExtractionResult(BaseModel):
     relationships: list[ExtractedRelationship] = Field(default_factory=list)
 
 
-class EntityExtractionResult(BaseModel):
-    """Entity extraction output with a short analysis written before the entities.
+# Local models served by Ollama get their own entity schema and prompt, tuned on
+# qwen3-coder:30b against a fixed sample of real chunks. Other providers keep the
+# schema and prompt above unchanged.
 
-    Generating the reasoning first makes smaller local models name more specific
-    entities and keeps them from dropping chunks they would otherwise skip.
+LocalEntityType = Literal["CONCEPT", "COMPONENT", "DATA_MODEL", "PATTERN", "SERVICE", "OTHER"]
+
+
+class LocalExtractedEntity(ExtractedEntity):
+    """Entity with a closed type set, so local models cannot invent types such as WORKFLOW."""
+
+    type: LocalEntityType = Field(
+        description="Entity type: CONCEPT, COMPONENT, DATA_MODEL, PATTERN, SERVICE, or OTHER"
+    )
+
+
+class LocalEntityExtractionResult(BaseModel):
+    """Entity output with a short analysis written before the entities.
+
+    Writing the reasoning first made the local model name more specific entities.
     """
 
     reasoning: str = Field(
         description="2-4 sentences: what this chunk is responsible for and which domain terms it uses"
     )
-    entities: list[ExtractedEntity] = Field(default_factory=list)
+    entities: list[LocalExtractedEntity] = Field(default_factory=list)
 
 
 # -----------------------------------------------------------------------------
@@ -227,13 +247,10 @@ Entity types:
 Focus on SEMANTIC meaning, not syntactic structure. Group related symbols into single entities.
 
 Ignore low-signal code such as:
-- mocks, fixtures, snapshots, and test harness setup themselves
+- tests, mocks, fixtures, snapshots, and test harness setup
 - generated code, vendored dependencies, build output, minified bundles
 - framework boilerplate, import/export barrels, trivial DTO/schema wrappers
 - generic helper names unless they represent a real subsystem
-
-Tests are evidence, not noise: for a test chunk, extract the production concepts, components
-and data models the test exercises (not the test helpers themselves).
 
 Prefer returning 0-5 high-signal entities. If the chunk is mostly boilerplate or has no durable concepts,
 return an empty entities array."""
@@ -260,7 +277,23 @@ Remember:
 - authenticate(), login(), validatePassword() might all be ONE entity "Authentication"
 - OrderService, OrderRepository, OrderController might all be ONE entity "Order Processing"
 
-Return a JSON object with a short 'reasoning' first, then the 'entities' array."""
+Return a JSON object with 'entities' array."""
+
+# For local models tests count as evidence for the production code they exercise.
+LOCAL_ENTITY_EXTRACTION_SYSTEM = ENTITY_EXTRACTION_SYSTEM.replace(
+    "- tests, mocks, fixtures, snapshots, and test harness setup\n",
+    "- mocks, fixtures, snapshots, and test harness setup themselves\n",
+).replace(
+    "Prefer returning 0-5 high-signal entities.",
+    "Tests are evidence, not noise: for a test chunk, extract the production concepts, components\n"
+    "and data models the test exercises (not the test helpers themselves).\n\n"
+    "Prefer returning 0-5 high-signal entities.",
+)
+
+LOCAL_ENTITY_EXTRACTION_PROMPT = ENTITY_EXTRACTION_PROMPT.replace(
+    "Return a JSON object with 'entities' array.",
+    "Return a JSON object with a short 'reasoning' first, then the 'entities' array.",
+)
 
 RELATIONSHIP_EXTRACTION_SYSTEM = """You are a code analyst extracting relationships between durable domain and architecture entities.
 
@@ -395,20 +428,23 @@ async def extract_entities_from_chunk(
     if not code.strip():
         return []
 
-    prompt = ENTITY_EXTRACTION_PROMPT.format(
+    local = _is_local_model(llm_provider)
+    prompt = (LOCAL_ENTITY_EXTRACTION_PROMPT if local else ENTITY_EXTRACTION_PROMPT).format(
         code=code,
         file_path=file_path,
         language=language or "unknown",
         start_line=max(1, int(start_line or 1)),
         end_line=max(1, int(end_line or max(1, code.count("\n") + 1))),
-        focus_guidance=_entity_focus_guidance(chunk_kind or _semantic_chunk_kind(file_path)),
+        focus_guidance=_entity_focus_guidance(
+            chunk_kind or _semantic_chunk_kind(file_path), include_tests=local
+        ),
     )
 
     try:
         result = await llm_provider.generate_structured(
-            system=ENTITY_EXTRACTION_SYSTEM,
+            system=LOCAL_ENTITY_EXTRACTION_SYSTEM if local else ENTITY_EXTRACTION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
-            output_schema=EntityExtractionResult,
+            output_schema=LocalEntityExtractionResult if local else ExtractionResult,
             temperature=0,
             max_tokens=2000,
         )
@@ -523,7 +559,12 @@ def _semantic_chunk_kind(file_path: str, language: str | None = None) -> str:
     return "unknown"
 
 
-def _entity_focus_guidance(chunk_kind: str) -> str:
+def _is_local_model(llm_provider: Any) -> bool:
+    """Return True for providers that use the local-model extraction profile."""
+    return getattr(llm_provider, "provider_name", None) == "ollama"
+
+
+def _entity_focus_guidance(chunk_kind: str, *, include_tests: bool = False) -> str:
     """Return chunk-kind-specific entity extraction guidance."""
     if chunk_kind == "config_integration":
         return (
@@ -536,9 +577,10 @@ def _entity_focus_guidance(chunk_kind: str) -> str:
             "extract only concrete architecture components, workflows, interfaces, or domain models "
             "explicitly described here; ignore generic prose and repository instructions"
         )
+    ignored = "mocks" if include_tests else "tests, mocks"
     return (
         "prefer business capabilities, architectural components, important data models, workflows, "
-        "integrations, and infrastructure roles; ignore mocks, generated code, dependency "
+        f"integrations, and infrastructure roles; ignore {ignored}, generated code, dependency "
         "code, framework glue, and trivial wrappers; if the chunk contains no durable "
         "architecture/domain concepts, return no entities"
     )
@@ -639,6 +681,25 @@ def _build_quality_report(
     }
 
 
+def _looks_like_test_path(normalized_path: str) -> bool:
+    """Return True when the path clearly refers to test-only material."""
+    if not normalized_path:
+        return False
+
+    parts = [part.lower() for part in normalized_path.split("/") if part]
+    if any(part in LOW_SIGNAL_TEST_PATH_PARTS for part in parts):
+        return True
+
+    file_name = parts[-1] if parts else normalized_path.lower()
+    return (
+        file_name.startswith("test_")
+        or file_name.endswith("_test.py")
+        or file_name.endswith("_spec.py")
+        or ".test." in file_name
+        or ".spec." in file_name
+    )
+
+
 def _looks_generated_or_minified(content: str) -> bool:
     """Return True when the chunk appears generated, snapshot-based, or minified."""
     sample = content[:2000].lower()
@@ -654,7 +715,9 @@ def _looks_generated_or_minified(content: str) -> bool:
     return max_line_length >= 800 and avg_line_length >= 250
 
 
-def _should_skip_semantic_chunk(file_path: str, chunk_meta: Any, chunk_content: str) -> str | None:
+def _should_skip_semantic_chunk(
+    file_path: str, chunk_meta: Any, chunk_content: str, *, keep_tests: bool = False
+) -> str | None:
     """Return a skip reason when a chunk is too low-signal for semantic extraction."""
     normalized_path = _normalize_repo_path(file_path)
     parts = [part.lower() for part in normalized_path.split("/") if part]
@@ -664,6 +727,8 @@ def _should_skip_semantic_chunk(file_path: str, chunk_meta: Any, chunk_content: 
         return "generated_meta"
     if any(part in LOW_SIGNAL_REPO_PATH_PARTS for part in parts):
         return "ignored_path"
+    if not keep_tests and _looks_like_test_path(normalized_path):
+        return "test_artifact"
     if any(file_name.endswith(suffix) for suffix in LOW_SIGNAL_FILE_SUFFIXES):
         return "generated_suffix"
     if normalized_path.endswith(
@@ -767,7 +832,9 @@ async def extract_from_documents(
             continue
 
         doc_uri = doc_uri_raw or str(_doc_id)
-        skip_reason = _should_skip_semantic_chunk(doc_uri, chunk_meta, chunk_content)
+        skip_reason = _should_skip_semantic_chunk(
+            doc_uri, chunk_meta, chunk_content, keep_tests=_is_local_model(llm_provider)
+        )
         if skip_reason:
             skipped_low_signal += 1
             skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1

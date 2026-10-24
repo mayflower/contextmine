@@ -285,6 +285,17 @@ class Settings(BaseSettings):
         default=3600,
         description="Timeout in seconds for knowledge graph build in source sync",
     )
+    semantic_extraction_llm_provider: str = Field(
+        default="",
+        description=(
+            "LLM provider for semantic entity extraction only (e.g. 'ollama'); "
+            "empty = DEFAULT_LLM_PROVIDER"
+        ),
+    )
+    semantic_extraction_llm_model: str = Field(
+        default="",
+        description="Model for semantic entity extraction; empty = the provider's default model",
+    )
     semantic_extraction_max_chunks: int = Field(
         default=0,
         description=(

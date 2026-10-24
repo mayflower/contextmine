@@ -40,6 +40,8 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "joern_parse_timeout_seconds": 120,
         "default_embedding_model": "openai:text-embedding-3-small",
         "default_llm_provider": "openai",
+        "semantic_extraction_llm_provider": "",
+        "semantic_extraction_llm_model": "",
         "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
