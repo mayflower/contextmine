@@ -20,7 +20,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -46,16 +46,6 @@ LOW_SIGNAL_REPO_PATH_PARTS = frozenset(
         "__snapshots__",
         "__fixtures__",
         "fixtures",
-    }
-)
-
-LOW_SIGNAL_TEST_PATH_PARTS = frozenset(
-    {
-        "test",
-        "tests",
-        "__tests__",
-        "spec",
-        "specs",
     }
 )
 
@@ -153,13 +143,17 @@ CONFIG_PATH_MARKERS = frozenset(
 # -----------------------------------------------------------------------------
 
 
+EntityType = Literal["CONCEPT", "COMPONENT", "DATA_MODEL", "PATTERN", "SERVICE", "OTHER"]
+
+
 class ExtractedEntity(BaseModel):
     """An entity extracted from code by LLM."""
 
     name: str = Field(
         description="Canonical name for this entity (e.g., 'User Authentication', 'Payment Processing')"
     )
-    type: str = Field(
+    # A closed set keeps models from inventing types such as WORKFLOW.
+    type: EntityType = Field(
         description="Entity type: CONCEPT, COMPONENT, DATA_MODEL, PATTERN, SERVICE, or OTHER"
     )
     description: str = Field(description="Brief description of what this entity represents")
@@ -196,6 +190,19 @@ class ExtractionResult(BaseModel):
     relationships: list[ExtractedRelationship] = Field(default_factory=list)
 
 
+class EntityExtractionResult(BaseModel):
+    """Entity extraction output with a short analysis written before the entities.
+
+    Generating the reasoning first makes smaller local models name more specific
+    entities and keeps them from dropping chunks they would otherwise skip.
+    """
+
+    reasoning: str = Field(
+        description="2-4 sentences: what this chunk is responsible for and which domain terms it uses"
+    )
+    entities: list[ExtractedEntity] = Field(default_factory=list)
+
+
 # -----------------------------------------------------------------------------
 # Extraction prompts
 # -----------------------------------------------------------------------------
@@ -221,10 +228,13 @@ Entity types:
 Focus on SEMANTIC meaning, not syntactic structure. Group related symbols into single entities.
 
 Ignore low-signal code such as:
-- tests, mocks, fixtures, snapshots, and test harness setup
+- mocks, fixtures, snapshots, and test harness setup themselves
 - generated code, vendored dependencies, build output, minified bundles
 - framework boilerplate, import/export barrels, trivial DTO/schema wrappers
 - generic helper names unless they represent a real subsystem
+
+Tests are evidence, not noise: for a test chunk, extract the production concepts, components
+and data models the test exercises (not the test helpers themselves).
 
 Prefer returning 0-5 high-signal entities. If the chunk is mostly boilerplate or has no durable concepts,
 return an empty entities array."""
@@ -251,7 +261,7 @@ Remember:
 - authenticate(), login(), validatePassword() might all be ONE entity "Authentication"
 - OrderService, OrderRepository, OrderController might all be ONE entity "Order Processing"
 
-Return a JSON object with 'entities' array."""
+Return a JSON object with a short 'reasoning' first, then the 'entities' array."""
 
 RELATIONSHIP_EXTRACTION_SYSTEM = """You are a code analyst extracting relationships between durable domain and architecture entities.
 
@@ -399,7 +409,7 @@ async def extract_entities_from_chunk(
         result = await llm_provider.generate_structured(
             system=ENTITY_EXTRACTION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
-            output_schema=ExtractionResult,
+            output_schema=EntityExtractionResult,
             temperature=0,
             max_tokens=2000,
         )
@@ -529,7 +539,7 @@ def _entity_focus_guidance(chunk_kind: str) -> str:
         )
     return (
         "prefer business capabilities, architectural components, important data models, workflows, "
-        "integrations, and infrastructure roles; ignore tests, mocks, generated code, dependency "
+        "integrations, and infrastructure roles; ignore mocks, generated code, dependency "
         "code, framework glue, and trivial wrappers; if the chunk contains no durable "
         "architecture/domain concepts, return no entities"
     )
@@ -630,25 +640,6 @@ def _build_quality_report(
     }
 
 
-def _looks_like_test_path(normalized_path: str) -> bool:
-    """Return True when the path clearly refers to test-only material."""
-    if not normalized_path:
-        return False
-
-    parts = [part.lower() for part in normalized_path.split("/") if part]
-    if any(part in LOW_SIGNAL_TEST_PATH_PARTS for part in parts):
-        return True
-
-    file_name = parts[-1] if parts else normalized_path.lower()
-    return (
-        file_name.startswith("test_")
-        or file_name.endswith("_test.py")
-        or file_name.endswith("_spec.py")
-        or ".test." in file_name
-        or ".spec." in file_name
-    )
-
-
 def _looks_generated_or_minified(content: str) -> bool:
     """Return True when the chunk appears generated, snapshot-based, or minified."""
     sample = content[:2000].lower()
@@ -674,8 +665,6 @@ def _should_skip_semantic_chunk(file_path: str, chunk_meta: Any, chunk_content: 
         return "generated_meta"
     if any(part in LOW_SIGNAL_REPO_PATH_PARTS for part in parts):
         return "ignored_path"
-    if _looks_like_test_path(normalized_path):
-        return "test_artifact"
     if any(file_name.endswith(suffix) for suffix in LOW_SIGNAL_FILE_SUFFIXES):
         return "generated_suffix"
     if normalized_path.endswith(

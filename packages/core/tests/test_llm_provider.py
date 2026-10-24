@@ -1,8 +1,10 @@
 """Tests for LLM provider abstraction."""
 
+import json
 from typing import Literal
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from contextmine_core.research.llm import (
     FailingMockProvider,
@@ -11,6 +13,7 @@ from contextmine_core.research.llm import (
 )
 from contextmine_core.research.llm.provider import (
     LangChainProvider,
+    OllamaProvider,
     get_llm_provider,
     get_research_llm_provider,
 )
@@ -474,6 +477,46 @@ class TestProviderFactory:
         provider = get_llm_provider(provider="anthropic", api_key="test", max_retries=5)
         assert isinstance(provider, LangChainProvider)
         assert provider._max_retries == 5
+
+    def test_get_llm_provider_ollama_uses_settings(self) -> None:
+        provider = get_llm_provider(provider="ollama", model="qwen3-coder:30b")
+        assert isinstance(provider, OllamaProvider)
+        assert provider.model_name == "qwen3-coder:30b"
+        assert provider.provider_name == "ollama"
+
+
+class TestOllamaProvider:
+    @pytest.mark.anyio
+    async def test_structured_request_uses_native_chat(self, monkeypatch) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            content = json.dumps({"answer": "42", "confidence": 0.9})
+            return httpx.Response(200, json={"message": {"role": "assistant", "content": content}})
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+        )
+        provider = OllamaProvider(base_url="http://ollama:11434/", model_name="m", num_ctx=8192)
+
+        result = await provider.generate_structured(
+            system="sys",
+            messages=[{"role": "user", "content": "q"}],
+            output_schema=SimpleResponse,
+            max_tokens=100,
+        )
+
+        assert result == SimpleResponse(answer="42", confidence=0.9)
+        assert str(requests[0].url) == "http://ollama:11434/api/chat"
+        body = json.loads(requests[0].content)
+        assert body["think"] is False
+        assert body["options"] == {"num_ctx": 8192, "num_predict": 100, "temperature": 0.0}
+        assert body["format"] == SimpleResponse.model_json_schema()
+        assert body["messages"][0] == {"role": "system", "content": "sys"}
 
 
 # ===========================================================================

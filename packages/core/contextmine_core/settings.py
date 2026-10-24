@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     )
     default_llm_provider: str = Field(
         default="openai",
-        description="Default LLM provider for context assembly (openai, anthropic, gemini)",
+        description="Default LLM provider for context assembly (openai, anthropic, gemini, ollama)",
     )
     default_llm_model: str = Field(
         default="gpt-5-mini",
@@ -146,6 +146,18 @@ class Settings(BaseSettings):
     gemini_llm_model: str = Field(
         default="gemini-2.0-flash",
         description="Default Gemini chat model",
+    )
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama server URL for local chat models (native /api/chat)",
+    )
+    ollama_llm_model: str = Field(
+        default="qwen3-coder:30b",
+        description="Default Ollama chat model",
+    )
+    ollama_num_ctx: int = Field(
+        default=8192,
+        description="Context window requested from Ollama; its server default truncates long chunks",
     )
 
     # Prefect
