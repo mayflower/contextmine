@@ -13,8 +13,9 @@ observed directly and what is only inferred from the code.
   with 800 symbols 51 s → 0.84 s, output byte-identical for 60 random graphs.
   The event-loop blocking is fixed in eb73244 (recovery runs in a worker
   thread; observed before: the web UI's arc42 drift view made the API
-  unresponsive for minutes, health 503, MCP timeouts). Still open: the
-  recovery is computed several times per build.
+  unresponsive for minutes, health 503, MCP timeouts). Repeated recovery per
+  build fixed in 9ba23af (cache keyed by inputs): a facts build 107 s →
+  55 s, a repeated build 28 s.
 - **Intended quadratic part (investigated through ContextMine's own MCP
   tools, consistent with the maintainer's note):** constrained LLM
   adjudication works on self-contained packets. `build_adjudication_packet`
@@ -119,8 +120,10 @@ observed directly and what is only inferred from the code.
   SCIP ingest and knowledge-graph seeding use multi-row upserts. Same real
   data, rolled-back transactions, full twin + knowledge-graph state
   identical (sha256 b5639a79d3dde546); ingest 399 s → 53 s, seed
-  537 s → 78 s. Still open: the twin is still rewritten in full on every
-  sync (not incremental), and seeding runs twice per sync.
+  537 s → 78 s. 563e8b2 (executemany instead of huge VALUES statements,
+  unchanged rows skipped; state identical) brought it to ingest 20 s and seed
+  24 s. Still open: SCIP output is still ingested in full on every sync, and
+  seeding runs twice per sync.
 - **Note:** Much of the per-row time was Python building SQLAlchemy
   statements (py-spy: `stmt.excluded` in `_upsert_twin_edge`), not
   database round trips.
@@ -176,8 +179,10 @@ observed directly and what is only inferred from the code.
 - **Status:** Confirmed by the maintainer. Edge matching fixed on
   `fix/sync-time-sinks` (049e37c): matching in `WHERE` instead of a property
   map turns the plan into a hash join, 51 s → 0.66 s per batch of 600 edges on
-  36k nodes (PostgreSQL 16.12, AGE 1.5.0). Still open: the full rebuild on
-  every sync.
+  36k nodes (PostgreSQL 16.12, AGE 1.5.0). 14b807a (TRUNCATE instead of
+  DETACH DELETE, batches of 2000) brought a full rebuild of the real
+  scenario from ~590 s to 292 s. Still open: any twin change still rebuilds
+  the whole graph (no incremental sync).
 - **Observed:** After the twin rows were written, Postgres ran at ~100 % CPU
   while the worker sat idle; the active statement was a single
   `SELECT * FROM cypher('twin_<scenario>', $$ UNWIND [...] AS row MATCH ...`
