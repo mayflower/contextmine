@@ -829,14 +829,18 @@ class TestBuildKnowledgeGraphHappyPath:
         mock_session.execute = AsyncMock(return_value=docs_result)
 
         # Step 5: Semantic entities
-        mock_extraction_batch = MagicMock()
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=mock_extraction_batch),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 5, "relationships_created": 3}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(
+                return_value={
+                    "entities_created": 5,
+                    "relationships_created": 3,
+                    "chunks_processed": 0,
+                    "chunks_failed": 0,
+                    "chunks_remaining": 0,
+                    "quality_report": {},
+                }
+            ),
         )
 
         # Step 6: Communities
@@ -912,7 +916,7 @@ class TestBuildKnowledgeGraphHappyPath:
             AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
         )
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
             AsyncMock(side_effect=RuntimeError("step5_fail")),
         )
         monkeypatch.setattr(
@@ -935,10 +939,11 @@ class TestBuildKnowledgeGraphHappyPath:
         assert result["kg_file_nodes"] == 0
         assert result["kg_symbol_nodes"] == 0
 
-    async def test_skips_extraction_when_no_changed_docs(
+    async def test_no_changed_docs_skips_rules_and_works_off_the_extraction_backlog(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When changed_doc_ids is empty list, business rules and semantic extraction skipped."""
+        """With changed_doc_ids empty, business rules are skipped; semantic extraction
+        resets nothing and works off its backlog."""
         source_id = str(uuid.uuid4())
         collection_id = str(uuid.uuid4())
 
@@ -977,10 +982,18 @@ class TestBuildKnowledgeGraphHappyPath:
             AsyncMock(return_value={"nodes_deleted": 0, "evidence_deleted": 0}),
         )
 
-        # These should NOT be called because changed_doc_ids=[]
-        extract_mock = AsyncMock()
+        extract_mock = AsyncMock(
+            return_value={
+                "entities_created": 0,
+                "relationships_created": 0,
+                "chunks_processed": 0,
+                "chunks_failed": 0,
+                "chunks_remaining": 0,
+                "quality_report": {},
+            }
+        )
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
             extract_mock,
         )
 
@@ -1010,7 +1023,8 @@ class TestBuildKnowledgeGraphHappyPath:
             changed_doc_ids=[],  # Empty list
         )
 
-        extract_mock.assert_not_awaited()
+        extract_mock.assert_awaited_once()
+        assert extract_mock.await_args.kwargs["changed_doc_ids"] == []
         # Communities are rebuilt on every pass, so summaries always run; unchanged
         # communities are skipped inside generate_community_summaries.
         summary_mock.assert_awaited_once()
