@@ -572,7 +572,11 @@ def _semantic_chunk_kind(file_path: str, language: str | None = None) -> str:
 
 def _is_local_model(llm_provider: Any) -> bool:
     """Return True for providers that use the local-model extraction profile."""
-    return getattr(llm_provider, "provider_name", None) == "ollama"
+    return _is_local_provider(getattr(llm_provider, "provider_name", None))
+
+
+def _is_local_provider(provider_name: str | None) -> bool:
+    return provider_name == "ollama"
 
 
 def _entity_focus_guidance(chunk_kind: str, *, include_tests: bool = False) -> str:
@@ -791,9 +795,9 @@ class _SemanticCandidates:
 
 async def _load_semantic_candidates(
     collection_id: UUID,
-    llm_provider: LLMProvider,
     changed_doc_ids: list[str] | None,
     *,
+    keep_tests: bool,
     unprocessed_only: bool = False,
 ) -> _SemanticCandidates:
     """Load the chunks to extract from, filtered for low-signal content and sorted."""
@@ -839,7 +843,7 @@ async def _load_semantic_candidates(
 
         doc_uri = doc_uri_raw or str(_doc_id)
         skip_reason = _should_skip_semantic_chunk(
-            doc_uri, chunk_meta, chunk_content, keep_tests=_is_local_model(llm_provider)
+            doc_uri, chunk_meta, chunk_content, keep_tests=keep_tests
         )
         if skip_reason:
             loaded.skipped_low_signal += 1
@@ -1053,7 +1057,9 @@ async def extract_from_documents(
         ValueError: If embedder is not provided
     """
     _require_embedder(embedder)
-    loaded = await _load_semantic_candidates(collection_id, llm_provider, changed_doc_ids)
+    loaded = await _load_semantic_candidates(
+        collection_id, changed_doc_ids, keep_tests=_is_local_model(llm_provider)
+    )
     selected = loaded.select(max_chunks)
     batch = await _extract_candidates(selected, llm_provider, embedder, similarity_threshold)
     cross_doc = batch.quality_report.get("cross_doc_relationships", 0)
@@ -1130,7 +1136,7 @@ async def extract_and_persist_semantic_entities(
         await session.commit()
 
     loaded = await _load_semantic_candidates(
-        collection_id, llm_provider, None, unprocessed_only=True
+        collection_id, None, keep_tests=_is_local_model(llm_provider), unprocessed_only=True
     )
     selected = loaded.select(max_chunks)
     model_name = f"{llm_provider.provider_name}:{llm_provider.model_name}"
@@ -1219,6 +1225,21 @@ async def extract_and_persist_semantic_entities(
         resolution_audit=_combine_resolution_audits(audits),
     )
     return stats
+
+
+async def semantic_extraction_backlog(collection_id: UUID, *, provider_name: str) -> int:
+    """Count chunks that semantic extraction with this provider has not finished yet.
+
+    Applies the same low-signal filter as the extraction, so chunks it would
+    never send to the LLM do not count.
+    """
+    loaded = await _load_semantic_candidates(
+        collection_id,
+        None,
+        keep_tests=_is_local_provider(provider_name),
+        unprocessed_only=True,
+    )
+    return len(loaded.candidates)
 
 
 async def _reset_semantic_extraction(

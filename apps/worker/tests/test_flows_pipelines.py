@@ -759,6 +759,8 @@ class TestSyncGithubSourceHappyPath:
 
         # Mock get_changed_files returning no changes
         monkeypatch.setattr(flows, "get_changed_files", lambda *a: ([], []))
+        # No file changes and no extraction backlog: the knowledge graph is skipped.
+        monkeypatch.setattr(flows, "_semantic_extraction_backlog", AsyncMock(return_value=0))
 
         # Mock KG build
         monkeypatch.setattr(
