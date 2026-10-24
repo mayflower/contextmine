@@ -324,6 +324,12 @@ observed directly and what is only inferred from the code.
   no changed documents and no entities yet, it processes all chunks (6,594
   here, over 3.5 hours). `SEMANTIC_EXTRACTION_MAX_CHUNKS` caps it but
   defaults to 0 (unlimited).
+- **Status (semantic entities):** Fixed on
+  `feat/resumable-semantic-extraction`: each batch of chunks is committed
+  together with a record per chunk (`semantic_extraction_chunks`, migration
+  025), and every pass works off unrecorded chunks, so an aborted or capped
+  run continues next time. Verified live: killed after batch 1, the next run
+  extracted only the next 25 chunks. Business rules are unchanged.
 
 ### 15. Semantic entities: duplicate natural keys abort the whole step
 
@@ -369,7 +375,13 @@ observed directly and what is only inferred from the code.
 - **Status:** Fixed on `fix/semantic-budget-and-summaries`: communities with
   the same members keep summary, title, hash and embedding; the summaries
   step always runs and skips unchanged communities; enum fixed; embeddings
-  of dropped communities are deleted.
+  of dropped communities are deleted. Found while verifying: the embedding
+  provider was stored as an enum (asyncpg rejected it, so summaries never
+  worked with the OpenAI embedder), one unusable LLM answer discarded every
+  summary of the pass, and Leiden read nodes and edges without ORDER BY, so
+  unchanged data still re-summarized some communities. All fixed on the same
+  branch; a second pass over unchanged data now makes no LLM or embedding
+  call (verified live: 250 summaries, then 0 calls).
 
 ### 18. A sync without file changes skips the knowledge graph entirely
 
