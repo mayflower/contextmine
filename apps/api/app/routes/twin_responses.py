@@ -417,7 +417,7 @@ class CityHotspot(TwinResponse):
     node_natural_key: str
     loc: float
     symbol_count: int
-    coverage: float
+    coverage: float | None
     complexity: float
     coupling: float
     change_frequency: float
