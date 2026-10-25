@@ -1356,6 +1356,17 @@ async def _kg_step_semantic_entities(
         stats["kg_errors"].append(f"semantic_extraction: {e}")
 
 
+def _semantic_extraction_deferred(stats: dict) -> int:
+    """Chunks this pass's semantic extraction left for later runs by its chunk budget.
+
+    Failed chunks do not count: one that always fails must not hold back the
+    summaries forever.
+    """
+    remaining = int(stats.get("kg_semantic_chunks_remaining", 0) or 0)
+    failed = int(stats.get("kg_semantic_chunks_failed", 0) or 0)
+    return max(0, remaining - failed)
+
+
 async def _kg_step_communities(stats: dict, collection_uuid: object) -> None:
     """Step 6: Detect communities using Leiden algorithm."""
     try:
@@ -1597,7 +1608,16 @@ async def build_knowledge_graph(
 
     # Step 7: Generate community summaries and embeddings
     if settings.model_calls_enabled:
-        await _kg_step_summaries(stats, collection_uuid, research_llm, embedder)
+        if _semantic_extraction_deferred(stats):
+            # Communities still change with every batch the backlog adds, so
+            # summaries written now would go stale; write them once it is done.
+            stats["kg_summaries_deferred"] = True
+            logger.info(
+                "Skipping community summaries: %d chunks still wait for semantic extraction",
+                _semantic_extraction_deferred(stats),
+            )
+        else:
+            await _kg_step_summaries(stats, collection_uuid, research_llm, embedder)
 
     return stats
 

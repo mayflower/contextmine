@@ -1100,3 +1100,76 @@ class TestFinishWithoutChanges:
 
         assert await flows._semantic_extraction_backlog(collection_id) == 5
         count.assert_awaited_once_with(collection_id, provider_name="ollama")
+
+
+class TestSummariesWaitForExtractionBacklog:
+    def test_deferred_counts_budgeted_chunks_but_not_failures(self) -> None:
+        stats = {"kg_semantic_chunks_remaining": 160, "kg_semantic_chunks_failed": 10}
+        assert flows._semantic_extraction_deferred(stats) == 150
+        stats = {"kg_semantic_chunks_remaining": 3, "kg_semantic_chunks_failed": 3}
+        assert flows._semantic_extraction_deferred(stats) == 0
+        assert flows._semantic_extraction_deferred({}) == 0
+
+    async def _build(self, monkeypatch: pytest.MonkeyPatch, remaining: int, failed: int):
+        _setup_kg_base_mocks(monkeypatch)
+        _setup_kg_step1_mock(monkeypatch)
+        _setup_kg_step2_mocks(monkeypatch)
+        _setup_kg_step3_mocks(monkeypatch)
+        _setup_kg_step4_mocks(monkeypatch)
+        mock_session = AsyncMock()
+
+        async def mock_exec(stmt):
+            r = MagicMock()
+            r.all.return_value = []
+            r.scalar_one_or_none.return_value = None
+            return r
+
+        mock_session.execute = mock_exec
+        mock_session.commit = AsyncMock()
+        monkeypatch.setattr(flows, "get_session", lambda: _mock_session_cm(mock_session))
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(
+                return_value={
+                    **_NO_EXTRACTION,
+                    "chunks_remaining": remaining,
+                    "chunks_failed": failed,
+                }
+            ),
+        )
+        mock_community = MagicMock()
+        mock_community.community_count = lambda level: 0
+        mock_community.modularity = {0: 0, 1: 0, 2: 0}
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.detect_communities",
+            AsyncMock(return_value=mock_community),
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.communities.persist_communities", AsyncMock()
+        )
+        summaries = AsyncMock(
+            return_value=MagicMock(communities_summarized=0, embeddings_created=0)
+        )
+        monkeypatch.setattr(
+            "contextmine_core.knowledge.summaries.generate_community_summaries", summaries
+        )
+        result = await flows.build_knowledge_graph.fn(
+            source_id=str(uuid.uuid4()), collection_id=str(uuid.uuid4()), changed_doc_ids=[]
+        )
+        return result, summaries
+
+    async def test_summaries_wait_while_the_budget_defers_chunks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, summaries = await self._build(monkeypatch, remaining=6000, failed=2)
+
+        summaries.assert_not_awaited()
+        assert result["kg_summaries_deferred"] is True
+
+    async def test_summaries_run_once_only_failed_chunks_remain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, summaries = await self._build(monkeypatch, remaining=2, failed=2)
+
+        summaries.assert_awaited_once()
+        assert "kg_summaries_deferred" not in result
