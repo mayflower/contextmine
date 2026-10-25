@@ -1413,6 +1413,8 @@ async def _kg_step_summaries(
                 collection_uuid,
                 provider=research_llm,
                 embed_provider=embedder,
+                # Keep finished summaries when the pipeline timeout cuts the pass.
+                commit_every=10,
             )
             await session.commit()
             stats["kg_summaries_created"] = summary_stats.communities_summarized
