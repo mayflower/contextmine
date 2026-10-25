@@ -111,8 +111,12 @@ export default function OverviewView({
     )
   }
 
-  const metricsUnavailable = city?.metrics_status?.status === 'unavailable'
   const unavailableReason = city?.metrics_status?.reason
+  // Structural metrics can be ready while coverage is still missing or failed.
+  const metricsUnavailable =
+    city?.metrics_status?.status === 'unavailable' ||
+    unavailableReason === 'awaiting_ci_coverage' ||
+    unavailableReason === 'coverage_ingest_failed'
 
   return (
     <ViewShell
@@ -201,7 +205,7 @@ export default function OverviewView({
                     </td>
                     <td>{(spot.complexity || 0).toFixed(2)}</td>
                     <td>{(spot.coupling || 0).toFixed(2)}</td>
-                    <td>{(spot.coverage || 0).toFixed(2)}</td>
+                    <td>{formatMetricValue(spot.coverage)}</td>
                     <td>{spot.loc}</td>
                     <td>{(spot.change_frequency || 0).toFixed(2)}</td>
                     <td>{(spot.churn || 0).toFixed(2)}</td>
