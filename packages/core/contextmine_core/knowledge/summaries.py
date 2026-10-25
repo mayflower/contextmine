@@ -78,6 +78,7 @@ async def generate_community_summaries(
     provider: LLMProvider,
     embed_provider: Any,
     top_k: int = 10,
+    commit_every: int = 0,
 ) -> SummaryStats:
     """Generate summaries and embeddings for all communities.
 
@@ -89,6 +90,9 @@ async def generate_community_summaries(
         provider: LLM provider for narrative summaries. REQUIRED.
         embed_provider: Embedding provider for vector embeddings. REQUIRED.
         top_k: Number of top members to include in summary
+        commit_every: Commit after this many communities with new writes, so an
+            aborted pass keeps its summaries and the next pass skips them.
+            0 leaves committing to the caller.
 
     Returns:
         SummaryStats with counts
@@ -114,6 +118,14 @@ async def generate_community_summaries(
         select(KnowledgeCommunity).where(KnowledgeCommunity.collection_id == collection_id)
     )
     communities = result.scalars().all()
+    uncommitted = 0
+
+    async def wrote() -> None:
+        nonlocal uncommitted
+        uncommitted += 1
+        if commit_every and uncommitted >= commit_every:
+            await session.commit()
+            uncommitted = 0
 
     for community in communities:
         # Get community context (members, evidence, etc.)
@@ -143,6 +155,7 @@ async def generate_community_summaries(
                 )
                 if embedding_created:
                     stats.embeddings_created += 1
+                    await wrote()
             continue
 
         # Generate LLM summary (required, no fallback). One unusable answer must not
@@ -179,6 +192,7 @@ async def generate_community_summaries(
             stats.embeddings_created += 1
         else:
             stats.embeddings_skipped += 1
+        await wrote()
 
     return stats
 

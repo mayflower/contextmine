@@ -738,3 +738,79 @@ class TestGenerateCommunitySummariesFailures:
         assert stats.communities_failed == 1
         assert stats.communities_summarized == 1
         assert stats.embeddings_created == 1
+
+
+class TestGenerateCommunitySummariesCommits:
+    @pytest.mark.anyio
+    async def test_commits_after_every_n_written_communities(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from contextmine_core.knowledge import summaries
+
+        communities = [
+            MagicMock(id=uuid4(), natural_key=f"community:L0:C{i}", summary=None, meta={})
+            for i in range(5)
+        ]
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=communities)))
+        )
+        monkeypatch.setattr(
+            summaries, "_gather_community_context", AsyncMock(return_value=MagicMock())
+        )
+        monkeypatch.setattr(summaries, "_compute_membership_hash", lambda context: "h")
+        output = summaries.CommunitySummaryOutput(
+            title="Auth",
+            responsibilities=["login"],
+            key_concepts=["auth"],
+            key_dependencies=[],
+            key_paths=[],
+            confidence=0.9,
+        )
+        monkeypatch.setattr(summaries, "_llm_summarize_community", AsyncMock(return_value=output))
+        monkeypatch.setattr(summaries, "_embed_community_summary", AsyncMock(return_value=True))
+
+        stats = await summaries.generate_community_summaries(
+            session, uuid4(), provider=MagicMock(), embed_provider=MagicMock(), commit_every=2
+        )
+
+        assert stats.communities_summarized == 5
+        # After communities 2 and 4; the fifth is left for the caller's commit.
+        assert session.commit.await_count == 2
+
+    @pytest.mark.anyio
+    async def test_leaves_committing_to_the_caller_by_default(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from contextmine_core.knowledge import summaries
+
+        community = MagicMock(id=uuid4(), natural_key="community:L0:C0", summary=None, meta={})
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[community])))
+        )
+        monkeypatch.setattr(
+            summaries, "_gather_community_context", AsyncMock(return_value=MagicMock())
+        )
+        monkeypatch.setattr(summaries, "_compute_membership_hash", lambda context: "h")
+        monkeypatch.setattr(
+            summaries,
+            "_llm_summarize_community",
+            AsyncMock(
+                return_value=summaries.CommunitySummaryOutput(
+                    title="A",
+                    responsibilities=[],
+                    key_concepts=[],
+                    key_dependencies=[],
+                    key_paths=[],
+                    confidence=0.5,
+                )
+            ),
+        )
+        monkeypatch.setattr(summaries, "_embed_community_summary", AsyncMock(return_value=True))
+
+        await summaries.generate_community_summaries(
+            session, uuid4(), provider=MagicMock(), embed_provider=MagicMock()
+        )
+
+        session.commit.assert_not_awaited()
