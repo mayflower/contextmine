@@ -130,8 +130,10 @@ def _metric_averages(metrics: list[MetricSnapshot]) -> dict[str, float | None]:
         }
 
     total = float(len(metrics))
+    # Average coverage over files that have a coverage report; None without any.
+    covered = [float(m.coverage) for m in metrics if m.coverage is not None]
     return {
-        "coverage_avg": round(sum(float(m.coverage or 0.0) for m in metrics) / total, 4),
+        "coverage_avg": round(sum(covered) / len(covered), 4) if covered else None,
         "complexity_avg": round(sum(float(m.complexity or 0.0) for m in metrics) / total, 4),
         "coupling_avg": round(sum(float(m.coupling or 0.0) for m in metrics) / total, 4),
         "change_frequency_avg": round(

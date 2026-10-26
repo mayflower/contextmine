@@ -1736,7 +1736,8 @@ def _build_metric_snapshot(
         loc=int(meta["loc"]),
         symbol_count=int(meta.get("symbol_count", 0) or 0),
         coupling=float(meta["coupling"]),
-        coverage=float(meta.get("coverage", 0.0) or 0.0),
+        # No coverage report is not 0 % coverage; keep it NULL.
+        coverage=(float(meta["coverage"]) if meta.get("coverage") is not None else None),
         complexity=float(meta["complexity"]),
         cohesion=float(meta.get("cohesion", 1.0) or 1.0),
         instability=float(meta.get("instability", 0.0) or 0.0),
