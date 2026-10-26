@@ -84,3 +84,29 @@ def test_generate_arc42_from_facts_renders_selected_section() -> None:
     assert len(document.sections) == 1
     assert "Average test coverage" in document.markdown
     assert document.section_coverage["10_quality_requirements"] is True
+
+
+def test_quality_section_says_na_without_coverage() -> None:
+    bundle = ArchitectureFactsBundle(
+        collection_id=uuid4(),
+        scenario_id=uuid4(),
+        scenario_name="AS-IS",
+        facts=[
+            ArchitectureFact(
+                fact_id="quality:1",
+                fact_type="quality_summary",
+                title="Quality",
+                description="summary",
+                source="deterministic",
+                confidence=0.9,
+                tags=("quality",),
+                attributes={"metric_nodes": 3, "coverage_avg": None, "complexity_avg": 4.0},
+            ),
+        ],
+        ports_adapters=[],
+    )
+
+    document = generate_arc42_from_facts(bundle, _Scenario("AS-IS"), options={"section": "quality"})
+
+    assert "Average test coverage: N/A." in document.markdown
+    assert "None" not in document.markdown

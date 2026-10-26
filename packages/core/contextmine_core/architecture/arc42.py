@@ -350,12 +350,17 @@ def _render_quality_from_facts(bundle: ArchitectureFactsBundle) -> str:
     quality = _facts_by_type(bundle, "quality_summary")
     if quality:
         attrs = quality[0].attributes
+
+        def value(key: str) -> object:
+            found = attrs.get(key)
+            return "N/A" if found is None else found
+
         return "\n".join(
             [
                 f"Metric nodes: {attrs.get('metric_nodes', 0)}.",
-                f"Average test coverage: {attrs.get('coverage_avg', 'N/A')}.",
-                f"Average complexity: {attrs.get('complexity_avg', 'N/A')}.",
-                f"Average coupling: {attrs.get('coupling_avg', 'N/A')}.",
+                f"Average test coverage: {value('coverage_avg')}.",
+                f"Average complexity: {value('complexity_avg')}.",
+                f"Average coupling: {value('coupling_avg')}.",
             ]
         )
 

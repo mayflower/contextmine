@@ -528,3 +528,42 @@ async def test_deployment_view_sparse_emits_warning(monkeypatch: pytest.MonkeyPa
 
     assert "C4Deployment" in result.content
     assert result.warnings
+
+
+@pytest.mark.anyio
+async def test_architecture_recovery_does_not_block_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery can take minutes; other requests must keep being served meanwhile."""
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+    from uuid import uuid4
+
+    import anyio
+    from contextmine_core.exports import mermaid_c4
+
+    def slow_recovery(*_args: object, **_kwargs: object) -> str:
+        time.sleep(0.5)  # stands in for CPU-bound recovery work
+        return "model"
+
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session = MagicMock(execute=AsyncMock(return_value=result))
+    monkeypatch.setattr(mermaid_c4, "recover_architecture_model", slow_recovery)
+    monkeypatch.setattr(mermaid_c4, "load_recovery_docs", AsyncMock(return_value=[]))
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await anyio.sleep(0.05)
+            ticks += 1
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(ticker)
+        model = await mermaid_c4._load_recovered_architecture_model(session, uuid4(), uuid4())
+        tg.cancel_scope.cancel()
+
+    assert model == "model"
+    assert ticks >= 5  # the loop kept running during the 0.5 s of recovery
