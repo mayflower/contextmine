@@ -59,7 +59,8 @@ from contextmine_core.twin.projections import (
     derive_group_with_strategy,
     normalize_architecture_level,
 )
-from sqlalchemy import ColumnElement, and_, case, delete, func, or_, select
+from sqlalchemy import ColumnElement, and_, case, cast, delete, func, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -421,19 +422,7 @@ async def _bulk_upsert_twin_nodes(
     items = list(latest.items())
     for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
         batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
-        stmt = pg_insert(TwinNode).values(
-            [
-                {
-                    "scenario_id": scenario_id,
-                    "natural_key": natural_key,
-                    "kind": kind,
-                    "name": name,
-                    "meta": meta,
-                    "provenance_node_id": provenance_node_id,
-                }
-                for natural_key, (kind, name, meta, provenance_node_id) in batch
-            ]
-        )
+        stmt = pg_insert(TwinNode.__table__)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_twin_node_natural",
             set_={
@@ -442,9 +431,40 @@ async def _bulk_upsert_twin_nodes(
                 "meta": stmt.excluded.meta,
                 "provenance_node_id": stmt.excluded.provenance_node_id,
             },
+            # Rows that already hold these values are left alone (no new row
+            # version); they are not returned and are looked up below.
+            where=or_(
+                TwinNode.kind.is_distinct_from(stmt.excluded.kind),
+                TwinNode.name.is_distinct_from(stmt.excluded.name),
+                cast(TwinNode.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+                TwinNode.provenance_node_id.is_distinct_from(stmt.excluded.provenance_node_id),
+            ),
         ).returning(TwinNode.id, TwinNode.natural_key)
-        for row in (await session.execute(stmt)).all():
+        params = [
+            {
+                "id": uuid.uuid4(),
+                "scenario_id": scenario_id,
+                "natural_key": natural_key,
+                "kind": kind,
+                "name": name,
+                "meta": meta,
+                "provenance_node_id": provenance_node_id,
+            }
+            for natural_key, (kind, name, meta, provenance_node_id) in batch
+        ]
+        for row in (await _execute_many(session, stmt, params)).all():
             ids[row.natural_key] = row.id
+        unchanged = [natural_key for natural_key, _values in batch if natural_key not in ids]
+        if unchanged:
+            for row in (
+                await session.execute(
+                    select(TwinNode.id, TwinNode.natural_key).where(
+                        TwinNode.scenario_id == scenario_id,
+                        TwinNode.natural_key.in_(unchanged),
+                    )
+                )
+            ).all():
+                ids[row.natural_key] = row.id
     await _bulk_insert_layers(
         session,
         TwinNodeLayer,
@@ -468,25 +488,53 @@ async def _bulk_upsert_twin_edges(
     items = list(latest.items())
     for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
         batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
-        stmt = pg_insert(TwinEdge).values(
-            [
-                {
-                    "scenario_id": scenario_id,
-                    "source_node_id": source_node_id,
-                    "target_node_id": target_node_id,
-                    "kind": kind,
-                    "meta": meta,
-                }
-                for (source_node_id, target_node_id, kind), meta in batch
-            ]
-        )
+        stmt = pg_insert(TwinEdge.__table__)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_twin_edge_unique",
             set_={"meta": stmt.excluded.meta},
-        ).returning(TwinEdge.id, TwinEdge.kind)
-        for row in (await session.execute(stmt)).all():
+            # Unchanged rows are left alone and looked up below.
+            where=cast(TwinEdge.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+        ).returning(TwinEdge.id, TwinEdge.source_node_id, TwinEdge.target_node_id, TwinEdge.kind)
+        params = [
+            {
+                "id": uuid.uuid4(),
+                "scenario_id": scenario_id,
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
+                "kind": kind,
+                "meta": meta,
+            }
+            for (source_node_id, target_node_id, kind), meta in batch
+        ]
+        written: set[tuple[UUID, UUID, str]] = set()
+        for row in (await _execute_many(session, stmt, params)).all():
+            written.add((row.source_node_id, row.target_node_id, row.kind))
             layer_rows.extend((row.id, layer) for layer in infer_edge_layers(row.kind))
+        unchanged = [key for key, _meta in batch if key not in written]
+        if unchanged:
+            for row in (
+                await session.execute(
+                    select(TwinEdge.id, TwinEdge.kind).where(
+                        TwinEdge.scenario_id == scenario_id,
+                        tuple_(TwinEdge.source_node_id, TwinEdge.target_node_id, TwinEdge.kind).in_(
+                            unchanged
+                        ),
+                    )
+                )
+            ).all():
+                layer_rows.extend((row.id, layer) for layer in infer_edge_layers(row.kind))
     await _bulk_insert_layers(session, TwinEdgeLayer, "edge_id", "uq_twin_edge_layer", layer_rows)
+
+
+async def _execute_many(session: AsyncSession, stmt: Any, params: list[dict[str, Any]]) -> Any:
+    """Execute a Core statement for many parameter sets.
+
+    Compiled once and batched by SQLAlchemy ("insertmanyvalues"); building one
+    multi-row VALUES clause per batch instead spent most of a twin seed in
+    Python compiling millions of bind parameters.
+    """
+    connection = await session.connection()
+    return await connection.execute(stmt, params)
 
 
 async def _bulk_insert_layers(
@@ -499,10 +547,15 @@ async def _bulk_insert_layers(
     unique_rows = list(dict.fromkeys(rows))
     for start in range(0, len(unique_rows), BULK_UPSERT_BATCH_SIZE):
         batch = unique_rows[start : start + BULK_UPSERT_BATCH_SIZE]
-        stmt = pg_insert(model).values(
-            [{owner_column: owner_id, "layer": layer} for owner_id, layer in batch]
+        stmt = pg_insert(model.__table__).on_conflict_do_nothing(constraint=constraint)
+        await _execute_many(
+            session,
+            stmt,
+            [
+                {"id": uuid.uuid4(), owner_column: owner_id, "layer": layer}
+                for owner_id, layer in batch
+            ],
         )
-        await session.execute(stmt.on_conflict_do_nothing(constraint=constraint))
 
 
 async def _upsert_node_layer(session: AsyncSession, node_id: UUID, layer: TwinLayer) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Any
 from uuid import UUID
 
 from contextmine_core.models import TwinAgeGraph, TwinEdge, TwinNode
@@ -25,7 +26,7 @@ _MUTATING_PATTERNS = re.compile(
 # Graph names are strictly alphanumeric + underscore (from UUID hex)
 _SAFE_NAME = re.compile(r"^[a-z0-9_]+$")
 _NODE_BATCH_SIZE = 800
-_EDGE_BATCH_SIZE = 600
+_EDGE_BATCH_SIZE = 2000
 
 
 def scenario_graph_name(scenario_id: UUID) -> str:
@@ -82,8 +83,7 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
         """
     )
 
-    # Clear existing graph data
-    await conn.exec_driver_sql(_age_cypher_sql(graph_name, "MATCH (n) DETACH DELETE n"))
+    await _clear_graph(conn, graph_name)
 
     # Load nodes in batches to avoid one SQL round-trip per vertex.
     nodes = (
@@ -102,6 +102,24 @@ async def sync_scenario_to_age(session: AsyncSession, scenario_id: UUID) -> None
     )
     for batch in _chunked(edges, _EDGE_BATCH_SIZE):
         await conn.exec_driver_sql(_age_cypher_sql(graph_name, _edge_batch_cypher(batch)))
+
+
+async def _clear_graph(conn: Any, graph_name: str) -> None:
+    """Remove every vertex and edge of the graph.
+
+    TRUNCATE on the graph's label tables instead of `MATCH (n) DETACH DELETE n`:
+    deleting row by row left the old rows as dead tuples that every edge batch
+    of the following rebuild had to scan. Empties the same tables either way.
+    """
+    relations = (
+        await conn.exec_driver_sql(
+            "SELECT l.relation::regclass::text FROM ag_catalog.ag_label l "
+            "JOIN ag_catalog.ag_graph g ON g.graphid = l.graph "
+            f"WHERE g.name = '{graph_name}'"
+        )
+    ).all()
+    if relations:
+        await conn.exec_driver_sql("TRUNCATE " + ", ".join(row[0] for row in relations))
 
 
 def _node_batch_cypher(nodes: Iterable[TwinNode]) -> str:
