@@ -9,13 +9,17 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections import deque
+from collections import defaultdict, deque
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from contextmine_core.analyzer.extractors.graph_helpers import upsert_edge as _upsert_knowledge_edge
-from contextmine_core.analyzer.extractors.graph_helpers import upsert_node as _upsert_knowledge_node
+from contextmine_core.analyzer.extractors.graph_helpers import (
+    BULK_UPSERT_BATCH_SIZE,
+    bulk_upsert_edges,
+    bulk_upsert_nodes,
+)
 from contextmine_core.architecture_intents import (
     ArchitectureIntentV1,
     IntentRisk,
@@ -55,7 +59,8 @@ from contextmine_core.twin.projections import (
     derive_group_with_strategy,
     normalize_architecture_level,
 )
-from sqlalchemy import ColumnElement, and_, case, delete, func, or_, select
+from sqlalchemy import ColumnElement, and_, case, cast, delete, func, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -199,9 +204,8 @@ async def seed_scenario_from_knowledge_graph(
         .all()
     )
 
-    node_map: dict[UUID, UUID] = {}
-    created_nodes = 0
-
+    twin_key_by_node: dict[UUID, str] = {}
+    twin_node_rows: list[tuple[str, str, str, dict[str, Any], UUID | None]] = []
     for node in node_rows:
         natural_key = node.natural_key
         node_name = node.name
@@ -214,17 +218,11 @@ async def seed_scenario_from_knowledge_graph(
                 natural_key = f"file:{canonical_file_path}"
                 node_name = canonical_file_path
                 node_meta["file_path"] = canonical_file_path
-        twin_node_id = await _upsert_twin_node(
-            session=session,
-            scenario_id=scenario_id,
-            natural_key=natural_key,
-            kind=node.kind.value,
-            name=node_name,
-            meta=node_meta,
-            provenance_node_id=node.id,
-        )
-        node_map[node.id] = twin_node_id
-        created_nodes += 1
+        twin_node_rows.append((natural_key, node.kind.value, node_name, node_meta, node.id))
+        twin_key_by_node[node.id] = natural_key
+    twin_ids = await _bulk_upsert_twin_nodes(session, scenario_id, twin_node_rows)
+    node_map = {node_id: twin_ids[key] for node_id, key in twin_key_by_node.items()}
+    created_nodes = len(twin_node_rows)
 
     edge_rows = (
         (
@@ -236,23 +234,16 @@ async def seed_scenario_from_knowledge_graph(
         .all()
     )
 
-    created_edges = 0
+    twin_edge_rows: list[tuple[UUID, UUID, str, dict[str, Any]]] = []
     for edge in edge_rows:
         src = node_map.get(edge.source_node_id)
         dst = node_map.get(edge.target_node_id)
         if not src or not dst:
             continue
-        await _upsert_twin_edge(
-            session,
-            scenario_id,
-            src,
-            dst,
-            edge.kind.value,
-            edge.meta or {},
-        )
-        created_edges += 1
+        twin_edge_rows.append((src, dst, edge.kind.value, edge.meta or {}))
+    await _bulk_upsert_twin_edges(session, scenario_id, twin_edge_rows)
 
-    return created_nodes, created_edges
+    return created_nodes, len(twin_edge_rows)
 
 
 async def create_to_be_scenario(
@@ -411,6 +402,162 @@ async def _upsert_twin_edge(
     return edge_id
 
 
+async def _bulk_upsert_twin_nodes(
+    session: AsyncSession,
+    scenario_id: UUID,
+    rows: Iterable[tuple[str, str, str, dict[str, Any], UUID | None]],
+) -> dict[str, UUID]:
+    """Same result as _upsert_twin_node for each (natural_key, kind, name, meta, provenance).
+
+    A natural key seen more than once keeps its last values, like consecutive
+    upserts, and gets the layers inferred from every occurrence, like the layer
+    inserts those upserts made. Returns the twin node id per natural key.
+    """
+    latest: dict[str, tuple[str, str, dict[str, Any], UUID | None]] = {}
+    layers: dict[str, set[TwinLayer]] = defaultdict(set)
+    for natural_key, kind, name, meta, provenance_node_id in rows:
+        latest[natural_key] = (kind, name, meta, provenance_node_id)
+        layers[natural_key] |= infer_node_layers(kind, meta)
+    ids: dict[str, UUID] = {}
+    items = list(latest.items())
+    for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
+        batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
+        stmt = pg_insert(TwinNode.__table__)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_twin_node_natural",
+            set_={
+                "kind": stmt.excluded.kind,
+                "name": stmt.excluded.name,
+                "meta": stmt.excluded.meta,
+                "provenance_node_id": stmt.excluded.provenance_node_id,
+            },
+            # Rows that already hold these values are left alone (no new row
+            # version); they are not returned and are looked up below.
+            where=or_(
+                TwinNode.kind.is_distinct_from(stmt.excluded.kind),
+                TwinNode.name.is_distinct_from(stmt.excluded.name),
+                cast(TwinNode.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+                TwinNode.provenance_node_id.is_distinct_from(stmt.excluded.provenance_node_id),
+            ),
+        ).returning(TwinNode.id, TwinNode.natural_key)
+        params = [
+            {
+                "id": uuid.uuid4(),
+                "scenario_id": scenario_id,
+                "natural_key": natural_key,
+                "kind": kind,
+                "name": name,
+                "meta": meta,
+                "provenance_node_id": provenance_node_id,
+            }
+            for natural_key, (kind, name, meta, provenance_node_id) in batch
+        ]
+        for row in (await _execute_many(session, stmt, params)).all():
+            ids[row.natural_key] = row.id
+        unchanged = [natural_key for natural_key, _values in batch if natural_key not in ids]
+        if unchanged:
+            for row in (
+                await session.execute(
+                    select(TwinNode.id, TwinNode.natural_key).where(
+                        TwinNode.scenario_id == scenario_id,
+                        TwinNode.natural_key.in_(unchanged),
+                    )
+                )
+            ).all():
+                ids[row.natural_key] = row.id
+    await _bulk_insert_layers(
+        session,
+        TwinNodeLayer,
+        "node_id",
+        "uq_twin_node_layer",
+        [(ids[key], layer) for key, key_layers in layers.items() for layer in key_layers],
+    )
+    return ids
+
+
+async def _bulk_upsert_twin_edges(
+    session: AsyncSession,
+    scenario_id: UUID,
+    rows: Iterable[tuple[UUID, UUID, str, dict[str, Any]]],
+) -> None:
+    """Same result as _upsert_twin_edge for each (source, target, kind, meta) in order."""
+    latest: dict[tuple[UUID, UUID, str], dict[str, Any]] = {}
+    for source_node_id, target_node_id, kind, meta in rows:
+        latest[(source_node_id, target_node_id, kind)] = meta
+    layer_rows: list[tuple[UUID, TwinLayer]] = []
+    items = list(latest.items())
+    for start in range(0, len(items), BULK_UPSERT_BATCH_SIZE):
+        batch = items[start : start + BULK_UPSERT_BATCH_SIZE]
+        stmt = pg_insert(TwinEdge.__table__)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_twin_edge_unique",
+            set_={"meta": stmt.excluded.meta},
+            # Unchanged rows are left alone and looked up below.
+            where=cast(TwinEdge.meta, JSONB).is_distinct_from(cast(stmt.excluded.meta, JSONB)),
+        ).returning(TwinEdge.id, TwinEdge.source_node_id, TwinEdge.target_node_id, TwinEdge.kind)
+        params = [
+            {
+                "id": uuid.uuid4(),
+                "scenario_id": scenario_id,
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
+                "kind": kind,
+                "meta": meta,
+            }
+            for (source_node_id, target_node_id, kind), meta in batch
+        ]
+        written: set[tuple[UUID, UUID, str]] = set()
+        for row in (await _execute_many(session, stmt, params)).all():
+            written.add((row.source_node_id, row.target_node_id, row.kind))
+            layer_rows.extend((row.id, layer) for layer in infer_edge_layers(row.kind))
+        unchanged = [key for key, _meta in batch if key not in written]
+        if unchanged:
+            for row in (
+                await session.execute(
+                    select(TwinEdge.id, TwinEdge.kind).where(
+                        TwinEdge.scenario_id == scenario_id,
+                        tuple_(TwinEdge.source_node_id, TwinEdge.target_node_id, TwinEdge.kind).in_(
+                            unchanged
+                        ),
+                    )
+                )
+            ).all():
+                layer_rows.extend((row.id, layer) for layer in infer_edge_layers(row.kind))
+    await _bulk_insert_layers(session, TwinEdgeLayer, "edge_id", "uq_twin_edge_layer", layer_rows)
+
+
+async def _execute_many(session: AsyncSession, stmt: Any, params: list[dict[str, Any]]) -> Any:
+    """Execute a Core statement for many parameter sets.
+
+    Compiled once and batched by SQLAlchemy ("insertmanyvalues"); building one
+    multi-row VALUES clause per batch instead spent most of a twin seed in
+    Python compiling millions of bind parameters.
+    """
+    connection = await session.connection()
+    return await connection.execute(stmt, params)
+
+
+async def _bulk_insert_layers(
+    session: AsyncSession,
+    model: type[TwinNodeLayer] | type[TwinEdgeLayer],
+    owner_column: str,
+    constraint: str,
+    rows: list[tuple[UUID, TwinLayer]],
+) -> None:
+    unique_rows = list(dict.fromkeys(rows))
+    for start in range(0, len(unique_rows), BULK_UPSERT_BATCH_SIZE):
+        batch = unique_rows[start : start + BULK_UPSERT_BATCH_SIZE]
+        stmt = pg_insert(model.__table__).on_conflict_do_nothing(constraint=constraint)
+        await _execute_many(
+            session,
+            stmt,
+            [
+                {"id": uuid.uuid4(), owner_column: owner_id, "layer": layer}
+                for owner_id, layer in batch
+            ],
+        )
+
+
 async def _upsert_node_layer(session: AsyncSession, node_id: UUID, layer: TwinLayer) -> None:
     stmt = pg_insert(TwinNodeLayer).values(node_id=node_id, layer=layer)
     stmt = stmt.on_conflict_do_nothing(constraint="uq_twin_node_layer")
@@ -432,191 +579,113 @@ async def ingest_snapshot_into_as_is(
 ) -> tuple[TwinScenario, dict[str, int]]:
     """Upsert SCIP/LSIF snapshot entities into the AS-IS scenario."""
     scenario = await get_or_create_as_is_scenario(session, collection_id, user_id)
+    source_value = str(source_id) if source_id else None
 
-    file_node_ids: dict[str, UUID] = {}
-    symbol_node_ids: dict[str, UUID] = {}
-    knowledge_file_node_ids: dict[str, UUID] = {}
-    knowledge_symbol_node_ids: dict[str, UUID] = {}
-
+    # Rows are collected first and written in bulk; per-row upserts made a sync
+    # issue several hundred thousand statements. Order matches the former
+    # per-row writes, so duplicate keys still end with their last values.
+    twin_node_rows: list[tuple[str, str, str, dict[str, Any], UUID | None]] = []
+    knowledge_node_rows: list[tuple[KnowledgeNodeKind, str, str, dict[str, Any]]] = []
+    file_keys: dict[str, str] = {}
+    symbol_keys: dict[str, str] = {}
+    symbol_files: list[tuple[str, str]] = []
     node_count = 0
-    edge_count = 0
 
     for file_info in snapshot.files:
         canonical_file_path = canonicalize_repo_relative_path(file_info.path)
         if not canonical_file_path:
             continue
         file_key = f"file:{canonical_file_path}"
-        file_node_id = await _upsert_twin_node(
-            session,
-            scenario.id,
-            natural_key=file_key,
-            kind="file",
-            name=canonical_file_path,
-            meta={
-                "file_path": canonical_file_path,
-                "language": file_info.language,
-                "source_id": str(source_id) if source_id else None,
-                **(snapshot.meta or {}),
-            },
-            provenance_node_id=None,
+        file_meta = {
+            "file_path": canonical_file_path,
+            "language": file_info.language,
+            "source_id": source_value,
+            **(snapshot.meta or {}),
+        }
+        twin_node_rows.append((file_key, "file", canonical_file_path, file_meta, None))
+        knowledge_node_rows.append(
+            (KnowledgeNodeKind.FILE, file_key, canonical_file_path, dict(file_meta))
         )
-        file_node_ids[canonical_file_path] = file_node_id
-        file_node_ids[file_info.path] = file_node_id
-        knowledge_file_node_id = await _upsert_knowledge_node(
-            session=session,
-            collection_id=collection_id,
-            kind=KnowledgeNodeKind.FILE,
-            natural_key=file_key,
-            name=canonical_file_path,
-            meta={
-                "file_path": canonical_file_path,
-                "language": file_info.language,
-                "source_id": str(source_id) if source_id else None,
-                **(snapshot.meta or {}),
-            },
-        )
-        knowledge_file_node_ids[canonical_file_path] = knowledge_file_node_id
-        knowledge_file_node_ids[file_info.path] = knowledge_file_node_id
+        file_keys[canonical_file_path] = file_key
+        file_keys[file_info.path] = file_key
         node_count += 1
 
     for symbol in snapshot.symbols:
-        added = await _ingest_symbol(
-            session,
-            scenario,
-            collection_id,
-            symbol,
-            file_node_ids,
-            knowledge_file_node_ids,
-            symbol_node_ids,
-            knowledge_symbol_node_ids,
+        if symbol.kind == SymbolKind.UNKNOWN:
+            continue
+        canonical_symbol_path = canonicalize_repo_relative_path(symbol.file_path)
+        symbol_key = f"symbol:{symbol.def_id}"
+        symbol_name = symbol.name or symbol.def_id
+        symbol_meta = {
+            "file_path": canonical_symbol_path or symbol.file_path,
+            "def_id": symbol.def_id,
+            "symbol_kind": symbol.kind.value,
+            "range": symbol.range.to_dict(),
+        }
+        twin_node_rows.append((symbol_key, symbol.kind.value, symbol_name, symbol_meta, None))
+        knowledge_node_rows.append((KnowledgeNodeKind.SYMBOL, symbol_key, symbol_name, symbol_meta))
+        symbol_keys[symbol.def_id] = symbol_key
+        symbol_files.append((canonical_symbol_path or symbol.file_path, symbol_key))
+        node_count += 1
+
+    twin_ids = await _bulk_upsert_twin_nodes(session, scenario.id, twin_node_rows)
+    knowledge_ids = await bulk_upsert_nodes(
+        session, collection_id=collection_id, rows=knowledge_node_rows
+    )
+
+    twin_edge_rows: list[tuple[UUID, UUID, str, dict[str, Any]]] = []
+    knowledge_edge_rows: list[tuple[UUID, UUID, KnowledgeEdgeKind, dict[str, Any]]] = []
+    edge_count = 0
+    for file_path_key, symbol_key in symbol_files:
+        file_key = file_keys.get(file_path_key)
+        if not file_key:
+            continue
+        twin_edge_rows.append((twin_ids[file_key], twin_ids[symbol_key], "file_defines_symbol", {}))
+        knowledge_edge_rows.append(
+            (
+                knowledge_ids[(KnowledgeNodeKind.FILE, file_key)],
+                knowledge_ids[(KnowledgeNodeKind.SYMBOL, symbol_key)],
+                KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
+                {},
+            )
         )
-        if added:
-            node_count += 1
-            edge_count += added
+        edge_count += 1
 
     for relation in snapshot.relations:
-        added = await _ingest_relation(
-            session,
-            scenario,
-            collection_id,
-            relation,
-            symbol_node_ids,
-            knowledge_symbol_node_ids,
+        src_key = symbol_keys.get(relation.src_def_id)
+        dst_key = symbol_keys.get(relation.dst_def_id)
+        if not src_key or not dst_key:
+            continue
+        relation_meta = {
+            "resolved": relation.resolved,
+            "weight": relation.weight,
+            **(relation.meta or {}),
+        }
+        twin_edge_rows.append(
+            (
+                twin_ids[src_key],
+                twin_ids[dst_key],
+                _relation_to_edge_kind(relation.kind),
+                relation_meta,
+            )
         )
-        edge_count += added
+        knowledge_edge_rows.append(
+            (
+                knowledge_ids[(KnowledgeNodeKind.SYMBOL, src_key)],
+                knowledge_ids[(KnowledgeNodeKind.SYMBOL, dst_key)],
+                _relation_to_knowledge_edge_kind(relation.kind),
+                dict(relation_meta),
+            )
+        )
+        edge_count += 1
+
+    await _bulk_upsert_twin_edges(session, scenario.id, twin_edge_rows)
+    await bulk_upsert_edges(session, collection_id=collection_id, rows=knowledge_edge_rows)
 
     scenario.version += 1
     scenario.updated_at = datetime.now(UTC)
 
     return scenario, {"nodes_upserted": node_count, "edges_upserted": edge_count}
-
-
-async def _ingest_symbol(
-    session: AsyncSession,
-    scenario: TwinScenario,
-    collection_id: UUID,
-    symbol: Any,
-    file_node_ids: dict[str, UUID],
-    knowledge_file_node_ids: dict[str, UUID],
-    symbol_node_ids: dict[str, UUID],
-    knowledge_symbol_node_ids: dict[str, UUID],
-) -> int:
-    """Ingest a single symbol into twin and knowledge graphs. Returns edge count delta."""
-    if symbol.kind == SymbolKind.UNKNOWN:
-        return 0
-    canonical_symbol_path = canonicalize_repo_relative_path(symbol.file_path)
-    symbol_key = f"symbol:{symbol.def_id}"
-    symbol_meta = {
-        "file_path": canonical_symbol_path or symbol.file_path,
-        "def_id": symbol.def_id,
-        "symbol_kind": symbol.kind.value,
-        "range": symbol.range.to_dict(),
-    }
-    symbol_node_ids[symbol.def_id] = await _upsert_twin_node(
-        session,
-        scenario.id,
-        natural_key=symbol_key,
-        kind=symbol.kind.value,
-        name=symbol.name or symbol.def_id,
-        meta=symbol_meta,
-        provenance_node_id=None,
-    )
-    knowledge_symbol_node_ids[symbol.def_id] = await _upsert_knowledge_node(
-        session=session,
-        collection_id=collection_id,
-        kind=KnowledgeNodeKind.SYMBOL,
-        natural_key=symbol_key,
-        name=symbol.name or symbol.def_id,
-        meta=symbol_meta,
-    )
-
-    edge_delta = 0
-    file_path_key = canonical_symbol_path or symbol.file_path
-    file_node_id = file_node_ids.get(file_path_key)
-    if file_node_id:
-        await _upsert_twin_edge(
-            session,
-            scenario.id,
-            file_node_id,
-            symbol_node_ids[symbol.def_id],
-            "file_defines_symbol",
-            {},
-        )
-        edge_delta += 1
-
-    kg_file = knowledge_file_node_ids.get(file_path_key)
-    kg_sym = knowledge_symbol_node_ids.get(symbol.def_id)
-    if kg_file and kg_sym:
-        await _upsert_knowledge_edge(
-            session=session,
-            collection_id=collection_id,
-            source_node_id=kg_file,
-            target_node_id=kg_sym,
-            kind=KnowledgeEdgeKind.FILE_DEFINES_SYMBOL,
-            meta={},
-        )
-    return edge_delta
-
-
-async def _ingest_relation(
-    session: AsyncSession,
-    scenario: TwinScenario,
-    collection_id: UUID,
-    relation: Any,
-    symbol_node_ids: dict[str, UUID],
-    knowledge_symbol_node_ids: dict[str, UUID],
-) -> int:
-    """Ingest a single relation into twin and knowledge graphs. Returns edge count delta."""
-    src = symbol_node_ids.get(relation.src_def_id)
-    dst = symbol_node_ids.get(relation.dst_def_id)
-    if not src or not dst:
-        return 0
-
-    edge_kind = _relation_to_edge_kind(relation.kind)
-    await _upsert_twin_edge(
-        session,
-        scenario.id,
-        src,
-        dst,
-        edge_kind,
-        {"resolved": relation.resolved, "weight": relation.weight, **(relation.meta or {})},
-    )
-    knowledge_src = knowledge_symbol_node_ids.get(relation.src_def_id)
-    knowledge_dst = knowledge_symbol_node_ids.get(relation.dst_def_id)
-    if knowledge_src and knowledge_dst:
-        await _upsert_knowledge_edge(
-            session=session,
-            collection_id=collection_id,
-            source_node_id=knowledge_src,
-            target_node_id=knowledge_dst,
-            kind=_relation_to_knowledge_edge_kind(relation.kind),
-            meta={
-                "resolved": relation.resolved,
-                "weight": relation.weight,
-                **(relation.meta or {}),
-            },
-        )
-    return 1
 
 
 def _relation_to_edge_kind(kind: RelationKind) -> str:

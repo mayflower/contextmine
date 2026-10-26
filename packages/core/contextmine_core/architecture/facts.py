@@ -26,7 +26,11 @@ from contextmine_core.twin.service import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .recovery import adjudicate_architecture_model_async, recover_architecture_model
+from .recovery import (
+    adjudicate_architecture_model_async,
+    recover_architecture_model,
+    recover_architecture_model_shared,
+)
 from .recovery_docs import load_recovery_docs
 from .schemas import ArchitectureFact, ArchitectureFactsBundle, EvidenceRef, PortAdapterFact
 
@@ -716,10 +720,8 @@ async def build_architecture_facts(
     recovery_nodes, recovery_subject_refs = _kg_nodes_to_recovery_inputs(kg_nodes)
     recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, recovery_subject_refs)
     recovery_docs = await load_recovery_docs(session, kg_nodes)
-    recovered_model = recover_architecture_model(
-        recovery_nodes,
-        recovery_edges,
-        docs=recovery_docs,
+    recovered_model = await recover_architecture_model_shared(
+        recovery_nodes, recovery_edges, recovery_docs, recover_architecture_model
     )
     if enable_llm_enrich and llm_provider is not None:
         # Real (async) LLM adjudication; selections are validated closed-world.
