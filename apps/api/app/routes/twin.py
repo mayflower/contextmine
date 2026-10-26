@@ -40,7 +40,7 @@ from contextmine_core.exports import (
     export_mermaid_c4_result,
     export_twin_manifest,
 )
-from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
+from contextmine_core.graph.age import ensure_scenario_age_graph, run_read_only_cypher
 from contextmine_core.graphrag import trace_path as graphrag_trace_path
 from contextmine_core.model_policy import ModelCallsDisabledError
 from contextmine_core.models import (
@@ -5632,7 +5632,9 @@ async def query_cypher(request: Request, scenario_id: str, body: CypherRequest) 
     async with get_db_session() as db:
         scenario = await _load_scenario(db, scenario_id)
         await _ensure_member(db, scenario.collection_id, user_id)
-        await sync_scenario_to_age(db, scenario.id)
+        # Rebuilds and persists the graph only if the twin changed since.
+        if await ensure_scenario_age_graph(db, scenario.id):
+            await db.commit()
         try:
             rows = await run_read_only_cypher(db, scenario.id, body.query)
         except ValueError as e:
