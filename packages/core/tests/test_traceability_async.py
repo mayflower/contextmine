@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 from contextmine_core.analyzer.extractors.traceability import (
     SymbolTraceResolver,
+    TwinScipGraph,
     build_endpoint_symbol_index,
     resolve_symbol_refs_for_calls,
 )
@@ -239,6 +240,40 @@ class TestEnsureScipGraph:
         await resolver._ensure_scip_graph()
 
         session.execute.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_resolvers_sharing_a_twin_graph_load_it_once(self) -> None:
+        """One resolver per test case must not reload the twin graph each time."""
+        session = _mock_session()
+        scenario = MagicMock(id=uuid4())
+        twin_id = uuid4()
+        twin_node = MagicMock(
+            id=twin_id,
+            natural_key="symbol:func1",
+            kind="function",
+            meta={"file_path": "src/a.py", "range": {"start_line": 1, "end_line": 3}},
+        )
+        twin_node.name = "func1"
+        results = iter(
+            [
+                MagicMock(scalar_one_or_none=MagicMock(return_value=scenario)),
+                MagicMock(scalars=MagicMock(return_value=MagicMock(all=lambda: [twin_node]))),
+                MagicMock(scalars=MagicMock(return_value=MagicMock(all=lambda: []))),
+            ]
+        )
+        session.execute.side_effect = lambda _stmt: next(results)
+
+        shared = TwinScipGraph()
+        resolvers = [
+            SymbolTraceResolver(session=session, collection_id=uuid4(), twin_graph=shared)
+            for _ in range(3)
+        ]
+        for resolver in resolvers:
+            await resolver._ensure_scip_graph()
+
+        assert session.execute.call_count == 3  # scenario, nodes, edges: once in total
+        assert all(resolver._scip_loaded for resolver in resolvers)
+        assert all(twin_id in resolver._twin_by_id for resolver in resolvers)
 
 
 # ===========================================================================

@@ -295,6 +295,8 @@ def _make_mock_session() -> MagicMock:
     session.execute = AsyncMock()
     session.flush = AsyncMock()
     session.add = MagicMock()
+    # Bulk writes run on the session's connection; share one result sequence.
+    session.connection = AsyncMock(return_value=MagicMock(execute=session.execute))
     return session
 
 
@@ -403,7 +405,6 @@ class TestSeedScenarioFromKnowledgeGraph:
         ke.kind.value = "file_defines_symbol"
         ke.meta = {}
 
-        # For _upsert_twin_node (pg_insert), we need execute to return scalar_one
         node_id = uuid4()
 
         session.execute.side_effect = [
@@ -412,9 +413,10 @@ class TestSeedScenarioFromKnowledgeGraph:
             MagicMock(),  # delete TwinEdge
             MagicMock(),  # delete TwinNode
             _scalars_all([kn]),  # knowledge nodes
-            _scalar_one(node_id),  # _upsert_twin_node -> returning(TwinNode.id)
-            MagicMock(),  # _upsert_node_layer (pg_insert)
-            _scalars_all([ke]),  # knowledge edges
+            # bulk twin node upsert -> returning(TwinNode.id, TwinNode.natural_key)
+            _rows_all([SimpleNamespace(id=node_id, natural_key="file:src/main.py")]),
+            MagicMock(),  # bulk node layer insert
+            _scalars_all([ke]),  # knowledge edges (none resolvable -> no edge insert)
         ]
 
         # Patch KnowledgeNodeKind.FILE for the node kind check
@@ -488,32 +490,47 @@ class TestIngestSnapshotIntoAsIs:
         edge_id = uuid4()
         kg_file_node_id = uuid4()
         kg_symbol_node_id = uuid4()
-        kg_edge_id = uuid4()
 
-        # Build side_effect list:
-        # 1. get_or_create_as_is_scenario -> existing scenario
-        # Then for each file: _upsert_twin_node, _upsert_knowledge_node
-        # Then for each symbol: _upsert_twin_node, _upsert_knowledge_node,
-        #   _upsert_twin_edge (file_defines_symbol), _upsert_knowledge_edge
-        # Then for each relation: _upsert_twin_edge, _upsert_knowledge_edge
+        from contextmine_core.models import KnowledgeNodeKind
 
+        symbol_key = "symbol:python scip-python . main/MyFunc()."
+        # Bulk writes: all twin nodes, their layers, all knowledge nodes, then
+        # all twin edges, their layers, and all knowledge edges.
         session.execute.side_effect = [
             _scalar_one_or_none(scenario),  # get_or_create_as_is_scenario
-            # File: _upsert_twin_node
-            _scalar_one(file_node_id),
-            MagicMock(),  # _upsert_node_layer
-            # File: _upsert_knowledge_node
-            _scalar_one(kg_file_node_id),
-            # Symbol: _upsert_twin_node
-            _scalar_one(symbol_node_id),
-            MagicMock(),  # _upsert_node_layer
-            # Symbol: _upsert_knowledge_node
-            _scalar_one(kg_symbol_node_id),
-            # file_defines_symbol twin edge
-            _scalar_one(edge_id),
-            MagicMock(),  # _upsert_edge_layer
-            # file_defines_symbol knowledge edge
-            _scalar_one(kg_edge_id),
+            _rows_all(
+                [
+                    SimpleNamespace(id=file_node_id, natural_key="file:src/main.py"),
+                    SimpleNamespace(id=symbol_node_id, natural_key=symbol_key),
+                ]
+            ),
+            MagicMock(),  # node layers
+            _rows_all(
+                [
+                    SimpleNamespace(
+                        id=kg_file_node_id,
+                        kind=KnowledgeNodeKind.FILE,
+                        natural_key="file:src/main.py",
+                    ),
+                    SimpleNamespace(
+                        id=kg_symbol_node_id,
+                        kind=KnowledgeNodeKind.SYMBOL,
+                        natural_key=symbol_key,
+                    ),
+                ]
+            ),
+            _rows_all(
+                [
+                    SimpleNamespace(
+                        id=edge_id,
+                        source_node_id=file_node_id,
+                        target_node_id=symbol_node_id,
+                        kind="file_defines_symbol",
+                    )
+                ]
+            ),
+            MagicMock(),  # edge layers
+            MagicMock(),  # knowledge edges
         ]
 
         snapshot = Snapshot(
@@ -561,11 +578,15 @@ class TestIngestSnapshotIntoAsIs:
         scenario.version = 1
         scenario.updated_at = None
 
+        from contextmine_core.models import KnowledgeNodeKind
+
         session.execute.side_effect = [
             _scalar_one_or_none(scenario),  # AS-IS
-            _scalar_one(uuid4()),  # file twin node
-            MagicMock(),  # node layer
-            _scalar_one(uuid4()),  # file knowledge node
+            _rows_all([SimpleNamespace(id=uuid4(), natural_key="file:x.py")]),  # twin nodes
+            MagicMock(),  # node layers
+            _rows_all(  # knowledge nodes
+                [SimpleNamespace(id=uuid4(), kind=KnowledgeNodeKind.FILE, natural_key="file:x.py")]
+            ),
         ]
 
         snapshot = Snapshot(
