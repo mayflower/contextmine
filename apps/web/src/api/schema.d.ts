@@ -1882,7 +1882,7 @@ export interface components {
             /** Coupling */
             coupling: number;
             /** Coverage */
-            coverage: number;
+            coverage: number | null;
             /** Loc */
             loc: number;
             /** Node Natural Key */
