@@ -17,14 +17,14 @@ repos:
 
       - id: ty
         name: ty check
-        entry: uvx ty check apps packages
+        entry: uv run ty check apps packages
         language: system
         types: [python]
         pass_filenames: false
 
       - id: pytest
         name: pytest
-        entry: .venv/bin/python -m pytest -v
+        entry: uv run pytest -v
         language: system
         types: [python]
         pass_filenames: false
