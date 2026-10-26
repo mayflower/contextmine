@@ -48,7 +48,6 @@ ignore = ["E501"]
 
 [tool.ty.environment]
 python-version = "3.14"
-python = ".venv"
 extra-paths = []
 
 [tool.ty.src]
