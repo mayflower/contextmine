@@ -26,7 +26,11 @@ from contextmine_core.twin.service import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .recovery import adjudicate_architecture_model_async, recover_architecture_model
+from .recovery import (
+    adjudicate_architecture_model_async,
+    recover_architecture_model,
+    recover_architecture_model_shared,
+)
 from .recovery_docs import load_recovery_docs
 from .schemas import ArchitectureFact, ArchitectureFactsBundle, EvidenceRef, PortAdapterFact
 
@@ -126,8 +130,10 @@ def _metric_averages(metrics: list[MetricSnapshot]) -> dict[str, float | None]:
         }
 
     total = float(len(metrics))
+    # Average coverage over files that have a coverage report; None without any.
+    covered = [float(m.coverage) for m in metrics if m.coverage is not None]
     return {
-        "coverage_avg": round(sum(float(m.coverage or 0.0) for m in metrics) / total, 4),
+        "coverage_avg": round(sum(covered) / len(covered), 4) if covered else None,
         "complexity_avg": round(sum(float(m.complexity or 0.0) for m in metrics) / total, 4),
         "coupling_avg": round(sum(float(m.coupling or 0.0) for m in metrics) / total, 4),
         "change_frequency_avg": round(
@@ -714,10 +720,8 @@ async def build_architecture_facts(
     recovery_nodes, recovery_subject_refs = _kg_nodes_to_recovery_inputs(kg_nodes)
     recovery_edges = _kg_edges_to_recovery_inputs(kg_edges, recovery_subject_refs)
     recovery_docs = await load_recovery_docs(session, kg_nodes)
-    recovered_model = recover_architecture_model(
-        recovery_nodes,
-        recovery_edges,
-        docs=recovery_docs,
+    recovered_model = await recover_architecture_model_shared(
+        recovery_nodes, recovery_edges, recovery_docs, recover_architecture_model
     )
     if enable_llm_enrich and llm_provider is not None:
         # Real (async) LLM adjudication; selections are validated closed-world.

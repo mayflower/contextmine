@@ -39,6 +39,8 @@ from contextmine_core.analyzer.extractors.graph_helpers import (
     upsert_node as _upsert_node,
 )
 from contextmine_core.analyzer.extractors.traceability import (
+    KnowledgeSymbolIndex,
+    TwinScipGraph,
     build_endpoint_symbol_index,
     resolve_symbol_refs_for_calls,
     symbol_token_variants,
@@ -1697,6 +1699,9 @@ async def build_ui_graph(
         collection_id=collection_id,
     )
 
+    # Loaded at most once for all views instead of once per view.
+    twin_graph = TwinScipGraph()
+    symbol_index = KnowledgeSymbolIndex()
     for extraction in extractions:
         route_ids_for_extraction = await _persist_routes(session, collection_id, extraction, stats)
         view_ids_for_extraction = await _persist_views(
@@ -1708,6 +1713,8 @@ async def build_ui_graph(
             endpoint_path_index,
             endpoint_method_path_index,
             stats,
+            twin_graph,
+            symbol_index,
         )
         await _link_routes_to_views(
             session,
@@ -1781,6 +1788,8 @@ async def _persist_views(
     endpoint_path_index: dict[str, set[UUID]],
     endpoint_method_path_index: dict[tuple[str, str], set[UUID]],
     stats: dict[str, int],
+    twin_graph: TwinScipGraph | None = None,
+    symbol_index: KnowledgeSymbolIndex | None = None,
 ) -> dict[str, UUID]:
     """Persist UI view nodes, components, contracts, and endpoint links.
 
@@ -1868,6 +1877,8 @@ async def _persist_views(
             file_path=view.file_path,
             call_sites=view.call_sites,
             fallback_symbol_hints=view.symbol_hints,
+            twin_graph=twin_graph,
+            symbol_index=symbol_index,
         )
         view_meta["resolved_symbol_refs"] = [
             {

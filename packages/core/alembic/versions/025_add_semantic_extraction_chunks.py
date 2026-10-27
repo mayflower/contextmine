@@ -1,7 +1,7 @@
 """Track which chunks semantic entity extraction has processed.
 
 Revision ID: 025
-Revises: 023
+Revises: 024
 Create Date: 2026-10-24
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "025"
-down_revision: str | None = "023"
+down_revision: str | None = "024"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
