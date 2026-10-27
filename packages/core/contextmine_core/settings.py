@@ -296,6 +296,19 @@ class Settings(BaseSettings):
         default="",
         description="Model for semantic entity extraction; empty = the provider's default model",
     )
+    semantic_extraction_batch_size: int = Field(
+        default=25,
+        ge=1,
+        description="Chunks per semantic extraction batch; each batch is committed on its own",
+    )
+    semantic_extraction_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Concurrent LLM calls during semantic extraction. Only helps when the provider "
+            "serves requests in parallel (Ollama: OLLAMA_NUM_PARALLEL)."
+        ),
+    )
     semantic_extraction_max_chunks: int = Field(
         default=0,
         description=(

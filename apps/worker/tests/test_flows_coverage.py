@@ -42,6 +42,8 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "default_llm_provider": "openai",
         "semantic_extraction_llm_provider": "",
         "semantic_extraction_llm_model": "",
+        "semantic_extraction_batch_size": 25,
+        "semantic_extraction_concurrency": 1,
         "model_calls_enabled": True,
         "scip_languages": "python,typescript",
         "scip_install_deps_mode": "auto",
@@ -643,12 +645,17 @@ class TestBuildKnowledgeGraphBusinessRules:
         )
 
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=MagicMock()),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(
+                return_value={
+                    "entities_created": 0,
+                    "relationships_created": 0,
+                    "chunks_processed": 0,
+                    "chunks_failed": 0,
+                    "chunks_remaining": 0,
+                    "quality_report": {},
+                }
+            ),
         )
 
         mock_community = MagicMock()
@@ -759,12 +766,17 @@ class TestBuildKnowledgeGraphSurfaces:
 
         # Steps 5-7
         monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.extract_from_documents",
-            AsyncMock(return_value=MagicMock()),
-        )
-        monkeypatch.setattr(
-            "contextmine_core.knowledge.extraction.persist_semantic_entities",
-            AsyncMock(return_value={"entities_created": 0, "relationships_created": 0}),
+            "contextmine_core.knowledge.extraction.extract_and_persist_semantic_entities",
+            AsyncMock(
+                return_value={
+                    "entities_created": 0,
+                    "relationships_created": 0,
+                    "chunks_processed": 0,
+                    "chunks_failed": 0,
+                    "chunks_remaining": 0,
+                    "quality_report": {},
+                }
+            ),
         )
         mock_community = MagicMock()
         mock_community.community_count = lambda level: 0

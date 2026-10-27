@@ -1289,22 +1289,6 @@ async def _kg_extract_surfaces(
     return result_stats
 
 
-async def _kg_has_semantic_entities(collection_uuid: object) -> bool:
-    """Check if any SEMANTIC_ENTITY nodes exist for this collection."""
-    from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
-
-    async with get_session() as session:
-        result = await session.execute(
-            select(KnowledgeNode.id)
-            .where(
-                KnowledgeNode.collection_id == collection_uuid,
-                KnowledgeNode.kind == KnowledgeNodeKind.SEMANTIC_ENTITY,
-            )
-            .limit(1)
-        )
-        return result.scalar_one_or_none() is not None
-
-
 async def _kg_has_business_rules(collection_uuid: object) -> bool:
     """Check if any BUSINESS_RULE nodes exist for this collection."""
     from contextmine_core.models import KnowledgeNode, KnowledgeNodeKind
@@ -1327,53 +1311,45 @@ async def _kg_step_semantic_entities(
     llm_provider: object,
     embedder: object,
     changed_doc_ids: list[str] | None,
-    deleted_file_paths: list[str] | None = None,
 ) -> None:
-    """Step 5: Extract semantic entities using LLM."""
-    try:
-        from contextmine_core.knowledge.extraction import (
-            extract_from_documents,
-            persist_semantic_entities,
-        )
+    """Step 5: Extract semantic entities using LLM.
 
-        has_deleted_files = bool(deleted_file_paths)
-        if changed_doc_ids is not None and len(changed_doc_ids) == 0 and not has_deleted_files:
-            # No docs changed — skip only if entities already exist from a prior run
-            if await _kg_has_semantic_entities(collection_uuid):
-                logger.info(
-                    "No changed documents and semantic entities exist - skipping extraction"
-                )
-                return
-            logger.info(
-                "No changed documents but no semantic entities found - running initial extraction"
-            )
-        extraction_batch = await extract_from_documents(
-            collection_id=collection_uuid,
-            llm_provider=llm_provider,
-            embedder=embedder,
-            max_chunks=_semantic_extraction_max_chunks(),
+    Runs on every pass: besides changed documents it works off chunks that no
+    earlier run finished (initial extraction, aborted runs, a chunk budget), so
+    it costs only a query when nothing is left.
+    """
+    try:
+        from contextmine_core.knowledge.extraction import extract_and_persist_semantic_entities
+
+        settings = get_settings()
+        extraction_stats = await extract_and_persist_semantic_entities(
+            collection_uuid,
+            llm_provider,
+            embedder,
             changed_doc_ids=changed_doc_ids,
+            max_chunks=_semantic_extraction_max_chunks(),
+            batch_size=settings.semantic_extraction_batch_size,
+            concurrency=settings.semantic_extraction_concurrency,
         )
-        async with get_session() as session:
-            extraction_stats = await persist_semantic_entities(
-                session=session,
-                collection_id=collection_uuid,
-                batch=extraction_batch,
-                changed_doc_ids=changed_doc_ids,
-            )
-            await session.commit()
-            stats["kg_semantic_entities"] = extraction_stats.get("entities_created", 0)
-            stats["kg_semantic_relationships"] = extraction_stats.get("relationships_created", 0)
-            quality_report = dict(getattr(extraction_batch, "quality_report", {}) or {})
-            stats["kg_semantic_quality"] = quality_report
-            stats["kg_semantic_quality_status"] = quality_report.get("status", "unknown")
-            stats["kg_semantic_quality_warnings"] = list(quality_report.get("warnings", []) or [])
-            logger.info(
-                "Extracted %d semantic entities, %d relationships (quality=%s)",
-                stats["kg_semantic_entities"],
-                stats["kg_semantic_relationships"],
-                stats["kg_semantic_quality_status"],
-            )
+        stats["kg_semantic_entities"] = extraction_stats["entities_created"]
+        stats["kg_semantic_relationships"] = extraction_stats["relationships_created"]
+        stats["kg_semantic_chunks_processed"] = extraction_stats["chunks_processed"]
+        stats["kg_semantic_chunks_failed"] = extraction_stats["chunks_failed"]
+        stats["kg_semantic_chunks_remaining"] = extraction_stats["chunks_remaining"]
+        quality_report = dict(extraction_stats.get("quality_report") or {})
+        stats["kg_semantic_quality"] = quality_report
+        stats["kg_semantic_quality_status"] = quality_report.get("status", "unknown")
+        stats["kg_semantic_quality_warnings"] = list(quality_report.get("warnings", []) or [])
+        logger.info(
+            "Extracted %d semantic entities, %d relationships from %d chunks "
+            "(%d failed, %d remaining, quality=%s)",
+            stats["kg_semantic_entities"],
+            stats["kg_semantic_relationships"],
+            stats["kg_semantic_chunks_processed"],
+            stats["kg_semantic_chunks_failed"],
+            stats["kg_semantic_chunks_remaining"],
+            stats["kg_semantic_quality_status"],
+        )
     except Exception as e:
         logger.warning("Failed to extract semantic entities: %s", e)
         stats["kg_errors"].append(f"semantic_extraction: {e}")
@@ -1612,7 +1588,7 @@ async def build_knowledge_graph(
     # Step 5: Extract semantic entities using LLM (for proper GraphRAG)
     if settings.model_calls_enabled:
         await _kg_step_semantic_entities(
-            stats, collection_uuid, llm_provider, embedder, changed_doc_ids, deleted_file_paths
+            stats, collection_uuid, llm_provider, embedder, changed_doc_ids
         )
 
     # Step 6: Detect communities using Leiden algorithm (GraphRAG)
