@@ -1031,6 +1031,7 @@ class TestSyncGithubSourceHappyPath:
                 }
             ),
         )
+        monkeypatch.setattr(flows, "_sync_scenario_age_graph", AsyncMock(return_value=True))
         behavioral_materialization = AsyncMock(return_value={})
         monkeypatch.setattr(
             flows,
@@ -1045,3 +1046,17 @@ class TestSyncGithubSourceHappyPath:
         assert result.files_indexed == 1
         assert result.docs_deleted >= 0
         behavioral_materialization.assert_awaited_once()
+
+
+def test_sync_run_stats_report_whether_the_age_graph_was_rebuilt() -> None:
+    from unittest.mock import MagicMock
+
+    from contextmine_worker import flows
+
+    ctx = flows._SyncGitHubCtx(source=MagicMock(), sync_run=MagicMock(), run_started_at=MagicMock())
+    for name, value in vars(ctx).items():  # accumulators of the earlier phases
+        if value is None:
+            setattr(ctx, name, MagicMock())
+    ctx.twin_stats = {"age_graph_rebuilt": False}
+
+    assert flows._build_sync_run_stats(ctx)["age_graph_rebuilt"] is False

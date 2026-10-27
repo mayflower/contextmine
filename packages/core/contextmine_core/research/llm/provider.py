@@ -7,7 +7,6 @@ supporting multiple providers (Anthropic, OpenAI) with structured output validat
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -455,7 +454,7 @@ def get_llm_provider(
     Args:
         provider: Provider name ('anthropic', 'openai', 'ollama')
         model: Model name (defaults to provider's default)
-        api_key: API key (defaults to environment variable)
+        api_key: API key (defaults to the configured setting)
         max_retries: Maximum retry attempts
         timeout: Request timeout in seconds
 
@@ -466,7 +465,7 @@ def get_llm_provider(
         ValueError: If provider is not supported
     """
     ensure_model_calls_enabled()
-    from contextmine_core.settings import get_settings
+    from contextmine_core.settings import get_settings, secret_value
 
     settings = get_settings()
 
@@ -474,10 +473,10 @@ def get_llm_provider(
         from langchain_anthropic import ChatAnthropic
 
         selected_model = model or settings.anthropic_llm_model
-        # Read from environment if not provided
-        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        # Settings cover environment variables, .env and CONTEXTMINE_SECRETS_DIR.
+        resolved_key = api_key or secret_value(settings.anthropic_api_key)
         if not resolved_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+            raise ValueError("ANTHROPIC_API_KEY is not configured")
         # ChatAnthropic and ChatOpenAI accept the model id under different kwarg names
         # in their type stubs (model_name vs model); keep them asymmetric so ty passes.
         chat_model = ChatAnthropic(
@@ -497,10 +496,10 @@ def get_llm_provider(
         from langchain_openai import ChatOpenAI
 
         selected_model = model or settings.openai_llm_model
-        # Read from environment if not provided
-        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        # Settings cover environment variables, .env and CONTEXTMINE_SECRETS_DIR.
+        resolved_key = api_key or secret_value(settings.openai_api_key)
         if not resolved_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
+            raise ValueError("OPENAI_API_KEY is not configured")
         chat_model = ChatOpenAI(
             model=selected_model,
             api_key=resolved_key,
