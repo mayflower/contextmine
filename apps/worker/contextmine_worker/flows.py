@@ -196,6 +196,16 @@ def _knowledge_graph_build_timeout_seconds() -> int:
     return max(120, configured)
 
 
+def _semantic_extraction_llm(settings: Any) -> tuple[str, str | None]:
+    """Return (provider, model) for semantic entity extraction.
+
+    Only semantic entity extraction uses this provider, so it can run on a local
+    model while everything else stays on DEFAULT_LLM_PROVIDER.
+    """
+    provider = settings.semantic_extraction_llm_provider or settings.default_llm_provider
+    return provider, settings.semantic_extraction_llm_model or None
+
+
 def _semantic_extraction_max_chunks() -> int | None:
     configured = int(getattr(get_settings(), "semantic_extraction_max_chunks", 0))
     return configured if configured > 0 else None
@@ -1489,9 +1499,10 @@ async def build_knowledge_graph(
     research_llm = None
     embedder = None
     if settings.model_calls_enabled:
-        if settings.default_llm_provider:
+        semantic_provider, semantic_model = _semantic_extraction_llm(settings)
+        if semantic_provider:
             try:
-                llm_provider = get_llm_provider(settings.default_llm_provider)
+                llm_provider = get_llm_provider(semantic_provider, model=semantic_model)
             except Exception as e:
                 raise ValueError(f"LLM provider configured but failed to initialize: {e}") from e
         else:
@@ -1518,7 +1529,7 @@ async def build_knowledge_graph(
 
         logger.info(
             "Knowledge Graph build starting with LLM=%s, embedder=%s",
-            settings.default_llm_provider,
+            semantic_provider,
             settings.default_embedding_model,
         )
     else:
