@@ -1303,6 +1303,26 @@ class TwinScenario(Base):
     created_by: Mapped[User | None] = relationship()
 
 
+class TwinAgeGraph(Base):
+    """Which state of a twin scenario its Apache AGE graph holds.
+
+    The fingerprint covers exactly the twin fields copied into AGE, so the
+    graph is rebuilt only when one of them changed.
+    """
+
+    __tablename__ = "twin_age_graphs"
+
+    scenario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(_FK_TWIN_SCENARIOS, ondelete=_ON_DELETE_CASCADE),
+        primary_key=True,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    built_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class TwinNode(Base):
     """Node in a scenario graph."""
 

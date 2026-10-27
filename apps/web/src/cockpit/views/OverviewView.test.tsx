@@ -154,6 +154,18 @@ describe('OverviewView', () => {
     expect(screen.getByText(/Coverage ingest pending/)).toBeInTheDocument()
   })
 
+  it('shows N/A and the pending hint when structural metrics lack coverage', () => {
+    const city = makeCity({
+      summary: { ...makeCity().summary, coverage_avg: null },
+      metrics_status: { status: 'ready', reason: 'awaiting_ci_coverage', strict_mode: false },
+      hotspots: makeCity().hotspots.map((spot) => ({ ...spot, coverage: null })),
+    })
+    render(<OverviewView {...defaultProps} city={city} />)
+    expect(screen.getByText(/Coverage ingest pending/)).toBeInTheDocument()
+    expect(screen.getAllByText('N/A').length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText('0.00')).not.toBeInTheDocument()
+  })
+
   it('shows awaiting CI coverage message', () => {
     const city = makeCity({
       metrics_status: { status: 'unavailable', reason: 'awaiting_ci_coverage', strict_mode: false },

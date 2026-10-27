@@ -12,7 +12,7 @@ Endpoint linkage is symbol-based through endpoint operation metadata.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -129,6 +129,39 @@ class _TwinSymbolRow:
     kind: str
 
 
+@dataclass
+class TwinScipGraph:
+    """SCIP symbol graph of the collection's AS-IS twin scenario.
+
+    Loading it reads every symbol node and call/reference edge of the scenario.
+    Building test and UI graphs creates one resolver per test case or view, so
+    pass one shared instance to all of them: nothing writes the twin while they
+    are linked, and the graph is only read once loaded.
+    """
+
+    loaded: bool = False
+    by_id: dict[UUID, _TwinSymbolRow] = field(default_factory=dict)
+    by_file: dict[str, list[_TwinSymbolRow]] = field(default_factory=dict)
+    calls: dict[UUID, list[UUID]] = field(default_factory=dict)
+    refs: dict[UUID, list[UUID]] = field(default_factory=dict)
+
+
+@dataclass
+class KnowledgeSymbolIndex:
+    """SYMBOL knowledge nodes of the collection, indexed for call resolution.
+
+    Like TwinScipGraph, share one instance across the resolvers of a tests/UI
+    graph build. Resolvers append the SYMBOL nodes they create from SCIP, so
+    later resolvers see them without reloading every symbol.
+    """
+
+    loaded: bool = False
+    by_name: dict[str, list[_KnowledgeSymbolRow]] = field(default_factory=dict)
+    by_file: dict[str, list[_KnowledgeSymbolRow]] = field(default_factory=dict)
+    by_def_id: dict[str, _KnowledgeSymbolRow] = field(default_factory=dict)
+    by_node_id: dict[UUID, _KnowledgeSymbolRow] = field(default_factory=dict)
+
+
 class SymbolTraceResolver:
     """Resolve call sites to symbol nodes using SCIP/LSP/Joern."""
 
@@ -138,22 +171,24 @@ class SymbolTraceResolver:
         session: Any,
         collection_id: UUID,
         source_id: UUID | None = None,
+        twin_graph: TwinScipGraph | None = None,
+        symbol_index: KnowledgeSymbolIndex | None = None,
     ) -> None:
         self._session = session
         self._collection_id = collection_id
         self._source_id = source_id
 
-        self._kg_loaded = False
-        self._kg_by_name: dict[str, list[_KnowledgeSymbolRow]] = {}
-        self._kg_by_file: dict[str, list[_KnowledgeSymbolRow]] = {}
-        self._kg_by_def_id: dict[str, _KnowledgeSymbolRow] = {}
-        self._kg_by_node_id: dict[UUID, _KnowledgeSymbolRow] = {}
+        self._symbol_index = symbol_index if symbol_index is not None else KnowledgeSymbolIndex()
+        self._kg_by_name = self._symbol_index.by_name
+        self._kg_by_file = self._symbol_index.by_file
+        self._kg_by_def_id = self._symbol_index.by_def_id
+        self._kg_by_node_id = self._symbol_index.by_node_id
 
-        self._scip_loaded = False
-        self._twin_by_id: dict[UUID, _TwinSymbolRow] = {}
-        self._twin_by_file: dict[str, list[_TwinSymbolRow]] = {}
-        self._twin_calls: dict[UUID, list[UUID]] = {}
-        self._twin_refs: dict[UUID, list[UUID]] = {}
+        self._twin_graph = twin_graph if twin_graph is not None else TwinScipGraph()
+        self._twin_by_id = self._twin_graph.by_id
+        self._twin_by_file = self._twin_graph.by_file
+        self._twin_calls = self._twin_graph.calls
+        self._twin_refs = self._twin_graph.refs
 
         self._repo_root: Path | None = None
         self._lsp_client: Any | None = None
@@ -161,6 +196,14 @@ class SymbolTraceResolver:
         self._joern_checked = False
         self._joern_client: JoernClient | None = None
         self._joern_ready = False
+
+    @property
+    def _scip_loaded(self) -> bool:
+        return self._twin_graph.loaded
+
+    @property
+    def _kg_loaded(self) -> bool:
+        return self._symbol_index.loaded
 
     async def _resolve_batch(
         self,
@@ -397,7 +440,7 @@ class SymbolTraceResolver:
         return refs
 
     async def _ensure_knowledge_symbols(self) -> None:
-        if self._kg_loaded:
+        if self._symbol_index.loaded:
             return
 
         rows = (
@@ -433,7 +476,7 @@ class SymbolTraceResolver:
                 self._kg_by_file.setdefault(file_path, []).append(symbol)
             if def_id:
                 self._kg_by_def_id[def_id] = symbol
-        self._kg_loaded = True
+        self._symbol_index.loaded = True
 
     @staticmethod
     def _twin_row_to_symbol(row: Any) -> _TwinSymbolRow:
@@ -455,7 +498,7 @@ class SymbolTraceResolver:
         )
 
     async def _ensure_scip_graph(self) -> None:
-        if self._scip_loaded:
+        if self._twin_graph.loaded:
             return
         scenario = (
             await self._session.execute(
@@ -469,7 +512,7 @@ class SymbolTraceResolver:
             )
         ).scalar_one_or_none()
         if scenario is None:
-            self._scip_loaded = True
+            self._twin_graph.loaded = True
             return
 
         twin_rows = (
@@ -509,7 +552,7 @@ class SymbolTraceResolver:
                 self._twin_calls.setdefault(edge.source_node_id, []).append(edge.target_node_id)
             else:
                 self._twin_refs.setdefault(edge.source_node_id, []).append(edge.target_node_id)
-        self._scip_loaded = True
+        self._twin_graph.loaded = True
 
     async def _ensure_lsp_client(self) -> None:
         if self._lsp_client is not None:
@@ -688,10 +731,16 @@ async def resolve_symbol_refs_for_calls(
     file_path: str,
     call_sites: list[dict[str, Any]],
     fallback_symbol_hints: list[str],
+    twin_graph: TwinScipGraph | None = None,
+    symbol_index: KnowledgeSymbolIndex | None = None,
 ) -> list[ResolvedSymbolRef]:
     """Resolve extracted call sites to symbol nodes."""
     resolver = SymbolTraceResolver(
-        session=session, collection_id=collection_id, source_id=source_id
+        session=session,
+        collection_id=collection_id,
+        source_id=source_id,
+        twin_graph=twin_graph,
+        symbol_index=symbol_index,
     )
     normalized_sites: list[CallSite] = []
     for item in call_sites:
