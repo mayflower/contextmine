@@ -992,7 +992,9 @@ class TestBuildKnowledgeGraphHappyPath:
             AsyncMock(),
         )
 
-        summary_mock = AsyncMock()
+        summary_mock = AsyncMock(
+            return_value=MagicMock(communities_summarized=0, embeddings_created=0)
+        )
         monkeypatch.setattr(
             "contextmine_core.knowledge.summaries.generate_community_summaries",
             summary_mock,
@@ -1005,7 +1007,9 @@ class TestBuildKnowledgeGraphHappyPath:
         )
 
         extract_mock.assert_not_awaited()
-        summary_mock.assert_not_awaited()
+        # Communities are rebuilt on every pass, so summaries always run; unchanged
+        # communities are skipped inside generate_community_summaries.
+        summary_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

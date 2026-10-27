@@ -573,6 +573,28 @@ def _chunk_priority_tuple(
     return (base_rank, path_penalty, max(0, int(chunk_index)), normalized_path + f":{start_line}")
 
 
+def _spread_across_directories[T](
+    candidates: list[tuple[tuple[int, int, int, str], T]],
+) -> list[tuple[tuple[int, int, int, str], T]]:
+    """Reorder sorted candidates so a chunk budget covers every directory first.
+
+    Most chunks share the same kind and penalty, so the plain priority order fills a
+    budget with the first chunk of each file in alphabetical order (apps/ before
+    packages/). Interleaving by directory takes one chunk per directory per round,
+    within the same kind and penalty tier.
+    """
+    taken: dict[tuple[int, int, str], int] = {}
+    keyed = []
+    for priority, payload in candidates:
+        base_rank, path_penalty, _chunk_index, path = priority
+        directory = path.rsplit("/", 1)[0]
+        nth = taken.get((base_rank, path_penalty, directory), 0)
+        taken[(base_rank, path_penalty, directory)] = nth + 1
+        keyed.append(((base_rank, path_penalty, nth), (priority, payload)))
+    keyed.sort(key=lambda item: item[0])
+    return [candidate for _key, candidate in keyed]
+
+
 def _build_quality_report(
     *,
     total_chunks_loaded: int,
@@ -807,7 +829,7 @@ async def extract_from_documents(
 
     candidates.sort(key=lambda item: item[0])
     if max_chunks is not None and max_chunks > 0:
-        selected_candidates = candidates[:max_chunks]
+        selected_candidates = _spread_across_directories(candidates)[:max_chunks]
     else:
         selected_candidates = candidates
     chunk_budget_deferred = max(0, len(candidates) - len(selected_candidates))
