@@ -75,7 +75,17 @@ class TestArchitectureFactsHelpers:
 
         m1 = SimpleNamespace(coverage=None, complexity=None, coupling=None, change_frequency=None)
         result = _metric_averages([m1])
-        assert result["coverage_avg"] == 0.0
+        # No coverage report means no coverage figure, not 0 %.
+        assert result["coverage_avg"] is None
+
+    def test_coverage_average_ignores_files_without_coverage(self) -> None:
+        from contextmine_core.architecture.facts import _metric_averages
+
+        covered = SimpleNamespace(coverage=80.0, complexity=2, coupling=1, change_frequency=0)
+        uncovered = SimpleNamespace(coverage=None, complexity=4, coupling=1, change_frequency=0)
+        result = _metric_averages([covered, uncovered])
+        assert result["coverage_avg"] == 80.0
+        assert result["complexity_avg"] == 3.0
 
     def _make_port(self, fact_id="port:1", confidence=0.9, evidence=(), **kwargs):
         from contextmine_core.architecture.schemas import PortAdapterFact

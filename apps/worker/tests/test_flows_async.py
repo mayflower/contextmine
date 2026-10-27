@@ -1276,7 +1276,8 @@ class TestMaterializeBehavioralLayersImplFull:
         )
 
         seed_mock.assert_awaited_once()
-        age_mock.assert_awaited_once()
+        # AGE is updated once at the end of the sync, not inside this phase.
+        age_mock.assert_not_awaited()
         assert result["behavioral_layers_status"] == "ready"
 
     async def test_with_source_version_records_events(

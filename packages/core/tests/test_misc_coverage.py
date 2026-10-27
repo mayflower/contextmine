@@ -1161,3 +1161,57 @@ class TestBuildLanguageCensus:
                 "cloc_not_available" in report.warnings
                 or "cloc_unavailable_or_unusable_using_extension_fallback" in report.warnings
             )
+
+
+class TestEnsureScenarioAgeGraph:
+    """ensure_scenario_age_graph rebuilds only when the twin changed."""
+
+    @staticmethod
+    def _session(*, stored: str | None, fingerprint: str, graph_exists: bool):
+        from unittest.mock import AsyncMock, MagicMock
+
+        conn = MagicMock()
+        conn.exec_driver_sql = AsyncMock(
+            side_effect=lambda sql: MagicMock(
+                first=MagicMock(return_value=(1,) if graph_exists and "ag_graph" in sql else None)
+            )
+        )
+        results = iter(
+            [
+                MagicMock(scalar_one=MagicMock(return_value=fingerprint)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=stored)),
+                MagicMock(),  # fingerprint upsert after a rebuild
+            ]
+        )
+        session = MagicMock()
+        session.connection = AsyncMock(return_value=conn)
+        session.execute = AsyncMock(side_effect=lambda *_a, **_k: next(results))
+        return session
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("stored", "graph_exists", "rebuilt"),
+        [
+            ("abc", True, False),  # unchanged twin, graph present: reuse
+            ("old", True, True),  # twin changed since the last build
+            (None, True, True),  # never recorded
+            ("abc", False, True),  # graph missing although recorded
+        ],
+    )
+    async def test_rebuilds_only_when_needed(
+        self, stored: str | None, graph_exists: bool, rebuilt: bool
+    ) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from contextmine_core.graph import age
+
+        session = self._session(stored=stored, fingerprint="abc", graph_exists=graph_exists)
+        with (
+            patch.object(age, "ensure_age_ready", AsyncMock()),
+            patch.object(age, "sync_scenario_to_age", AsyncMock()) as rebuild,
+        ):
+            result = await age.ensure_scenario_age_graph(session, uuid.uuid4())
+
+        assert result is rebuilt
+        assert rebuild.await_count == (1 if rebuilt else 0)
+        assert session.execute.await_count == (3 if rebuilt else 2)

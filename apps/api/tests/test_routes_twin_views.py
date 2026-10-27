@@ -2326,8 +2326,9 @@ class TestCypherQuery:
         )
         with (
             patch(
-                "app.routes.twin.sync_scenario_to_age",
+                "app.routes.twin.ensure_scenario_age_graph",
                 new_callable=AsyncMock,
+                return_value=False,
             ),
             patch(
                 "app.routes.twin.run_read_only_cypher",

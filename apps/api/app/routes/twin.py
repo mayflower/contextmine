@@ -40,7 +40,7 @@ from contextmine_core.exports import (
     export_mermaid_c4_result,
     export_twin_manifest,
 )
-from contextmine_core.graph.age import run_read_only_cypher, sync_scenario_to_age
+from contextmine_core.graph.age import ensure_scenario_age_graph, run_read_only_cypher
 from contextmine_core.graphrag import trace_path as graphrag_trace_path
 from contextmine_core.model_policy import ModelCallsDisabledError
 from contextmine_core.models import (
@@ -5160,9 +5160,14 @@ async def _resolve_metrics_reason(
     collection_uuid: uuid.UUID,
     scenario_id: uuid.UUID,
     metrics_ready: bool,
+    has_coverage: bool = True,
 ) -> str:
-    """Determine the reason string for metrics availability."""
-    if metrics_ready:
+    """Determine the reason string for metrics availability.
+
+    Structural metrics without any coverage report are ready but still report
+    why coverage is missing, so the UI can say so instead of showing 0 %.
+    """
+    if metrics_ready and has_coverage:
         return "ok"
     sources = (
         (await db.execute(select(Source).where(Source.collection_id == collection_uuid)))
@@ -5171,7 +5176,8 @@ async def _resolve_metrics_reason(
     )
     github_source_ids = [source.id for source in sources if source.type == SourceType.GITHUB]
     if not github_source_ids:
-        return "no_real_metrics"
+        # Only GitHub sources receive coverage reports.
+        return "ok" if metrics_ready else "no_real_metrics"
     jobs = (
         (
             await db.execute(
@@ -5192,6 +5198,8 @@ async def _resolve_metrics_reason(
     )
     if latest_failed is not None:
         return "coverage_ingest_failed"
+    if metrics_ready:
+        return "awaiting_ci_coverage"
     file_nodes = (
         (
             await db.execute(
@@ -5229,8 +5237,10 @@ def _compute_metric_averages(metrics: list, metrics_ready: bool) -> dict[str, fl
             "change_frequency_avg": None,
             "churn_avg": None,
         }
+    # Average coverage over files that have a coverage report; None without any.
+    covered = [float(m.coverage) for m in metrics if m.coverage is not None]
     return {
-        "coverage_avg": sum(float(m.coverage or 0.0) for m in metrics) / total,
+        "coverage_avg": sum(covered) / len(covered) if covered else None,
         "complexity_avg": sum(float(m.complexity or 0.0) for m in metrics) / total,
         "coupling_avg": sum(float(m.coupling or 0.0) for m in metrics) / total,
         "cohesion_avg": sum(float(m.cohesion or 0.0) for m in metrics) / total,
@@ -5296,7 +5306,11 @@ async def city_view(
         settings = get_settings()
         metrics_ready = len(metrics) > 0
         metrics_reason = await _resolve_metrics_reason(
-            db, collection_uuid, scenario.id, metrics_ready
+            db,
+            collection_uuid,
+            scenario.id,
+            metrics_ready,
+            has_coverage=any(metric.coverage is not None for metric in metrics),
         )
         metrics_status = {
             "status": "ready" if metrics_ready else "unavailable",
@@ -5618,7 +5632,9 @@ async def query_cypher(request: Request, scenario_id: str, body: CypherRequest) 
     async with get_db_session() as db:
         scenario = await _load_scenario(db, scenario_id)
         await _ensure_member(db, scenario.collection_id, user_id)
-        await sync_scenario_to_age(db, scenario.id)
+        # Rebuilds and persists the graph only if the twin changed since.
+        if await ensure_scenario_age_graph(db, scenario.id):
+            await db.commit()
         try:
             rows = await run_read_only_cypher(db, scenario.id, body.query)
         except ValueError as e:
