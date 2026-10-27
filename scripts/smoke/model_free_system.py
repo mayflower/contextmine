@@ -253,7 +253,9 @@ def _assert_first_sync(result: dict[str, Any]) -> dict[str, Any]:
         "metrics_requested_files": 124,
         "kg_file_nodes": 210,
         "kg_symbol_nodes": 553,
-        "twin_nodes_upserted": 6391,
+        # Every upserted SCIP symbol counts; per-row ingest skipped the 70 symbols
+        # without a file node, although it wrote them too.
+        "twin_nodes_upserted": 6461,
     }
     for key, expected in expected_counts.items():
         actual = int(stats.get(key, 0) or 0)

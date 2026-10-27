@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
+from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -1043,6 +1047,10 @@ def cluster_component_candidates(
     component_entities: dict[str, RecoveredArchitectureEntity] = {}
     component_memberships: list[RecoveredArchitectureMembership] = []
     component_hypotheses: list[RecoveredArchitectureHypothesis] = []
+    # Merged into component_entities once per component after the loop: merging
+    # (and deduplicating the growing evidence list) per member symbol was cubic
+    # in the number of symbols of a file cluster.
+    selected_component_confidence: dict[str, float] = {}
 
     for subject_ref, node in symbol_nodes.items():
         candidates = component_candidate_map.get(subject_ref, {})
@@ -1066,14 +1074,9 @@ def cluster_component_candidates(
                 )
             )
             component_evidence_by_id[component_id].extend(payload["evidence"])
-            _merge_entity_candidate(
-                component_entities,
-                entity_id=component_id,
-                kind="component",
-                name=_component_display_name(_component_candidate_key(component_id)),
-                confidence=max(float(payload["score"]), _ENTITY_CONFIDENCE),
-                evidence=_dedupe_evidence(component_evidence_by_id[component_id]),
-                attributes={"component": _component_candidate_key(component_id)},
+            confidence = max(float(payload["score"]), _ENTITY_CONFIDENCE)
+            selected_component_confidence[component_id] = max(
+                selected_component_confidence.get(component_id, confidence), confidence
             )
 
         if status == "selected":
@@ -1099,6 +1102,17 @@ def cluster_component_candidates(
                 )
                 or _node_evidence(node),
             )
+        )
+
+    for component_id, confidence in selected_component_confidence.items():
+        _merge_entity_candidate(
+            component_entities,
+            entity_id=component_id,
+            kind="component",
+            name=_component_display_name(_component_candidate_key(component_id)),
+            confidence=confidence,
+            evidence=_dedupe_evidence(component_evidence_by_id[component_id]),
+            attributes={"component": _component_candidate_key(component_id)},
         )
 
     return (
@@ -1612,6 +1626,63 @@ def recover_architecture_model(
             packet=packet,
             adjudication=adjudication,
         )
+    return model
+
+
+# Recovered models keyed by a hash of their inputs. One arc42/C4 build used to
+# recover the same model three times (facts plus two C4 views), and a sync runs
+# up to three builds; the model is immutable (frozen dataclasses), so equal
+# inputs can share it. Small because a model of a large repository is big.
+_RECOVERY_CACHE: OrderedDict[tuple[Callable[..., Any], str], RecoveredArchitectureModel] = (
+    OrderedDict()
+)
+_RECOVERY_CACHE_SIZE = 2
+_RECOVERY_CACHE_LOCK = threading.Lock()
+
+
+def _recovery_inputs_key(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    docs: list[dict[str, Any]] | None,
+) -> str:
+    payload = json.dumps([nodes, edges, docs or []], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def recover_architecture_model_shared(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    docs: list[dict[str, Any]] | None,
+    recover: Callable[..., RecoveredArchitectureModel],
+) -> RecoveredArchitectureModel:
+    """Run ``recover`` in a worker thread, reusing its model for identical inputs.
+
+    The recovery is CPU-bound pure Python on plain dicts; on the event loop it
+    blocked every other request of the API and the timeouts of a sync. Callers
+    pass the recovery function they import, so tests can substitute it; the
+    cache is keyed by that function and the inputs.
+    """
+    return await anyio.to_thread.run_sync(lambda: _recover_cached(nodes, edges, docs, recover))
+
+
+def _recover_cached(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    docs: list[dict[str, Any]] | None,
+    recover: Callable[..., RecoveredArchitectureModel],
+) -> RecoveredArchitectureModel:
+    key = (recover, _recovery_inputs_key(nodes, edges, docs))
+    with _RECOVERY_CACHE_LOCK:
+        cached = _RECOVERY_CACHE.get(key)
+        if cached is not None:
+            _RECOVERY_CACHE.move_to_end(key)
+            return cached
+    # Computed outside the lock; concurrent misses may compute the same model.
+    model = recover(nodes, edges, docs=docs)
+    with _RECOVERY_CACHE_LOCK:
+        _RECOVERY_CACHE[key] = model
+        while len(_RECOVERY_CACHE) > _RECOVERY_CACHE_SIZE:
+            _RECOVERY_CACHE.popitem(last=False)
     return model
 
 

@@ -14,6 +14,7 @@ Tests LLM-based entity and relationship extraction with mocked providers:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from contextmine_core.knowledge.extraction import (
     _merge_entity_groups,
     _resolve_entities_with_embeddings,
     _should_skip_semantic_chunk,
+    _spread_across_directories,
     extract_entities_from_chunk,
     extract_from_documents,
     extract_relationships_from_chunk,
@@ -263,6 +265,34 @@ class TestCanonicalizeRelationships:
                 strength=0.8,
             )
         ]
+
+
+class TestChunkBudgetSpread:
+    def test_budget_takes_one_chunk_per_directory_before_going_deeper(self) -> None:
+        paths = [
+            "apps/api/a.py",
+            "apps/api/b.py",
+            "apps/api/c.py",
+            "apps/web/x.ts",
+            "packages/core/knowledge/graph.py",
+        ]
+        candidates = sorted(((0, 0, 0, f"{path}:1"), path) for path in paths)
+
+        selected = [path for _priority, path in _spread_across_directories(candidates)[:3]]
+
+        assert selected == ["apps/api/a.py", "apps/web/x.ts", "packages/core/knowledge/graph.py"]
+
+    def test_spread_keeps_kind_tiers(self) -> None:
+        candidates = [
+            ((0, 0, 0, "src/a.py:1"), "src/a.py"),
+            ((0, 0, 0, "src/b.py:1"), "src/b.py"),
+            ((3, 0, 0, "docs/readme.md:1"), "docs/readme.md"),
+        ]
+
+        selected = [path for _priority, path in _spread_across_directories(candidates)]
+
+        # Documentation stays behind all core code, even from a fresh directory.
+        assert selected == ["src/a.py", "src/b.py", "docs/readme.md"]
 
 
 class TestSemanticChunkFiltering:
@@ -826,6 +856,26 @@ class TestResolveEntitiesWithEmbeddings:
 # ===========================================================================
 
 
+def _then_defaults(scripted: list) -> Callable[..., MagicMock]:
+    """Return the scripted results in order, then empty selects and successful inserts.
+
+    persist_semantic_entities also loads existing entities and inserts edges
+    with ON CONFLICT DO NOTHING ... RETURNING after the scripted queries.
+    """
+    results = iter(scripted)
+
+    def execute(*_args: object, **_kwargs: object) -> MagicMock:
+        try:
+            return next(results)
+        except StopIteration:
+            result = MagicMock()
+            result.scalars.return_value.all.return_value = []
+            result.first.return_value = (uuid4(),)
+            return result
+
+    return execute
+
+
 class TestPersistSemanticEntities:
     """Tests for persist_semantic_entities with mocked session."""
 
@@ -842,7 +892,7 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = []
 
-        session.execute.side_effect = [mock_existing, mock_files]
+        session.execute.side_effect = _then_defaults([mock_existing, mock_files])
 
         batch = ExtractionBatch()
         stats = await persist_semantic_entities(session, coll_id, batch)
@@ -864,7 +914,7 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = []
 
-        session.execute.side_effect = [mock_existing, mock_files]
+        session.execute.side_effect = _then_defaults([mock_existing, mock_files])
 
         # Make session.add set a mock .id on the node so flush/entity creation works.
         # persist_semantic_entities reads node.id after flush.
@@ -922,7 +972,9 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = []
 
-        session.execute.side_effect = [mock_existing, MagicMock(), MagicMock(), mock_files]
+        session.execute.side_effect = _then_defaults(
+            [mock_existing, MagicMock(), MagicMock(), mock_files]
+        )
 
         batch = ExtractionBatch()
         await persist_semantic_entities(session, coll_id, batch)
@@ -944,7 +996,7 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = [(file_node_id, "file:src/auth.py")]
 
-        session.execute.side_effect = [mock_existing, mock_files]
+        session.execute.side_effect = _then_defaults([mock_existing, mock_files])
 
         batch = ExtractionBatch(
             entities=[
@@ -984,7 +1036,7 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = [(file_node_id, "src/auth.py")]
 
-        session.execute.side_effect = [mock_existing, mock_files]
+        session.execute.side_effect = _then_defaults([mock_existing, mock_files])
 
         batch = ExtractionBatch(
             entities=[
@@ -1011,7 +1063,7 @@ class TestPersistSemanticEntities:
         mock_files = MagicMock()
         mock_files.all.return_value = []
 
-        session.execute.side_effect = [mock_existing, mock_files]
+        session.execute.side_effect = _then_defaults([mock_existing, mock_files])
 
         batch = ExtractionBatch(
             entities=[

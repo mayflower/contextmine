@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from contextmine_core.architecture.recovery import recover_architecture_model
 from contextmine_core.twin.projections import build_inferred_architecture_projection
 
@@ -254,3 +255,67 @@ def test_component_boundary_ambiguity_is_preserved_when_two_clusters_are_equally
         "component:session-service",
     )
     assert hypothesis.selected_entity_ids == ()
+
+
+def test_component_evidence_work_stays_quadratic_for_large_file_clusters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file cluster of k symbols must not re-deduplicate its evidence per member.
+
+    Each member carries the whole file's evidence, so the output is O(k²); merging
+    the component once per member made the deduplication work O(k³), which hung
+    syncs of repositories with large files. Counting the deduplicated items keeps
+    the guard deterministic.
+    """
+    import contextmine_core.architecture.recovery as recovery
+
+    processed = 0
+    original = recovery._dedupe_evidence
+
+    def counting(evidence):
+        nonlocal processed
+        processed += len(evidence)
+        return original(evidence)
+
+    monkeypatch.setattr(recovery, "_dedupe_evidence", counting)
+    k = 200
+    nodes = [
+        _symbol(node_id=f"symbol:s{i}", name=f"Step {i}", file_path="worker/flows.py")
+        for i in range(k)
+    ]
+    edges = [_edge(f"symbol:s{i}", f"symbol:s{i + 1}", "symbol_calls_symbol") for i in range(k - 1)]
+
+    model = recover_architecture_model(nodes, edges, docs=[])
+
+    components = [entity for entity in model.entities if entity.kind == "component"]
+    assert [len(component.evidence) for component in components] == [k + 1]
+    assert processed < 10 * k * k
+
+
+@pytest.mark.anyio
+async def test_shared_recovery_reuses_the_model_for_identical_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One build recovered the same model three times; equal inputs must share it."""
+    import contextmine_core.architecture.recovery as recovery
+
+    calls = 0
+    real = recovery.recover_architecture_model
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(recovery, "_RECOVERY_CACHE", type(recovery._RECOVERY_CACHE)())
+    nodes = [_symbol(node_id="symbol:a", name="A", file_path="pkg/a.py")]
+
+    first = await recovery.recover_architecture_model_shared(nodes, [], None, counting)
+    again = await recovery.recover_architecture_model_shared(list(nodes), [], [], counting)
+    other = await recovery.recover_architecture_model_shared(
+        [*nodes, _symbol(node_id="symbol:b", name="B", file_path="pkg/a.py")], [], None, counting
+    )
+
+    assert again is first
+    assert other is not first
+    assert calls == 2

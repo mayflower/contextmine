@@ -555,8 +555,15 @@
             "type": "number"
           },
           "coverage": {
-            "title": "Coverage",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
           },
           "loc": {
             "title": "Loc",

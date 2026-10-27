@@ -23,6 +23,12 @@ from pydantic import BaseModel
 # ---- Test schemas for structured output ----
 
 
+def _settings(**values: object):
+    from contextmine_core.settings import Settings
+
+    return Settings(_env_file=None, **values)
+
+
 class ActionSelection(BaseModel):
     """Schema for action selection."""
 
@@ -439,9 +445,10 @@ class TestProviderFactory:
         assert "gpt" in openai.model_name.lower()
 
     def test_anthropic_no_api_key_env_raises(self) -> None:
-        """When no key is passed and no env var is set, should raise."""
+        """When no key is passed and none is configured, should raise."""
         with (
             patch.dict("os.environ", {}, clear=True),
+            patch("contextmine_core.settings.get_settings", return_value=_settings()),
             pytest.raises(ValueError, match="ANTHROPIC_API_KEY"),
         ):
             get_llm_provider(provider="anthropic", api_key=None)
@@ -449,9 +456,22 @@ class TestProviderFactory:
     def test_openai_no_api_key_env_raises(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=True),
+            patch("contextmine_core.settings.get_settings", return_value=_settings()),
             pytest.raises(ValueError, match="OPENAI_API_KEY"),
         ):
             get_llm_provider(provider="openai", api_key=None)
+
+    def test_keys_come_from_settings_not_only_the_environment(self) -> None:
+        """Keys from .env or a secrets dir live in settings, not in os.environ."""
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "contextmine_core.settings.get_settings",
+                return_value=_settings(openai_api_key="sk-from-settings"),
+            ),
+        ):
+            provider = get_llm_provider(provider="openai", api_key=None)
+        assert provider._model.openai_api_key.get_secret_value() == "sk-from-settings"
 
     def test_max_retries_forwarded(self) -> None:
         provider = get_llm_provider(provider="anthropic", api_key="test", max_retries=5)
