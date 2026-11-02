@@ -15,7 +15,7 @@ dependencies = [
     "lizard>=1.24.0",
     "trafilatura>=2.2.0",
     "lxml_html_clean>=0.4.5",
-    "langsmith==0.11.2",
+    "langsmith==0.14.12",
 ]
 
 [project.optional-dependencies]
