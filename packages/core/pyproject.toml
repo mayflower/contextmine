@@ -21,7 +21,7 @@ dependencies = [
     "langchain-anthropic>=1.7.0",
     "langchain-openai>=1.6.0",
     "langgraph>=1.2.11",
-    "langgraph-checkpoint-postgres==3.1.2",
+    "langgraph-checkpoint-postgres==3.2.0",
     "psycopg[binary]>=3.3.5",
     "claude-agent-sdk==0.2.149",
     # SCIP protobuf parsing for code intelligence
