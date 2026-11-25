@@ -1,5 +1,5 @@
 # Build the spider_md binary with the declared stable Rust toolchain.
-FROM rust:1.98.0-slim@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS rust-builder
+FROM rust:1.98.1-slim@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS rust-builder
 
 WORKDIR /build
 COPY rust/spider_md/ ./
